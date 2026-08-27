@@ -123,3 +123,77 @@ capability, not on being the only one there.
   sessions are built on the same lossy opencode event stream kestrel found in [#2](https://github.com/jtmthf/kestrel/issues/2) — worth reading how they handled it.
 - Does Open-Inspect's Cloudflare coupling run deeper than deployment (Durable Objects are a genuinely
   distinctive primitive), and is that a moat or a millstone?
+
+---
+
+# Addendum: how deep is Open-Inspect's Cloudflare coupling?
+
+Left as an open question above; settled 2026-08-26 by reading the source at
+`ColeMurray/background-agents` (shallow clone, ~1,800 files, control plane ~130k lines of TypeScript).
+
+**Answer: the coupling is architectural, not deployment. The data plane is portable; the control plane is not.**
+
+## The control plane binds four Cloudflare primitives
+
+From `packages/control-plane/wrangler.jsonc`:
+
+- **Durable Objects** — `SESSION` → `SessionDO`, with `new_sqlite_classes: ["SessionDO"]`
+- **D1** — `DB` (78 `D1Database` references across the control plane)
+- **KV** — `REPOS_CACHE`
+- **R2** — `MEDIA_BUCKET`
+
+## The abstraction that exists does not decouple
+
+There *is* a `platform-ports.ts`, and the DO class is deliberately thin — 103 lines, documented as
+"the Cloudflare adapter for one session runtime," with application wiring separated into
+`createSessionRuntime`. That is real engineering discipline, and it means the *business logic* is not
+Cloudflare-shaped.
+
+But `platform-ports.ts` is **28 lines** abstracting exactly two capabilities, and one of them encodes a
+Durable Object constraint in its own contract:
+
+> `/** Access the runtime's single scheduled wake-up. */`
+
+"Single scheduled wake-up" *is* the DO alarm model — one alarm per object. The file also type-asserts
+that Cloudflare's `Fetcher` satisfies its `FetchClient`.
+
+## Where the real weld is: session state and multiplayer
+
+Two things sit directly on Durable Object semantics and are not behind any port:
+
+1. **Session storage is DO-embedded SQLite** — `this.sql = ctx.storage.sql`, colocated with the actor.
+2. **Multiplayer runs on DO WebSocket Hibernation** — `this.ctx.acceptWebSocket(ws, tags)`, with
+   explicit hibernation-recovery logic: sockets tagged "for hibernation recovery," ws-to-participant
+   mappings persisted "for hibernation survival," and handling for the case where "on wake, the zombie
+   WS still appears OPEN."
+
+`session/` alone is ~36,700 lines, and `hibernat` appears throughout it.
+
+## Why this matters for kestrel
+
+Durable Objects hand Open-Inspect four things nearly for free, and they are **precisely the hard parts of
+durable multiplayer sessions**:
+
+| DO gives them | kestrel must build it |
+|---|---|
+| One single-threaded actor per session | Per-session single-writer serialization (leader election / actor runtime) |
+| Embedded SQLite colocated with that actor | Durable per-session storage with the same consistency story |
+| Hibernatable WebSockets — idle sessions cost nothing | Fan-out that survives idle without pinning a process per session |
+| One durable alarm per object | Per-session scheduled wake-up |
+
+Nothing in the docker-compose/Kubernetes world offers this combination out of the box. **That is why no
+portable implementation exists** — and it is the concrete content of kestrel's differentiator, not a
+marketing line.
+
+It is also an honest warning: "make it portable" is not a packaging exercise. It is building a
+session-actor runtime, and it is likely the single largest piece of engineering on the road to v1.
+
+## Corroboration: their compute layer *is* pluggable
+
+`packages/control-plane/src/sandbox/providers/` ships **Daytona, E2B, Modal, OpenComputer, and Vercel**
+drivers. So Open-Inspect already proves the pluggable-compute posture from
+[#4](https://github.com/jtmthf/kestrel/issues/4) is workable — kestrel gets no differentiation there.
+The difference is entirely in the control plane.
+
+The README documents no non-Cloudflare deployment path. (`docker compose up -d postgres redis` appears in
+it, but for local development dependencies, not for running the control plane.)
