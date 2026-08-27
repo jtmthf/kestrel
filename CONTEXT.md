@@ -27,6 +27,12 @@ One execution of an agent runtime inside one environment, on behalf of a session
 end, and an exit status. Work that is queued but not yet started is a run in a queued state.
 _Avoid_: job, task, execution, invocation
 
+**Approval**:
+A pending decision that blocks a run until a human resolves it. Always carries a deadline and is
+addressed outward through an integration; expiry resolves it as denied. Resolving an approval is
+not joining the session.
+_Avoid_: permission, confirmation, gate, ask
+
 **Transcript**:
 The ordered, replayable record of everything that happened in a session — messages, run boundaries,
 participant joins. What a human reads when they join a session late.
@@ -43,6 +49,12 @@ _Avoid_: signal, notification, hook
 A standing, configured rule that matches events and starts work. Named, listable, disableable. A
 trigger is the rule, never an individual firing; the session records the event that started it.
 _Avoid_: subscription, listener, automation
+
+**Integration**:
+A configured, credentialed connection to an external system. Carries events inbound and kestrel's
+requests outbound; an integration may do either direction or both, and declares which. Slack,
+Linear, GitHub and a plain webhook are all integrations.
+_Avoid_: connector, provider, app, plugin
 
 **Workflow**:
 A declared multi-step process whose steps are runs, executing within a single session. Trigger is to
@@ -80,7 +92,8 @@ _Avoid_: engine, backend, driver
 
 **Participant**:
 A member of a session. A participant is either a human or an agent; the session makes no structural
-distinction between them.
+distinction between them in the transcript or in turn-taking. Reachability is where they differ: an
+agent is reached through its runtime, a human only through an integration, or not at all.
 _Avoid_: member, user, collaborator
 
 ## Invariants
@@ -92,6 +105,9 @@ words from drifting.
 - A session has exactly **one** workspace. A workspace may declare **many** repositories.
 - A run executes in exactly **one** environment.
 - At most **one** run is active in a session at a time.
+- A run blocked on an approval still occupies that **one** active-run slot.
+- An approval may be resolved by someone who is **not** a participant, and resolving it does not
+  make them one.
 
 ## Terms deliberately not used
 
@@ -111,6 +127,9 @@ as above — it stays behind the runtime contract.
 an organization is the boundary that is expensive to introduce later, a team is cheap.
 
 **Factory**: describes what kestrel is to a reader; nothing in the system is an instance of it.
+
+**Channel**: Slack's word for a room, and it would be read as one. The configured connection to
+Slack, or to any other external system, is an **Integration**.
 
 **Fleet**: a view, not an entity — every running session looked at once. If the operator surface
 needs a name, that is a UI name, not vocabulary.
