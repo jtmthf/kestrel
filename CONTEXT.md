@@ -8,6 +8,13 @@ decisions live in `docs/adr/`.
 
 ## Language
 
+### Boundary
+
+**Organization**:
+The outermost boundary of ownership and access. Owns workspaces, triggers, secrets, participants,
+and the audit record. A self-hosted install typically has exactly one.
+_Avoid_: tenant, account, team, org
+
 ### Work
 
 **Session**:
@@ -76,6 +83,7 @@ _Avoid_: member, user, collaborator
 These hold by definition of the terms above; they are stated here because they are what keeps the
 words from drifting.
 
+- Every durable record belongs to exactly **one** organization.
 - A session has exactly **one** workspace. A workspace may declare **many** repositories.
 - A run executes in exactly **one** environment.
 - At most **one** run is active in a session at a time.
@@ -90,6 +98,12 @@ session contains many of them over its life.
 
 **Agent** (opencode's): opencode uses the word for its own primary/subagent concept. Same resolution
 as above — it stays behind the runtime contract.
+
+**Tenant**: names a deployment model, not a thing in the domain. The boundary is an
+**Organization**; "multi-tenancy" remains fine as description.
+
+**Team**: a grouping *below* an organization. Deliberately unnamed until something needs it —
+an organization is the boundary that is expensive to introduce later, a team is cheap.
 
 **Factory**: describes what kestrel is to a reader; nothing in the system is an instance of it.
 
