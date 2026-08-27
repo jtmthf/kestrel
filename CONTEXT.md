@@ -56,6 +56,11 @@ The isolated compute instance a run executes in. Disposable, provisioned by a co
 destroyed when finished.
 _Avoid_: sandbox, container, machine, box
 
+**Compute Backend**:
+A pluggable implementation that provisions and destroys environments, which kestrel drives through a
+contract. Docker is the default; hosted backends are drivers alongside it.
+_Avoid_: provider, infrastructure, cloud, executor
+
 **Workspace**:
 The durable declaration of what a session's work happens against — repositories, branch, setup.
 Belongs to the session and outlives every environment built from it.
