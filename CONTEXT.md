@@ -33,6 +33,12 @@ addressed outward through an integration; expiry resolves it as denied. Resolvin
 not joining the session.
 _Avoid_: permission, confirmation, gate, ask
 
+**Question**:
+A request for a participant's input that blocks a run until it is answered. Carries a deadline; on
+expiry the agent proceeds on its own judgment. A question is about the work, never about
+permission — anything that could exceed an agent's policy is an approval, not a question.
+_Avoid_: ask, prompt, clarification, input
+
 **Transcript**:
 The ordered, replayable record of everything that happened in a session — messages, run boundaries,
 participant joins. What a human reads when they join a session late.
@@ -82,7 +88,8 @@ _Avoid_: checkout, working tree, project
 
 **Agent**:
 A configured actor identity that participates in a session: its runtime, model, instructions, and
-permissions. An agent is configuration, not a running process — a running agent is a run.
+the policy granted to it. An agent is configuration, not a running process — a running agent is a
+run.
 _Avoid_: bot, worker, assistant
 
 **Agent Runtime**:
@@ -96,6 +103,21 @@ distinction between them in the transcript or in turn-taking. Reachability is wh
 agent is reached through its runtime, a human only through an integration, or not at all.
 _Avoid_: member, user, collaborator
 
+### Governance
+
+**Policy**:
+The standing rule set that resolves an attempted operation to one of four dispositions: allow, deny,
+judge, or human. Judge refers the operation to a model that decides against stated criteria; human
+raises an approval, and the rule that raises it also names who may resolve it. An organization
+declares the ceiling, an agent is granted at most that, and effective policy is the intersection.
+_Avoid_: permission, rule, guardrail, ask
+
+**Audit Record**:
+The organization-scoped, append-only record of every governed decision: what was attempted, the
+policy that decided it, who resolved it, and the outcome. Distinct from a transcript — a transcript
+is one session's narrative, an audit record spans every session in the organization.
+_Avoid_: log, trail, history, ledger
+
 ## Invariants
 
 These hold by definition of the terms above; they are stated here because they are what keeps the
@@ -108,6 +130,12 @@ words from drifting.
 - A run blocked on an approval still occupies that **one** active-run slot.
 - An approval may be resolved by someone who is **not** a participant, and resolving it does not
   make them one.
+- An approval is resolved by a **human**. No agent resolves one, so no run's agent can approve its
+  own approval.
+- Effective policy is the **intersection** of the organization's ceiling and the agent's grant.
+- A question's expiry is **not** a denial; only an approval's is.
+- Every approval resolution appears in **both** the session's transcript and the organization's
+  audit record.
 
 ## Terms deliberately not used
 
@@ -127,6 +155,9 @@ as above — it stays behind the runtime contract.
 an organization is the boundary that is expensive to introduce later, a team is cheap.
 
 **Factory**: describes what kestrel is to a reader; nothing in the system is an instance of it.
+
+**Ask**: opencode's name for a permission that must be confirmed, and a bare verb everywhere else.
+The pending decision is an **Approval**; the request for input is a **Question**.
 
 **Channel**: Slack's word for a room, and it would be read as one. The configured connection to
 Slack, or to any other external system, is an **Integration**.
