@@ -63,9 +63,17 @@ Linear, GitHub and a plain webhook are all integrations.
 _Avoid_: connector, provider, app, plugin
 
 **Workflow**:
-A declared multi-step process whose steps are runs, executing within a single session. Trigger is to
-event as workflow is to run: the configured noun declares, the runtime noun happens.
+A standing, declared process: the roster of agents that may be enqueued, and the caps and failure
+tolerances that bound one enactment of it. The sequence is not declared — a run grows it at runtime
+by enqueueing further sessions — but nothing outside the roster may be enqueued. Trigger is to event
+as workflow is to campaign: the configured noun declares, the runtime noun happens.
 _Avoid_: pipeline, recipe, playbook
+
+**Campaign**:
+One enactment of a workflow: the sessions it has enqueued, the concurrency and spend caps binding
+them, and the scope a cancellation applies to. A campaign owns no work of its own, and a session
+belongs to at most one campaign.
+_Avoid_: execution, batch, initiative, rollout
 
 ### Place
 
@@ -126,8 +134,20 @@ words from drifting.
 - Every durable record belongs to exactly **one** organization.
 - A session has exactly **one** workspace. A workspace may declare **many** repositories.
 - A run executes in exactly **one** environment.
-- At most **one** run is active in a session at a time.
-- A run blocked on an approval still occupies that **one** active-run slot.
+- At most **one** run is active in a session at a time. Concurrency is across sessions, **never**
+  within one.
+- A run blocked on an approval still occupies that **one** active-run slot. Nothing else holds that
+  slot: a run never waits on work it has enqueued.
+- A session belongs to at most **one** campaign, and nothing outside a workflow's roster may be
+  enqueued.
+- A queued run is dispatched **at most once**. A lease that expires marks its run failed and never
+  re-dispatches it.
+- kestrel retries **dispatch**, never **work**. A run that started and failed is retried only by a
+  workflow enqueueing a new one.
+- A session records the run that enqueued it, if any. Enqueueing grants that run **no** rights over
+  the session.
+- A run whose dependencies are many proceeds only when its declared tolerance is met; **all must
+  succeed** unless the workflow says otherwise.
 - An approval may be resolved by someone who is **not** a participant, and resolving it does not
   make them one.
 - An approval is resolved by a **human**. No agent resolves one, so no run's agent can approve its
