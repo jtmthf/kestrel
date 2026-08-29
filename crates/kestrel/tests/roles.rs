@@ -8,20 +8,27 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use tempfile::TempDir;
+
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// stderr is drained on a thread so the pipe cannot fill and block the child.
+/// stderr is drained on a thread so the pipe cannot fill and block the child. The data
+/// directory is held for the process's lifetime so concurrent tests never race over the
+/// real default database.
 struct Kestrel {
     child: Child,
     stderr: Receiver<String>,
     seen: Vec<String>,
+    _data_dir: TempDir,
 }
 
 impl Kestrel {
     fn spawn(args: &[&str]) -> Self {
+        let data_dir = TempDir::new().expect("a temporary data directory");
         let mut child = Command::new(env!("CARGO_BIN_EXE_kestrel"))
             .args(args)
             .env("RUST_LOG", "info")
+            .env("KESTREL_DATA_DIR", data_dir.path())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -42,6 +49,7 @@ impl Kestrel {
             child,
             stderr,
             seen: Vec::new(),
+            _data_dir: data_dir,
         }
     }
 
