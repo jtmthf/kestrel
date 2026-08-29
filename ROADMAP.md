@@ -1,8 +1,8 @@
 # Roadmap
 
 > **We are here: `0.1`, kestrel opens its own PRs.** No rung is closed. The repo holds the
-> vocabulary in [`CONTEXT.md`](CONTEXT.md) and the direction in [`README.md`](README.md), and there
-> is no running code yet.
+> vocabulary in [`CONTEXT.md`](CONTEXT.md) and the direction in [`README.md`](README.md); the code
+> so far is the two toolchains, the two binaries and CI, and no domain concept has been built yet.
 
 Seven rungs from an empty repository to v1, and no dates. Each is a `0.N` release, and each is named
 by a class of kestrel's own work rather than by a feature list, because the ladder is walked by

@@ -1,0 +1,11 @@
+{
+  "name": "@kestrel/supervisor",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The supervisor that runs inside an Environment alongside the agent runtime.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "bun build ./src/main.ts --compile --outfile dist/kestrel-supervisor"
+  }
+}

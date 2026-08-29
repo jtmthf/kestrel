@@ -12,9 +12,11 @@ point without losing what came before.
 
 ## Status
 
-Early, and honest about it: there is no running code yet. What the repo holds today is the
-vocabulary, in [`CONTEXT.md`](CONTEXT.md), and the full planning trail in the issue tracker, where
-every decision below is written down with its reasoning and the objections it survived. This document
+Early, and honest about it: rung `0.1` is under construction, and what runs today is scaffolding —
+two binaries that start and stop cleanly, and the CI that builds them. No domain concept has been
+built yet. What the repo mostly holds is still the vocabulary, in [`CONTEXT.md`](CONTEXT.md), and the
+full planning trail in the issue tracker, where every decision below is written down with its
+reasoning and the objections it survived. This document
 is the direction, written first so the implementation has something to be judged against;
 [`ROADMAP.md`](ROADMAP.md) is the order it gets built in, and it carries the marker for where the
 project actually is.
