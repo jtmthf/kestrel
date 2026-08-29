@@ -103,10 +103,21 @@ fn first_boot_needs_no_configuration_file_to_declare_an_organization() {
 
     let id = kestrel.run(&["organization", "declare", "acme"]);
 
+    assert!(kestrel.data_dir.path().join("kestrel.db").exists());
     assert_eq!(
         kestrel.run(&["organization", "list"]),
         format!("{id}  acme")
     );
+}
+
+#[test]
+fn a_role_boots_on_an_empty_data_directory_and_makes_its_database() {
+    let kestrel = Kestrel::new();
+
+    kestrel.kill_a_booted_control_plane();
+
+    assert!(kestrel.data_dir.path().join("kestrel.db").exists());
+    assert_eq!(kestrel.run(&["organization", "list"]), "");
 }
 
 #[test]

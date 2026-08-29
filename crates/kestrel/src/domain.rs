@@ -81,8 +81,12 @@ impl SessionState {
             SessionState::Sealed => "sealed",
         }
     }
+}
 
-    pub fn parse(state: &str) -> Result<Self> {
+impl FromStr for SessionState {
+    type Err = anyhow::Error;
+
+    fn from_str(state: &str) -> Result<Self> {
         match state {
             "open" => Ok(SessionState::Open),
             "sealed" => Ok(SessionState::Sealed),

@@ -290,7 +290,7 @@ impl Tx<'_> {
             organization,
             workspace,
             agent,
-            state: SessionState::parse(row.get("state"))?,
+            state: row.get::<String, _>("state").parse()?,
             opened_at: row.get::<String, _>("opened_at").parse()?,
         })
     }
