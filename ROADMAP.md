@@ -71,18 +71,22 @@ Everything above this rung is addition; this one is creation.
 Some of what lands here is invisible on the day it ships and impossible to add cheaply afterwards:
 the `Organization` column on every durable record, the transcript's entry granularity and the fact
 that state is held as current values rather than replayed out of history, the `sealed` state on a
-session, and the bounded-window-plus-paging transcript read. That last one is needed here rather than
-at `0.3`, because environments are disposable from the first commit, so a run resuming on a cold
-environment needs the paging read before any human has ever joined a session. Also settled here by
-omission: what happens inside a run stays behind the agent-runtime contract, and gets no promise and
-no name.
+session, the run-held lease, and the bounded-window-plus-paging transcript read. That last one is
+needed here rather than at `0.3`, because environments are disposable from the first commit, so a run
+resuming on a cold environment needs the paging read before any human has ever joined a session. The
+lease is here rather than at `0.2` for a neighbouring reason: without one, an environment that dies
+mid-run leaves its run active forever, holding the session's one active-run slot, so the session
+never seals — and a rung that promises an interrupted run ends with an explicit exit status cannot
+ship a session that wedges permanently. Also settled here by omission: what happens inside a run
+stays behind the agent-runtime contract, and gets no promise and no name.
 
 ### 0.2 — kestrel works the backlog
 
 Many issues at once, and you stop being the queue. The rung is scheduling: a ledger of queued runs
-with dependency edges between them, claiming, at-most-once dispatch, a deterministic FIFO ready
-order, and a lease whose expiry fails its run rather than re-dispatching it. Sessions also start
-sealing themselves here, on idle expiry, riding the same timer sweep that reaps leases.
+with dependency edges between them, claiming, at-most-once dispatch, and a deterministic FIFO ready
+order. The lease itself landed at `0.1`; what arrives here is the graph its expiry unblocks, and the
+rule that expiry fails a run rather than re-dispatching it. Sessions also start sealing themselves
+here, on idle expiry, riding the same timer sweep that reaps leases.
 
 Concurrency arrives with it, and it lives **across** sessions and never within one: at most one run
 is active in a session, always. That is the project's most surprising design decision, and it is what
