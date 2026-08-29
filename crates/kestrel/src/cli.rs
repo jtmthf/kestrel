@@ -1,4 +1,10 @@
+use std::path::PathBuf;
+
+use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
+use directories::ProjectDirs;
+
+use crate::domain::SessionId;
 
 const ROLES: &str = "\
 Roles:
@@ -33,10 +39,11 @@ impl std::fmt::Display for Role {
 
 /// Not a wrapper around [`Role`]: the CLI role is one-shot, never started and waited in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Selection {
+pub enum Selection<'a> {
     AllInOne,
     Serve,
     Work,
+    Cli(&'a CliCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -51,24 +58,139 @@ pub enum Selection {
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
+
+    /// Where kestrel keeps its database
+    #[arg(long, env = "KESTREL_DATA_DIR", global = true, value_name = "DIR")]
+    data_dir: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Subcommand)]
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
     /// Serve the API and the link an Environment dials out to
     Serve,
     /// Claim queued Runs and execute them
     Work,
+    #[command(flatten)]
+    Cli(CliCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum CliCommand {
+    /// Declare and list Organizations
+    #[command(subcommand)]
+    Organization(OrganizationCommand),
+    /// Declare and list Workspaces
+    #[command(subcommand)]
+    Workspace(WorkspaceCommand),
+    /// Declare and list Agents
+    #[command(subcommand)]
+    Agent(AgentCommand),
+    /// Open and read Sessions
+    #[command(subcommand)]
+    Session(SessionCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SessionCommand {
+    /// Open a Session against a Workspace and an Agent
+    Open {
+        /// The Organization it belongs to
+        #[arg(long)]
+        organization: String,
+        /// The Workspace its work happens against
+        #[arg(long)]
+        workspace: String,
+        /// The Agent that participates in it
+        #[arg(long)]
+        agent: String,
+    },
+    /// Show a Session
+    Show {
+        /// The Session's identifier
+        session: SessionId,
+    },
+    /// Read a Session's Transcript
+    Transcript {
+        /// The Session's identifier
+        session: SessionId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum AgentCommand {
+    /// Declare an Agent: the actor identity that participates in a Session
+    Declare {
+        /// The name it is referred to by
+        name: String,
+        /// The Organization it belongs to
+        #[arg(long)]
+        organization: String,
+        /// The Agent Runtime that drives it
+        #[arg(long, default_value = "opencode")]
+        runtime: String,
+        /// The model it works with
+        #[arg(long)]
+        model: String,
+    },
+    /// List every Agent in an Organization
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum WorkspaceCommand {
+    /// Declare a Workspace: the repositories and branch a Session's work happens against
+    Declare {
+        /// The name it is referred to by
+        name: String,
+        /// The Organization it belongs to
+        #[arg(long)]
+        organization: String,
+        /// A repository the work happens against; repeat for many
+        #[arg(long = "repository", value_name = "URL", required = true)]
+        repositories: Vec<String>,
+        /// The branch the work happens on
+        #[arg(long)]
+        branch: String,
+    },
+    /// List every Workspace in an Organization
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum OrganizationCommand {
+    /// Declare an Organization
+    Declare {
+        /// The name it is referred to by
+        name: String,
+    },
+    /// List every Organization
+    List,
 }
 
 impl Cli {
     /// Every other command is the CLI role; this match being exhaustive is what forces the
     /// first one to say so.
-    pub fn selection(&self) -> Selection {
+    pub fn selection(&self) -> Selection<'_> {
         match &self.command {
             None => Selection::AllInOne,
             Some(Command::Serve) => Selection::Serve,
             Some(Command::Work) => Selection::Work,
+            Some(Command::Cli(command)) => Selection::Cli(command),
+        }
+    }
+
+    pub fn data_dir(&self) -> Result<PathBuf> {
+        match &self.data_dir {
+            Some(dir) => Ok(dir.clone()),
+            None => ProjectDirs::from("", "", "kestrel")
+                .map(|dirs| dirs.data_dir().to_owned())
+                .context("no home directory to keep kestrel's data in; pass --data-dir"),
         }
     }
 }
@@ -83,25 +205,33 @@ mod tests {
         Cli::command().render_long_help().to_string()
     }
 
-    fn selection_from(argv: &[&str]) -> Selection {
+    fn parsed(argv: &[&str]) -> Cli {
         let mut args = vec!["kestrel"];
         args.extend_from_slice(argv);
-        Cli::parse_from(args).selection()
+        Cli::parse_from(args)
     }
 
     #[test]
     fn no_role_selects_every_role_in_one_process() {
-        assert_eq!(selection_from(&[]), Selection::AllInOne);
+        assert_eq!(parsed(&[]).selection(), Selection::AllInOne);
     }
 
     #[test]
     fn serve_selects_the_serve_role() {
-        assert_eq!(selection_from(&["serve"]), Selection::Serve);
+        assert_eq!(parsed(&["serve"]).selection(), Selection::Serve);
     }
 
     #[test]
     fn work_selects_the_work_role() {
-        assert_eq!(selection_from(&["work"]), Selection::Work);
+        assert_eq!(parsed(&["work"]).selection(), Selection::Work);
+    }
+
+    #[test]
+    fn every_other_command_is_the_one_shot_cli_role() {
+        assert_eq!(
+            parsed(&["organization", "list"]).selection(),
+            Selection::Cli(&CliCommand::Organization(OrganizationCommand::List))
+        );
     }
 
     #[test]

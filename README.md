@@ -12,9 +12,11 @@ point without losing what came before.
 
 ## Status
 
-Early, and honest about it: rung `0.1` is under construction, and what runs today is scaffolding —
-two binaries that start and stop cleanly, and the CI that builds them. No domain concept has been
-built yet. What the repo mostly holds is still the vocabulary, in [`CONTEXT.md`](CONTEXT.md), and the
+Early, and honest about it: rung `0.1` is under construction. What runs today is two binaries that
+start and stop cleanly, the CI that builds them, and a durable Session — declare an organization, a
+workspace and an agent, open a session against them, and its state and transcript are still there
+after the process is killed. Nothing triggers, schedules or executes work yet. What the repo mostly
+holds is still the vocabulary, in [`CONTEXT.md`](CONTEXT.md), and the
 full planning trail in the issue tracker, where every decision below is written down with its
 reasoning and the objections it survived. This document
 is the direction, written first so the implementation has something to be judged against;
