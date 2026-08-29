@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod compute;
 pub mod domain;
 pub mod fanout;
 pub mod log;
