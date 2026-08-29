@@ -53,7 +53,9 @@ _Avoid_: signal, notification, hook
 
 **Trigger**:
 A standing, configured rule that matches events and starts work. Named, listable, disableable. A
-trigger is the rule, never an individual firing; the session records the event that started it.
+trigger is the rule, never an individual firing; the session records the event that started it. A
+trigger may name a workflow; when it does, each firing begins a campaign, and the session it starts
+belongs to that campaign.
 _Avoid_: subscription, listener, automation
 
 **Integration**:
@@ -139,7 +141,10 @@ words from drifting.
 - A run blocked on an approval still occupies that **one** active-run slot. Nothing else holds that
   slot: a run never waits on work it has enqueued.
 - A session belongs to at most **one** campaign, and nothing outside a workflow's roster may be
-  enqueued.
+  enqueued. Naming a non-member is rejected when the work is **enqueued**, never when it is
+  dispatched.
+- Only a run whose session belongs to a **campaign** may enqueue work. A campaign-less session
+  runs and ends; it never grows.
 - A queued run is dispatched **at most once**. A lease that expires marks its run failed and never
   re-dispatches it.
 - kestrel retries **dispatch**, never **work**. A run that started and failed is retried only by a
@@ -148,6 +153,8 @@ words from drifting.
   the session.
 - A run whose dependencies are many proceeds only when its declared tolerance is met; **all must
   succeed** unless the workflow says otherwise.
+- A queued run whose declared tolerance can **no longer** be met is **unreachable**: terminal,
+  operator-visible, and never reported as a failure, because nothing failed.
 - An approval may be resolved by someone who is **not** a participant, and resolving it does not
   make them one.
 - An approval is resolved by a **human**. No agent resolves one, so no run's agent can approve its
@@ -156,6 +163,8 @@ words from drifting.
 - A question's expiry is **not** a denial; only an approval's is.
 - Every approval resolution appears in **both** the session's transcript and the organization's
   audit record.
+- A session's transcript is readable only by its **participants**. A session is a read boundary, not
+  only a work boundary.
 
 ## Terms deliberately not used
 
