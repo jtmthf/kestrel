@@ -1,11 +1,5 @@
-//! The binary, spawned and signalled.
-//!
-//! "Starts every role in one process and shuts down cleanly on a signal" is not observable
-//! from inside the process, so this is the one seam where the test spawns `kestrel` itself.
-
-// Every target in ADR-0006 is a Linux container, and there is no signal here to send off
-// unix. On a non-unix host this file compiles to no tests at all rather than to failing
-// ones — so a Windows runner added to CI later would be green without proving anything.
+// Off unix this compiles to no tests rather than failing ones: a non-Linux CI runner added
+// later would be green without proving anything.
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader};
@@ -14,12 +8,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Generous: a debug binary on a loaded CI runner still starts well inside it, and a hang
-/// fails the test rather than the suite.
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// A spawned `kestrel`, with its stderr drained on a thread so the pipe cannot fill and
-/// block the child while the test is waiting on something else.
+/// stderr is drained on a thread so the pipe cannot fill and block the child.
 struct Kestrel {
     child: Child,
     stderr: Receiver<String>,
@@ -54,7 +45,6 @@ impl Kestrel {
         }
     }
 
-    /// Blocks until a stderr line satisfies `predicate`, or fails the test.
     fn wait_for(&mut self, what: &str, predicate: impl Fn(&str) -> bool) {
         let deadline = Instant::now() + PATIENCE;
         loop {
@@ -97,14 +87,11 @@ impl Kestrel {
     }
 
     fn signal(&self, signal: i32) {
-        // The only way to test signal handling is to send a signal.
         #[allow(unsafe_code)]
         let sent = unsafe { libc::kill(self.child.id() as i32, signal) };
         assert_eq!(sent, 0, "kill({signal}) failed");
     }
 
-    /// Signals, waits for exit, drains whatever stderr was still in flight, and asserts
-    /// that kestrel treated the signal as a request to stop rather than as a failure.
     fn shut_down_cleanly(&mut self, signal: i32) {
         self.signal(signal);
         let status = self.child.wait().expect("kestrel should be waitable");
@@ -126,8 +113,6 @@ impl Kestrel {
         );
     }
 
-    /// Named for what it is rather than `log`: `Log` is a port, and a Session's Transcript
-    /// is a different thing entirely (CONTEXT.md, ADR-0005).
     fn stderr_so_far(&self) -> String {
         self.seen.join("\n")
     }
@@ -135,7 +120,6 @@ impl Kestrel {
 
 impl Drop for Kestrel {
     fn drop(&mut self) {
-        // A test that failed part-way must not leave a kestrel running.
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

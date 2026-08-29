@@ -1,12 +1,4 @@
-# The toolchains, pinned so a contributor, an agent and CI all build with the same ones.
-#
-# `rust` is deliberately not declared here. Its version lives in rust-toolchain.toml, which
-# rustup honours with no setup at all — so a contributor who has never heard of mise still
-# gets the right compiler — and which mise reads as rust's idiomatic version file, given the
-# setting below. One tool, one pin, two readers.
-#
-# That setting replaces the user's global list rather than extending it. Inert here: this
-# repo carries no version file for any other tool. If one is ever added, add its tool here.
+# rust is pinned in rust-toolchain.toml. This setting replaces the global list, not extends it.
 [settings]
 idiomatic_version_file_enable_tools = ["rust"]
 

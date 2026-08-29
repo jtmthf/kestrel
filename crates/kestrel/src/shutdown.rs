@@ -1,12 +1,6 @@
-//! Turning a signal into a request that every role stop.
-
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-/// A token that is cancelled on the first shutdown signal.
-///
-/// Roles await it rather than handling signals themselves, so `serve` and `work` stop the
-/// same way whether they were signalled directly or asked to stop by the other role.
 pub fn on_signal() -> std::io::Result<CancellationToken> {
     let token = CancellationToken::new();
     let signalled = token.clone();
@@ -37,7 +31,6 @@ impl Signals {
         })
     }
 
-    /// Waits for whichever of the two arrives first, and names it.
     async fn first(&mut self) -> &'static str {
         tokio::select! {
             _ = self.interrupt.recv() => "SIGINT",

@@ -1,11 +1,4 @@
-/**
- * The compiled supervisor, spawned.
- *
- * "The supervisor binary starts and exits with status 0" is a claim about the artifact
- * `kestrel-env` will carry, not about a module — so this test runs the package's own
- * `build` script and then runs what it produced. Testing a separately-compiled copy would
- * prove the claim of a second artifact that nothing ships.
- */
+// Tests the artifact `bun run build` ships, not a separately compiled copy.
 
 import { beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";

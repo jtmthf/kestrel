@@ -1,13 +1,5 @@
-//! argv, and the role it selects.
-//!
-//! kestrel is one binary. Which of the three roles a process runs as is selected by argv
-//! rather than by a different artifact, so the deployment shapes that split the roles later
-//! do not need a second image (ADR-0002).
-
 use clap::{Parser, Subcommand};
 
-/// Named in `--help` after the command list, because the CLI role is every command that is
-/// not `serve` or `work` and so cannot be listed as one entry alongside them.
 const ROLES: &str = "\
 Roles:
   kestrel runs as one of three roles, selected by argv on one image: `serve`, `work`, and
@@ -16,7 +8,6 @@ Roles:
   Run kestrel with no command to start every role in one process. That is the default,
   and at 0.1 it is the only supported topology.";
 
-/// One of the three roles a `kestrel` process can run as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Serve,
@@ -25,7 +16,6 @@ pub enum Role {
 }
 
 impl Role {
-    /// The name this role is known by in argv and in a log line.
     pub const fn as_str(self) -> &'static str {
         match self {
             Role::Serve => "serve",
@@ -41,19 +31,11 @@ impl std::fmt::Display for Role {
     }
 }
 
-/// Which long-running role, or roles, argv selected.
-///
-/// Kept separate from [`Role`], rather than folded into an `Only(Role)` wrapper around it,
-/// because the CLI role is one-shot: it is not something a process is *started as* and then
-/// waits in, so it has no place here. The first CLI command lands in 0.1/02 and brings its
-/// own variant with it.
+/// Not a wrapper around [`Role`]: the CLI role is one-shot, never started and waited in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
-    /// Every long-running role in one process — the default.
     AllInOne,
-    /// The `serve` role alone.
     Serve,
-    /// The `work` role alone.
     Work,
 }
 
@@ -62,7 +44,6 @@ pub enum Selection {
     name = "kestrel",
     version,
     about = "kestrel — background agents, triggered by the events a team already produces.",
-    // So the command list names roles and nothing else; `--help` already does this job.
     disable_help_subcommand = true,
     after_help = ROLES,
     after_long_help = ROLES
@@ -81,11 +62,8 @@ pub enum Command {
 }
 
 impl Cli {
-    /// What argv asked this process to be.
-    ///
-    /// `serve` and `work` name the two long-running roles; every other command is the CLI
-    /// role, and there are none yet. Because this match is exhaustive, the first one cannot
-    /// land without being given a role here.
+    /// Every other command is the CLI role; this match being exhaustive is what forces the
+    /// first one to say so.
     pub fn selection(&self) -> Selection {
         match &self.command {
             None => Selection::AllInOne,
@@ -128,15 +106,12 @@ mod tests {
 
     #[test]
     fn an_unknown_command_is_rejected_rather_than_run_as_a_role() {
-        let mut args = vec!["kestrel"];
-        args.push("wrok");
-        assert!(Cli::try_parse_from(args).is_err());
+        assert!(Cli::try_parse_from(["kestrel", "wrok"]).is_err());
     }
 
     #[test]
     fn help_lists_the_three_roles() {
         let help = rendered_help();
-        // Case-insensitively: help prose says "the CLI", argv says `cli`.
         let spoken = help.to_lowercase();
         for role in [Role::Serve, Role::Work, Role::Cli] {
             assert!(

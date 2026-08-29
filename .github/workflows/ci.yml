@@ -16,8 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The version comes from rust-toolchain.toml. `install_args` keeps bun out of a job
-      # that has no use for it.
+      # Version comes from rust-toolchain.toml.
       - uses: jdx/mise-action@v4
         with:
           install_args: rust
