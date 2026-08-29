@@ -19,7 +19,8 @@ _Avoid_: tenant, account, team, org
 
 **Session**:
 The durable, joinable thread of work. Owns its history, its participants, and its event log, and
-survives restarts. Contains many runs over its life.
+survives restarts. Contains many runs over its life. A session is open or sealed; a sealed session
+is readable but accepts no run, no turn, and no new transcript entry.
 _Avoid_: thread, conversation, mission
 
 **Run**:
@@ -40,8 +41,10 @@ permission — anything that could exceed an agent's policy is an approval, not 
 _Avoid_: ask, prompt, clarification, input
 
 **Transcript**:
-The ordered, replayable record of everything that happened in a session — messages, run boundaries,
-participant joins. What a human reads when they join a session late.
+The ordered, replayable record of what happened between a session's participants — messages, run
+boundaries, participant joins, and the resolution of every approval and question. It records what
+changed the session's shared state, never what happened inside a run: an agent's reasoning and tool
+calls stay behind the agent-runtime contract. What a human reads when they join a session late.
 _Avoid_: log, event stream, history
 
 ### Cause
@@ -125,7 +128,8 @@ _Avoid_: permission, rule, guardrail, ask
 **Audit Record**:
 The organization-scoped, append-only record of every governed decision: what was attempted, the
 policy that decided it, who resolved it, and the outcome. Distinct from a transcript — a transcript
-is one session's narrative, an audit record spans every session in the organization.
+is one session's narrative, an audit record spans every session in the organization, and outlives
+them.
 _Avoid_: log, trail, history, ledger
 
 ## Invariants
@@ -165,6 +169,17 @@ words from drifting.
   audit record.
 - A session's transcript is readable only by its **participants**. A session is a read boundary, not
   only a work boundary.
+- Nothing reconstructs a session's state from its **transcript**. A transcript is read; state is held
+  as current values, **never** derived from history.
+- A session is **open** or **sealed**. Sealing is not deletion: a sealed session is readable and is
+  **never** reopened. Work that would have continued it starts a **new** session, which records the
+  sealed one.
+- kestrel **never** expires a transcript entry. An entry leaves a transcript only by **deliberate
+  deletion**.
+- A deletion inside a transcript is **itself recorded** in that transcript, so what a reader sees is
+  gap-free.
+- Deleting a session removes **nothing** from the audit record.
+- A campaign is complete when **every** session it enqueued is sealed.
 
 ## Terms deliberately not used
 
