@@ -1,0 +1,6 @@
+# rust is pinned in rust-toolchain.toml. This setting replaces the global list, not extends it.
+[settings]
+idiomatic_version_file_enable_tools = ["rust"]
+
+[tools]
+bun = "1.3.14"
