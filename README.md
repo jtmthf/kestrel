@@ -15,7 +15,9 @@ point without losing what came before.
 Early, and honest about it: there is no running code yet. What the repo holds today is the
 vocabulary, in [`CONTEXT.md`](CONTEXT.md), and the full planning trail in the issue tracker, where
 every decision below is written down with its reasoning and the objections it survived. This document
-is the direction, written first so the implementation has something to be judged against.
+is the direction, written first so the implementation has something to be judged against;
+[`ROADMAP.md`](ROADMAP.md) is the order it gets built in, and it carries the marker for where the
+project actually is.
 
 ## What kestrel is
 
@@ -34,13 +36,17 @@ carry the whole product, and they are defined precisely in [`CONTEXT.md`](CONTEX
   correctness property.
 - **Environment**: the isolated compute a run executes in. Disposable, provisioned by a pluggable
   compute backend, and destroyed when the run finishes.
-- **Workflow**: a declared multi-step process whose steps are runs, executing within a single
-  session, with conditional continuation on exit status and a human-approval step.
+- **Workflow**: a standing declaration of a roster of agents that may be enqueued, and the caps and
+  failure tolerances that bound one enactment of it. The sequence is not declared: a run grows it at
+  runtime by enqueueing further sessions, and nothing outside the roster may be enqueued. One
+  enactment is a campaign, which owns the sessions enqueued under it, the concurrency and spend caps
+  binding them, and the scope a cancellation applies to.
 
 Participants in a session are humans or agents, and the session makes no structural distinction
 between them: a person joining a running session and an agent taking a turn are the same kind of
-thing happening to the same record. That symmetry is deliberate, and it is what lets a workflow hand
-a step to a human without the session having to become a different object.
+thing happening to the same record. That symmetry is deliberate, and it is what lets a run hand the
+turn to a human without the session having to become a different object. Handing work to another
+*agent* is a different act: it enqueues a new session rather than taking a turn in this one.
 
 ## Who it is for
 
@@ -80,9 +86,12 @@ capabilities are the content of that freeze:
 
 1. **Trigger ingestion**: five sources, all round-trip. Generic webhook is the core and the named
    integrations are adapters over it, so a sixth source is a contribution rather than a fork.
-2. **Scheduling**: placement, per-organization concurrency limits, bounded retry with explicit
-   failure, and a queue that never rejects. Priority is excluded from v1 on purpose, since fairness
-   cannot be tuned without production load the project does not have yet.
+2. **Scheduling**: placement, concurrency limits per organization and per campaign, a spend cap on
+   every campaign, and a queue that never rejects. kestrel retries *dispatch*, never *work*: a run
+   that never started is dispatched again, a run that started and failed is never re-run, and a
+   workflow that wants the work retried enqueues a new run. Priority is excluded from v1 on purpose,
+   since fairness cannot be tuned without production load the project does not have yet; ready order
+   is FIFO, which is an order rather than a priority.
 3. **Isolated execution**: every run in its own environment, provisioned through a compute contract
    kestrel defines rather than a layer kestrel owns.
 4. **Model choice**: any provider the configured runtime supports, selectable per agent, with keys
@@ -92,15 +101,24 @@ capabilities are the content of that freeze:
 5. **Persistent sessions**: a session survives everything except deliberate deletion, and an
    environment survives nothing. Process restart, environment teardown, and control-plane upgrade all
    preserve the session and its full transcript, and a run interrupted by a restart ends with an
-   explicit exit status.
+   explicit exit status. Sessions do not stay open forever: an idle one is sealed, which ends it
+   without deleting it — a sealed session is readable and is never reopened, and work that would have
+   continued it starts a new session that records the sealed one. Nothing expires a transcript entry
+   at any age; there is no retention knob, only deletion you asked for.
 6. **Pluggable storage**: SQLite for the single-machine path, Postgres for production.
 7. **Multiplayer**: one uniform promise, designed to the weakest transport kestrel supports, so every
    deployment gets the same guarantees and the faster ones are only faster.
-8. **Workflows**: declared sequence, conditional continuation on exit status, human approval. Parallel
-   steps are absent by design, because a workflow runs inside one session and only one run is active
-   at a time.
+8. **Workflows**: a declared roster rather than a declared sequence, with the sequence grown at
+   runtime by runs enqueueing further sessions against it, under a campaign's caps and failure
+   tolerances. A handoff is an enqueue and never a message: kestrel delivers ordering and once-only
+   dispatch, there is no coordination bus, and the brief passes as the new session's first transcript
+   entry, which makes a handoff auditable and joinable by construction rather than private. Work runs
+   concurrently *across* sessions while at most one run is ever active *within* one — Temporal, Step
+   Functions, Prefect and Restate all draw that line the other way, which is why it is worth stating
+   rather than assuming.
 9. **Governance**: an audit record, policy enforced at the execution layer rather than by prompt, and
-   a real path for routing an approval to a human in the session.
+   a real path for routing an approval outward to the human the policy authorizes to resolve it —
+   who is usually not in the session, and does not join it by answering.
 
 Underneath all of it sits one pluggability rule: every pluggable layer ships at least two real
 implementations at v1, one of them the default. A contract with a single implementation is an
@@ -109,11 +127,14 @@ freeze one that has only ever been driven once.
 
 ## Where it runs
 
-kestrel has to be cheap to adopt for people who are not willing to commit to running a server, so
-serverless is a v1 commitment alongside the obvious targets: docker-compose, Kubernetes, ECS, Cloud
-Run, Azure Container Apps, Vercel, AWS Lambda, and Cloudflare. Platform-specific adapters are
-accepted as the cost of that, because the realtime seam alone spans four genuinely different
-connection models and pretending they intersect produces a contract that lies.
+kestrel has to be portable enough to adopt wherever a team already runs things, so serverless is a v1
+commitment alongside the obvious targets: docker-compose, Kubernetes, ECS, Cloud Run, Azure Container
+Apps, Vercel, AWS Lambda, and Cloudflare. None of them is a way to avoid paying for a server: at
+kestrel's capability floor every one of them converts to a standing monthly bill, so they buy
+portability rather than a cheap tier, and the free path is docker-compose on your own machine.
+Platform-specific adapters are accepted as the cost of that, because the realtime seam alone spans
+five genuinely different connection models and pretending they intersect produces a contract that
+lies.
 
 The rule about configuration survives the move: zero required *kestrel* configuration, with vendor
 credentials treated as the platform's cost of entry rather than as kestrel config. Every supported
