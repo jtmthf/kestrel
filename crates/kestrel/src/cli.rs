@@ -6,6 +6,9 @@ use clap::{Parser, Subcommand};
 use directories::ProjectDirs;
 
 use crate::domain::SessionId;
+use crate::role::work::Dispatch;
+
+const SUPERVISOR: &str = "kestrel-supervisor";
 
 const ROLES: &str = "\
 Roles:
@@ -73,6 +76,14 @@ pub struct Cli {
         default_value = "127.0.0.1:7717"
     )]
     pub listen: SocketAddr,
+
+    /// Where an Environment reaches the link, if not the address the control plane bound
+    #[arg(long, env = "KESTREL_LINK", global = true, value_name = "URL")]
+    link: Option<String>,
+
+    /// The supervisor an Environment runs, if not the one beside this binary
+    #[arg(long, env = "KESTREL_SUPERVISOR", global = true, value_name = "PATH")]
+    supervisor: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -99,6 +110,24 @@ pub enum CliCommand {
     /// Open and read Sessions
     #[command(subcommand)]
     Session(SessionCommand),
+    /// Enqueue and list Runs
+    #[command(subcommand)]
+    Run(RunCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum RunCommand {
+    /// Enqueue a Run in a Session, for the work role to claim and dispatch
+    Enqueue {
+        /// The Session it executes on behalf of
+        #[arg(long)]
+        session: SessionId,
+    },
+    /// List every Run in a Session, with the Environment it executed in
+    List {
+        #[arg(long)]
+        session: SessionId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -194,6 +223,33 @@ impl Cli {
             Some(Command::Work) => Selection::Work,
             Some(Command::Cli(command)) => Selection::Cli(command),
         }
+    }
+
+    /// What the work role hands an Environment: where to dial back to, and what to run.
+    pub fn dispatch(&self, bound: SocketAddr) -> Result<Dispatch> {
+        Ok(Dispatch {
+            link: self
+                .link
+                .clone()
+                .unwrap_or_else(|| format!("http://{bound}")),
+            supervisor: self.supervisor()?,
+        })
+    }
+
+    fn supervisor(&self) -> Result<PathBuf> {
+        if let Some(supervisor) = &self.supervisor {
+            return Ok(supervisor.clone());
+        }
+
+        let beside = std::env::current_exe()
+            .context("no path to this binary to find the supervisor beside")?
+            .with_file_name(SUPERVISOR);
+
+        Ok(if beside.exists() {
+            beside
+        } else {
+            PathBuf::from(SUPERVISOR)
+        })
     }
 
     pub fn data_dir(&self) -> Result<PathBuf> {

@@ -149,15 +149,31 @@
         "description": "What the control plane asks of an Environment.",
         "oneOf": [
           {
+            "$ref": "#/components/schemas/Start"
+          },
+          {
             "$ref": "#/components/schemas/Stop"
           }
         ],
         "discriminator": {
           "propertyName": "kind",
           "mapping": {
+            "start": "#/components/schemas/Start",
             "stop": "#/components/schemas/Stop"
           }
         }
+      },
+      "Start": {
+        "description": "Execute the Run this Environment was provisioned for.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "start"
+          }
+        },
+        "required": [
+          "kind"
+        ]
       },
       "Stop": {
         "description": "Leave the link and exit.",
@@ -176,12 +192,20 @@
         "oneOf": [
           {
             "$ref": "#/components/schemas/Connected"
+          },
+          {
+            "$ref": "#/components/schemas/Started"
+          },
+          {
+            "$ref": "#/components/schemas/Finished"
           }
         ],
         "discriminator": {
           "propertyName": "kind",
           "mapping": {
-            "connected": "#/components/schemas/Connected"
+            "connected": "#/components/schemas/Connected",
+            "started": "#/components/schemas/Started",
+            "finished": "#/components/schemas/Finished"
           }
         }
       },
@@ -200,6 +224,53 @@
         "required": [
           "kind",
           "version"
+        ]
+      },
+      "Started": {
+        "description": "The Run has started.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "started"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "Finished": {
+        "description": "The Run is over, and this is how it went. The Environment exits after saying so.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "finished"
+          },
+          "exit": {
+            "$ref": "#/components/schemas/Exit"
+          }
+        },
+        "required": [
+          "kind",
+          "exit"
+        ]
+      },
+      "Exit": {
+        "description": "How a Run ended.",
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "succeeded",
+              "failed"
+            ]
+          },
+          "because": {
+            "type": "string",
+            "description": "Why it failed. Absent when it succeeded."
+          }
+        },
+        "required": [
+          "status"
         ]
       },
       "Refusal": {

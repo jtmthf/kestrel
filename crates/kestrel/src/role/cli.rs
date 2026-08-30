@@ -1,8 +1,11 @@
 use anyhow::Result;
 
-use crate::cli::{AgentCommand, CliCommand, OrganizationCommand, SessionCommand, WorkspaceCommand};
+use crate::cli::{
+    AgentCommand, CliCommand, OrganizationCommand, RunCommand, SessionCommand, WorkspaceCommand,
+};
 use crate::session;
 use crate::store::Store;
+use crate::work;
 
 pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
     match command {
@@ -89,6 +92,21 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
         CliCommand::Session(SessionCommand::Transcript { session }) => {
             for entry in session::transcript(&store, *session).await? {
                 println!("{}  {}  {}", entry.seq, entry.appended_at, entry.entry);
+            }
+        }
+        CliCommand::Run(RunCommand::Enqueue { session }) => {
+            let run = work::enqueue(&store, *session).await?;
+            println!("{}", run.id);
+        }
+        CliCommand::Run(RunCommand::List { session }) => {
+            for run in work::runs(&store, *session).await? {
+                println!(
+                    "{}  {}  {}",
+                    run.id,
+                    run.environment.as_deref().unwrap_or("-"),
+                    run.exit
+                        .map_or_else(|| run.state.to_string(), |exit| exit.to_string())
+                );
             }
         }
     }

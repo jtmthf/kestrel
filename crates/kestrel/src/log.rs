@@ -5,13 +5,15 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqliteConnection};
 
-use crate::domain::Session;
+use crate::domain::{Exit, RunId, Session};
 
 /// What changed a Session's shared state. Never what happened inside a Run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Entry {
     ParticipantJoined { participant: String },
+    RunStarted { run: RunId },
+    RunEnded { run: RunId, exit: Exit },
 }
 
 impl fmt::Display for Entry {
@@ -20,6 +22,8 @@ impl fmt::Display for Entry {
             Entry::ParticipantJoined { participant } => {
                 write!(f, "participant joined  {participant}")
             }
+            Entry::RunStarted { run } => write!(f, "run started  {run}"),
+            Entry::RunEnded { run, exit } => write!(f, "run ended  {run}  {exit}"),
         }
     }
 }

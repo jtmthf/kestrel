@@ -16,7 +16,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 
 /// Built rather than assumed present, so a Rust test never passes against a stale artifact
 /// someone built by hand.
-fn binary() -> &'static Path {
+pub fn binary() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
 
     BINARY.get_or_init(|| {
@@ -72,7 +72,7 @@ impl Supervisor {
         let run = run.to_string();
         let mut environment = LocalExec
             .provision(
-                binary().to_str().expect("a utf-8 path to the supervisor"),
+                binary(),
                 &[],
                 &[
                     ("KESTREL_LINK", link),

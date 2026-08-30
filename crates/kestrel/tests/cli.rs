@@ -1,8 +1,13 @@
+mod support;
+
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
+
+const PATIENCE: Duration = Duration::from_secs(30);
 
 struct Kestrel {
     data_dir: TempDir,
@@ -23,16 +28,24 @@ impl Kestrel {
             .expect("kestrel should run")
     }
 
-    /// `Child::kill` is a `SIGKILL`, so nothing kestrel holds in memory is given a chance to land.
-    fn kill_a_booted_control_plane(&self) {
-        let mut kestrel = Command::new(env!("CARGO_BIN_EXE_kestrel"))
+    /// An ephemeral port, so tests that boot one concurrently never race over kestrel's
+    /// default.
+    fn boot(&self) -> Child {
+        Command::new(env!("CARGO_BIN_EXE_kestrel"))
             .env("KESTREL_DATA_DIR", self.data_dir.path())
+            .env("KESTREL_LISTEN", "127.0.0.1:0")
+            .env("KESTREL_SUPERVISOR", support::supervisor::binary())
             .env("RUST_LOG", "info")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("kestrel should spawn");
+            .expect("kestrel should spawn")
+    }
+
+    /// `Child::kill` is a `SIGKILL`, so nothing kestrel holds in memory is given a chance to land.
+    fn kill_a_booted_control_plane(&self) {
+        let mut kestrel = self.boot();
 
         let stderr = BufReader::new(kestrel.stderr.take().expect("stderr should be piped"));
         let booted = stderr
@@ -59,6 +72,29 @@ impl Kestrel {
             .trim_end()
             .to_owned()
     }
+}
+
+/// The one path a person actually takes: the work role running while a Run is worked.
+fn dispatched(kestrel: &Kestrel, session: &str) -> String {
+    let mut booted = kestrel.boot();
+    let deadline = Instant::now() + PATIENCE;
+
+    let listed = loop {
+        let listed = kestrel.run(&["run", "list", "--session", session]);
+        if listed.contains("succeeded") || listed.contains("failed") {
+            break listed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no run in the session {session} ended. the last listing was:\n{listed}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let _ = booted.kill();
+    booted.wait().expect("kestrel should be waitable");
+
+    listed
 }
 
 fn declared() -> Kestrel {
@@ -306,4 +342,61 @@ fn a_declaration_is_reachable_only_from_the_organization_it_belongs_to() {
         "acme's agent was reachable from globex: {}",
         String::from_utf8_lossy(&refusal.stderr)
     );
+}
+
+#[test]
+fn a_run_enqueued_through_the_cli_is_dispatched_and_lists_where_it_executed() {
+    let kestrel = declared();
+    let session = kestrel.run(&[
+        "session",
+        "open",
+        "--organization",
+        "acme",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+    let run = kestrel.run(&["run", "enqueue", "--session", &session]);
+
+    assert_eq!(
+        kestrel.run(&["run", "list", "--session", &session]),
+        format!("{run}  -  queued")
+    );
+
+    let listed = dispatched(&kestrel, &session);
+
+    let mut listed = listed.split("  ");
+    assert_eq!(listed.next(), Some(run.as_str()));
+    assert!(
+        listed
+            .next()
+            .is_some_and(|environment| environment.starts_with("local-exec/")),
+        "the run does not list the environment it executed in"
+    );
+    assert_eq!(listed.next(), Some("succeeded"));
+}
+
+#[test]
+fn a_dispatched_run_starts_and_ends_in_its_sessions_transcript() {
+    let kestrel = declared();
+    let session = kestrel.run(&[
+        "session",
+        "open",
+        "--organization",
+        "acme",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+    let run = kestrel.run(&["run", "enqueue", "--session", &session]);
+    dispatched(&kestrel, &session);
+
+    let transcript = kestrel.run(&["session", "transcript", &session]);
+    let said: Vec<&str> = transcript.lines().collect();
+
+    assert_eq!(said.len(), 3, "unexpected transcript:\n{transcript}");
+    assert!(said[1].ends_with(&format!("run started  {run}")));
+    assert!(said[2].ends_with(&format!("run ended  {run}  succeeded")));
 }

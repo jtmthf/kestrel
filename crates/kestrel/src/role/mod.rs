@@ -10,11 +10,13 @@ use tokio_util::sync::CancellationToken;
 use crate::store::Store;
 
 pub struct AllInOne {
+    store: Store,
     listening: serve::Listening,
 }
 
 pub async fn bind(store: Store, listen: SocketAddr) -> Result<AllInOne> {
     Ok(AllInOne {
+        store: store.clone(),
         listening: serve::bind(store, listen).await?,
     })
 }
@@ -24,11 +26,17 @@ impl AllInOne {
         self.listening.address()
     }
 
-    pub async fn run(self, shutdown: CancellationToken) -> Result<()> {
+    pub async fn run(
+        self,
+        dispatch: Option<work::Dispatch>,
+        shutdown: CancellationToken,
+    ) -> Result<()> {
         let serve = tokio::spawn(stopping_the_others(shutdown.clone(), |shutdown| {
             serve::run(self.listening, shutdown)
         }));
-        let work = tokio::spawn(stopping_the_others(shutdown.clone(), work::run));
+        let work = tokio::spawn(stopping_the_others(shutdown.clone(), |shutdown| {
+            work::run(self.store, dispatch, shutdown)
+        }));
 
         let (serve, work) = tokio::join!(serve, work);
         serve??;

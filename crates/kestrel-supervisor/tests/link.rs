@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use kestrel_supervisor::link::{Error, INSTRUCTIONS, Instruction, Link, REPORTS, Report};
+use kestrel_supervisor::link::{Error, Exit, INSTRUCTIONS, Instruction, Link, REPORTS, Report};
 
 #[derive(Debug, Clone)]
 struct Asked {
@@ -150,6 +150,16 @@ fn connected() -> Report {
     Report::Connected {
         version: "0.0.0".to_owned(),
     }
+}
+
+fn everything_it_reports() -> Vec<Report> {
+    vec![
+        connected(),
+        Report::Started,
+        Report::Finished {
+            exit: Exit::Succeeded,
+        },
+    ]
 }
 
 #[tokio::test]
@@ -336,24 +346,27 @@ fn the_client_recognises_every_instruction_the_published_document_declares() {
 }
 
 #[test]
-fn the_report_the_client_sends_carries_what_the_published_document_requires() {
+fn every_report_the_client_sends_carries_what_the_published_document_requires() {
     let published = published();
-    let sent = serde_json::to_value(connected()).expect("a report should serialise");
-    let kind = sent["kind"].as_str().expect("a report carries its kind");
 
-    let schema = declared(&published, "Report")
-        .remove(kind)
-        .unwrap_or_else(|| panic!("the client sends the report {kind}, which is not declared"));
+    for report in everything_it_reports() {
+        let sent = serde_json::to_value(&report).expect("a report should serialise");
+        let kind = sent["kind"].as_str().expect("a report carries its kind");
 
-    for field in resolve(&published, &schema)["required"]
-        .as_array()
-        .expect("an array of required fields")
-    {
-        let field = field.as_str().expect("a named field");
-        assert!(
-            sent.get(field).is_some(),
-            "the document requires {field} on a {kind} report, and the client does not send it"
-        );
+        let schema = declared(&published, "Report")
+            .remove(kind)
+            .unwrap_or_else(|| panic!("the client sends the report {kind}, which is not declared"));
+
+        for field in resolve(&published, &schema)["required"]
+            .as_array()
+            .expect("an array of required fields")
+        {
+            let field = field.as_str().expect("a named field");
+            assert!(
+                sent.get(field).is_some(),
+                "the document requires {field} on a {kind} report, and the client does not send it"
+            );
+        }
     }
 }
 
