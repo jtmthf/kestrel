@@ -10,17 +10,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  control-plane:
-    name: control plane (rust)
+  workspace:
+    name: workspace (rust)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      # The rust version comes from rust-toolchain.toml. bun is here because the primary test
-      # seam provisions an Environment running the real supervisor binary.
+      # The rust version comes from rust-toolchain.toml.
       - uses: jdx/mise-action@v4
         with:
-          install_args: rust bun
+          install_args: rust
 
       - uses: Swatinem/rust-cache@v2
 
@@ -30,38 +29,14 @@ jobs:
       - name: Lint
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
-      - name: Build the kestrel binary
+      - name: Build the binaries
         run: cargo build --locked --workspace
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       - name: Test
         run: cargo test --locked --workspace
 
-  supervisor:
-    name: supervisor (typescript)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: jdx/mise-action@v4
-        with:
-          install_args: bun
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Check the link client against the document it is generated from
+      - name: Record the supervisor binary's size
         run: |
-          bun run generate
-          git diff --exit-code
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Build the supervisor binary
-        run: bun run build
-
-      - name: Test
-        run: bun test
+          cargo build --locked --release --package kestrel-supervisor
+          size=$(wc -c < target/release/kestrel-supervisor)
+          echo "kestrel-supervisor: $size bytes ($((size / 1024)) KiB)" >> "$GITHUB_STEP_SUMMARY"

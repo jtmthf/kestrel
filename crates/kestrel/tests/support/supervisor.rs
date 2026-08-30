@@ -14,35 +14,51 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
-fn repository_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("the crate sits two directories below the repository root")
-}
-
 /// Built rather than assumed present, so a Rust test never passes against a stale artifact
 /// someone built by hand.
 fn binary() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
 
     BINARY.get_or_init(|| {
-        let package = repository_root().join("packages/supervisor");
-        let built = Command::new("bun")
-            .args(["run", "build"])
-            .current_dir(&package)
+        let alongside = alongside_this_test();
+        let profile = alongside
+            .file_name()
+            .and_then(|profile| profile.to_str())
+            .expect("a named profile directory");
+        let built = Command::new(env!("CARGO"))
+            .args([
+                "build",
+                "--package",
+                "kestrel-supervisor",
+                "--profile",
+                if profile == "debug" { "dev" } else { profile },
+            ])
             .output()
-            .expect("bun should be on PATH to build the supervisor");
+            .expect("cargo should build the supervisor");
 
         assert!(
             built.status.success(),
-            "`bun run build` failed in {}:\n{}",
-            package.display(),
+            "building kestrel-supervisor failed:\n{}",
             String::from_utf8_lossy(&built.stderr)
         );
 
-        package.join("dist/kestrel-supervisor")
+        let binary = alongside.join("kestrel-supervisor");
+        assert!(
+            binary.exists(),
+            "cargo built the supervisor, but not to {}",
+            binary.display()
+        );
+        binary
     })
+}
+
+fn alongside_this_test() -> PathBuf {
+    std::env::current_exe()
+        .expect("a test binary should know where it is")
+        .parent()
+        .and_then(Path::parent)
+        .expect("the test binary sits in the profile's deps directory")
+        .to_path_buf()
 }
 
 pub struct Supervisor {

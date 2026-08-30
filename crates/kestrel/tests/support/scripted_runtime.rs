@@ -1,9 +1,6 @@
-//! A stand-in for the real Agent Runtime driver interface (ADR-0003), which lives inside the
-//! TypeScript supervisor and does not exist yet. This is the test-only "hook" 0.1/03 asks for:
-//! a canned sequence a test can select instead of a real runtime, deterministic and free of
-//! network or model spend. Once the driver interface lands, this becomes what a real
-//! supervisor selects when `KESTREL_AGENT_RUNTIME=scripted`; nothing here is wired to
-//! production code yet because there is no production driver to wire it into.
+//! A stand-in for the ACP-speaking agent runtime (ADR-0007) the supervisor does not drive yet:
+//! the test-only "hook" 0.1/03 asks for, a canned sequence a test can select instead of a real
+//! runtime, deterministic and free of network or model spend.
 
 use std::collections::VecDeque;
 
