@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "bun build ./src/main.ts --compile --outfile dist/kestrel-supervisor"
+    "build": "bun build ./src/main.ts --compile --outfile dist/kestrel-supervisor",
+    "generate": "bunx openapi-typescript@7.13.0 ../../openapi/link.json -o src/link/schema.ts"
   }
 }

@@ -3,7 +3,7 @@
 //! Environment (0.1/03).
 
 use std::io;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
@@ -22,6 +22,15 @@ impl Environment {
 
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
         self.child.stdout.take()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.stderr.take()
+    }
+
+    /// `None` while the Environment is still running.
+    pub fn status(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
     }
 
     /// Kills every process in the tree, not only the one this Environment spawned directly.
@@ -58,10 +67,16 @@ impl Drop for Environment {
 pub struct LocalExec;
 
 impl LocalExec {
-    pub fn provision(&self, program: &str, args: &[&str]) -> io::Result<Environment> {
+    pub fn provision(
+        &self,
+        program: &str,
+        args: &[&str],
+        variables: &[(&str, &str)],
+    ) -> io::Result<Environment> {
         let mut command = Command::new(program);
         command
             .args(args)
+            .envs(variables.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -129,7 +144,7 @@ mod tests {
     /// onto directly.
     fn spawn_tree_with_grandchild(driver: &LocalExec) -> (Environment, i32) {
         let mut environment = driver
-            .provision("sh", &["-c", "sleep 30 & echo $!; wait"])
+            .provision("sh", &["-c", "sleep 30 & echo $!; wait"], &[])
             .expect("sh should spawn");
 
         let stdout = environment.take_stdout().expect("stdout should be piped");

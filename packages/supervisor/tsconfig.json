@@ -15,7 +15,8 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["bun"]
+    "types": ["bun"],
+    "resolveJsonModule": true
   },
   "include": ["src", "tests"]
 }
