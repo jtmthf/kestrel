@@ -3,6 +3,7 @@
 //! Environment (0.1/03).
 
 use std::io;
+use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 
 #[cfg(unix)]
@@ -16,8 +17,8 @@ pub struct Environment {
 }
 
 impl Environment {
-    pub fn id(&self) -> u32 {
-        self.child.id()
+    pub fn name(&self) -> String {
+        format!("local-exec/{}", self.child.id())
     }
 
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
@@ -69,7 +70,7 @@ pub struct LocalExec;
 impl LocalExec {
     pub fn provision(
         &self,
-        program: &str,
+        program: &Path,
         args: &[&str],
         variables: &[(&str, &str)],
     ) -> io::Result<Environment> {
@@ -144,7 +145,7 @@ mod tests {
     /// onto directly.
     fn spawn_tree_with_grandchild(driver: &LocalExec) -> (Environment, i32) {
         let mut environment = driver
-            .provision("sh", &["-c", "sleep 30 & echo $!; wait"], &[])
+            .provision(Path::new("sh"), &["-c", "sleep 30 & echo $!; wait"], &[])
             .expect("sh should spawn");
 
         let stdout = environment.take_stdout().expect("stdout should be piped");

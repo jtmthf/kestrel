@@ -40,7 +40,7 @@ async fn a_run(harness: &Harness) -> (Run, Secret) {
 async fn another_run(harness: &Harness) -> (Run, Secret) {
     let session = harness.open_session("acme", "kestrel", "builder").await;
 
-    harness.start_run(session.id).await
+    harness.dispatch_run(session.id).await
 }
 
 #[tokio::test]
@@ -214,7 +214,7 @@ async fn a_credential_stops_working_when_its_run_ends() {
         StatusCode::OK
     );
 
-    harness.end_run(&run).await;
+    harness.complete_run(&run).await;
 
     assert_eq!(
         link.instructions(run.id, Some(&credential), None)

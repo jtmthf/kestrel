@@ -3,7 +3,7 @@ pub mod link;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::link::{Instruction, Link, Report};
+use crate::link::{Exit, Instruction, Link, Report};
 
 const RECONNECT_AFTER: Duration = Duration::from_millis(250);
 
@@ -21,6 +21,7 @@ impl Diagnostics for Stderr {
 
 enum Attended {
     Stopped,
+    Finished,
     LostTheLink,
 }
 
@@ -34,11 +35,16 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
     };
 
     let mut cursor = None;
+    let mut started = false;
 
     loop {
-        match attend(&link, &mut cursor, diagnostics).await {
+        match attend(&link, &mut cursor, &mut started, diagnostics).await {
             Ok(Attended::Stopped) => {
                 diagnostics.info("supervisor stopped");
+                return 0;
+            }
+            Ok(Attended::Finished) => {
+                diagnostics.info("supervisor finished");
                 return 0;
             }
             Ok(Attended::LostTheLink) => diagnostics.info("lost the link"),
@@ -56,6 +62,7 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
 async fn attend(
     link: &Link,
     cursor: &mut Option<String>,
+    started: &mut bool,
     diagnostics: &dyn Diagnostics,
 ) -> Result<Attended, link::Error> {
     let mut instructions = link.open(cursor.as_deref()).await?;
@@ -70,20 +77,39 @@ async fn attend(
     .await?;
     diagnostics.info("reported connected");
 
-    while let Some(delivered) = instructions.next().await? {
-        *cursor = Some(delivered.id.clone());
-        diagnostics.info(&format!(
-            "instruction {} {}",
-            delivered.instruction.kind(),
-            delivered.id
-        ));
+    // Nothing is read off the stream once the Run has started: saying how it went is all that
+    // is left, and a reconnection resumes at that rather than waiting to be told to start again.
+    if !*started {
+        loop {
+            let Some(delivered) = instructions.next().await? else {
+                return Ok(Attended::LostTheLink);
+            };
+            *cursor = Some(delivered.id.clone());
+            diagnostics.info(&format!(
+                "instruction {} {}",
+                delivered.instruction.kind(),
+                delivered.id
+            ));
 
-        if delivered.instruction == Instruction::Stop {
-            return Ok(Attended::Stopped);
+            match delivered.instruction {
+                Instruction::Stop => return Ok(Attended::Stopped),
+                Instruction::Start => break,
+                Instruction::Unrecognized => {}
+            }
         }
+        *started = true;
     }
 
-    Ok(Attended::LostTheLink)
+    link.report(&Report::Started).await?;
+    diagnostics.info("reported started");
+
+    link.report(&Report::Finished {
+        exit: Exit::Succeeded,
+    })
+    .await?;
+    diagnostics.info("reported finished");
+
+    Ok(Attended::Finished)
 }
 
 fn dialled(variables: &BTreeMap<String, String>) -> Option<Link> {

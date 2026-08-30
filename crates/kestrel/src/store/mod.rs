@@ -6,14 +6,27 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteRow};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::domain::{
-    Agent, AgentId, Connected, Organization, OrganizationId, Run, RunId, Session, SessionId,
-    SessionState, Workspace, WorkspaceId,
+    Agent, AgentId, Connected, Exit, Organization, OrganizationId, Run, RunId, RunState, Session,
+    SessionId, SessionState, Workspace, WorkspaceId,
 };
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
 use crate::log::Log;
 
 const DATABASE: &str = "kestrel.db";
+
+macro_rules! runs_where {
+    ($tail:literal) => {
+        concat!(
+            "SELECT id, organization_id, session_id, state, exit, exit_because, environment,
+                    enqueued_at, started_at, ended_at, heartbeat_at, connected_at,
+                    supervisor_version
+             FROM run
+             WHERE ",
+            $tail
+        )
+    };
+}
 
 #[derive(Clone)]
 pub struct Store {
@@ -44,10 +57,13 @@ impl Store {
         Ok(Self { pool })
     }
 
-    /// A `Tx` that is dropped rather than committed rolls back, which is how a read is scoped too.
+    /// A `Tx` that is dropped rather than committed rolls back, which is how a read is scoped
+    /// too. Every one of them takes the write lock up front: SQLite refuses a deferred
+    /// transaction that reads and then writes while another has written, rather than making
+    /// it wait its turn.
     pub async fn begin(&self) -> Result<Tx<'_>> {
         Ok(Tx {
-            transaction: self.pool.begin().await?,
+            transaction: self.pool.begin_with("BEGIN IMMEDIATE").await?,
         })
     }
 }
@@ -343,62 +359,81 @@ impl Tx<'_> {
         agent(&row)
     }
 
-    pub async fn start_run(&mut self, session: &Session) -> Result<Run> {
+    pub async fn enqueue_run(&mut self, session: &Session) -> Result<Run> {
         let run = Run {
             id: RunId::generate(),
             organization: session.organization.id,
             session: session.id,
-            started_at: Timestamp::now(),
+            state: RunState::Queued,
+            exit: None,
+            environment: None,
+            enqueued_at: Timestamp::now(),
+            started_at: None,
             ended_at: None,
+            heartbeat_at: None,
             connected: None,
         };
 
         sqlx::query(
-            "INSERT INTO run (id, organization_id, session_id, started_at)
-             VALUES (?, ?, ?, ?)",
+            "INSERT INTO run (id, organization_id, session_id, state, enqueued_at)
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(run.id.to_string())
         .bind(run.organization.to_string())
         .bind(run.session.to_string())
-        .bind(run.started_at.to_string())
+        .bind(run.state.as_str())
+        .bind(run.enqueued_at.to_string())
         .execute(&mut *self.transaction)
         .await
-        .with_context(|| format!("starting a run in the session {}", session.id))?;
+        .with_context(|| format!("enqueueing a run in the session {}", session.id))?;
 
         Ok(run)
     }
 
-    pub async fn run(&mut self, id: RunId) -> Result<Run> {
-        let row = sqlx::query(
-            "SELECT organization_id, session_id, started_at, ended_at, connected_at,
-                    supervisor_version
-             FROM run
-             WHERE id = ?",
+    /// One statement, so two claimants cannot both take the same Run: the Run this returns
+    /// was queued when the statement began and is active by the time anyone else looks.
+    pub async fn claim_run(&mut self) -> Result<Option<Run>> {
+        let claimed = sqlx::query(
+            "UPDATE run
+             SET state = ?, claimed_at = ?
+             WHERE id = (
+                 SELECT id FROM run WHERE state = ? ORDER BY enqueued_at, id LIMIT 1
+             )
+             RETURNING id",
         )
-        .bind(id.to_string())
+        .bind(RunState::Active.as_str())
+        .bind(Timestamp::now().to_string())
+        .bind(RunState::Queued.as_str())
         .fetch_optional(&mut *self.transaction)
-        .await?
-        .with_context(|| format!("no run {id}"))?;
+        .await
+        .context("claiming a queued run")?;
 
-        let connected_at: Option<String> = row.get("connected_at");
+        match claimed {
+            Some(claimed) => Ok(Some(
+                self.run(claimed.get::<String, _>("id").parse()?).await?,
+            )),
+            None => Ok(None),
+        }
+    }
 
-        Ok(Run {
-            id,
-            organization: row.get::<String, _>("organization_id").parse()?,
-            session: row.get::<String, _>("session_id").parse()?,
-            started_at: row.get::<String, _>("started_at").parse()?,
-            ended_at: row
-                .get::<Option<String>, _>("ended_at")
-                .map(|at| at.parse())
-                .transpose()?,
-            connected: match connected_at {
-                Some(at) => Some(Connected {
-                    at: at.parse()?,
-                    version: row.get("supervisor_version"),
-                }),
-                None => None,
-            },
-        })
+    pub async fn run(&mut self, id: RunId) -> Result<Run> {
+        let row = sqlx::query(runs_where!("id = ?"))
+            .bind(id.to_string())
+            .fetch_optional(&mut *self.transaction)
+            .await?
+            .with_context(|| format!("no run {id}"))?;
+
+        run(&row)
+    }
+
+    pub async fn runs(&mut self, session: &Session) -> Result<Vec<Run>> {
+        sqlx::query(runs_where!("session_id = ? ORDER BY enqueued_at, id"))
+            .bind(session.id.to_string())
+            .fetch_all(&mut *self.transaction)
+            .await?
+            .iter()
+            .map(run)
+            .collect()
     }
 
     pub async fn record_connected(&mut self, run: &Run, version: &str) -> Result<()> {
@@ -413,15 +448,60 @@ impl Tx<'_> {
         Ok(())
     }
 
-    pub async fn end_run(&mut self, run: &Run) -> Result<()> {
-        sqlx::query("UPDATE run SET ended_at = ? WHERE id = ? AND ended_at IS NULL")
+    pub async fn record_environment(&mut self, run: &Run, environment: &str) -> Result<()> {
+        sqlx::query("UPDATE run SET environment = ? WHERE id = ?")
+            .bind(environment)
+            .bind(run.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("recording the environment run {} executes in", run.id))?;
+
+        Ok(())
+    }
+
+    pub async fn record_heartbeat(&mut self, run: &Run) -> Result<()> {
+        sqlx::query("UPDATE run SET heartbeat_at = ? WHERE id = ?")
             .bind(Timestamp::now().to_string())
             .bind(run.id.to_string())
             .execute(&mut *self.transaction)
             .await
-            .with_context(|| format!("ending the run {}", run.id))?;
+            .with_context(|| format!("heartbeating the run {}", run.id))?;
 
         Ok(())
+    }
+
+    /// `false` when the Run had already started, so an Environment that reconnects and says
+    /// so again adds no second Transcript entry.
+    pub async fn record_started(&mut self, run: &Run) -> Result<bool> {
+        let started =
+            sqlx::query("UPDATE run SET started_at = ? WHERE id = ? AND started_at IS NULL")
+                .bind(Timestamp::now().to_string())
+                .bind(run.id.to_string())
+                .execute(&mut *self.transaction)
+                .await
+                .with_context(|| format!("recording the run {} started", run.id))?;
+
+        Ok(started.rows_affected() > 0)
+    }
+
+    /// `false` when the Run had already ended: whoever ends it first decides its exit status.
+    pub async fn end_run(&mut self, run: &Run, exit: &Exit) -> Result<bool> {
+        let ended = sqlx::query(
+            "UPDATE run
+             SET state = ?, ended_at = ?, exit = ?, exit_because = ?
+             WHERE id = ? AND state != ?",
+        )
+        .bind(RunState::Ended.as_str())
+        .bind(Timestamp::now().to_string())
+        .bind(exit.status())
+        .bind(exit.because())
+        .bind(run.id.to_string())
+        .bind(RunState::Ended.as_str())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("ending the run {}", run.id))?;
+
+        Ok(ended.rows_affected() > 0)
     }
 
     pub async fn issue_credential(
@@ -592,6 +672,40 @@ fn agent(row: &SqliteRow) -> Result<Agent> {
         runtime: row.get("runtime"),
         model: row.get("model"),
     })
+}
+
+fn run(row: &SqliteRow) -> Result<Run> {
+    let exit: Option<String> = row.get("exit");
+    let connected_at: Option<String> = row.get("connected_at");
+
+    Ok(Run {
+        id: row.get::<String, _>("id").parse()?,
+        organization: row.get::<String, _>("organization_id").parse()?,
+        session: row.get::<String, _>("session_id").parse()?,
+        state: row.get::<String, _>("state").parse()?,
+        exit: exit
+            .map(|status| Exit::read(&status, row.get("exit_because")))
+            .transpose()?,
+        environment: row.get("environment"),
+        enqueued_at: row.get::<String, _>("enqueued_at").parse()?,
+        started_at: timestamp(row, "started_at")?,
+        ended_at: timestamp(row, "ended_at")?,
+        heartbeat_at: timestamp(row, "heartbeat_at")?,
+        connected: match connected_at {
+            Some(at) => Some(Connected {
+                at: at.parse()?,
+                version: row.get("supervisor_version"),
+            }),
+            None => None,
+        },
+    })
+}
+
+fn timestamp(row: &SqliteRow, column: &str) -> Result<Option<Timestamp>> {
+    row.get::<Option<String>, _>(column)
+        .map(|at| at.parse())
+        .transpose()
+        .map_err(Into::into)
 }
 
 fn organization(row: &SqliteRow) -> Result<Organization> {

@@ -3,11 +3,12 @@ use std::str::FromStr;
 
 use anyhow::{Result, bail};
 use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 macro_rules! identifiers {
     ($($name:ident),+ $(,)?) => {$(
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub struct $name(Uuid);
 
         impl $name {
@@ -73,9 +74,92 @@ pub struct Run {
     pub id: RunId,
     pub organization: OrganizationId,
     pub session: SessionId,
-    pub started_at: Timestamp,
+    pub state: RunState,
+    pub exit: Option<Exit>,
+    pub environment: Option<String>,
+    pub enqueued_at: Timestamp,
+    pub started_at: Option<Timestamp>,
     pub ended_at: Option<Timestamp>,
+    pub heartbeat_at: Option<Timestamp>,
     pub connected: Option<Connected>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunState {
+    Queued,
+    Active,
+    Ended,
+}
+
+impl RunState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RunState::Queued => "queued",
+            RunState::Active => "active",
+            RunState::Ended => "ended",
+        }
+    }
+}
+
+impl FromStr for RunState {
+    type Err = anyhow::Error;
+
+    fn from_str(state: &str) -> Result<Self> {
+        match state {
+            "queued" => Ok(RunState::Queued),
+            "active" => Ok(RunState::Active),
+            "ended" => Ok(RunState::Ended),
+            other => bail!("{other} is not a state a run can be in"),
+        }
+    }
+}
+
+impl fmt::Display for RunState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Exit {
+    Succeeded,
+    Failed { because: String },
+}
+
+impl Exit {
+    pub const fn status(&self) -> &'static str {
+        match self {
+            Exit::Succeeded => "succeeded",
+            Exit::Failed { .. } => "failed",
+        }
+    }
+
+    pub fn because(&self) -> Option<&str> {
+        match self {
+            Exit::Succeeded => None,
+            Exit::Failed { because } => Some(because),
+        }
+    }
+
+    pub fn read(status: &str, because: Option<String>) -> Result<Self> {
+        match status {
+            "succeeded" => Ok(Exit::Succeeded),
+            "failed" => Ok(Exit::Failed {
+                because: because.unwrap_or_default(),
+            }),
+            other => bail!("{other} is not an exit status a run can end with"),
+        }
+    }
+}
+
+impl fmt::Display for Exit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Exit::Succeeded => f.write_str("succeeded"),
+            Exit::Failed { because } => write!(f, "failed: {because}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

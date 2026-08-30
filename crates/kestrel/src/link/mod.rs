@@ -18,9 +18,10 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::domain::{Run, RunId};
+use crate::domain::{Exit, Run, RunId};
 use crate::link::credential::Secret;
 use crate::store::Store;
+use crate::work;
 
 pub const INSTRUCTIONS: &str = "/link/runs/{run}/instructions";
 pub const REPORTS: &str = "/link/runs/{run}/reports";
@@ -33,12 +34,14 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Instruction {
+    Start,
     Stop,
 }
 
 impl Instruction {
     pub const fn kind(&self) -> &'static str {
         match self {
+            Instruction::Start => "start",
             Instruction::Stop => "stop",
         }
     }
@@ -54,6 +57,8 @@ pub struct SentInstruction {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Report {
     Connected { version: String },
+    Started,
+    Finished { exit: Exit },
 }
 
 #[derive(Clone)]
@@ -134,6 +139,17 @@ async fn report(
             tx.record_connected(&run, &version).await?;
             tx.commit().await?;
             info!(run = %run.id, version, "an environment reported itself connected");
+        }
+        Report::Started => {
+            work::started(&control_plane.store, &run).await?;
+            info!(run = %run.id, "an environment reported its run started");
+        }
+        Report::Finished { exit } => {
+            let stands = match &exit {
+                Exit::Succeeded => work::complete(&control_plane.store, &run).await?,
+                Exit::Failed { because } => work::fail(&control_plane.store, &run, because).await?,
+            };
+            info!(run = %run.id, %stands, "an environment reported its run finished");
         }
     }
 

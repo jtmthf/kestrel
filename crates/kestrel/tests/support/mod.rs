@@ -7,21 +7,24 @@
 // is not dead, it belongs to a sibling.
 #![allow(dead_code)]
 
+pub mod environment;
 pub mod github_stub;
 pub mod link_client;
 pub mod scripted_runtime;
 pub mod supervisor;
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use kestrel::domain::{Agent, Organization, Run, RunId, Session, SessionId, Workspace};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
 use kestrel::log::TranscriptEntry;
+use kestrel::role::work::Dispatch;
 use kestrel::session;
 use kestrel::store::Store;
+use kestrel::work::{self, Claimed};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -30,6 +33,7 @@ pub struct Harness {
     data_dir: TempDir,
     store: Store,
     address: SocketAddr,
+    supervisor: Option<PathBuf>,
     shutdown: CancellationToken,
     roles: JoinHandle<anyhow::Result<()>>,
 }
@@ -39,15 +43,35 @@ pub struct Harness {
 pub struct Stopped {
     data_dir: TempDir,
     address: SocketAddr,
+    supervisor: Option<PathBuf>,
 }
 
 impl Harness {
+    /// Boots with no supervisor to provision an Environment with, so the work role claims
+    /// nothing and a test is the only thing dispatching the Runs it opens.
     pub async fn boot() -> Self {
-        let data_dir = TempDir::new().expect("a temporary data directory");
-        Self::boot_against(data_dir, "127.0.0.1:0".parse().expect("a loopback address")).await
+        Self::booted(None).await
     }
 
-    async fn boot_against(data_dir: TempDir, listen: SocketAddr) -> Self {
+    pub async fn dispatching(supervisor: &Path) -> Self {
+        Self::booted(Some(supervisor.to_path_buf())).await
+    }
+
+    async fn booted(supervisor: Option<PathBuf>) -> Self {
+        let data_dir = TempDir::new().expect("a temporary data directory");
+        Self::boot_against(
+            data_dir,
+            "127.0.0.1:0".parse().expect("a loopback address"),
+            supervisor,
+        )
+        .await
+    }
+
+    async fn boot_against(
+        data_dir: TempDir,
+        listen: SocketAddr,
+        supervisor: Option<PathBuf>,
+    ) -> Self {
         let store = Store::open(data_dir.path())
             .await
             .expect("the control plane should boot against a fresh data directory");
@@ -56,12 +80,17 @@ impl Harness {
             .await
             .expect("the control plane should bind its link");
         let address = all_in_one.address();
-        let roles = tokio::spawn(all_in_one.run(shutdown.clone()));
+        let dispatch = supervisor.clone().map(|supervisor| Dispatch {
+            link: format!("http://{address}"),
+            supervisor,
+        });
+        let roles = tokio::spawn(all_in_one.run(dispatch, shutdown.clone()));
 
         Self {
             data_dir,
             store,
             address,
+            supervisor,
             shutdown,
             roles,
         }
@@ -152,20 +181,43 @@ impl Harness {
             .expect("the transcript should read")
     }
 
-    pub async fn start_run(&self, session: SessionId) -> (Run, Secret) {
-        session::start_run(&self.store, session)
+    pub async fn enqueue_run(&self, session: SessionId) -> Run {
+        work::enqueue(&self.store, session)
             .await
-            .expect("the run should start")
+            .expect("the run should enqueue")
+    }
+
+    /// Claims what it enqueued, standing in for the work role a `boot`ed harness leaves idle.
+    pub async fn dispatch_run(&self, session: SessionId) -> (Run, Secret) {
+        self.enqueue_run(session).await;
+        let claimed = self
+            .claim_run()
+            .await
+            .expect("a run was just enqueued to claim");
+
+        (claimed.run, claimed.credential)
+    }
+
+    pub async fn claim_run(&self) -> Option<Claimed> {
+        work::claim(&self.store)
+            .await
+            .expect("the claim should ask")
     }
 
     pub async fn run(&self, id: RunId) -> Run {
-        session::run(&self.store, id)
+        work::run(&self.store, id)
             .await
             .expect("the run should show")
     }
 
-    pub async fn end_run(&self, run: &Run) {
-        session::end_run(&self.store, run)
+    pub async fn runs(&self, session: SessionId) -> Vec<Run> {
+        work::runs(&self.store, session)
+            .await
+            .expect("the runs should list")
+    }
+
+    pub async fn complete_run(&self, run: &Run) {
+        work::complete(&self.store, run)
             .await
             .expect("the run should end");
     }
@@ -199,6 +251,7 @@ impl Harness {
         Stopped {
             data_dir: self.data_dir,
             address: self.address,
+            supervisor: self.supervisor,
         }
     }
 
@@ -206,15 +259,32 @@ impl Harness {
         self.kill().await.restart().await
     }
 
-    pub async fn teardown(self) {
+    /// Stops the way a signalled control plane does: every role is told to stop and is waited
+    /// for, rather than being cut off where it stood.
+    pub async fn teardown(self) -> Stopped {
         self.shutdown.cancel();
         let _ = self.roles.await;
+        drop(self.store);
+
+        Stopped {
+            data_dir: self.data_dir,
+            address: self.address,
+            supervisor: self.supervisor,
+        }
     }
 }
 
 impl Stopped {
     pub async fn restart(self) -> Harness {
-        Harness::boot_against(self.data_dir, self.address).await
+        Harness::boot_against(self.data_dir, self.address, self.supervisor).await
+    }
+
+    pub async fn run(&self, id: RunId) -> Run {
+        let store = Store::open(self.data_dir.path())
+            .await
+            .expect("the database should still be there");
+
+        work::run(&store, id).await.expect("the run should show")
     }
 
     /// Reaches the durable record while nothing is serving it, which is the only way to make
