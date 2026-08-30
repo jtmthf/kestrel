@@ -85,10 +85,12 @@ deprecation policy. The day it lands is the day this project is willing to stop 
 which puts it deliberately far out; the `0.x` line carries real, recommended releases and is where
 people will live for a long time.
 
-The gate is an internal one. The agent-runtime contract has to be proven against a second runtime,
-because a second working implementation is the only thing that shows the seam absorbs churn; adoption
-is the right outcome but the wrong line, since it is not something the project controls. Nine
-capabilities are the content of that freeze:
+The gate is an internal one. kestrel drives an agent runtime by speaking the Agent Client Protocol
+to it, so the seam is proven against two ACP agents of different lineages — one that speaks the
+protocol natively and one reached through an adapter — because that line is where resume behaviour,
+permission granularity and declared capabilities all differ, and a client with opencode-shaped
+assumptions fails on it. Adoption is the right outcome but the wrong line, since it is not something
+the project controls. Nine capabilities are the content of that freeze:
 
 1. **Trigger ingestion**: five sources, all round-trip. Generic webhook is the core and the named
    integrations are adapters over it, so a sixth source is a contribution rather than a fork.
@@ -102,8 +104,10 @@ capabilities are the content of that freeze:
    kestrel defines rather than a layer kestrel owns.
 4. **Model choice**: any provider the configured runtime supports, selectable per agent, with keys
    held per organization and reaching an environment only when a run needs them. Uniform behavior
-   across models is not promised, and neither is model availability across runtimes: once the agent
-   runtime is pluggable, "any model" is scoped to whichever runtime you are running.
+   across models is not promised, and neither is model availability across runtimes: "any model" is
+   scoped to whichever runtime you are running, and to whether that runtime lets a client select one
+   at all. A run whose agent names a model the runtime cannot honour fails rather than quietly
+   running a different one.
 5. **Persistent sessions**: a session survives everything except deliberate deletion, and an
    environment survives nothing. Process restart, environment teardown, and control-plane upgrade all
    preserve the session and its full transcript, and a run interrupted by a restart ends with an
@@ -149,9 +153,9 @@ default compute pairing so that choice never lands on whoever is adopting it.
 
 ## What kestrel is not
 
-- **kestrel does not write an agent loop**: opencode is the default and the reference
-  implementation, and the agent-runtime contract is what keeps that boundary honest while leaving
-  room for Claude Code, Codex, or anything else to drive a run.
+- **kestrel does not write an agent loop**, and does not own a contract for one: it speaks the
+  Agent Client Protocol as a client. opencode is the default, and Claude Code, Codex, Gemini CLI or
+  anything else that speaks ACP can drive a run.
 - **Not a hosted SaaS**: there is no plan to run one, and the data model only avoids foreclosing it,
   which is why `Organization` is carried by every durable record from the first migration.
 - **Not a CI/CD replacement**: kestrel schedules agent work in response to events and leaves your

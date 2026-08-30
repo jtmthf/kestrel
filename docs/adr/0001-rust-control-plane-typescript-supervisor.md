@@ -1,5 +1,9 @@
 # Rust control plane, TypeScript supervisor
 
+> **Superseded by [ADR-0007](0007-acp-is-the-agent-runtime-contract.md).** The claim below that
+> `canUseTool` is the only surface carrying a mid-run approval round-trip is false: ACP's
+> `session/request_permission` carries it, and the supervisor is Rust.
+
 kestrel is two programs in two languages. The control plane — every domain concept, all six ports,
 the whole session model — is Rust. The supervisor that runs inside an `Environment` alongside the
 agent runtime is TypeScript. The boundary is not a compromise between tastes: it is exactly the line

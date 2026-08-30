@@ -1,5 +1,9 @@
 # The agent-runtime contract is an in-process interface
 
+> **Superseded by [ADR-0007](0007-acp-is-the-agent-runtime-contract.md).** kestrel speaks ACP as
+> a client; there is no in-house driver interface. The objection recorded below applies to a
+> contract kestrel publishes, not one it consumes.
+
 kestrel drives an agent runtime through an interface **inside the supervisor**, not through a wire
 protocol. One supervisor hosts every driver. A driver is thin: start the runtime, send a prompt,
 stream events out, map permission requests, map exit status. Everything else — the outbound
