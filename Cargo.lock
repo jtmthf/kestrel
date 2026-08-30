@@ -1067,6 +1067,7 @@ dependencies = [
 name = "kestrel-supervisor"
 version = "0.0.0"
 dependencies = [
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",

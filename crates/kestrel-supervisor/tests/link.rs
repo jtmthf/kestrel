@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Read as _, Write as _};
+use std::net::TcpListener;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -111,6 +113,39 @@ impl Drop for Stub {
     }
 }
 
+/// tiny_http writes a body in one go, and a character split across two chunks is the frame
+/// the decoder is most likely to get wrong.
+fn stream_in_two_writes(first: &[u8], second: &[u8]) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("the stub should bind a port");
+    let base = format!("http://{}", listener.local_addr().expect("a bound address"));
+    let head = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n",
+        first.len() + second.len()
+    );
+    let (first, second) = (first.to_vec(), second.to_vec());
+
+    std::thread::spawn(move || {
+        let (mut connection, _) = listener.accept().expect("the client should connect");
+
+        // Closing with the request still unread resets the connection and loses the answer.
+        let mut asked = Vec::new();
+        let mut byte = [0u8; 1];
+        while !asked.ends_with(b"\r\n\r\n") && connection.read(&mut byte).unwrap_or(0) == 1 {
+            asked.push(byte[0]);
+        }
+
+        let _ = connection.write_all(head.as_bytes());
+        let _ = connection.write_all(&first);
+        let _ = connection.flush();
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = connection.write_all(&second);
+        let _ = connection.flush();
+        std::thread::sleep(Duration::from_millis(50));
+    });
+
+    base
+}
+
 fn connected() -> Report {
     Report::Connected {
         version: "0.0.0".to_owned(),
@@ -208,14 +243,73 @@ async fn reporting_posts_to_the_runs_reports() {
     assert_eq!(stub.asked()[0].path, "/link/runs/a-run/reports");
 }
 
+#[tokio::test]
+async fn a_run_id_the_environment_was_handed_cannot_rewrite_the_path_it_dials() {
+    let stub = Stub::streaming("");
+
+    Link::to(
+        &format!("http://127.0.0.1:{}", stub.port),
+        "../../elsewhere",
+        "a-credential",
+    )
+    .open(None)
+    .await
+    .expect("the stream should open");
+
+    assert_eq!(
+        stub.asked()[0].path,
+        "/link/runs/..%2F..%2Felsewhere/instructions"
+    );
+}
+
+#[tokio::test]
+async fn an_instruction_this_supervisor_predates_is_carried_past_rather_than_stalled_on() {
+    let stub = Stub::streaming("id: 4\nevent: pause\ndata: {\"kind\":\"pause\"}\n\n");
+
+    let mut instructions = stub
+        .link()
+        .open(None)
+        .await
+        .expect("the stream should open");
+    let delivered = instructions
+        .next()
+        .await
+        .expect("an unknown instruction is not a broken stream")
+        .expect("the stream should deliver it");
+
+    assert_eq!(delivered.id, "4");
+    assert_eq!(delivered.instruction, Instruction::Unrecognized);
+}
+
+#[tokio::test]
+async fn a_character_split_across_two_chunks_survives_the_stream() {
+    let frame = "id: café\nevent: stop\ndata: {\"kind\":\"stop\"}\n\n".as_bytes();
+    let split = frame
+        .iter()
+        .position(|byte| *byte == 0xc3)
+        .expect("the frame carries a two-byte character")
+        + 1;
+
+    let base = stream_in_two_writes(&frame[..split], &frame[split..]);
+    let mut instructions = Link::to(&base, "a-run", "a-credential")
+        .open(None)
+        .await
+        .expect("the stream should open");
+
+    let delivered = instructions
+        .next()
+        .await
+        .expect("the stream should deliver a whole frame")
+        .expect("the stream should deliver it");
+
+    assert_eq!(delivered.id, "café");
+    assert_eq!(delivered.instruction, Instruction::Stop);
+}
+
 #[test]
 fn the_client_dials_the_paths_the_published_document_describes() {
-    let document = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../openapi/link.json");
-    let document: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(document).expect("a readable openapi document"))
-            .expect("valid json");
-
-    let described: Vec<&String> = document["paths"]
+    let published = published();
+    let described: Vec<&String> = published["paths"]
         .as_object()
         .expect("an object of paths")
         .keys()
@@ -223,4 +317,70 @@ fn the_client_dials_the_paths_the_published_document_describes() {
 
     assert!(described.contains(&&INSTRUCTIONS.to_owned()));
     assert!(described.contains(&&REPORTS.to_owned()));
+}
+
+#[test]
+fn the_client_recognises_every_instruction_the_published_document_declares() {
+    let published = published();
+
+    for (kind, _) in declared(&published, "Instruction") {
+        let instruction: Instruction =
+            serde_json::from_str(&format!("{{\"kind\":\"{kind}\"}}")).expect("an instruction");
+
+        assert_eq!(
+            instruction.kind(),
+            kind,
+            "the document declares the instruction {kind}, which this client does not recognise"
+        );
+    }
+}
+
+#[test]
+fn the_report_the_client_sends_carries_what_the_published_document_requires() {
+    let published = published();
+    let sent = serde_json::to_value(connected()).expect("a report should serialise");
+    let kind = sent["kind"].as_str().expect("a report carries its kind");
+
+    let schema = declared(&published, "Report")
+        .remove(kind)
+        .unwrap_or_else(|| panic!("the client sends the report {kind}, which is not declared"));
+
+    for field in resolve(&published, &schema)["required"]
+        .as_array()
+        .expect("an array of required fields")
+    {
+        let field = field.as_str().expect("a named field");
+        assert!(
+            sent.get(field).is_some(),
+            "the document requires {field} on a {kind} report, and the client does not send it"
+        );
+    }
+}
+
+fn published() -> serde_json::Value {
+    let document = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../openapi/link.json");
+
+    serde_json::from_str(&fs::read_to_string(document).expect("a readable openapi document"))
+        .expect("valid json")
+}
+
+fn declared(published: &serde_json::Value, schema: &str) -> HashMap<String, String> {
+    published["components"]["schemas"][schema]["discriminator"]["mapping"]
+        .as_object()
+        .unwrap_or_else(|| panic!("{schema} should discriminate on a mapping"))
+        .iter()
+        .map(|(kind, reference)| {
+            (
+                kind.clone(),
+                reference.as_str().expect("a reference").to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn resolve<'a>(published: &'a serde_json::Value, reference: &str) -> &'a serde_json::Value {
+    reference
+        .trim_start_matches("#/")
+        .split('/')
+        .fold(published, |document, step| &document[step])
 }

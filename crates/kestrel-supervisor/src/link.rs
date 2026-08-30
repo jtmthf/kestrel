@@ -1,22 +1,35 @@
 //! Server-sent events down, POST up, specified by `openapi/link.json` rather than shared as
 //! types with the control plane that serves it.
 
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::{Client, Response, StatusCode, header};
 use serde::{Deserialize, Serialize};
 
 pub const INSTRUCTIONS: &str = "/link/runs/{run}/instructions";
 pub const REPORTS: &str = "/link/runs/{run}/reports";
 
+/// A run reaches the link as one path segment, whatever the Environment was handed.
+const SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Instruction {
     Stop,
+    /// A control plane kestrel upgraded under a live Environment (ADR-0002) may send an
+    /// instruction this supervisor predates; letting it past keeps the cursor moving.
+    #[serde(other)]
+    Unrecognized,
 }
 
 impl Instruction {
     pub const fn kind(&self) -> &'static str {
         match self {
             Instruction::Stop => "stop",
+            Instruction::Unrecognized => "unrecognized",
         }
     }
 }
@@ -65,7 +78,7 @@ pub struct Link {
 
 pub struct Instructions {
     response: Response,
-    buffered: String,
+    buffered: Vec<u8>,
 }
 
 impl Link {
@@ -118,12 +131,14 @@ impl Link {
 
         Ok(Instructions {
             response,
-            buffered: String::new(),
+            buffered: Vec::new(),
         })
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base, path.replace("{run}", &self.run))
+        let run = utf8_percent_encode(&self.run, SEGMENT).to_string();
+
+        format!("{}{}", self.base, path.replace("{run}", &run))
     }
 }
 
@@ -141,7 +156,7 @@ impl Instructions {
             }
 
             match self.response.chunk().await? {
-                Some(chunk) => self.buffered.push_str(&String::from_utf8_lossy(&chunk)),
+                Some(chunk) => self.buffered.extend_from_slice(&chunk),
                 None => return Ok(None),
             }
         }
@@ -150,8 +165,9 @@ impl Instructions {
     /// A frame is everything up to a blank line; the keep-alive is a frame with only a comment.
     fn take_frame(&mut self) -> Option<(String, String)> {
         loop {
-            let end = self.buffered.find("\n\n")?;
-            let frame: String = self.buffered.drain(..end + 2).collect();
+            let end = self.buffered.windows(2).position(|pair| pair == b"\n\n")?;
+            let frame: Vec<u8> = self.buffered.drain(..end + 2).collect();
+            let frame = String::from_utf8_lossy(&frame);
 
             let mut id = None;
             let mut data = String::new();

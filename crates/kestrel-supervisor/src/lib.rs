@@ -87,11 +87,18 @@ async fn attend(
 }
 
 fn dialled(variables: &BTreeMap<String, String>) -> Option<Link> {
-    let base = variables.get("KESTREL_LINK")?;
-    let run = variables.get("KESTREL_RUN")?;
-    let credential = variables.get("KESTREL_RUN_CREDENTIAL")?;
+    let base = set(variables, "KESTREL_LINK")?;
+    let run = set(variables, "KESTREL_RUN")?;
+    let credential = set(variables, "KESTREL_RUN_CREDENTIAL")?;
 
     Some(Link::to(base, run, credential))
+}
+
+fn set<'a>(variables: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
+    variables
+        .get(name)
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]
@@ -149,6 +156,24 @@ mod tests {
         let diagnostics = Recorder::new();
 
         assert_eq!(run(&diagnostics, &variables(&[])).await, 1);
+        assert!(diagnostics.everything_it_said().contains("no link to dial"));
+    }
+
+    #[tokio::test]
+    async fn a_variable_set_to_nothing_is_not_a_link_to_dial() {
+        let diagnostics = Recorder::new();
+
+        let status = run(
+            &diagnostics,
+            &variables(&[
+                ("KESTREL_LINK", ""),
+                ("KESTREL_RUN", "01999cf2-0000-7000-8000-000000000000"),
+                ("KESTREL_RUN_CREDENTIAL", "a-credential"),
+            ]),
+        )
+        .await;
+
+        assert_eq!(status, 1);
         assert!(diagnostics.everything_it_said().contains("no link to dial"));
     }
 
