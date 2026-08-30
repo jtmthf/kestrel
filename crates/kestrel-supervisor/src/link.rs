@@ -1,0 +1,182 @@
+//! Server-sent events down, POST up, specified by `openapi/link.json` rather than shared as
+//! types with the control plane that serves it.
+
+use reqwest::{Client, Response, StatusCode, header};
+use serde::{Deserialize, Serialize};
+
+pub const INSTRUCTIONS: &str = "/link/runs/{run}/instructions";
+pub const REPORTS: &str = "/link/runs/{run}/reports";
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Instruction {
+    Stop,
+}
+
+impl Instruction {
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Instruction::Stop => "stop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Report {
+    Connected { version: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivered {
+    pub id: String,
+    pub instruction: Instruction,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    /// The link declined this Environment. Reconnecting with the same credential will not help.
+    Refused(String),
+    Lost(String),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Refused(why) | Error::Lost(why) => out.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<reqwest::Error> for Error {
+    fn from(error: reqwest::Error) -> Self {
+        Error::Lost(error.to_string())
+    }
+}
+
+pub struct Link {
+    client: Client,
+    base: String,
+    run: String,
+    credential: String,
+}
+
+pub struct Instructions {
+    response: Response,
+    buffered: String,
+}
+
+impl Link {
+    pub fn to(base: &str, run: &str, credential: &str) -> Self {
+        Self {
+            client: Client::new(),
+            base: base.to_owned(),
+            run: run.to_owned(),
+            credential: credential.to_owned(),
+        }
+    }
+
+    pub async fn report(&self, report: &Report) -> Result<(), Error> {
+        let response = self
+            .client
+            .post(self.url(REPORTS))
+            .bearer_auth(&self.credential)
+            .json(report)
+            .send()
+            .await?;
+
+        let response = refuse_if_declined(response).await?;
+        if !response.status().is_success() {
+            return Err(Error::Lost(format!(
+                "the link answered {} to a report",
+                response.status().as_u16()
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub async fn open(&self, cursor: Option<&str>) -> Result<Instructions, Error> {
+        let mut request = self
+            .client
+            .get(self.url(INSTRUCTIONS))
+            .bearer_auth(&self.credential)
+            .header(header::ACCEPT, "text/event-stream");
+        if let Some(cursor) = cursor {
+            request = request.header("last-event-id", cursor);
+        }
+
+        let response = refuse_if_declined(request.send().await?).await?;
+        if !response.status().is_success() {
+            return Err(Error::Lost(format!(
+                "the link answered {} to a stream",
+                response.status().as_u16()
+            )));
+        }
+
+        Ok(Instructions {
+            response,
+            buffered: String::new(),
+        })
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base, path.replace("{run}", &self.run))
+    }
+}
+
+impl Instructions {
+    pub async fn next(&mut self) -> Result<Option<Delivered>, Error> {
+        loop {
+            if let Some((id, data)) = self.take_frame() {
+                let instruction = serde_json::from_str(&data).map_err(|error| {
+                    Error::Lost(format!(
+                        "the stream carried {data}, which is not an instruction: {error}"
+                    ))
+                })?;
+
+                return Ok(Some(Delivered { id, instruction }));
+            }
+
+            match self.response.chunk().await? {
+                Some(chunk) => self.buffered.push_str(&String::from_utf8_lossy(&chunk)),
+                None => return Ok(None),
+            }
+        }
+    }
+
+    /// A frame is everything up to a blank line; the keep-alive is a frame with only a comment.
+    fn take_frame(&mut self) -> Option<(String, String)> {
+        loop {
+            let end = self.buffered.find("\n\n")?;
+            let frame: String = self.buffered.drain(..end + 2).collect();
+
+            let mut id = None;
+            let mut data = String::new();
+            for line in frame.lines() {
+                if let Some(carried) = line.strip_prefix("id:") {
+                    id = Some(carried.trim().to_owned());
+                } else if let Some(carried) = line.strip_prefix("data:") {
+                    data.push_str(carried.trim());
+                }
+            }
+
+            if let Some(id) = id
+                && !data.is_empty()
+            {
+                return Some((id, data));
+            }
+        }
+    }
+}
+
+async fn refuse_if_declined(response: Response) -> Result<Response, Error> {
+    match response.status() {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
+            Err(Error::Refused(response.text().await?))
+        }
+        _ => Ok(response),
+    }
+}

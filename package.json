@@ -2,12 +2,6 @@
   "name": "kestrel",
   "private": true,
   "workspaces": ["packages/*"],
-  "scripts": {
-    "typecheck": "bun run --filter '*' typecheck",
-    "generate": "bun run --filter '*' generate",
-    "build": "bun run --filter '*' build",
-    "test": "bun test"
-  },
   "devDependencies": {
     "@types/bun": "^1.4.0",
     "typescript": "^7.0.2"
