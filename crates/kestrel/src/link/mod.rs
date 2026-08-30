@@ -145,11 +145,11 @@ async fn report(
             info!(run = %run.id, "an environment reported its run started");
         }
         Report::Finished { exit } => {
-            match &exit {
+            let stands = match &exit {
                 Exit::Succeeded => work::complete(&control_plane.store, &run).await?,
                 Exit::Failed { because } => work::fail(&control_plane.store, &run, because).await?,
-            }
-            info!(run = %run.id, %exit, "an environment reported its run finished");
+            };
+            info!(run = %run.id, %stands, "an environment reported its run finished");
         }
     }
 

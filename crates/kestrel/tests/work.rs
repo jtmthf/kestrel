@@ -7,8 +7,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
+use kestrel::link::Report;
 use support::Harness;
 use support::environment::Environment;
+use support::link_client::Link;
 use support::supervisor;
 
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -134,6 +136,51 @@ async fn an_environment_that_ends_without_saying_how_the_run_went_leaves_it_fail
         because.contains("without reporting how the run went"),
         "unhelpful exit status: {because}"
     );
+    Environment::named(ended.environment.as_deref().expect("an environment"))
+        .is_gone()
+        .await;
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn an_environment_that_reports_its_run_failed_ends_it_failed() {
+    let harness = Harness::boot().await;
+    let session = a_session(&harness).await;
+    let (run, credential) = harness.dispatch_run(session.id).await;
+
+    Link::to(&harness.link())
+        .report(
+            run.id,
+            Some(&credential),
+            &Report::Finished {
+                exit: Exit::Failed {
+                    because: "the agent could not open a pull request".to_owned(),
+                },
+            },
+        )
+        .await;
+
+    let ended = ended(&harness, run.id).await;
+    assert_eq!(
+        ended.exit,
+        Some(Exit::Failed {
+            because: "the agent could not open a pull request".to_owned()
+        })
+    );
+    assert_eq!(
+        harness
+            .transcript(session.id)
+            .await
+            .last()
+            .expect("a transcript entry")
+            .entry
+            .to_string(),
+        format!(
+            "run ended  {}  failed: the agent could not open a pull request",
+            run.id
+        )
+    );
 
     harness.teardown().await;
 }
@@ -151,6 +198,12 @@ async fn a_run_still_in_flight_when_the_control_plane_stops_ends_and_its_environ
         run.environment.is_some() && run.heartbeat_at.is_some()
     })
     .await;
+
+    let beating = until(&harness, run.id, "heartbeat twice", |run| {
+        run.heartbeat_at > in_flight.heartbeat_at
+    })
+    .await;
+    assert!(beating.state == RunState::Active);
 
     let stopped = harness.teardown().await;
 
@@ -196,6 +249,21 @@ async fn a_queued_run_is_claimed_once_however_many_claimants_ask_at_once() {
         .map(|claimed| claimed.run.id)
         .collect();
     assert_eq!(claimed, vec![run.id]);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_run_being_executed_is_never_claimed_again() {
+    let harness = Harness::boot().await;
+    let session = a_session(&harness).await;
+    let (run, _) = harness.dispatch_run(session.id).await;
+
+    assert_eq!(harness.run(run.id).await.state, RunState::Active);
+    assert!(
+        harness.claim_run().await.is_none(),
+        "a run already being executed was handed out to be dispatched again"
+    );
 
     harness.teardown().await;
 }

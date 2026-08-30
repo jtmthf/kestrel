@@ -489,13 +489,14 @@ impl Tx<'_> {
         let ended = sqlx::query(
             "UPDATE run
              SET state = ?, ended_at = ?, exit = ?, exit_because = ?
-             WHERE id = ? AND ended_at IS NULL",
+             WHERE id = ? AND state != ?",
         )
         .bind(RunState::Ended.as_str())
         .bind(Timestamp::now().to_string())
         .bind(exit.status())
         .bind(exit.because())
         .bind(run.id.to_string())
+        .bind(RunState::Ended.as_str())
         .execute(&mut *self.transaction)
         .await
         .with_context(|| format!("ending the run {}", run.id))?;

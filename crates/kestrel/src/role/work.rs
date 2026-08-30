@@ -18,7 +18,6 @@ use crate::work::{self, Claimed};
 const POLL: Duration = Duration::from_millis(100);
 const HEARTBEAT: Duration = Duration::from_secs(1);
 
-/// Where an Environment reaches the link, and what runs inside one.
 pub struct Dispatch {
     pub link: String,
     pub supervisor: PathBuf,
@@ -84,12 +83,13 @@ async fn execute(
     ) {
         Ok(environment) => environment,
         Err(error) => {
-            return work::fail(
+            work::fail(
                 store,
                 &run,
                 &format!("the environment could not be provisioned: {error}"),
             )
-            .await;
+            .await?;
+            return Ok(());
         }
     };
 
@@ -103,27 +103,16 @@ async fn execute(
         warn!(run = %run.id, %error, "an environment resisted being destroyed");
     }
 
-    match ended? {
+    let unreported = match ended? {
         Ended::Environment(status) => {
-            work::fail(
-                store,
-                &run,
-                &format!("the environment exited {status} without reporting how the run went"),
-            )
-            .await?;
+            format!("the environment exited {status} without reporting how the run went")
         }
         Ended::ControlPlaneStopped => {
-            work::fail(
-                store,
-                &run,
-                "the control plane stopped while this run was in flight",
-            )
-            .await?;
+            "the control plane stopped while this run was in flight".to_owned()
         }
-    }
-
-    let ended = work::run(store, run.id).await?;
-    info!(run = %run.id, exit = ended.exit.map(|exit| exit.to_string()), "a run ended");
+    };
+    let exit = work::fail(store, &run, &unreported).await?;
+    info!(run = %run.id, %exit, "a run ended");
 
     Ok(())
 }

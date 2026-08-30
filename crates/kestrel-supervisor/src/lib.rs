@@ -77,6 +77,8 @@ async fn attend(
     .await?;
     diagnostics.info("reported connected");
 
+    // Nothing is read off the stream once the Run has started: saying how it went is all that
+    // is left, and a reconnection resumes at that rather than waiting to be told to start again.
     if !*started {
         loop {
             let Some(delivered) = instructions.next().await? else {

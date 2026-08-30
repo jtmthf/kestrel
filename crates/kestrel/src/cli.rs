@@ -225,7 +225,6 @@ impl Cli {
         }
     }
 
-    /// What the work role hands an Environment: where to dial back to, and what to run.
     pub fn dispatch(&self, bound: SocketAddr) -> Result<Dispatch> {
         Ok(Dispatch {
             link: self

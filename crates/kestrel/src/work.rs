@@ -1,7 +1,6 @@
-//! Enqueue, claim, heartbeat, complete, fail — and no dependency edges, because everything
-//! queued at 0.1 is immediately eligible (ADR-0005).
+//! No dependency edges, because everything queued at 0.1 is immediately eligible (ADR-0005).
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use jiff::{SignedDuration, Timestamp};
 
 use crate::domain::{Exit, Run, RunId, SessionId};
@@ -86,11 +85,11 @@ pub async fn provisioned(store: &Store, run: &Run, environment: &str) -> Result<
     tx.commit().await
 }
 
-pub async fn complete(store: &Store, run: &Run) -> Result<()> {
+pub async fn complete(store: &Store, run: &Run) -> Result<Exit> {
     end(store, run, Exit::Succeeded).await
 }
 
-pub async fn fail(store: &Store, run: &Run, because: &str) -> Result<()> {
+pub async fn fail(store: &Store, run: &Run, because: &str) -> Result<Exit> {
     end(
         store,
         run,
@@ -102,16 +101,32 @@ pub async fn fail(store: &Store, run: &Run, because: &str) -> Result<()> {
 }
 
 /// A Run ends once. Whoever gets there first — the Environment reporting itself finished, or
-/// the claimant finding it gone — decides the exit status, and the other is a no-op.
-async fn end(store: &Store, run: &Run, exit: Exit) -> Result<()> {
+/// the claimant finding it gone — decides the exit status, and what comes back is the one
+/// that stands.
+async fn end(store: &Store, run: &Run, exit: Exit) -> Result<Exit> {
     let mut tx = store.begin().await?;
-    if tx.end_run(run, &exit).await? {
+
+    let stands = if tx.end_run(run, &exit).await? {
         let session = tx.session(run.session).await?;
         tx.log()
-            .append(&session, Entry::RunEnded { run: run.id, exit })
+            .append(
+                &session,
+                Entry::RunEnded {
+                    run: run.id,
+                    exit: exit.clone(),
+                },
+            )
             .await?;
         tx.invalidate_credentials(run).await?;
-    }
+        exit
+    } else {
+        tx.run(run.id)
+            .await?
+            .exit
+            .context("a run that has ended has an exit status")?
+    };
 
-    tx.commit().await
+    tx.commit().await?;
+
+    Ok(stands)
 }
