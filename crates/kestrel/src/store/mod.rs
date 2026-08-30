@@ -6,13 +6,16 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteRow};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::domain::{
-    Agent, AgentId, Organization, OrganizationId, Session, SessionId, SessionState, Workspace,
-    WorkspaceId,
+    Agent, AgentId, Connected, Organization, OrganizationId, Run, RunId, Session, SessionId,
+    SessionState, Workspace, WorkspaceId,
 };
+use crate::link::credential::Credential;
+use crate::link::{Instruction, SentInstruction};
 use crate::log::Log;
 
 const DATABASE: &str = "kestrel.db";
 
+#[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
 }
@@ -338,6 +341,205 @@ impl Tx<'_> {
         .await?;
 
         agent(&row)
+    }
+
+    pub async fn start_run(&mut self, session: &Session) -> Result<Run> {
+        let run = Run {
+            id: RunId::generate(),
+            organization: session.organization.id,
+            session: session.id,
+            started_at: Timestamp::now(),
+            ended_at: None,
+            connected: None,
+        };
+
+        sqlx::query(
+            "INSERT INTO run (id, organization_id, session_id, started_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(run.id.to_string())
+        .bind(run.organization.to_string())
+        .bind(run.session.to_string())
+        .bind(run.started_at.to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("starting a run in the session {}", session.id))?;
+
+        Ok(run)
+    }
+
+    pub async fn run(&mut self, id: RunId) -> Result<Run> {
+        let row = sqlx::query(
+            "SELECT organization_id, session_id, started_at, ended_at, connected_at,
+                    supervisor_version
+             FROM run
+             WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&mut *self.transaction)
+        .await?
+        .with_context(|| format!("no run {id}"))?;
+
+        let connected_at: Option<String> = row.get("connected_at");
+
+        Ok(Run {
+            id,
+            organization: row.get::<String, _>("organization_id").parse()?,
+            session: row.get::<String, _>("session_id").parse()?,
+            started_at: row.get::<String, _>("started_at").parse()?,
+            ended_at: row
+                .get::<Option<String>, _>("ended_at")
+                .map(|at| at.parse())
+                .transpose()?,
+            connected: match connected_at {
+                Some(at) => Some(Connected {
+                    at: at.parse()?,
+                    version: row.get("supervisor_version"),
+                }),
+                None => None,
+            },
+        })
+    }
+
+    pub async fn record_connected(&mut self, run: &Run, version: &str) -> Result<()> {
+        sqlx::query("UPDATE run SET connected_at = ?, supervisor_version = ? WHERE id = ?")
+            .bind(Timestamp::now().to_string())
+            .bind(version)
+            .bind(run.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("recording the environment of run {} connected", run.id))?;
+
+        Ok(())
+    }
+
+    pub async fn end_run(&mut self, run: &Run) -> Result<()> {
+        sqlx::query("UPDATE run SET ended_at = ? WHERE id = ? AND ended_at IS NULL")
+            .bind(Timestamp::now().to_string())
+            .bind(run.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("ending the run {}", run.id))?;
+
+        Ok(())
+    }
+
+    pub async fn issue_credential(
+        &mut self,
+        run: &Run,
+        digest: &str,
+        expires_at: Timestamp,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO run_credential (token_hash, run_id, organization_id, issued_at, expires_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(digest)
+        .bind(run.id.to_string())
+        .bind(run.organization.to_string())
+        .bind(Timestamp::now().to_string())
+        .bind(expires_at.to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("issuing a credential for the run {}", run.id))?;
+
+        Ok(())
+    }
+
+    pub async fn invalidate_credentials(&mut self, run: &Run) -> Result<()> {
+        sqlx::query(
+            "UPDATE run_credential
+             SET invalidated_at = ?
+             WHERE run_id = ? AND invalidated_at IS NULL",
+        )
+        .bind(Timestamp::now().to_string())
+        .bind(run.id.to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("invalidating the credentials of run {}", run.id))?;
+
+        Ok(())
+    }
+
+    pub async fn credential(&mut self, digest: &str) -> Result<Option<Credential>> {
+        let found = sqlx::query(
+            "SELECT run_id, organization_id, expires_at, invalidated_at
+             FROM run_credential
+             WHERE token_hash = ?",
+        )
+        .bind(digest)
+        .fetch_optional(&mut *self.transaction)
+        .await?;
+
+        found
+            .map(|row| {
+                Ok(Credential {
+                    run: row.get::<String, _>("run_id").parse()?,
+                    organization: row.get::<String, _>("organization_id").parse()?,
+                    expires_at: row.get::<String, _>("expires_at").parse()?,
+                    invalidated_at: row
+                        .get::<Option<String>, _>("invalidated_at")
+                        .map(|at| at.parse())
+                        .transpose()?,
+                })
+            })
+            .transpose()
+    }
+
+    pub async fn send_instruction(
+        &mut self,
+        run: &Run,
+        instruction: Instruction,
+    ) -> Result<SentInstruction> {
+        let sent = sqlx::query(
+            "INSERT INTO link_instruction (run_id, organization_id, seq, body, sent_at)
+             VALUES (
+                 ?,
+                 ?,
+                 (SELECT COALESCE(MAX(seq), 0) + 1 FROM link_instruction WHERE run_id = ?),
+                 ?,
+                 ?
+             )
+             RETURNING seq",
+        )
+        .bind(run.id.to_string())
+        .bind(run.organization.to_string())
+        .bind(run.id.to_string())
+        .bind(serde_json::to_string(&instruction)?)
+        .bind(Timestamp::now().to_string())
+        .fetch_one(&mut *self.transaction)
+        .await
+        .with_context(|| format!("sending an instruction to the run {}", run.id))?;
+
+        Ok(SentInstruction {
+            seq: sent.get("seq"),
+            instruction,
+        })
+    }
+
+    pub async fn instructions_after(
+        &mut self,
+        run: RunId,
+        cursor: i64,
+    ) -> Result<Vec<SentInstruction>> {
+        sqlx::query(
+            "SELECT seq, body
+             FROM link_instruction
+             WHERE run_id = ? AND seq > ?
+             ORDER BY seq",
+        )
+        .bind(run.to_string())
+        .bind(cursor)
+        .fetch_all(&mut *self.transaction)
+        .await?
+        .iter()
+        .map(|row| {
+            Ok(SentInstruction {
+                seq: row.get("seq"),
+                instruction: serde_json::from_str(row.get("body"))?,
+            })
+        })
+        .collect()
     }
 
     pub async fn agents(&mut self, organization: &Organization) -> Result<Vec<Agent>> {

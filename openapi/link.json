@@ -1,0 +1,218 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "kestrel link",
+    "version": "0.1.0",
+    "summary": "The connection between an Environment and the control plane.",
+    "description": "The supervisor inside an Environment opens this connection outward: server-sent events down, POST up, plain HTTP with no protocol upgrade. Every Environment authenticates as the Run it is executing.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "{link}",
+      "variables": {
+        "link": {
+          "default": "http://127.0.0.1:7717"
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "runCredential": []
+    }
+  ],
+  "paths": {
+    "/link/runs/{run}/instructions": {
+      "get": {
+        "operationId": "instructions",
+        "summary": "Hold open the stream of instructions for a Run.",
+        "description": "Replays every instruction after `Last-Event-ID`, then stays open. The stream closes when the Run ends.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/run"
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "description": "The seq of the last instruction this Environment received. Absent means from the beginning.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stream is open. Each event carries an instruction as its data, the instruction's kind as its event name, and its seq as its id.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Instruction"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "403": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
+    "/link/runs/{run}/reports": {
+      "post": {
+        "operationId": "report",
+        "summary": "Report something about an Environment to the control plane.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/run"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Report"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The report was recorded."
+          },
+          "401": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "403": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "runCredential": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The credential issued for this Run when its Environment was provisioned, and invalidated when the Run ends."
+      }
+    },
+    "parameters": {
+      "run": {
+        "name": "run",
+        "in": "path",
+        "required": true,
+        "description": "The Run this Environment is executing.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "responses": {
+      "Refused": {
+        "description": "The link refused the request.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Refusal"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Instruction": {
+        "description": "What the control plane asks of an Environment.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Stop"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "stop": "#/components/schemas/Stop"
+          }
+        }
+      },
+      "Stop": {
+        "description": "Leave the link and exit.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "stop"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "Report": {
+        "description": "What an Environment tells the control plane about itself.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Connected"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "connected": "#/components/schemas/Connected"
+          }
+        }
+      },
+      "Connected": {
+        "description": "The Environment is on the link, and this is what is running in it.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "connected"
+          },
+          "version": {
+            "type": "string",
+            "description": "The supervisor's version."
+          }
+        },
+        "required": [
+          "kind",
+          "version"
+        ]
+      },
+      "Refusal": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      }
+    }
+  }
+}

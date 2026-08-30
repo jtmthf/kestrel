@@ -13,8 +13,8 @@ use tempfile::TempDir;
 const PATIENCE: Duration = Duration::from_secs(30);
 
 /// stderr is drained on a thread so the pipe cannot fill and block the child. The data
-/// directory is held for the process's lifetime so concurrent tests never race over the
-/// real default database.
+/// directory is held for the process's lifetime, and the link is bound on an ephemeral port,
+/// so concurrent tests never race over the real defaults.
 struct Kestrel {
     child: Child,
     stderr: Receiver<String>,
@@ -29,6 +29,7 @@ impl Kestrel {
             .args(args)
             .env("RUST_LOG", "info")
             .env("KESTREL_DATA_DIR", data_dir.path())
+            .env("KESTREL_LISTEN", "127.0.0.1:0")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -161,6 +162,16 @@ fn serve_starts_only_the_serve_role() {
     kestrel.shut_down_cleanly(libc::SIGTERM);
 
     kestrel.assert_role_never_started("work");
+}
+
+#[test]
+fn serve_reports_where_it_is_listening_for_the_link() {
+    let mut kestrel = Kestrel::spawn(&["serve"]);
+
+    kestrel.wait_for("the serve role to report its address", |line| {
+        line.contains("role started") && line.contains("address=127.0.0.1:")
+    });
+    kestrel.shut_down_cleanly(libc::SIGTERM);
 }
 
 #[test]

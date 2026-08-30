@@ -15,13 +15,15 @@ point without losing what came before.
 Early, and honest about it: rung `0.1` is under construction. What runs today is two binaries that
 start and stop cleanly, the CI that builds them, and a durable Session — declare an organization, a
 workspace and an agent, open a session against them, and its state and transcript are still there
-after the process is killed. Nothing triggers, schedules or executes work yet. What the repo mostly
-holds is still the vocabulary, in [`CONTEXT.md`](CONTEXT.md), and the
-full planning trail in the issue tracker, where every decision below is written down with its
-reasoning and the objections it survived. This document
-is the direction, written first so the implementation has something to be judged against;
-[`ROADMAP.md`](ROADMAP.md) is the order it gets built in, and it carries the marker for where the
-project actually is.
+after the process is killed. The two binaries are joined up: a supervisor inside an environment dials
+out to the control plane over the link specified in [`openapi/link.json`](openapi/link.json),
+authenticating as the run it is executing, and reconnects with its cursor when the control plane
+restarts under it. Nothing triggers, schedules or executes work yet. What the repo mostly holds is
+still the vocabulary, in [`CONTEXT.md`](CONTEXT.md), and the full planning trail in the issue
+tracker, where every decision below is written down with its reasoning and the objections it
+survived. This document is the direction, written first so the implementation has something to be
+judged against; [`ROADMAP.md`](ROADMAP.md) is the order it gets built in, and it carries the marker
+for where the project actually is.
 
 ## What kestrel is
 

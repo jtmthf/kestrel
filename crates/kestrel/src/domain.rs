@@ -32,7 +32,7 @@ macro_rules! identifiers {
     )+};
 }
 
-identifiers!(OrganizationId, WorkspaceId, AgentId, SessionId);
+identifiers!(OrganizationId, WorkspaceId, AgentId, SessionId, RunId);
 
 #[derive(Debug, Clone)]
 pub struct Organization {
@@ -66,6 +66,22 @@ pub struct Session {
     pub agent: Agent,
     pub state: SessionState,
     pub opened_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub struct Run {
+    pub id: RunId,
+    pub organization: OrganizationId,
+    pub session: SessionId,
+    pub started_at: Timestamp,
+    pub ended_at: Option<Timestamp>,
+    pub connected: Option<Connected>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Connected {
+    pub at: Timestamp,
+    pub version: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

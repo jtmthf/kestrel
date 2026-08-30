@@ -1,4 +1,6 @@
-// Tests the artifact `bun run build` ships, not a separately compiled copy.
+// Tests the artifact `bun run build` ships, not a separately compiled copy. What the
+// supervisor does once it has a link to dial is proved against a real control plane by the
+// primary test seam, in the kestrel crate.
 
 import { beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
@@ -19,13 +21,18 @@ beforeAll(() => {
   }
 });
 
-test("the supervisor binary starts and exits with status 0", async () => {
-  const supervisor = Bun.spawn({ cmd: [binary], stdout: "pipe", stderr: "pipe" });
+test("the supervisor binary starts and says it has no link to dial", async () => {
+  const supervisor = Bun.spawn({
+    cmd: [binary],
+    env: { PATH: process.env["PATH"] ?? "" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
   const status = await supervisor.exited;
   const stderr = await new Response(supervisor.stderr).text();
 
-  expect(status, `the supervisor exited ${status}. stderr:\n${stderr}`).toBe(0);
+  expect(status, `the supervisor exited ${status}. stderr:\n${stderr}`).toBe(1);
   expect(stderr).toContain("supervisor started");
-  expect(stderr).toContain("supervisor stopped");
+  expect(stderr).toContain("no link to dial");
 });

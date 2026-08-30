@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
@@ -62,6 +63,16 @@ pub struct Cli {
     /// Where kestrel keeps its database
     #[arg(long, env = "KESTREL_DATA_DIR", global = true, value_name = "DIR")]
     data_dir: Option<PathBuf>,
+
+    /// Where the control plane listens for the link an Environment dials out to
+    #[arg(
+        long,
+        env = "KESTREL_LISTEN",
+        global = true,
+        value_name = "ADDR",
+        default_value = "127.0.0.1:7717"
+    )]
+    pub listen: SocketAddr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
