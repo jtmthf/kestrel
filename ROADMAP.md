@@ -78,8 +78,8 @@ resuming on a cold environment needs the paging read before any human has ever j
 lease is here rather than at `0.2` for a neighbouring reason: without one, an environment that dies
 mid-run leaves its run active forever, holding the session's one active-run slot, so the session
 never seals — and a rung that promises an interrupted run ends with an explicit exit status cannot
-ship a session that wedges permanently. Also settled here by omission: what happens inside a run
-stays behind the agent-runtime contract, and gets no promise and no name.
+ship a session that wedges permanently. Also settled here by omission: what happens inside a run is
+the run's business, not the session's, and gets no promise and no name.
 
 ### 0.2 — kestrel works the backlog
 
@@ -170,8 +170,8 @@ demo mode.
 ## v1 — the lock
 
 v1 is not a rung. It is the lock applied the day `0.7` closes: the implementation freezes, the
-project commits to no breaking changes until v2, and the agent-runtime contract has been proven
-against a second runtime. Putting it on the ladder would re-import the reading that v1 is a feature
+project commits to no breaking changes until v2, and kestrel's ACP client has been proven against
+two agents of different lineages. Putting it on the ladder would re-import the reading that v1 is a feature
 set, when what it actually is is the day this project is willing to stop changing its mind. The `0.x`
 line carries real, recommended releases, and is where people will live for a long time.
 

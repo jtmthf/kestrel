@@ -44,7 +44,7 @@ _Avoid_: ask, prompt, clarification, input
 The ordered, replayable record of what happened between a session's participants — messages, run
 boundaries, participant joins, and the resolution of every approval and question. It records what
 changed the session's shared state, never what happened inside a run: an agent's reasoning and tool
-calls stay behind the agent-runtime contract. What a human reads when they join a session late.
+calls are the run's business, not the session's. What a human reads when they join a session late.
 _Avoid_: log, event stream, history
 
 ### Cause
@@ -106,8 +106,8 @@ run.
 _Avoid_: bot, worker, assistant
 
 **Agent Runtime**:
-A pluggable implementation of the agent loop that kestrel drives through a contract. opencode is the
-default and reference implementation; kestrel does not write an agent loop of its own.
+An agent loop kestrel drives by speaking the Agent Client Protocol to it. opencode is the default;
+kestrel writes no agent loop and owns no contract for one.
 _Avoid_: engine, backend, driver
 
 **Participant**:
@@ -185,12 +185,12 @@ words from drifting.
 
 **Job**, **Task**: both name a run, or a state of one. Use **Run**.
 
-**Session** (opencode's): opencode binds one agent conversation to one directory in one process. That
-concept lives behind the agent-runtime contract and has no name in kestrel's vocabulary. A kestrel
-session contains many of them over its life.
+**Session** (ACP's): the thread an agent runtime holds against one directory in one process. A
+**Run** holds exactly one and dies with it, so it is a run's identifier at the runtime rather than a
+concept, and it gets no name here. A kestrel session contains many of them over its life.
 
-**Agent** (opencode's): opencode uses the word for its own primary/subagent concept. Same resolution
-as above — it stays behind the runtime contract.
+**Agent** (ACP's): ACP calls the *program* an agent. kestrel's **Agent** is a configured actor
+identity, and one of them may be run by several ACP agents over its life.
 
 **Tenant**: names a deployment model, not a thing in the domain. The boundary is an
 **Organization**; "multi-tenancy" remains fine as description.
