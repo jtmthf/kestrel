@@ -3,7 +3,7 @@
 use anyhow::{Context as _, Result};
 use jiff::{SignedDuration, Timestamp};
 
-use crate::domain::{Exit, Run, RunId, SessionId};
+use crate::domain::{Exit, Run, RunId, SessionId, Usage};
 use crate::link::credential::Secret;
 use crate::log::Entry;
 use crate::store::Store;
@@ -74,6 +74,31 @@ pub async fn started(store: &Store, run: &Run) -> Result<()> {
             .append(&session, Entry::RunStarted { run: run.id })
             .await?;
     }
+
+    tx.commit().await
+}
+
+/// An Environment reports what its agent said; who said it is the Session's to know.
+pub async fn said(store: &Store, run: &Run, message: &str) -> Result<()> {
+    let mut tx = store.begin().await?;
+    let session = tx.session(run.session).await?;
+    tx.log()
+        .append(
+            &session,
+            Entry::Said {
+                participant: session.agent.name.clone(),
+                message: message.to_owned(),
+            },
+        )
+        .await?;
+
+    tx.commit().await
+}
+
+/// On the Run, and in no Transcript: what an agent spent is not a Session's shared state.
+pub async fn used(store: &Store, run: &Run, usage: &Usage) -> Result<()> {
+    let mut tx = store.begin().await?;
+    tx.record_usage(run, usage).await?;
 
     tx.commit().await
 }

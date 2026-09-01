@@ -35,6 +35,10 @@ impl Kestrel {
             .env("KESTREL_DATA_DIR", self.data_dir.path())
             .env("KESTREL_LISTEN", "127.0.0.1:0")
             .env("KESTREL_SUPERVISOR", support::supervisor::binary())
+            .env(
+                "KESTREL_AGENT_RUNTIME",
+                support::scripted_agent::playing(support::scripted_agent::Script::Speaks),
+            )
             .env("RUST_LOG", "info")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -396,7 +400,9 @@ fn a_dispatched_run_starts_and_ends_in_its_sessions_transcript() {
     let transcript = kestrel.run(&["session", "transcript", &session]);
     let said: Vec<&str> = transcript.lines().collect();
 
-    assert_eq!(said.len(), 3, "unexpected transcript:\n{transcript}");
+    assert_eq!(said.len(), 5, "unexpected transcript:\n{transcript}");
     assert!(said[1].ends_with(&format!("run started  {run}")));
-    assert!(said[2].ends_with(&format!("run ended  {run}  succeeded")));
+    assert!(said[2].ends_with("said  builder  half of one message, and the other half"));
+    assert!(said[3].ends_with("said  builder  a second message"));
+    assert!(said[4].ends_with(&format!("run ended  {run}  succeeded")));
 }

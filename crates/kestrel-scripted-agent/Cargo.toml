@@ -1,0 +1,16 @@
+[package]
+name = "kestrel-scripted-agent"
+description = "A scripted ACP agent: the stand-in the test suite drives kestrel's ACP client against."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+agent-client-protocol = "2"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt"] }

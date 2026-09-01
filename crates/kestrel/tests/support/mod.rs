@@ -7,10 +7,11 @@
 // is not dead, it belongs to a sibling.
 #![allow(dead_code)]
 
+pub mod built;
 pub mod environment;
 pub mod github_stub;
 pub mod link_client;
-pub mod scripted_runtime;
+pub mod scripted_agent;
 pub mod supervisor;
 
 use std::net::SocketAddr;
@@ -33,9 +34,16 @@ pub struct Harness {
     data_dir: TempDir,
     store: Store,
     address: SocketAddr,
-    supervisor: Option<PathBuf>,
+    environment: Option<Provisions>,
     shutdown: CancellationToken,
     roles: JoinHandle<anyhow::Result<()>>,
+}
+
+/// What an Environment the work role provisions runs.
+#[derive(Clone)]
+pub struct Provisions {
+    supervisor: PathBuf,
+    runtime: String,
 }
 
 /// Comes back on the address it was listening on, so what an Environment already dialled
@@ -43,7 +51,7 @@ pub struct Harness {
 pub struct Stopped {
     data_dir: TempDir,
     address: SocketAddr,
-    supervisor: Option<PathBuf>,
+    environment: Option<Provisions>,
 }
 
 impl Harness {
@@ -54,15 +62,27 @@ impl Harness {
     }
 
     pub async fn dispatching(supervisor: &Path) -> Self {
-        Self::booted(Some(supervisor.to_path_buf())).await
+        Self::dispatching_to(
+            supervisor,
+            &scripted_agent::playing(scripted_agent::Script::Speaks),
+        )
+        .await
     }
 
-    async fn booted(supervisor: Option<PathBuf>) -> Self {
+    pub async fn dispatching_to(supervisor: &Path, runtime: &str) -> Self {
+        Self::booted(Some(Provisions {
+            supervisor: supervisor.to_path_buf(),
+            runtime: runtime.to_owned(),
+        }))
+        .await
+    }
+
+    async fn booted(environment: Option<Provisions>) -> Self {
         let data_dir = TempDir::new().expect("a temporary data directory");
         Self::boot_against(
             data_dir,
             "127.0.0.1:0".parse().expect("a loopback address"),
-            supervisor,
+            environment,
         )
         .await
     }
@@ -70,7 +90,7 @@ impl Harness {
     async fn boot_against(
         data_dir: TempDir,
         listen: SocketAddr,
-        supervisor: Option<PathBuf>,
+        environment: Option<Provisions>,
     ) -> Self {
         let store = Store::open(data_dir.path())
             .await
@@ -80,9 +100,10 @@ impl Harness {
             .await
             .expect("the control plane should bind its link");
         let address = all_in_one.address();
-        let dispatch = supervisor.clone().map(|supervisor| Dispatch {
+        let dispatch = environment.clone().map(|provisions| Dispatch {
             link: format!("http://{address}"),
-            supervisor,
+            supervisor: provisions.supervisor,
+            runtime: provisions.runtime,
         });
         let roles = tokio::spawn(all_in_one.run(dispatch, shutdown.clone()));
 
@@ -90,7 +111,7 @@ impl Harness {
             data_dir,
             store,
             address,
-            supervisor,
+            environment,
             shutdown,
             roles,
         }
@@ -251,7 +272,7 @@ impl Harness {
         Stopped {
             data_dir: self.data_dir,
             address: self.address,
-            supervisor: self.supervisor,
+            environment: self.environment,
         }
     }
 
@@ -269,14 +290,14 @@ impl Harness {
         Stopped {
             data_dir: self.data_dir,
             address: self.address,
-            supervisor: self.supervisor,
+            environment: self.environment,
         }
     }
 }
 
 impl Stopped {
     pub async fn restart(self) -> Harness {
-        Harness::boot_against(self.data_dir, self.address, self.supervisor).await
+        Harness::boot_against(self.data_dir, self.address, self.environment).await
     }
 
     pub async fn run(&self, id: RunId) -> Run {

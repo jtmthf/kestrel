@@ -13,6 +13,7 @@ use kestrel::domain::Run;
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction, Report};
 use reqwest::{StatusCode, Version, header};
+use serde_json::json;
 use support::Harness;
 use support::link_client::{Link, Next};
 use support::supervisor::Supervisor;
@@ -21,6 +22,12 @@ const PATIENCE: Duration = Duration::from_secs(30);
 const LONG_ENOUGH_TO_BE_SURE: Duration = Duration::from_millis(500);
 
 async fn a_run(harness: &Harness) -> (Run, Secret) {
+    declared(harness).await;
+
+    another_run(harness).await
+}
+
+async fn declared(harness: &Harness) {
     let organization = harness.declare_organization("acme").await;
     harness
         .declare_workspace(
@@ -33,7 +40,6 @@ async fn a_run(harness: &Harness) -> (Run, Secret) {
     harness
         .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
         .await;
-    another_run(harness).await
 }
 
 /// A second Session, because at 0.1 nothing yet stops two Runs being live in one.
@@ -300,4 +306,65 @@ fn the_published_openapi_document_describes_the_link_the_control_plane_serves() 
             (link::REPORTS.to_owned(), "post".to_owned()),
         ]
     );
+}
+
+/// A report body written as the document describes it, so a field the control plane renamed
+/// under the specification fails here rather than as a 422 an Environment cannot act on.
+#[tokio::test]
+async fn the_link_takes_every_report_the_published_openapi_document_describes() {
+    let described = reports_the_document_describes();
+    let bodies = json!({
+        "connected": {"kind": "connected", "version": "0.0.0"},
+        "started": {"kind": "started"},
+        "said": {"kind": "said", "message": "what the agent said"},
+        "used": {
+            "kind": "used",
+            "usage": {
+                "context_used": 1_200,
+                "context_size": 200_000,
+                "cost": {"amount": 0.42, "currency": "USD"},
+            },
+        },
+        "finished": {"kind": "finished", "exit": {"status": "succeeded"}},
+    });
+    assert_eq!(
+        described,
+        bodies
+            .as_object()
+            .expect("an object of bodies")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+
+    let harness = Harness::boot().await;
+    let link = Link::to(&harness.link());
+    declared(&harness).await;
+
+    for kind in described {
+        let (run, credential) = another_run(&harness).await;
+        assert_eq!(
+            link.report_body(run.id, Some(&credential), &bodies[&kind])
+                .await
+                .status(),
+            StatusCode::ACCEPTED,
+            "the link would not take a {kind} report as the document describes it"
+        );
+    }
+
+    harness.teardown().await;
+}
+
+fn reports_the_document_describes() -> Vec<String> {
+    let document = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../openapi/link.json");
+    let document: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(document).expect("a readable openapi document"))
+            .expect("valid json");
+
+    document["components"]["schemas"]["Report"]["discriminator"]["mapping"]
+        .as_object()
+        .expect("an object of report kinds")
+        .keys()
+        .cloned()
+        .collect()
 }

@@ -36,11 +36,13 @@ impl Instruction {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Report {
     Connected { version: String },
     Started,
+    Said { message: String },
+    Used { usage: Usage },
     Finished { exit: Exit },
 }
 
@@ -50,6 +52,21 @@ pub enum Report {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Exit {
     Succeeded,
+    Failed { because: String },
+}
+
+/// What the agent has spent so far, cumulative rather than per turn.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Usage {
+    pub context_used: u64,
+    pub context_size: u64,
+    pub cost: Option<Cost>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Cost {
+    pub amount: f64,
+    pub currency: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

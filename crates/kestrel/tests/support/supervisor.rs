@@ -3,7 +3,7 @@
 
 use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::ExitStatus;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -12,53 +12,14 @@ use kestrel::domain::RunId;
 use kestrel::link::credential::Secret;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
+use super::{built, scripted_agent};
+
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// Built rather than assumed present, so a Rust test never passes against a stale artifact
-/// someone built by hand.
 pub fn binary() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
 
-    BINARY.get_or_init(|| {
-        let alongside = alongside_this_test();
-        let profile = alongside
-            .file_name()
-            .and_then(|profile| profile.to_str())
-            .expect("a named profile directory");
-        let built = Command::new(env!("CARGO"))
-            .args([
-                "build",
-                "--package",
-                "kestrel-supervisor",
-                "--profile",
-                if profile == "debug" { "dev" } else { profile },
-            ])
-            .output()
-            .expect("cargo should build the supervisor");
-
-        assert!(
-            built.status.success(),
-            "building kestrel-supervisor failed:\n{}",
-            String::from_utf8_lossy(&built.stderr)
-        );
-
-        let binary = alongside.join("kestrel-supervisor");
-        assert!(
-            binary.exists(),
-            "cargo built the supervisor, but not to {}",
-            binary.display()
-        );
-        binary
-    })
-}
-
-fn alongside_this_test() -> PathBuf {
-    std::env::current_exe()
-        .expect("a test binary should know where it is")
-        .parent()
-        .and_then(Path::parent)
-        .expect("the test binary sits in the profile's deps directory")
-        .to_path_buf()
+    BINARY.get_or_init(|| built::binary("kestrel-supervisor"))
 }
 
 pub struct Supervisor {
@@ -70,6 +31,7 @@ pub struct Supervisor {
 impl Supervisor {
     pub fn provision(link: &str, run: RunId, credential: &Secret) -> Self {
         let run = run.to_string();
+        let runtime = scripted_agent::playing(scripted_agent::Script::Speaks);
         let mut environment = LocalExec
             .provision(
                 binary(),
@@ -78,6 +40,7 @@ impl Supervisor {
                     ("KESTREL_LINK", link),
                     ("KESTREL_RUN", &run),
                     ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
+                    ("KESTREL_AGENT_RUNTIME", &runtime),
                 ],
             )
             .expect("the supervisor should spawn");
@@ -162,6 +125,12 @@ impl Supervisor {
         LocalExec
             .destroy(self.environment)
             .expect("the environment should be destroyed");
+    }
+
+    /// Signals nothing: a supervisor that reported itself finished is on its way out, and
+    /// reaping it is the whole of the cleanup left.
+    pub async fn finishes(mut self) -> ExitStatus {
+        self.exits().await
     }
 }
 

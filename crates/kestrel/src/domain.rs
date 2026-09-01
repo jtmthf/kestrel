@@ -82,6 +82,31 @@ pub struct Run {
     pub ended_at: Option<Timestamp>,
     pub heartbeat_at: Option<Timestamp>,
     pub connected: Option<Connected>,
+    pub usage: Option<Usage>,
+}
+
+/// What the Agent Runtime has spent on behalf of a Run, cumulative rather than per turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Usage {
+    pub context_used: u64,
+    pub context_size: u64,
+    pub cost: Option<Cost>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Cost {
+    pub amount: f64,
+    pub currency: String,
+}
+
+impl fmt::Display for Usage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} of {} tokens", self.context_used, self.context_size)?;
+        match &self.cost {
+            Some(cost) => write!(f, ", {:.2} {}", cost.amount, cost.currency),
+            None => Ok(()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::domain::{Exit, Run, RunId};
+use crate::domain::{Exit, Run, RunId, Usage};
 use crate::link::credential::Secret;
 use crate::store::Store;
 use crate::work;
@@ -53,11 +53,13 @@ pub struct SentInstruction {
     pub instruction: Instruction,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Report {
     Connected { version: String },
     Started,
+    Said { message: String },
+    Used { usage: Usage },
     Finished { exit: Exit },
 }
 
@@ -143,6 +145,14 @@ async fn report(
         Report::Started => {
             work::started(&control_plane.store, &run).await?;
             info!(run = %run.id, "an environment reported its run started");
+        }
+        Report::Said { message } => {
+            work::said(&control_plane.store, &run, &message).await?;
+            info!(run = %run.id, "an environment reported what its agent said");
+        }
+        Report::Used { usage } => {
+            info!(run = %run.id, %usage, "an environment reported what its agent used");
+            work::used(&control_plane.store, &run, &usage).await?;
         }
         Report::Finished { exit } => {
             let stands = match &exit {

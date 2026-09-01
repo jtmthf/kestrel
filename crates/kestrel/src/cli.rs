@@ -84,6 +84,16 @@ pub struct Cli {
     /// The supervisor an Environment runs, if not the one beside this binary
     #[arg(long, env = "KESTREL_SUPERVISOR", global = true, value_name = "PATH")]
     supervisor: Option<PathBuf>,
+
+    /// The command an Environment spawns as its Agent Runtime and speaks ACP to
+    #[arg(
+        long,
+        env = "KESTREL_AGENT_RUNTIME",
+        global = true,
+        value_name = "COMMAND",
+        default_value = "opencode acp"
+    )]
+    agent_runtime: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -232,6 +242,7 @@ impl Cli {
                 .clone()
                 .unwrap_or_else(|| format!("http://{bound}")),
             supervisor: self.supervisor()?,
+            runtime: self.agent_runtime.clone(),
         })
     }
 
