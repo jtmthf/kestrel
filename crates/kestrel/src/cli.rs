@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use directories::ProjectDirs;
 
 use crate::domain::SessionId;
+use crate::log::Cursor;
 use crate::role::work::Dispatch;
 
 const SUPERVISOR: &str = "kestrel-supervisor";
@@ -159,10 +160,16 @@ pub enum SessionCommand {
         /// The Session's identifier
         session: SessionId,
     },
-    /// Read a Session's Transcript
+    /// Read one window of a Session's Transcript, and the cursor the next one resumes from
     Transcript {
         /// The Session's identifier
         session: SessionId,
+        /// Resume from the cursor a previous read ended with
+        #[arg(long)]
+        cursor: Option<Cursor>,
+        /// How many entries to read at most
+        #[arg(long, value_name = "ENTRIES")]
+        window: Option<usize>,
     },
 }
 

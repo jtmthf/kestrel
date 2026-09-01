@@ -89,6 +89,35 @@ impl Link {
         }
     }
 
+    /// The query is written as sent, so a cursor reaches the link exactly as the reader that
+    /// was handed it would give it back.
+    pub async fn entries(
+        &self,
+        run: RunId,
+        credential: Option<&Secret>,
+        cursor: Option<&str>,
+        window: Option<usize>,
+    ) -> Response {
+        let asked: Vec<String> = cursor
+            .map(|cursor| format!("cursor={cursor}"))
+            .into_iter()
+            .chain(window.map(|window| format!("window={window}")))
+            .collect();
+        let query = match asked.is_empty() {
+            true => String::new(),
+            false => format!("?{}", asked.join("&")),
+        };
+
+        let mut request = self
+            .client
+            .get(format!("{}/link/runs/{run}/entries{query}", self.base));
+        if let Some(credential) = credential {
+            request = request.bearer_auth(credential.as_str());
+        }
+
+        request.send().await.expect("the link should answer")
+    }
+
     pub async fn report(
         &self,
         run: RunId,

@@ -3,7 +3,8 @@
 
 mod support;
 
-use kestrel::domain::SessionState;
+use kestrel::domain::{Run, Session, SessionState};
+use kestrel::log::{Cursor, Unreadable, Window};
 use support::Harness;
 
 async fn declare_fixture(harness: &Harness) {
@@ -161,4 +162,141 @@ async fn two_harnesses_running_at_once_do_not_share_state() {
 
     first.teardown().await;
     second.teardown().await;
+}
+
+/// One entry for the Agent joining, and one for each thing it said.
+async fn a_transcript_of(harness: &Harness, said: usize) -> (Session, Run) {
+    declare_fixture(harness).await;
+    let session = harness.open_session("acme", "kestrel", "builder").await;
+    let (run, _) = harness.dispatch_run(session.id).await;
+
+    for message in 1..=said {
+        harness.said(&run, &format!("message {message}")).await;
+    }
+
+    (session, run)
+}
+
+fn two() -> Window {
+    Window::of(2).expect("two entries is a window")
+}
+
+async fn walked(harness: &Harness, session: &Session, from: Option<Cursor>) -> Vec<i64> {
+    harness
+        .walk(session.id, from, two())
+        .await
+        .iter()
+        .map(|entry| entry.seq)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_read_returns_at_most_one_window_of_entries_and_a_cursor() {
+    let harness = Harness::boot().await;
+    let (session, _) = a_transcript_of(&harness, 4).await;
+
+    let page = harness
+        .page(session.id, None, two())
+        .await
+        .expect("the transcript should page");
+
+    assert_eq!(page.entries.len(), 2);
+    assert_eq!(page.entries[0].seq, 1);
+    assert_eq!(page.entries[1].seq, 2);
+    assert!(page.more);
+    assert!(page.cursor.is_some());
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn paging_walks_a_transcript_longer_than_one_window_with_no_gap_and_no_duplicate() {
+    let harness = Harness::boot().await;
+    let (session, _) = a_transcript_of(&harness, 6).await;
+
+    assert_eq!(
+        walked(&harness, &session, None).await,
+        (1..=7).collect::<Vec<_>>()
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_cursor_still_walks_the_transcript_after_the_control_plane_restarts() {
+    let harness = Harness::boot().await;
+    let (session, _) = a_transcript_of(&harness, 3).await;
+    let held = harness
+        .page(session.id, None, two())
+        .await
+        .expect("the transcript should page")
+        .cursor;
+
+    let harness = harness.kill_and_restart().await;
+
+    assert_eq!(walked(&harness, &session, held).await, vec![3, 4]);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn entries_appended_part_way_through_a_walk_land_after_what_was_already_walked() {
+    let harness = Harness::boot().await;
+    let (session, run) = a_transcript_of(&harness, 3).await;
+    let held = harness
+        .page(session.id, None, two())
+        .await
+        .expect("the transcript should page")
+        .cursor;
+
+    harness
+        .said(&run, "said while the read was in flight")
+        .await;
+
+    assert_eq!(walked(&harness, &session, held).await, vec![3, 4, 5]);
+    assert_eq!(
+        harness.transcript(session.id).await[4].entry.to_string(),
+        "said  builder  said while the read was in flight"
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_cursor_that_walks_another_transcript_is_refused() {
+    let harness = Harness::boot().await;
+    let (session, _) = a_transcript_of(&harness, 3).await;
+    let elsewhere = harness.open_session("acme", "kestrel", "builder").await;
+    let held = harness
+        .page(elsewhere.id, None, two())
+        .await
+        .expect("the transcript should page")
+        .cursor;
+
+    let refusal = harness.page(session.id, held, two()).await;
+
+    assert!(
+        matches!(refusal, Err(Unreadable::Cursor(_))),
+        "a cursor from another transcript was taken"
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_cursor_naming_no_entry_is_refused_rather_than_restarting_the_walk() {
+    let harness = Harness::boot().await;
+    let (session, _) = a_transcript_of(&harness, 3).await;
+    let nowhere: Cursor = format!("{}:99", session.id)
+        .parse()
+        .expect("a cursor is a session and a seq");
+
+    let refusal = harness.page(session.id, Some(nowhere), two()).await;
+
+    assert!(
+        matches!(refusal, Err(Unreadable::Cursor(_))),
+        "a cursor naming no entry was taken, and the walk started over"
+    );
+
+    harness.teardown().await;
 }
