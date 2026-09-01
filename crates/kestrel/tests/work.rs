@@ -94,6 +94,8 @@ async fn a_run_that_reaches_an_environment_starts_and_ends_in_the_transcript() {
         vec![
             "participant joined  builder".to_owned(),
             format!("run started  {}", run.id),
+            "said  builder  half of one message, and the other half".to_owned(),
+            "said  builder  a second message".to_owned(),
             format!("run ended  {}  succeeded", run.id),
         ]
     );

@@ -30,6 +30,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v7"] }
 
 [dev-dependencies]
+kestrel-scripted-agent = { path = "../kestrel-scripted-agent" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
 tempfile = "3"
 tiny_http = "0.12"

@@ -6,8 +6,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteRow};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::domain::{
-    Agent, AgentId, Connected, Exit, Organization, OrganizationId, Run, RunId, RunState, Session,
-    SessionId, SessionState, Workspace, WorkspaceId,
+    Agent, AgentId, Connected, Cost, Exit, Organization, OrganizationId, Run, RunId, RunState,
+    Session, SessionId, SessionState, Usage, Workspace, WorkspaceId,
 };
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
@@ -20,7 +20,7 @@ macro_rules! runs_where {
         concat!(
             "SELECT id, organization_id, session_id, state, exit, exit_because, environment,
                     enqueued_at, started_at, ended_at, heartbeat_at, connected_at,
-                    supervisor_version
+                    supervisor_version, context_used, context_size, cost_amount, cost_currency
              FROM run
              WHERE ",
             $tail
@@ -372,6 +372,7 @@ impl Tx<'_> {
             ended_at: None,
             heartbeat_at: None,
             connected: None,
+            usage: None,
         };
 
         sqlx::query(
@@ -444,6 +445,25 @@ impl Tx<'_> {
             .execute(&mut *self.transaction)
             .await
             .with_context(|| format!("recording the environment of run {} connected", run.id))?;
+
+        Ok(())
+    }
+
+    /// The figures are cumulative, so the last report of them is the one that stands.
+    pub async fn record_usage(&mut self, run: &Run, usage: &Usage) -> Result<()> {
+        sqlx::query(
+            "UPDATE run
+             SET context_used = ?, context_size = ?, cost_amount = ?, cost_currency = ?
+             WHERE id = ?",
+        )
+        .bind(usage.context_used as i64)
+        .bind(usage.context_size as i64)
+        .bind(usage.cost.as_ref().map(|cost| cost.amount))
+        .bind(usage.cost.as_ref().map(|cost| cost.currency.clone()))
+        .bind(run.id.to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("recording what run {} used", run.id))?;
 
         Ok(())
     }
@@ -697,6 +717,21 @@ fn run(row: &SqliteRow) -> Result<Run> {
                 version: row.get("supervisor_version"),
             }),
             None => None,
+        },
+        usage: usage(row),
+    })
+}
+
+fn usage(row: &SqliteRow) -> Option<Usage> {
+    let context_used: Option<i64> = row.get("context_used");
+    let currency: Option<String> = row.get("cost_currency");
+
+    Some(Usage {
+        context_used: context_used? as u64,
+        context_size: row.get::<i64, _>("context_size") as u64,
+        cost: match (row.get::<Option<f64>, _>("cost_amount"), currency) {
+            (Some(amount), Some(currency)) => Some(Cost { amount, currency }),
+            _ => None,
         },
     })
 }

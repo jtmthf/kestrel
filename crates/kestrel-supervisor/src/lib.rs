@@ -1,9 +1,11 @@
 pub mod link;
+pub mod permission;
+pub mod runtime;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::link::{Exit, Instruction, Link, Report};
+use crate::link::{Instruction, Link, Report};
 
 const RECONNECT_AFTER: Duration = Duration::from_millis(250);
 
@@ -25,6 +27,15 @@ enum Attended {
     LostTheLink,
 }
 
+/// Held across a reconnect: the turn is worked once, and what is left to say about it is what
+/// the supervisor comes back to.
+#[derive(Default)]
+struct Attending {
+    cursor: Option<String>,
+    started: bool,
+    worked: Option<runtime::Worked>,
+}
+
 pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, String>) -> i32 {
     diagnostics.info("supervisor started");
 
@@ -33,12 +44,14 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
             .info("no link to dial: set KESTREL_LINK, KESTREL_RUN and KESTREL_RUN_CREDENTIAL");
         return 1;
     };
+    let runtime = set(variables, "KESTREL_AGENT_RUNTIME")
+        .unwrap_or_default()
+        .to_owned();
 
-    let mut cursor = None;
-    let mut started = false;
+    let mut attending = Attending::default();
 
     loop {
-        match attend(&link, &mut cursor, &mut started, diagnostics).await {
+        match attend(&link, &runtime, &mut attending, diagnostics).await {
             Ok(Attended::Stopped) => {
                 diagnostics.info("supervisor stopped");
                 return 0;
@@ -61,12 +74,12 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
 
 async fn attend(
     link: &Link,
-    cursor: &mut Option<String>,
-    started: &mut bool,
+    runtime: &str,
+    attending: &mut Attending,
     diagnostics: &dyn Diagnostics,
 ) -> Result<Attended, link::Error> {
-    let mut instructions = link.open(cursor.as_deref()).await?;
-    match cursor.as_deref() {
+    let mut instructions = link.open(attending.cursor.as_deref()).await?;
+    match attending.cursor.as_deref() {
         None => diagnostics.info("link open"),
         Some(held) => diagnostics.info(&format!("link open after {held}")),
     }
@@ -79,12 +92,12 @@ async fn attend(
 
     // Nothing is read off the stream once the Run has started: saying how it went is all that
     // is left, and a reconnection resumes at that rather than waiting to be told to start again.
-    if !*started {
+    if !attending.started {
         loop {
             let Some(delivered) = instructions.next().await? else {
                 return Ok(Attended::LostTheLink);
             };
-            *cursor = Some(delivered.id.clone());
+            attending.cursor = Some(delivered.id.clone());
             diagnostics.info(&format!(
                 "instruction {} {}",
                 delivered.instruction.kind(),
@@ -97,14 +110,42 @@ async fn attend(
                 Instruction::Unrecognized => {}
             }
         }
-        *started = true;
+        attending.started = true;
     }
 
     link.report(&Report::Started).await?;
     diagnostics.info("reported started");
 
+    if attending.worked.is_none() {
+        let worked = runtime::work(runtime).await;
+        for subject in &worked.allowed {
+            diagnostics.info(&format!("allowed once  {subject}"));
+        }
+        attending.worked = Some(worked);
+    }
+    let worked = attending
+        .worked
+        .as_mut()
+        .expect("the turn has been worked by here");
+
+    // Each of these is dropped once the link has taken it, so a reconnect says what is left
+    // rather than saying any of it twice.
+    while let Some(message) = worked.said.front() {
+        link.report(&Report::Said {
+            message: message.clone(),
+        })
+        .await?;
+        worked.said.pop_front();
+        diagnostics.info("reported what the agent said");
+    }
+    if let Some(usage) = worked.usage.clone() {
+        link.report(&Report::Used { usage }).await?;
+        worked.usage = None;
+        diagnostics.info("reported what the agent used");
+    }
+
     link.report(&Report::Finished {
-        exit: Exit::Succeeded,
+        exit: worked.exit.clone(),
     })
     .await?;
     diagnostics.info("reported finished");

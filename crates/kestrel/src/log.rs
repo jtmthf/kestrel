@@ -11,9 +11,20 @@ use crate::domain::{Exit, RunId, Session};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Entry {
-    ParticipantJoined { participant: String },
-    RunStarted { run: RunId },
-    RunEnded { run: RunId, exit: Exit },
+    ParticipantJoined {
+        participant: String,
+    },
+    RunStarted {
+        run: RunId,
+    },
+    Said {
+        participant: String,
+        message: String,
+    },
+    RunEnded {
+        run: RunId,
+        exit: Exit,
+    },
 }
 
 impl fmt::Display for Entry {
@@ -23,6 +34,10 @@ impl fmt::Display for Entry {
                 write!(f, "participant joined  {participant}")
             }
             Entry::RunStarted { run } => write!(f, "run started  {run}"),
+            Entry::Said {
+                participant,
+                message,
+            } => write!(f, "said  {participant}  {message}"),
             Entry::RunEnded { run, exit } => write!(f, "run ended  {run}  {exit}"),
         }
     }

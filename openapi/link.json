@@ -197,6 +197,12 @@
             "$ref": "#/components/schemas/Started"
           },
           {
+            "$ref": "#/components/schemas/Said"
+          },
+          {
+            "$ref": "#/components/schemas/Used"
+          },
+          {
             "$ref": "#/components/schemas/Finished"
           }
         ],
@@ -205,6 +211,8 @@
           "mapping": {
             "connected": "#/components/schemas/Connected",
             "started": "#/components/schemas/Started",
+            "said": "#/components/schemas/Said",
+            "used": "#/components/schemas/Used",
             "finished": "#/components/schemas/Finished"
           }
         }
@@ -236,6 +244,38 @@
         },
         "required": [
           "kind"
+        ]
+      },
+      "Said": {
+        "description": "What the Agent Runtime said, coalesced into one message at the end of a turn. An Agent's reasoning and its tool calls are the Run's business and are never reported.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "said"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "message"
+        ]
+      },
+      "Used": {
+        "description": "What the Agent Runtime has spent so far. Recorded on the Run, and never in a Transcript.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "used"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
+        "required": [
+          "kind",
+          "usage"
         ]
       },
       "Finished": {
@@ -271,6 +311,43 @@
         },
         "required": [
           "status"
+        ]
+      },
+      "Usage": {
+        "description": "Cumulative rather than per turn: the last report of it is the one that stands.",
+        "type": "object",
+        "properties": {
+          "context_used": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Tokens currently in context."
+          },
+          "context_size": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The context window, in tokens."
+          },
+          "cost": {
+            "type": "object",
+            "description": "What it has cost so far. Absent when the runtime does not say.",
+            "properties": {
+              "amount": {
+                "type": "number"
+              },
+              "currency": {
+                "type": "string",
+                "description": "An ISO 4217 currency code."
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ]
+          }
+        },
+        "required": [
+          "context_used",
+          "context_size"
         ]
       },
       "Refusal": {

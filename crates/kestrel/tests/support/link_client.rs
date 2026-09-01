@@ -95,10 +95,26 @@ impl Link {
         credential: Option<&Secret>,
         report: &Report,
     ) -> Response {
+        self.report_body(
+            run,
+            credential,
+            &serde_json::to_value(report).expect("a report"),
+        )
+        .await
+    }
+
+    /// Posts a body as written rather than as `Report` serializes it, which is the only way to
+    /// hold the link to what `openapi/link.json` says it accepts.
+    pub async fn report_body(
+        &self,
+        run: RunId,
+        credential: Option<&Secret>,
+        body: &serde_json::Value,
+    ) -> Response {
         let mut request = self
             .client
             .post(format!("{}/link/runs/{run}/reports", self.base))
-            .json(report);
+            .json(body);
         if let Some(credential) = credential {
             request = request.bearer_auth(credential.as_str());
         }

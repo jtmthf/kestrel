@@ -21,6 +21,7 @@ const HEARTBEAT: Duration = Duration::from_secs(1);
 pub struct Dispatch {
     pub link: String,
     pub supervisor: PathBuf,
+    pub runtime: String,
 }
 
 enum Ended {
@@ -79,6 +80,7 @@ async fn execute(
             ("KESTREL_LINK", dispatch.link.as_str()),
             ("KESTREL_RUN", &run.id.to_string()),
             ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
+            ("KESTREL_AGENT_RUNTIME", dispatch.runtime.as_str()),
         ],
     ) {
         Ok(environment) => environment,
