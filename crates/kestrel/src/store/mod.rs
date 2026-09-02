@@ -19,7 +19,7 @@ macro_rules! runs_where {
     ($tail:literal) => {
         concat!(
             "SELECT id, organization_id, session_id, state, exit, exit_because, environment,
-                    enqueued_at, started_at, ended_at, heartbeat_at, connected_at,
+                    enqueued_at, started_at, ended_at, lease_expires_at, connected_at,
                     supervisor_version, context_used, context_size, cost_amount, cost_currency
              FROM run
              WHERE ",
@@ -370,7 +370,7 @@ impl Tx<'_> {
             enqueued_at: Timestamp::now(),
             started_at: None,
             ended_at: None,
-            heartbeat_at: None,
+            lease_expires_at: None,
             connected: None,
             usage: None,
         };
@@ -392,11 +392,12 @@ impl Tx<'_> {
     }
 
     /// One statement, so two claimants cannot both take the same Run: the Run this returns
-    /// was queued when the statement began and is active by the time anyone else looks.
-    pub async fn claim_run(&mut self) -> Result<Option<Run>> {
+    /// was queued when the statement began, and is active and holding its lease by the time
+    /// anyone else looks.
+    pub async fn claim_run(&mut self, lease_until: Timestamp) -> Result<Option<Run>> {
         let claimed = sqlx::query(
             "UPDATE run
-             SET state = ?, claimed_at = ?
+             SET state = ?, claimed_at = ?, lease_expires_at = ?
              WHERE id = (
                  SELECT id FROM run WHERE state = ? ORDER BY enqueued_at, id LIMIT 1
              )
@@ -404,6 +405,7 @@ impl Tx<'_> {
         )
         .bind(RunState::Active.as_str())
         .bind(Timestamp::now().to_string())
+        .bind(due(lease_until))
         .bind(RunState::Queued.as_str())
         .fetch_optional(&mut *self.transaction)
         .await
@@ -479,15 +481,31 @@ impl Tx<'_> {
         Ok(())
     }
 
-    pub async fn record_heartbeat(&mut self, run: &Run) -> Result<()> {
-        sqlx::query("UPDATE run SET heartbeat_at = ? WHERE id = ?")
-            .bind(Timestamp::now().to_string())
+    /// Only a Run that is active holds one, so a heartbeat arriving after its Run ended puts
+    /// no lease back.
+    pub async fn hold_lease(&mut self, run: &Run, until: Timestamp) -> Result<()> {
+        sqlx::query("UPDATE run SET lease_expires_at = ? WHERE id = ? AND state = ?")
+            .bind(due(until))
             .bind(run.id.to_string())
+            .bind(RunState::Active.as_str())
             .execute(&mut *self.transaction)
             .await
-            .with_context(|| format!("heartbeating the run {}", run.id))?;
+            .with_context(|| format!("holding the lease of run {} until {until}", run.id))?;
 
         Ok(())
+    }
+
+    pub async fn expired_leases(&mut self, at: Timestamp) -> Result<Vec<Run>> {
+        sqlx::query(runs_where!(
+            "lease_expires_at <= ? ORDER BY lease_expires_at"
+        ))
+        .bind(due(at))
+        .fetch_all(&mut *self.transaction)
+        .await
+        .context("sweeping expired leases")?
+        .iter()
+        .map(run)
+        .collect()
     }
 
     /// `false` when the Run had already started, so an Environment that reconnects and says
@@ -508,7 +526,7 @@ impl Tx<'_> {
     pub async fn end_run(&mut self, run: &Run, exit: &Exit) -> Result<bool> {
         let ended = sqlx::query(
             "UPDATE run
-             SET state = ?, ended_at = ?, exit = ?, exit_because = ?
+             SET state = ?, ended_at = ?, exit = ?, exit_because = ?, lease_expires_at = NULL
              WHERE id = ? AND state != ?",
         )
         .bind(RunState::Ended.as_str())
@@ -710,7 +728,7 @@ fn run(row: &SqliteRow) -> Result<Run> {
         enqueued_at: row.get::<String, _>("enqueued_at").parse()?,
         started_at: timestamp(row, "started_at")?,
         ended_at: timestamp(row, "ended_at")?,
-        heartbeat_at: timestamp(row, "heartbeat_at")?,
+        lease_expires_at: timestamp(row, "lease_expires_at")?,
         connected: match connected_at {
             Some(at) => Some(Connected {
                 at: at.parse()?,
@@ -734,6 +752,12 @@ fn usage(row: &SqliteRow) -> Option<Usage> {
             _ => None,
         },
     })
+}
+
+/// A due time is the one timestamp SQL compares rather than reads back, and at the precision
+/// jiff prints by default a whole second sorts after the fractions of it.
+fn due(at: Timestamp) -> String {
+    format!("{at:.9}")
 }
 
 fn timestamp(row: &SqliteRow, column: &str) -> Result<Option<Timestamp>> {
@@ -776,6 +800,15 @@ mod tests {
         tx.commit().await.unwrap();
 
         (organization, workspace, agent)
+    }
+
+    #[test]
+    fn a_due_time_at_a_whole_second_sorts_before_the_moments_after_it() {
+        let whole: Timestamp = "2026-09-01T12:00:00Z".parse().unwrap();
+        let after: Timestamp = "2026-09-01T12:00:00.5Z".parse().unwrap();
+
+        assert!(due(whole) < due(after));
+        assert_eq!(due(whole).parse::<Timestamp>().unwrap(), whole);
     }
 
     #[tokio::test]

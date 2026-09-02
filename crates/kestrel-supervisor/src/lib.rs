@@ -3,11 +3,15 @@ pub mod permission;
 pub mod runtime;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::link::{Instruction, Link, Report};
 
 const RECONNECT_AFTER: Duration = Duration::from_millis(250);
+/// Often enough that the control plane keeps its hold on this Environment through a handful
+/// of these going missing, and through the control plane itself restarting under it.
+const HEARTBEAT_EVERY: Duration = Duration::from_secs(2);
 
 pub trait Diagnostics {
     fn info(&self, message: &str);
@@ -47,11 +51,31 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
     let runtime = set(variables, "KESTREL_AGENT_RUNTIME")
         .unwrap_or_default()
         .to_owned();
+    let link = Arc::new(link);
 
+    // Nothing else reaches the link while a turn is being worked, so this Environment says it
+    // is alive beside the work rather than between the steps of it.
+    let alive = tokio::spawn(saying_it_is_alive(Arc::clone(&link)));
+    let status = attending(&link, &runtime, diagnostics).await;
+    alive.abort();
+
+    status
+}
+
+async fn saying_it_is_alive(link: Arc<Link>) {
+    loop {
+        tokio::time::sleep(HEARTBEAT_EVERY).await;
+        // Whether the link is there at all is the attending loop's to notice and reconnect
+        // through; this one says what it can, whenever it can.
+        let _ = link.report(&Report::Heartbeat).await;
+    }
+}
+
+async fn attending(link: &Link, runtime: &str, diagnostics: &dyn Diagnostics) -> i32 {
     let mut attending = Attending::default();
 
     loop {
-        match attend(&link, &runtime, &mut attending, diagnostics).await {
+        match attend(link, runtime, &mut attending, diagnostics).await {
             Ok(Attended::Stopped) => {
                 diagnostics.info("supervisor stopped");
                 return 0;

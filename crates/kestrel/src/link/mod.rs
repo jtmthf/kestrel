@@ -16,7 +16,7 @@ use futures_core::Stream;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::domain::{Exit, Run, RunId, Usage};
 use crate::link::credential::Secret;
@@ -62,6 +62,7 @@ pub struct SentInstruction {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Report {
     Connected { version: String },
+    Heartbeat,
     Started,
     Said { message: String },
     Used { usage: Usage },
@@ -200,6 +201,10 @@ async fn report(
             tx.record_connected(&run, &version).await?;
             tx.commit().await?;
             info!(run = %run.id, version, "an environment reported itself connected");
+        }
+        Report::Heartbeat => {
+            work::heartbeat(&control_plane.store, &run).await?;
+            debug!(run = %run.id, "an environment reported itself alive");
         }
         Report::Started => {
             work::started(&control_plane.store, &run).await?;

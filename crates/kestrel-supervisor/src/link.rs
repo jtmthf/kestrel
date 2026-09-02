@@ -40,6 +40,7 @@ impl Instruction {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Report {
     Connected { version: String },
+    Heartbeat,
     Started,
     Said { message: String },
     Used { usage: Usage },

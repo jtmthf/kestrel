@@ -5,6 +5,7 @@ const STORE: &str = "src/store";
 const LOG: &str = "src/log.rs";
 const FANOUT: &str = "src/fanout.rs";
 const WORK: &str = "src/work.rs";
+const TIMER: &str = "src/timer.rs";
 const COMPUTE: &str = "src/compute";
 
 fn crate_root() -> PathBuf {
@@ -27,8 +28,8 @@ fn rust_files(directory: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn store_log_fanout_work_and_compute_are_modules_you_can_grep_for() {
-    for boundary in [STORE, LOG, FANOUT, WORK, COMPUTE] {
+fn store_log_fanout_work_timer_and_compute_are_modules_you_can_grep_for() {
+    for boundary in [STORE, LOG, FANOUT, WORK, TIMER, COMPUTE] {
         assert!(
             crate_root().join(boundary).exists(),
             "{boundary} is a port ADR-0005 says is a named module, and it is not there"

@@ -314,6 +314,7 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
     let described = reports_the_document_describes();
     let bodies = json!({
         "connected": {"kind": "connected", "version": "0.0.0"},
+        "heartbeat": {"kind": "heartbeat"},
         "started": {"kind": "started"},
         "said": {"kind": "said", "message": "what the agent said"},
         "used": {

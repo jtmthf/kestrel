@@ -286,6 +286,16 @@ impl Harness {
             .expect("the instruction should send");
     }
 
+    /// A lease that is up when the caller says rather than when a real one would be. The only
+    /// way to watch a sweep without waiting a whole lease out.
+    pub async fn lease_until(&self, run: &Run, expires_at: Timestamp) {
+        let mut tx = self.store.begin().await.expect("a transaction");
+        tx.hold_lease(run, expires_at)
+            .await
+            .expect("the lease should hold");
+        tx.commit().await.expect("the lease should commit");
+    }
+
     /// A second credential for the same Run, with an expiry the caller chooses. The only way
     /// to hold an expired one without waiting out a real credential's life.
     pub async fn issue_credential(&self, run: &Run, expires_at: Timestamp) -> Secret {
@@ -343,6 +353,19 @@ impl Stopped {
             .expect("the database should still be there");
 
         work::run(&store, id).await.expect("the run should show")
+    }
+
+    /// A due time set while nothing is keeping time, so what fires it afterwards is a control
+    /// plane that could only have read it back.
+    pub async fn lease_until(&self, run: &Run, expires_at: Timestamp) {
+        let store = Store::open(self.data_dir.path())
+            .await
+            .expect("the database should still be there");
+        let mut tx = store.begin().await.expect("a transaction");
+        tx.hold_lease(run, expires_at)
+            .await
+            .expect("the lease should hold");
+        tx.commit().await.expect("the lease should commit");
     }
 
     /// Reaches the durable record while nothing is serving it, which is the only way to make
