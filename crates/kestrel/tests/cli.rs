@@ -406,3 +406,136 @@ fn a_dispatched_run_starts_and_ends_in_its_sessions_transcript() {
     assert!(said[3].ends_with("said  builder  a second message"));
     assert!(said[4].ends_with(&format!("run ended  {run}  succeeded")));
 }
+
+#[test]
+fn the_cli_reads_a_transcript_one_window_at_a_time_and_pages_with_the_cursor() {
+    let kestrel = declared();
+    let session = kestrel.run(&[
+        "session",
+        "open",
+        "--organization",
+        "acme",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+    kestrel.run(&["run", "enqueue", "--session", &session]);
+    dispatched(&kestrel, &session);
+    let whole = kestrel.run(&["session", "transcript", &session]);
+
+    let mut walked: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut args = vec!["session", "transcript", session.as_str(), "--window", "2"];
+        if let Some(held) = cursor.as_deref() {
+            args.extend(["--cursor", held]);
+        }
+
+        let read = kestrel.try_run(&args);
+        assert!(read.status.success());
+        let page = String::from_utf8_lossy(&read.stdout);
+        let page = page.trim_end();
+        cursor = String::from_utf8_lossy(&read.stderr)
+            .lines()
+            .find_map(|line| line.strip_prefix("cursor  "))
+            .map(str::to_owned);
+
+        if page.is_empty() {
+            break;
+        }
+        assert!(
+            page.lines().count() <= 2,
+            "a read overran its window:\n{page}"
+        );
+        walked.extend(page.lines().map(str::to_owned));
+    }
+
+    assert_eq!(walked.join("\n"), whole);
+    assert_eq!(walked.len(), 5, "unexpected transcript:\n{whole}");
+}
+
+/// An Agent says whatever it says, and the CLI hands back a cursor a reader gives straight
+/// back, so the two may never be read off the same place.
+#[test]
+fn what_an_entry_says_cannot_be_mistaken_for_the_cursor() {
+    let kestrel = declared();
+    let session = kestrel.run(&[
+        "session",
+        "open",
+        "--organization",
+        "acme",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+
+    let read = kestrel.try_run(&["session", "transcript", &session]);
+
+    assert!(
+        !String::from_utf8_lossy(&read.stdout).contains("cursor  "),
+        "the cursor is in the transcript an agent writes into"
+    );
+    assert!(
+        String::from_utf8_lossy(&read.stderr).contains("cursor  "),
+        "the read hands back no cursor to resume from"
+    );
+}
+
+#[test]
+fn the_cli_refuses_a_cursor_it_did_not_issue() {
+    let kestrel = declared();
+    let session = kestrel.run(&[
+        "session",
+        "open",
+        "--organization",
+        "acme",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+
+    let nonsense = kestrel.try_run(&[
+        "session",
+        "transcript",
+        &session,
+        "--cursor",
+        "halfway-through",
+    ]);
+    assert!(!nonsense.status.success());
+
+    let nowhere = format!("{session}:99");
+    let refusal = kestrel.try_run(&["session", "transcript", &session, "--cursor", &nowhere]);
+    assert!(!refusal.status.success());
+    assert!(
+        String::from_utf8_lossy(&refusal.stderr).contains("no position in this transcript"),
+        "the read started over rather than refusing: {}",
+        String::from_utf8_lossy(&refusal.stderr)
+    );
+}
+
+#[test]
+fn the_cli_refuses_a_window_wider_than_one_read_may_return() {
+    let kestrel = declared();
+    let session = kestrel.run(&[
+        "session",
+        "open",
+        "--organization",
+        "acme",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+
+    let refusal = kestrel.try_run(&["session", "transcript", &session, "--window", "5000"]);
+
+    assert!(!refusal.status.success());
+    assert!(
+        String::from_utf8_lossy(&refusal.stderr).contains("a window is 1 to 500 entries"),
+        "an unbounded read was served: {}",
+        String::from_utf8_lossy(&refusal.stderr)
+    );
+}

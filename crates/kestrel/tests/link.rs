@@ -9,9 +9,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use kestrel::domain::Run;
+use kestrel::domain::{Exit, Run, RunId};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction, Report};
+use kestrel::log::Entry;
 use reqwest::{StatusCode, Version, header};
 use serde_json::json;
 use support::Harness;
@@ -278,10 +279,7 @@ async fn the_link_is_plain_http_with_no_protocol_upgrade() {
 
 #[test]
 fn the_published_openapi_document_describes_the_link_the_control_plane_serves() {
-    let document = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../openapi/link.json");
-    let document: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(document).expect("a readable openapi document"))
-            .expect("valid json");
+    let document = published();
 
     assert_eq!(document["openapi"], "3.1.0");
 
@@ -302,6 +300,7 @@ fn the_published_openapi_document_describes_the_link_the_control_plane_serves() 
     assert_eq!(
         described,
         vec![
+            (link::ENTRIES.to_owned(), "get".to_owned()),
             (link::INSTRUCTIONS.to_owned(), "get".to_owned()),
             (link::REPORTS.to_owned(), "post".to_owned()),
         ]
@@ -355,16 +354,182 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
     harness.teardown().await;
 }
 
-fn reports_the_document_describes() -> Vec<String> {
+fn published() -> serde_json::Value {
     let document = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../openapi/link.json");
-    let document: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(document).expect("a readable openapi document"))
-            .expect("valid json");
 
-    document["components"]["schemas"]["Report"]["discriminator"]["mapping"]
+    serde_json::from_str(&fs::read_to_string(document).expect("a readable openapi document"))
+        .expect("valid json")
+}
+
+fn reports_the_document_describes() -> Vec<String> {
+    published()["components"]["schemas"]["Report"]["discriminator"]["mapping"]
         .as_object()
         .expect("an object of report kinds")
         .keys()
         .cloned()
         .collect()
+}
+
+/// As a supervisor seeding a cold Environment walks it.
+async fn paged(link: &Link, run: &Run, credential: &Secret, window: usize) -> Vec<i64> {
+    let mut walked = Vec::new();
+    let mut cursor: Option<String> = None;
+
+    loop {
+        let response = link
+            .entries(run.id, Some(credential), cursor.as_deref(), Some(window))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let page: serde_json::Value = response.json().await.expect("a page of the transcript");
+        let entries = page["entries"].as_array().expect("an array of entries");
+        assert!(entries.len() <= window, "a read overran its window: {page}");
+
+        walked.extend(
+            entries
+                .iter()
+                .map(|entry| entry["seq"].as_i64().expect("a seq")),
+        );
+        cursor = page["cursor"].as_str().map(str::to_owned);
+
+        if !page["more"].as_bool().expect("whether more are waiting") {
+            return walked;
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_environment_reads_the_transcript_of_the_session_its_run_belongs_to_in_windows() {
+    let harness = Harness::boot().await;
+    let (run, credential) = a_run(&harness).await;
+    for message in 1..=4 {
+        harness.said(&run, &format!("message {message}")).await;
+    }
+    let link = Link::to(&harness.link());
+
+    let first: serde_json::Value = link
+        .entries(run.id, Some(&credential), None, Some(2))
+        .await
+        .json()
+        .await
+        .expect("a page of the transcript");
+
+    assert_eq!(first["entries"].as_array().expect("entries").len(), 2);
+    assert_eq!(first["entries"][0]["entry"]["kind"], "participant_joined");
+    assert_eq!(first["more"], true);
+    assert!(first["cursor"].is_string());
+    assert_eq!(
+        paged(&link, &run, &credential, 2).await,
+        (1..=5).collect::<Vec<_>>()
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn the_link_refuses_a_cursor_that_names_no_position_in_the_transcript() {
+    let harness = Harness::boot().await;
+    let (run, credential) = a_run(&harness).await;
+    let link = Link::to(&harness.link());
+
+    for cursor in ["halfway-through", &format!("{}:99", run.session)] {
+        assert_eq!(
+            link.entries(run.id, Some(&credential), Some(cursor), None)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST,
+            "the link took the cursor {cursor} and started the walk over"
+        );
+    }
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn the_link_refuses_a_window_wider_than_one_read_may_return() {
+    let harness = Harness::boot().await;
+    let (run, credential) = a_run(&harness).await;
+    let link = Link::to(&harness.link());
+
+    assert_eq!(
+        link.entries(run.id, Some(&credential), None, Some(5_000))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn the_link_refuses_a_transcript_read_from_an_environment_presenting_no_credential() {
+    let harness = Harness::boot().await;
+    let (run, _) = a_run(&harness).await;
+    let link = Link::to(&harness.link());
+
+    assert_eq!(
+        link.entries(run.id, None, None, None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    harness.teardown().await;
+}
+
+/// The document is what a supervisor seeding a cold Environment reads the entries against, so
+/// a kind or a field the Transcript grew and the document did not fails here.
+#[test]
+fn the_published_openapi_document_describes_every_transcript_entry_the_link_serves() {
+    let document = published();
+    let mapping = document["components"]["schemas"]["Entry"]["discriminator"]["mapping"]
+        .as_object()
+        .expect("an object of entry kinds");
+
+    let served = [
+        Entry::ParticipantJoined {
+            participant: "builder".to_owned(),
+        },
+        Entry::RunStarted {
+            run: RunId::generate(),
+        },
+        Entry::Said {
+            participant: "builder".to_owned(),
+            message: "what the agent said".to_owned(),
+        },
+        Entry::RunEnded {
+            run: RunId::generate(),
+            exit: Exit::Succeeded,
+        },
+    ];
+
+    let mut kinds: Vec<String> = Vec::new();
+    for entry in served {
+        let entry = serde_json::to_value(&entry).expect("an entry");
+        let kind = entry["kind"].as_str().expect("a kind").to_owned();
+        let schema = mapping
+            .get(&kind)
+            .unwrap_or_else(|| panic!("the document describes no {kind} entry"))
+            .as_str()
+            .expect("a reference");
+
+        for field in resolve(&document, schema)["required"]
+            .as_array()
+            .expect("an array of required fields")
+        {
+            let field = field.as_str().expect("a named field");
+            assert!(
+                entry.get(field).is_some(),
+                "the document requires {field} on a {kind} entry, and the link does not serve it"
+            );
+        }
+        kinds.push(kind);
+    }
+
+    assert_eq!(kinds, mapping.keys().cloned().collect::<Vec<_>>());
+}
+
+fn resolve<'a>(document: &'a serde_json::Value, reference: &str) -> &'a serde_json::Value {
+    reference
+        .trim_start_matches("#/")
+        .split('/')
+        .fold(document, |document, step| &document[step])
 }

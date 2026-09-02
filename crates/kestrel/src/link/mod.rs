@@ -6,7 +6,7 @@ pub mod credential;
 use std::time::Duration;
 
 use anyhow::Result;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -20,9 +20,14 @@ use tracing::{info, warn};
 
 use crate::domain::{Exit, Run, RunId, Usage};
 use crate::link::credential::Secret;
+use crate::log::{self, Cursor, Unreadable, Window};
+use crate::session;
 use crate::store::Store;
 use crate::work;
 
+/// The Transcript of the Session the Run belongs to. Named for what crosses the link rather
+/// than for what it is, because the supervisor is a courier and may not know (ADR-0002).
+pub const ENTRIES: &str = "/link/runs/{run}/entries";
 pub const INSTRUCTIONS: &str = "/link/runs/{run}/instructions";
 pub const REPORTS: &str = "/link/runs/{run}/reports";
 
@@ -74,8 +79,29 @@ struct Waiting {
     the_run_ended: bool,
 }
 
+#[derive(Deserialize)]
+struct Paging {
+    cursor: Option<String>,
+    window: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct Entries {
+    entries: Vec<Recorded>,
+    cursor: Option<String>,
+    more: bool,
+}
+
+#[derive(Serialize)]
+struct Recorded {
+    seq: i64,
+    appended_at: String,
+    entry: log::Entry,
+}
+
 pub fn router(store: Store, shutdown: CancellationToken) -> Router {
     Router::new()
+        .route(ENTRIES, get(entries))
         .route(INSTRUCTIONS, get(instructions))
         .route(REPORTS, post(report))
         .with_state(ControlPlane { store, shutdown })
@@ -99,7 +125,7 @@ async fn instructions(
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, BoxError>>>, Refused> {
     let run = authenticated(&control_plane, &headers, &run).await?;
-    let mut cursor = cursor(&headers);
+    let mut cursor = last_event_id(&headers);
     info!(run = %run.id, cursor, "an environment is on the link");
 
     let stream = async_stream::try_stream! {
@@ -125,6 +151,39 @@ async fn instructions(
     };
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)))
+}
+
+async fn entries(
+    State(control_plane): State<ControlPlane>,
+    Path(run): Path<String>,
+    Query(paging): Query<Paging>,
+    headers: HeaderMap,
+) -> Result<Json<Entries>, Refused> {
+    let run = authenticated(&control_plane, &headers, &run).await?;
+    let from = paging
+        .cursor
+        .as_deref()
+        .map(str::parse::<Cursor>)
+        .transpose()
+        .map_err(|error| Refused::BadRequest(error.to_string()))?;
+    let window = Window::or_default(paging.window)
+        .map_err(|error| Refused::BadRequest(error.to_string()))?;
+
+    let page = session::transcript(&control_plane.store, run.session, from, window).await?;
+
+    Ok(Json(Entries {
+        entries: page
+            .entries
+            .into_iter()
+            .map(|entry| Recorded {
+                seq: entry.seq,
+                appended_at: entry.appended_at.to_string(),
+                entry: entry.entry,
+            })
+            .collect(),
+        cursor: page.cursor.map(|cursor| cursor.to_string()),
+        more: page.more,
+    }))
 }
 
 async fn report(
@@ -209,7 +268,7 @@ fn bearer(headers: &HeaderMap) -> Option<Secret> {
         .map(Secret::presented)
 }
 
-fn cursor(headers: &HeaderMap) -> i64 {
+fn last_event_id(headers: &HeaderMap) -> i64 {
     headers
         .get("last-event-id")
         .and_then(|cursor| cursor.to_str().ok())
@@ -218,6 +277,7 @@ fn cursor(headers: &HeaderMap) -> i64 {
 }
 
 enum Refused {
+    BadRequest(String),
     NoSuchRun,
     Unauthorized(&'static str),
     Forbidden(&'static str),
@@ -230,9 +290,19 @@ impl From<anyhow::Error> for Refused {
     }
 }
 
+impl From<Unreadable> for Refused {
+    fn from(unreadable: Unreadable) -> Self {
+        match unreadable {
+            Unreadable::Cursor(why) => Refused::BadRequest(why),
+            Unreadable::Unavailable(error) => Refused::Unavailable(error),
+        }
+    }
+}
+
 impl IntoResponse for Refused {
     fn into_response(self) -> Response {
         let (status, message) = match self {
+            Refused::BadRequest(why) => (StatusCode::BAD_REQUEST, why),
             Refused::NoSuchRun => (StatusCode::NOT_FOUND, "no such run".to_owned()),
             Refused::Unauthorized(why) => (StatusCode::UNAUTHORIZED, why.to_owned()),
             Refused::Forbidden(why) => (StatusCode::FORBIDDEN, why.to_owned()),

@@ -26,6 +26,66 @@
     }
   ],
   "paths": {
+    "/link/runs/{run}/entries": {
+      "get": {
+        "operationId": "entries",
+        "summary": "Read one window of the Transcript of the Session this Run belongs to.",
+        "description": "At most one window of entries, in order, and the cursor the next read resumes from. A cursor names a position rather than a read held open, so it still walks after the control plane restarts; one that names no position in this Transcript is refused rather than silently restarting the walk.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/run"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "The cursor a previous read ended with. Absent means from the beginning.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "How many entries to return at most.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One window of the Transcript, and the cursor the next read resumes from.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "401": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "403": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
     "/link/runs/{run}/instructions": {
       "get": {
         "operationId": "instructions",
@@ -359,6 +419,157 @@
         },
         "required": [
           "message"
+        ]
+      },
+      "Page": {
+        "description": "One bounded window of a Transcript, and where the next read resumes.",
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Recorded"
+            }
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the next read resumes. Null only for a read that started at the beginning and found nothing."
+          },
+          "more": {
+            "type": "boolean",
+            "description": "Whether entries were waiting beyond this window when it was read."
+          }
+        },
+        "required": [
+          "entries",
+          "cursor",
+          "more"
+        ]
+      },
+      "Recorded": {
+        "description": "One Transcript entry, and where it sits in the order.",
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "appended_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "entry": {
+            "$ref": "#/components/schemas/Entry"
+          }
+        },
+        "required": [
+          "seq",
+          "appended_at",
+          "entry"
+        ]
+      },
+      "Entry": {
+        "description": "What changed the Session's shared state. Never what happened inside a Run.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ParticipantJoined"
+          },
+          {
+            "$ref": "#/components/schemas/RunStarted"
+          },
+          {
+            "$ref": "#/components/schemas/Message"
+          },
+          {
+            "$ref": "#/components/schemas/RunEnded"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "participant_joined": "#/components/schemas/ParticipantJoined",
+            "run_started": "#/components/schemas/RunStarted",
+            "said": "#/components/schemas/Message",
+            "run_ended": "#/components/schemas/RunEnded"
+          }
+        }
+      },
+      "ParticipantJoined": {
+        "description": "A Participant joined the Session.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "participant_joined"
+          },
+          "participant": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "participant"
+        ]
+      },
+      "RunStarted": {
+        "description": "A Run started on behalf of the Session.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "run_started"
+          },
+          "run": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "kind",
+          "run"
+        ]
+      },
+      "Message": {
+        "description": "What a Participant said.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "said"
+          },
+          "participant": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "participant",
+          "message"
+        ]
+      },
+      "RunEnded": {
+        "description": "A Run ended, and how it went.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "run_ended"
+          },
+          "run": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "exit": {
+            "$ref": "#/components/schemas/Exit"
+          }
+        },
+        "required": [
+          "kind",
+          "run",
+          "exit"
         ]
       }
     }

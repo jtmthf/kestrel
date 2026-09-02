@@ -3,6 +3,7 @@ use anyhow::Result;
 use crate::cli::{
     AgentCommand, CliCommand, OrganizationCommand, RunCommand, SessionCommand, WorkspaceCommand,
 };
+use crate::log::Window;
 use crate::session;
 use crate::store::Store;
 use crate::work;
@@ -89,9 +90,21 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!("state         {}", session.state);
             println!("opened        {}", session.opened_at);
         }
-        CliCommand::Session(SessionCommand::Transcript { session }) => {
-            for entry in session::transcript(&store, *session).await? {
+        CliCommand::Session(SessionCommand::Transcript {
+            session,
+            cursor,
+            window,
+        }) => {
+            let window = Window::or_default(*window)?;
+            let page = session::transcript(&store, *session, *cursor, window).await?;
+
+            for entry in &page.entries {
                 println!("{}  {}  {}", entry.seq, entry.appended_at, entry.entry);
+            }
+            // Beside the Transcript rather than in it: an entry carrying a line of its own
+            // that reads `cursor  …` would otherwise be indistinguishable from this one.
+            if let Some(cursor) = page.cursor {
+                eprintln!("cursor  {cursor}");
             }
         }
         CliCommand::Run(RunCommand::Enqueue { session }) => {

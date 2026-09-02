@@ -21,7 +21,7 @@ use jiff::Timestamp;
 use kestrel::domain::{Agent, Organization, Run, RunId, Session, SessionId, Workspace};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
-use kestrel::log::TranscriptEntry;
+use kestrel::log::{Cursor, Page, TranscriptEntry, Unreadable, Window};
 use kestrel::role::work::Dispatch;
 use kestrel::session;
 use kestrel::store::Store;
@@ -197,9 +197,46 @@ impl Harness {
     }
 
     pub async fn transcript(&self, id: SessionId) -> Vec<TranscriptEntry> {
-        session::transcript(&self.store, id)
+        self.walk(id, None, Window::DEFAULT).await
+    }
+
+    /// One bounded window is the only read there is, so a whole Transcript is a walk.
+    pub async fn walk(
+        &self,
+        id: SessionId,
+        from: Option<Cursor>,
+        window: Window,
+    ) -> Vec<TranscriptEntry> {
+        let mut walked = Vec::new();
+        let mut cursor = from;
+
+        loop {
+            let page = self
+                .page(id, cursor, window)
+                .await
+                .expect("the transcript should read");
+            walked.extend(page.entries);
+            cursor = page.cursor;
+
+            if !page.more {
+                return walked;
+            }
+        }
+    }
+
+    pub async fn page(
+        &self,
+        id: SessionId,
+        from: Option<Cursor>,
+        window: Window,
+    ) -> Result<Page, Unreadable> {
+        session::transcript(&self.store, id, from, window).await
+    }
+
+    pub async fn said(&self, run: &Run, message: &str) {
+        work::said(&self.store, run, message)
             .await
-            .expect("the transcript should read")
+            .expect("the message should reach the transcript");
     }
 
     pub async fn enqueue_run(&self, session: SessionId) -> Run {

@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::domain::{Session, SessionId};
 use crate::fanout::{self, Change};
-use crate::log::{Entry, TranscriptEntry};
+use crate::log::{Cursor, Entry, Page, Unreadable, Window};
 use crate::store::Store;
 
 pub async fn open(
@@ -36,9 +36,14 @@ pub async fn show(store: &Store, id: SessionId) -> Result<Session> {
     store.begin().await?.session(id).await
 }
 
-pub async fn transcript(store: &Store, id: SessionId) -> Result<Vec<TranscriptEntry>> {
+pub async fn transcript(
+    store: &Store,
+    id: SessionId,
+    from: Option<Cursor>,
+    window: Window,
+) -> Result<Page, Unreadable> {
     let mut tx = store.begin().await?;
     let session = tx.session(id).await?;
 
-    tx.log().transcript(&session).await
+    tx.log().page(&session, from, window).await
 }
