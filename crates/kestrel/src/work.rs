@@ -6,16 +6,16 @@ use jiff::{SignedDuration, Timestamp};
 use crate::domain::{Exit, Run, RunId, SessionId, Usage};
 use crate::link::credential::Secret;
 use crate::log::Entry;
-use crate::store::Store;
+use crate::store::{Store, Tx};
 
 /// Long enough that no Run outlives its own credential at 0.1, short enough that one left
 /// behind by a control plane that died before ending its Run stops working on its own.
 const CREDENTIAL_LIFETIME: SignedDuration = SignedDuration::from_hours(12);
 
-/// Long enough to outlast a control plane restarted under a live Environment, which would
-/// otherwise have every Run it was carrying reaped by the upgrade; short enough that a dead
-/// Environment does not hold a Session's active-Run slot for long.
-const LEASE: SignedDuration = SignedDuration::from_secs(30);
+/// An Environment cannot say it is alive while the control plane is not listening, so this
+/// outlasts a restart under a live one by enough that an upgrade does not reap the Runs it
+/// was carrying; a dead Environment holds a Session's active-Run slot until it is up.
+const LEASE: SignedDuration = SignedDuration::from_mins(2);
 
 /// The Secret is returned once, to be handed to the Environment at provision; `Store` keeps
 /// only its digest, so it cannot be recovered afterwards.
@@ -64,8 +64,6 @@ pub async fn runs(store: &Store, session: SessionId) -> Result<Vec<Run>> {
     tx.runs(&session).await
 }
 
-/// What an Environment does to say it is still alive: the lease it holds is held out, and a
-/// Run whose lease nothing holds out is swept (`timer`).
 pub async fn heartbeat(store: &Store, run: &Run) -> Result<()> {
     let mut tx = store.begin().await?;
     tx.hold_lease(run, Timestamp::now() + LEASE).await?;
@@ -132,12 +130,18 @@ pub async fn fail(store: &Store, run: &Run, because: &str) -> Result<Exit> {
     .await
 }
 
-/// A Run ends once. Whoever gets there first — the Environment reporting itself finished, or
-/// the claimant finding it gone — decides the exit status, and what comes back is the one
-/// that stands.
 async fn end(store: &Store, run: &Run, exit: Exit) -> Result<Exit> {
     let mut tx = store.begin().await?;
+    let stands = ending(&mut tx, run, exit).await?;
+    tx.commit().await?;
 
+    Ok(stands)
+}
+
+/// A Run ends once. Whoever gets there first — the Environment reporting itself finished, the
+/// claimant finding it gone, `timer` finding its lease expired — decides the exit status, and
+/// what comes back is the one that stands.
+pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exit> {
     let stands = if tx.end_run(run, &exit).await? {
         let session = tx.session(run.session).await?;
         tx.log()
@@ -157,8 +161,6 @@ async fn end(store: &Store, run: &Run, exit: Exit) -> Result<Exit> {
             .exit
             .context("a run that has ended has an exit status")?
     };
-
-    tx.commit().await?;
 
     Ok(stands)
 }

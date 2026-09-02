@@ -75,6 +75,12 @@ fn a_moment_ago() -> Timestamp {
     Timestamp::now() - SignedDuration::from_secs(1)
 }
 
+/// A lease due sooner than a real one, and further off than an Environment that is alive lets
+/// one get.
+fn shortened() -> Timestamp {
+    Timestamp::now() + SignedDuration::from_secs(4)
+}
+
 #[tokio::test]
 async fn a_run_holds_a_lease_from_the_moment_it_is_claimed() {
     let harness = Harness::boot().await;
@@ -186,8 +192,7 @@ async fn an_environment_holds_its_runs_lease_out_for_the_life_of_the_run() {
     let run = harness.enqueue_run(session.id).await;
 
     let working = until(&harness, run.id, "started", |run| run.started_at.is_some()).await;
-    // A lease due sooner than a real one, so a Run that outlives it is one something held out.
-    let shortened = Timestamp::now() + SignedDuration::from_secs(3);
+    let shortened = shortened();
     harness.lease_until(&working, shortened).await;
 
     let held = until(&harness, run.id, "had its lease held out", |run| {
@@ -196,7 +201,7 @@ async fn an_environment_holds_its_runs_lease_out_for_the_life_of_the_run() {
     .await;
     assert_eq!(held.state, RunState::Active);
 
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
     assert_eq!(
         harness.run(run.id).await.state,
         RunState::Active,
@@ -212,7 +217,7 @@ async fn an_environment_that_dies_mid_run_stops_holding_the_lease_out_and_the_ru
     // The Environment outlives the supervisor inside it, so what ends this Run is the lease
     // rather than the work role noticing an Environment that is gone.
     let environment = Environment::executing(&format!(
-        "\"{}\" &\nsupervisor=$!\nsleep 1\nkill -9 $supervisor\nsleep 60",
+        "\"{}\" &\nsupervisor=$!\nsleep 3\nkill -9 $supervisor\nsleep 60",
         supervisor::binary().display()
     ));
     let harness = Harness::dispatching_to(
@@ -224,8 +229,10 @@ async fn an_environment_that_dies_mid_run_stops_holding_the_lease_out_and_the_ru
     let run = harness.enqueue_run(session.id).await;
 
     let working = until(&harness, run.id, "started", |run| run.started_at.is_some()).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    harness.lease_until(&working, a_moment_ago()).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    // The same lease the Environment above outlives: an Environment still alive holds one out
+    // well inside this, so what ends this Run is the supervisor inside it being gone.
+    harness.lease_until(&working, shortened()).await;
 
     swept(&harness, run.id).await;
     Environment::named(working.environment.as_deref().expect("an environment"))

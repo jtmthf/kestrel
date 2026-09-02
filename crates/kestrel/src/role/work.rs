@@ -24,10 +24,11 @@ pub struct Dispatch {
     pub runtime: String,
 }
 
+/// What ended the attending, rather than how the Run went.
 enum Ended {
     Environment(ExitStatus),
     TheRun(Exit),
-    ControlPlaneStopped,
+    ControlPlane,
 }
 
 /// The wheel keeps time whether or not this role has anywhere to dispatch a Run, because a
@@ -123,7 +124,7 @@ async fn execute(
                 format!("the environment exited {status} without reporting how the run went");
             work::fail(store, &run, &unreported).await?
         }
-        Ended::ControlPlaneStopped => {
+        Ended::ControlPlane => {
             work::fail(
                 store,
                 &run,
@@ -157,7 +158,7 @@ async fn attend(
 
         tokio::select! {
             () = tokio::time::sleep(POLL) => {}
-            () = shutdown.cancelled() => return Ok(Ended::ControlPlaneStopped),
+            () = shutdown.cancelled() => return Ok(Ended::ControlPlane),
         }
     }
 }
