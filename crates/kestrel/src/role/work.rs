@@ -8,15 +8,15 @@ use tracing::{info, warn};
 
 use crate::cli::Role;
 use crate::compute::{Environment, LocalExec};
-use crate::domain::Run;
+use crate::domain::{Exit, Run};
 use crate::link::{self, Instruction};
 use crate::store::Store;
+use crate::timer;
 use crate::work::{self, Claimed};
 
 /// Nothing subscribes to `Fanout` at 0.1 (ADR-0005), so a queued Run is found by asking
 /// `Store` again rather than by being told.
 const POLL: Duration = Duration::from_millis(100);
-const HEARTBEAT: Duration = Duration::from_secs(1);
 
 pub struct Dispatch {
     pub link: String,
@@ -26,11 +26,12 @@ pub struct Dispatch {
 
 enum Ended {
     Environment(ExitStatus),
+    TheRun(Exit),
     ControlPlaneStopped,
 }
 
-/// A work role with nowhere to run a Run claims none: claiming one it cannot dispatch would
-/// spend the Run's one dispatch on nothing.
+/// The wheel keeps time whether or not this role has anywhere to dispatch a Run, because a
+/// lease left unswept wedges a Session no matter who was going to execute it.
 pub async fn run(
     store: Store,
     dispatch: Option<Dispatch>,
@@ -38,10 +39,20 @@ pub async fn run(
 ) -> Result<()> {
     info!(role = %Role::Work, "role started");
 
-    match dispatch {
-        Some(dispatch) => dispatching(&store, &dispatch, &shutdown).await?,
-        None => shutdown.cancelled().await,
-    }
+    tokio::try_join!(
+        timer::sweeping(&store, &shutdown),
+        // A work role with nowhere to run a Run claims none: claiming one it cannot dispatch
+        // would spend the Run's one dispatch on nothing.
+        async {
+            match &dispatch {
+                Some(dispatch) => dispatching(&store, dispatch, &shutdown).await,
+                None => {
+                    shutdown.cancelled().await;
+                    Ok(())
+                }
+            }
+        },
+    )?;
 
     info!(role = %Role::Work, "role stopped");
     Ok(())
@@ -105,37 +116,46 @@ async fn execute(
         warn!(run = %run.id, %error, "an environment resisted being destroyed");
     }
 
-    let unreported = match ended? {
+    let exit = match ended? {
+        Ended::TheRun(exit) => exit,
         Ended::Environment(status) => {
-            format!("the environment exited {status} without reporting how the run went")
+            let unreported =
+                format!("the environment exited {status} without reporting how the run went");
+            work::fail(store, &run, &unreported).await?
         }
         Ended::ControlPlaneStopped => {
-            "the control plane stopped while this run was in flight".to_owned()
+            work::fail(
+                store,
+                &run,
+                "the control plane stopped while this run was in flight",
+            )
+            .await?
         }
     };
-    let exit = work::fail(store, &run, &unreported).await?;
     info!(run = %run.id, %exit, "a run ended");
 
     Ok(())
 }
 
 /// The Environment reports its own outcome over the link, so what this waits for is the
-/// Environment being gone rather than the Run's exit status.
+/// Environment being gone. It stops for a Run that ended some other way too — a lease the
+/// Environment stopped holding out — because an Environment that outlives its Run would
+/// otherwise hold this role's one dispatch forever.
 async fn attend(
     store: &Store,
     run: &Run,
     environment: &mut Environment,
     shutdown: &CancellationToken,
 ) -> Result<Ended> {
-    let mut heartbeat = tokio::time::interval(HEARTBEAT);
-
     loop {
         if let Some(status) = environment.status()? {
             return Ok(Ended::Environment(status));
         }
+        if let Some(exit) = work::run(store, run.id).await?.exit {
+            return Ok(Ended::TheRun(exit));
+        }
 
         tokio::select! {
-            _ = heartbeat.tick() => work::heartbeat(store, run).await?,
             () = tokio::time::sleep(POLL) => {}
             () = shutdown.cancelled() => return Ok(Ended::ControlPlaneStopped),
         }

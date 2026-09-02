@@ -80,7 +80,7 @@ pub struct Run {
     pub enqueued_at: Timestamp,
     pub started_at: Option<Timestamp>,
     pub ended_at: Option<Timestamp>,
-    pub heartbeat_at: Option<Timestamp>,
+    pub lease_expires_at: Option<Timestamp>,
     pub connected: Option<Connected>,
     pub usage: Option<Usage>,
 }

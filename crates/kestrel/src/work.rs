@@ -12,6 +12,11 @@ use crate::store::Store;
 /// behind by a control plane that died before ending its Run stops working on its own.
 const CREDENTIAL_LIFETIME: SignedDuration = SignedDuration::from_hours(12);
 
+/// Long enough to outlast a control plane restarted under a live Environment, which would
+/// otherwise have every Run it was carrying reaped by the upgrade; short enough that a dead
+/// Environment does not hold a Session's active-Run slot for long.
+const LEASE: SignedDuration = SignedDuration::from_secs(30);
+
 /// The Secret is returned once, to be handed to the Environment at provision; `Store` keeps
 /// only its digest, so it cannot be recovered afterwards.
 pub struct Claimed {
@@ -32,7 +37,7 @@ pub async fn enqueue(store: &Store, session: SessionId) -> Result<Run> {
 /// second claimant asking at the same moment is handed something else, or nothing.
 pub async fn claim(store: &Store) -> Result<Option<Claimed>> {
     let mut tx = store.begin().await?;
-    let Some(run) = tx.claim_run().await? else {
+    let Some(run) = tx.claim_run(Timestamp::now() + LEASE).await? else {
         return Ok(None);
     };
 
@@ -59,9 +64,11 @@ pub async fn runs(store: &Store, session: SessionId) -> Result<Vec<Run>> {
     tx.runs(&session).await
 }
 
+/// What an Environment does to say it is still alive: the lease it holds is held out, and a
+/// Run whose lease nothing holds out is swept (`timer`).
 pub async fn heartbeat(store: &Store, run: &Run) -> Result<()> {
     let mut tx = store.begin().await?;
-    tx.record_heartbeat(run).await?;
+    tx.hold_lease(run, Timestamp::now() + LEASE).await?;
 
     tx.commit().await
 }

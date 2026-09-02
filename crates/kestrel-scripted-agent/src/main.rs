@@ -76,6 +76,9 @@ async fn main() -> Result<()> {
 }
 
 async fn play(script: Script, connection: &ConnectionTo<Client>) -> Result<StopReason> {
+    if script == Script::Dawdles {
+        std::future::pending::<()>().await;
+    }
     if script == Script::Refuses {
         say(connection, "message-1", "this is not work I will do")?;
         return Ok(StopReason::Refusal);

@@ -9,6 +9,7 @@ pub mod session;
 pub mod shutdown;
 pub mod store;
 pub mod telemetry;
+pub mod timer;
 pub mod work;
 
 use tokio_util::sync::CancellationToken;

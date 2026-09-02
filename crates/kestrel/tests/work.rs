@@ -197,15 +197,9 @@ async fn a_run_still_in_flight_when_the_control_plane_stops_ends_and_its_environ
 
     let run = harness.enqueue_run(session.id).await;
     let in_flight = until(&harness, run.id, "reached an environment", |run| {
-        run.environment.is_some() && run.heartbeat_at.is_some()
+        run.environment.is_some() && run.state == RunState::Active
     })
     .await;
-
-    let beating = until(&harness, run.id, "heartbeat twice", |run| {
-        run.heartbeat_at > in_flight.heartbeat_at
-    })
-    .await;
-    assert!(beating.state == RunState::Active);
 
     let stopped = harness.teardown().await;
 

@@ -155,6 +155,7 @@ fn connected() -> Report {
 fn everything_it_reports() -> Vec<Report> {
     vec![
         connected(),
+        Report::Heartbeat,
         Report::Started,
         Report::Finished {
             exit: Exit::Succeeded,

@@ -254,6 +254,9 @@
             "$ref": "#/components/schemas/Connected"
           },
           {
+            "$ref": "#/components/schemas/Heartbeat"
+          },
+          {
             "$ref": "#/components/schemas/Started"
           },
           {
@@ -270,6 +273,7 @@
           "propertyName": "kind",
           "mapping": {
             "connected": "#/components/schemas/Connected",
+            "heartbeat": "#/components/schemas/Heartbeat",
             "started": "#/components/schemas/Started",
             "said": "#/components/schemas/Said",
             "used": "#/components/schemas/Used",
@@ -292,6 +296,18 @@
         "required": [
           "kind",
           "version"
+        ]
+      },
+      "Heartbeat": {
+        "description": "The Environment is still alive, and holds its Run's lease out for another turn of the clock. Sent for as long as the Run lasts; when it stops, the lease expires and the Run ends failed.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "heartbeat"
+          }
+        },
+        "required": [
+          "kind"
         ]
       },
       "Started": {

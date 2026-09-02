@@ -12,6 +12,8 @@ pub enum Script {
     Dies,
     /// Answers `initialize` with a protocol version it was not asked for.
     Predates,
+    /// Works at a turn that never ends, so nothing the agent does is what ends the Run.
+    Dawdles,
 }
 
 impl Script {
@@ -21,6 +23,7 @@ impl Script {
             Script::Refuses => "refuses",
             Script::Dies => "dies",
             Script::Predates => "predates",
+            Script::Dawdles => "dawdles",
         }
     }
 }
