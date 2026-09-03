@@ -70,9 +70,8 @@ pub enum Report {
 }
 
 impl Report {
-    /// Whether this report changes the Run's durable record, and so is one the Environment
-    /// numbers and the control plane takes once. What it does not number costs nothing to
-    /// take twice.
+    /// Whether this report belongs to the Environment's ordered account of the turn, which
+    /// the control plane takes once; what it says about itself costs nothing to take twice.
     const fn numbered(&self) -> bool {
         match self {
             Report::Connected { .. } | Report::Heartbeat => false,
@@ -212,8 +211,6 @@ async fn entries(
     }))
 }
 
-/// Everything a numbered report changes commits with the number that took it, so replaying
-/// one whose answer never arrived changes the record once (ADR-0004).
 async fn report(
     State(control_plane): State<ControlPlane>,
     Path(run): Path<String>,
@@ -225,7 +222,7 @@ async fn report(
 
     if report.numbered() {
         let seq = seq.ok_or(Refused::BadRequest(
-            "this report changes the run's record, and carries no seq".to_owned(),
+            "a report of this kind carries a seq, and this one carries none".to_owned(),
         ))?;
         match tx.take_report(&run, seq).await? {
             Taken::Next => {}
@@ -255,7 +252,7 @@ async fn report(
             info!(run = %run.id, "an environment reported its run started");
         }
         Report::Said { message } => {
-            work::saying(&mut tx, &run, &message).await?;
+            work::said(&mut tx, &run, &message).await?;
             info!(run = %run.id, "an environment reported what its agent said");
         }
         Report::Used { usage } => {

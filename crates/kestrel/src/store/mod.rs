@@ -28,15 +28,12 @@ macro_rules! runs_where {
     };
 }
 
-/// What became of a report the link was handed.
+/// What became of a report the link was handed: the next in the Environment's sequence, one
+/// taken already — where a replay after an answer that never arrived lands — or one that
+/// skips a report the Run has yet to make, which would leave a gap nothing fills.
 pub enum Taken {
-    /// The next in the Environment's sequence. Whatever it changes is changed in the same
-    /// transaction that took it (ADR-0004).
     Next,
-    /// Taken already. An at-least-once replay after an answer the Environment never got
-    /// lands here, and changes nothing.
     Again,
-    /// Neither the next nor one already taken: taking it would leave a gap nothing fills.
     Skipped,
 }
 
@@ -535,7 +532,7 @@ impl Tx<'_> {
     }
 
     /// Read and write under the same write lock every `Tx` takes up front, so the check and
-    /// whatever the report changes commit together or not at all.
+    /// whatever the report changes commit together or not at all (ADR-0004).
     pub async fn take_report(&mut self, run: &Run, seq: i64) -> Result<Taken> {
         let taken: i64 = sqlx::query("SELECT reports_taken FROM run WHERE id = ?")
             .bind(run.id.to_string())

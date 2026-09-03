@@ -155,16 +155,34 @@ fn shortened() -> Timestamp {
     Timestamp::now() + SignedDuration::from_secs(6)
 }
 
+/// A second Run whose lease is already up when the control plane comes back, so the sweep
+/// that reaps it is observably the same sweep that left the live one alone.
 #[tokio::test]
 async fn a_lease_is_not_swept_while_the_environment_that_holds_it_out_is_reconnecting() {
     let harness = Harness::boot().await;
     let session = a_session(&harness).await;
     let (run, supervisor) = working(&harness, &session, Script::Dawdles).await;
+    let (abandoned, _) = harness
+        .dispatch_run(harness.open_session("acme", "kestrel", "builder").await.id)
+        .await;
 
     let stopped = harness.kill().await;
     let shortened = shortened();
     stopped.lease_until(&run, shortened).await;
+    stopped
+        .lease_until(&abandoned, Timestamp::now() - SignedDuration::from_secs(1))
+        .await;
     let harness = stopped.restart().await;
+
+    until(&harness, abandoned.id, "was swept", |run| {
+        run.state == RunState::Ended
+    })
+    .await;
+    assert_eq!(
+        harness.run(run.id).await.state,
+        RunState::Active,
+        "the sweep that reaped the expired lease took the live one with it"
+    );
 
     let held = until(&harness, run.id, "had its lease held out again", |run| {
         run.lease_expires_at > Some(shortened)

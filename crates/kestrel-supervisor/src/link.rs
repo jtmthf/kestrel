@@ -2,7 +2,7 @@
 //! types with the control plane that serves it.
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
-use reqwest::{Client, Response, header};
+use reqwest::{Client, Response, StatusCode, header};
 use serde::{Deserialize, Serialize};
 
 pub const INSTRUCTIONS: &str = "/link/runs/{run}/instructions";
@@ -47,8 +47,21 @@ pub enum Report {
     Finished { exit: Exit },
 }
 
-/// A report as it goes on the wire. The seq is what lets the control plane take a report once
-/// however many times a reconnect sends it, and only what changes the Run's record carries one.
+impl Report {
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Report::Connected { .. } => "connected",
+            Report::Heartbeat => "heartbeat",
+            Report::Started => "started",
+            Report::Said { .. } => "said",
+            Report::Used { .. } => "used",
+            Report::Finished { .. } => "finished",
+        }
+    }
+}
+
+/// A report as it goes on the wire: the seq is what lets the control plane take it once
+/// however many times a reconnect sends it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Reported<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -229,8 +242,11 @@ impl Instructions {
 }
 
 async fn refuse_if_declined(response: Response) -> Result<Response, Error> {
-    match response.status().is_client_error() {
-        true => Err(Error::Refused(response.text().await?)),
-        false => Ok(response),
+    match response.status() {
+        StatusCode::BAD_REQUEST
+        | StatusCode::UNAUTHORIZED
+        | StatusCode::FORBIDDEN
+        | StatusCode::NOT_FOUND => Err(Error::Refused(response.text().await?)),
+        _ => Ok(response),
     }
 }

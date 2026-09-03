@@ -2,9 +2,11 @@ mod support;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+use std::net::TcpListener;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use support::scripted_agent::Script;
 use tempfile::TempDir;
 
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -31,13 +33,17 @@ impl Kestrel {
     /// An ephemeral port, so tests that boot one concurrently never race over kestrel's
     /// default.
     fn boot(&self) -> Child {
+        self.booting("127.0.0.1:0", Script::Speaks)
+    }
+
+    fn booting(&self, listen: &str, script: Script) -> Child {
         Command::new(env!("CARGO_BIN_EXE_kestrel"))
             .env("KESTREL_DATA_DIR", self.data_dir.path())
-            .env("KESTREL_LISTEN", "127.0.0.1:0")
+            .env("KESTREL_LISTEN", listen)
             .env("KESTREL_SUPERVISOR", support::supervisor::binary())
             .env(
                 "KESTREL_AGENT_RUNTIME",
-                support::scripted_agent::playing(support::scripted_agent::Script::Speaks),
+                support::scripted_agent::playing(script),
             )
             .env("RUST_LOG", "info")
             .stdin(Stdio::null())
@@ -45,6 +51,23 @@ impl Kestrel {
             .stderr(Stdio::piped())
             .spawn()
             .expect("kestrel should spawn")
+    }
+
+    fn until(&self, args: &[&str], listed: impl Fn(&str) -> bool, what: &str) -> String {
+        let deadline = Instant::now() + PATIENCE;
+
+        loop {
+            let shown = self.run(args);
+            if listed(&shown) {
+                return shown;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "`kestrel {}` never {what}. the last listing was:\n{shown}",
+                args.join(" ")
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// `Child::kill` is a `SIGKILL`, so nothing kestrel holds in memory is given a chance to land.
@@ -538,4 +561,80 @@ fn the_cli_refuses_a_window_wider_than_one_read_may_return() {
         "an unbounded read was served: {}",
         String::from_utf8_lossy(&refusal.stderr)
     );
+}
+
+/// A port nothing is listening on, so a control plane that is killed comes back on the
+/// address the Environment it left behind already dialled.
+fn a_free_port() -> String {
+    let port = TcpListener::bind("127.0.0.1:0")
+        .expect("a free port")
+        .local_addr()
+        .expect("a bound address")
+        .port();
+
+    format!("127.0.0.1:{port}")
+}
+
+/// ADR-0002's definition of done for rung 0.1, out of process and against a real `SIGKILL`:
+/// nothing kestrel held in memory lands, and the Environment it provisioned outlives it.
+#[test]
+fn a_control_plane_killed_mid_run_comes_back_and_the_run_completes() {
+    let kestrel = declared();
+    let session = kestrel.run(&[
+        "session",
+        "open",
+        "--organization",
+        "acme",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+    let listen = a_free_port();
+    let run = kestrel.run(&["run", "enqueue", "--session", &session]);
+
+    let mut killed = kestrel.booting(&listen, Script::Lingers);
+    kestrel.until(
+        &["run", "list", "--session", &session],
+        |listed| listed.contains("local-exec/"),
+        "reached an environment",
+    );
+    killed.kill().expect("kestrel should be killable");
+    killed.wait().expect("kestrel should be waitable");
+
+    let mut restarted = kestrel.booting(&listen, Script::Lingers);
+    let listed = kestrel.until(
+        &["run", "list", "--session", &session],
+        |listed| listed.contains("succeeded") || listed.contains("failed"),
+        "ended",
+    );
+    let _ = restarted.kill();
+    restarted.wait().expect("kestrel should be waitable");
+
+    assert!(
+        listed.contains("succeeded"),
+        "the run did not complete after the restart:\n{listed}"
+    );
+    assert_eq!(
+        transcribed(&kestrel.run(&["session", "transcript", &session])),
+        vec![
+            "1  participant joined  builder".to_owned(),
+            format!("2  run started  {run}"),
+            "3  said  builder  half of one message, and the other half".to_owned(),
+            "4  said  builder  a second message".to_owned(),
+            format!("5  run ended  {run}  succeeded"),
+        ]
+    );
+}
+
+/// The seq and the entry, without the moment it was appended, which is different every run.
+fn transcribed(transcript: &str) -> Vec<String> {
+    transcript
+        .lines()
+        .map(|entry| {
+            let (seq, rest) = entry.split_once("  ").expect("a seq and an entry");
+            let (_, entry) = rest.split_once("  ").expect("an appended-at and an entry");
+            format!("{seq}  {entry}")
+        })
+        .collect()
 }

@@ -3,6 +3,7 @@ pub mod permission;
 pub mod runtime;
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io::{self, Write as _};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,8 +21,10 @@ pub trait Diagnostics {
 pub struct Stderr;
 
 impl Diagnostics for Stderr {
+    /// A control plane that dies takes the pipe it was reading these over with it, and an
+    /// Environment outlives a control-plane restart (ADR-0002) rather than dying into one.
     fn info(&self, message: &str) {
-        eprintln!("{message}");
+        let _ = writeln!(io::stderr(), "{message}");
     }
 }
 
@@ -165,11 +168,12 @@ async fn say(
     diagnostics: &dyn Diagnostics,
 ) -> Result<(), link::Error> {
     while let Some(report) = attending.saying.front() {
-        link.report(report, Some(attending.taken + 1)).await?;
-        let said = reported(report);
-        attending.taken += 1;
+        let seq = attending.taken + 1;
+        link.report(report, Some(seq)).await?;
+        let kind = report.kind();
+        attending.taken = seq;
         attending.saying.pop_front();
-        diagnostics.info(&format!("reported {said}"));
+        diagnostics.info(&format!("reported {kind} {seq}"));
     }
 
     Ok(())
@@ -182,17 +186,6 @@ fn everything_left_to_say(worked: runtime::Worked) -> impl Iterator<Item = Repor
         .map(|message| Report::Said { message })
         .chain(worked.usage.map(|usage| Report::Used { usage }))
         .chain(std::iter::once(Report::Finished { exit: worked.exit }))
-}
-
-fn reported(report: &Report) -> &'static str {
-    match report {
-        Report::Connected { .. } => "connected",
-        Report::Heartbeat => "itself alive",
-        Report::Started => "started",
-        Report::Said { .. } => "what the agent said",
-        Report::Used { .. } => "what the agent used",
-        Report::Finished { .. } => "finished",
-    }
 }
 
 fn dialled(variables: &BTreeMap<String, String>) -> Option<Link> {
