@@ -265,6 +265,7 @@ impl Tx<'_> {
         organization: &Organization,
         workspace: &Workspace,
         agent: &Agent,
+        continues: Option<&Session>,
     ) -> Result<Session> {
         let session = Session {
             id: SessionId::generate(),
@@ -273,11 +274,15 @@ impl Tx<'_> {
             agent: agent.clone(),
             state: SessionState::Open,
             opened_at: Timestamp::now(),
+            sealed_at: None,
+            continues: continues.map(|sealed| sealed.id),
+            continued_by: Vec::new(),
         };
 
         sqlx::query(
-            "INSERT INTO session (id, organization_id, workspace_id, agent_id, state, opened_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO session
+                 (id, organization_id, workspace_id, agent_id, state, opened_at, continues)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.to_string())
         .bind(organization.id.to_string())
@@ -285,6 +290,7 @@ impl Tx<'_> {
         .bind(agent.id.to_string())
         .bind(session.state.as_str())
         .bind(session.opened_at.to_string())
+        .bind(session.continues.map(|sealed| sealed.to_string()))
         .execute(&mut *self.transaction)
         .await
         .context("opening a session")?;
@@ -292,9 +298,44 @@ impl Tx<'_> {
         Ok(session)
     }
 
+    pub async fn seal_session(&mut self, session: &Session) -> Result<Timestamp> {
+        let sealed_at = Timestamp::now();
+
+        sqlx::query("UPDATE session SET state = ?, sealed_at = ? WHERE id = ?")
+            .bind(SessionState::Sealed.as_str())
+            .bind(sealed_at.to_string())
+            .bind(session.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("sealing the session {}", session.id))?;
+
+        Ok(sealed_at)
+    }
+
+    /// The slot is taken from the moment work is enqueued rather than from the moment it is
+    /// dispatched: two Runs queued in one Session would otherwise both be handed out.
+    pub async fn run_holding_the_slot(&mut self, session: &Session) -> Result<Option<RunId>> {
+        let holding = sqlx::query(
+            "SELECT id
+             FROM run
+             WHERE session_id = ? AND state != ?
+             ORDER BY enqueued_at, id
+             LIMIT 1",
+        )
+        .bind(session.id.to_string())
+        .bind(RunState::Ended.as_str())
+        .fetch_optional(&mut *self.transaction)
+        .await
+        .with_context(|| format!("reading what run the session {} has", session.id))?;
+
+        holding
+            .map(|row| Ok(row.get::<String, _>("id").parse()?))
+            .transpose()
+    }
+
     pub async fn session(&mut self, id: SessionId) -> Result<Session> {
         let row = sqlx::query(
-            "SELECT organization_id, workspace_id, agent_id, state, opened_at
+            "SELECT organization_id, workspace_id, agent_id, state, opened_at, sealed_at, continues
              FROM session
              WHERE id = ?",
         )
@@ -320,7 +361,24 @@ impl Tx<'_> {
             agent,
             state: row.get::<String, _>("state").parse()?,
             opened_at: row.get::<String, _>("opened_at").parse()?,
+            sealed_at: timestamp(&row, "sealed_at")?,
+            continues: row
+                .get::<Option<String>, _>("continues")
+                .map(|sealed| sealed.parse())
+                .transpose()?,
+            continued_by: self.continuations(id).await?,
         })
+    }
+
+    async fn continuations(&mut self, sealed: SessionId) -> Result<Vec<SessionId>> {
+        sqlx::query("SELECT id FROM session WHERE continues = ? ORDER BY opened_at, id")
+            .bind(sealed.to_string())
+            .fetch_all(&mut *self.transaction)
+            .await
+            .with_context(|| format!("reading what continues the session {sealed}"))?
+            .iter()
+            .map(|row| Ok(row.get::<String, _>("id").parse()?))
+            .collect()
     }
 
     async fn organization_with_id(&mut self, id: OrganizationId) -> Result<Organization> {
@@ -852,7 +910,7 @@ mod tests {
 
         let mut tx = store.begin().await.unwrap();
         let session = tx
-            .open_session(&organization, &workspace, &agent)
+            .open_session(&organization, &workspace, &agent, None)
             .await
             .unwrap();
         let run = tx.enqueue_run(&session).await.unwrap();
@@ -941,7 +999,7 @@ mod tests {
 
         let mut tx = store.begin().await.unwrap();
         let session = tx
-            .open_session(&organization, &workspace, &agent)
+            .open_session(&organization, &workspace, &agent, None)
             .await
             .unwrap();
         tx.log()

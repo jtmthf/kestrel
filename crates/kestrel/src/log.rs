@@ -61,6 +61,7 @@ impl<'a> Log<'a> {
     }
 
     pub async fn append(&mut self, session: &Session, entry: Entry) -> Result<TranscriptEntry> {
+        session.accepts("new transcript entry")?;
         let appended_at = Timestamp::now();
 
         let appended = sqlx::query(

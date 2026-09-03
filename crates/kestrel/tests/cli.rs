@@ -324,6 +324,175 @@ fn a_session_outlives_the_process_that_opened_it() {
     assert_eq!(kestrel.run(&["session", "transcript", &id]), transcript);
 }
 
+/// The refusal itself, so a test asserting one never passes on a command that succeeded.
+fn refused(kestrel: &Kestrel, args: &[&str]) -> String {
+    let refusal = kestrel.try_run(args);
+    assert!(
+        !refusal.status.success(),
+        "`kestrel {}` was expected to be refused, and succeeded",
+        args.join(" ")
+    );
+    String::from_utf8_lossy(&refusal.stderr).into_owned()
+}
+
+fn opened(kestrel: &Kestrel) -> String {
+    kestrel.run(&[
+        "session",
+        "open",
+        "--organization",
+        "acme",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ])
+}
+
+#[test]
+fn a_session_takes_one_run_at_a_time() {
+    let kestrel = declared();
+    let session = opened(&kestrel);
+    let run = kestrel.run(&["run", "enqueue", "--session", &session]);
+
+    let refusal = refused(&kestrel, &["run", "enqueue", "--session", &session]);
+
+    assert!(
+        refusal.contains(&run) && refusal.contains("one at a time"),
+        "unhelpful refusal: {refusal}"
+    );
+    assert_eq!(
+        kestrel
+            .run(&["run", "list", "--session", &session])
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_session_seals_through_the_cli_only_once_no_run_is_in_flight() {
+    let kestrel = declared();
+    let session = opened(&kestrel);
+    let run = kestrel.run(&["run", "enqueue", "--session", &session]);
+
+    let refusal = refused(&kestrel, &["session", "seal", &session]);
+    assert!(
+        refusal.contains(&run) && refusal.contains("still in flight"),
+        "unhelpful refusal: {refusal}"
+    );
+    assert_eq!(
+        shown(&kestrel.run(&["session", "show", &session]))["state"],
+        "open"
+    );
+
+    dispatched(&kestrel, &session);
+
+    assert_eq!(kestrel.run(&["session", "seal", &session]), session);
+    let sealed = shown(&kestrel.run(&["session", "show", &session]));
+    assert_eq!(sealed["state"], "sealed");
+    assert!(
+        sealed.contains_key("sealed"),
+        "a sealed session says when: {sealed:?}"
+    );
+}
+
+#[test]
+fn a_sealed_session_is_readable_and_takes_no_more_work() {
+    let kestrel = declared();
+    let session = opened(&kestrel);
+    kestrel.run(&["run", "enqueue", "--session", &session]);
+    dispatched(&kestrel, &session);
+    let transcript = kestrel.run(&["session", "transcript", &session]);
+
+    kestrel.run(&["session", "seal", &session]);
+
+    assert_eq!(
+        kestrel.run(&["session", "transcript", &session]),
+        transcript
+    );
+    assert!(
+        transcript.lines().count() > 1,
+        "nothing was transcribed to read back"
+    );
+    let refusal = refused(&kestrel, &["run", "enqueue", "--session", &session]);
+    assert!(refusal.contains("sealed"), "unhelpful refusal: {refusal}");
+}
+
+#[test]
+fn no_command_reopens_a_sealed_session() {
+    let kestrel = declared();
+    let session = opened(&kestrel);
+    kestrel.run(&["session", "seal", &session]);
+    let sealed = kestrel.run(&["session", "show", &session]);
+
+    for again in [
+        vec!["session", "seal", &session],
+        vec!["run", "enqueue", "--session", &session],
+    ] {
+        refused(&kestrel, &again);
+    }
+
+    assert_eq!(kestrel.run(&["session", "show", &session]), sealed);
+}
+
+#[test]
+fn work_that_continues_a_sealed_session_reads_the_link_from_both_ends() {
+    let kestrel = declared();
+    let sealed = opened(&kestrel);
+    kestrel.run(&["session", "seal", &sealed]);
+
+    let continuing = kestrel.run(&[
+        "session",
+        "open",
+        "--organization",
+        "acme",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+        "--continues",
+        &sealed,
+    ]);
+
+    assert_ne!(continuing, sealed);
+    assert_eq!(
+        shown(&kestrel.run(&["session", "show", &continuing]))["continues"],
+        sealed
+    );
+    assert_eq!(
+        shown(&kestrel.run(&["session", "show", &sealed]))["continued-by"],
+        continuing
+    );
+    kestrel.run(&["run", "enqueue", "--session", &continuing]);
+}
+
+#[test]
+fn a_session_that_is_still_open_is_not_continued() {
+    let kestrel = declared();
+    let open = opened(&kestrel);
+
+    let refusal = refused(
+        &kestrel,
+        &[
+            "session",
+            "open",
+            "--organization",
+            "acme",
+            "--workspace",
+            "kestrel",
+            "--agent",
+            "builder",
+            "--continues",
+            &open,
+        ],
+    );
+
+    assert!(
+        refusal.contains("continues in it rather than after it"),
+        "unhelpful refusal: {refusal}"
+    );
+}
+
 #[test]
 fn a_declaration_is_reachable_only_from_the_organization_it_belongs_to() {
     let kestrel = declared();

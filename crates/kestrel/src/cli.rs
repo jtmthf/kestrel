@@ -154,6 +154,14 @@ pub enum SessionCommand {
         /// The Agent that participates in it
         #[arg(long)]
         agent: String,
+        /// The sealed Session this one carries on from
+        #[arg(long, value_name = "SESSION")]
+        continues: Option<SessionId>,
+    },
+    /// Seal a Session: readable ever after, and never reopened
+    Seal {
+        /// The Session's identifier
+        session: SessionId,
     },
     /// Show a Session
     Show {

@@ -77,9 +77,14 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             organization,
             workspace,
             agent,
+            continues,
         }) => {
-            let session = session::open(&store, organization, workspace, agent).await?;
+            let session = session::open(&store, organization, workspace, agent, *continues).await?;
             println!("{}", session.id);
+        }
+        CliCommand::Session(SessionCommand::Seal { session }) => {
+            let sealed = session::seal(&store, *session).await?;
+            println!("{}", sealed.id);
         }
         CliCommand::Session(SessionCommand::Show { session }) => {
             let session = session::show(&store, *session).await?;
@@ -89,6 +94,15 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!("agent         {}", session.agent.name);
             println!("state         {}", session.state);
             println!("opened        {}", session.opened_at);
+            if let Some(sealed_at) = session.sealed_at {
+                println!("sealed        {sealed_at}");
+            }
+            if let Some(continues) = session.continues {
+                println!("continues     {continues}");
+            }
+            for continuation in &session.continued_by {
+                println!("continued-by  {continuation}");
+            }
         }
         CliCommand::Session(SessionCommand::Transcript {
             session,
