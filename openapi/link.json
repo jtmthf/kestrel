@@ -137,6 +137,7 @@
       "post": {
         "operationId": "report",
         "summary": "Report something about an Environment to the control plane.",
+        "description": "Delivery is at-least-once: an Environment that loses the answer to a report sends it again under the same seq, and the control plane takes it once. A seq that skips one the Run has yet to report is refused.",
         "parameters": [
           {
             "$ref": "#/components/parameters/run"
@@ -154,7 +155,10 @@
         },
         "responses": {
           "202": {
-            "description": "The report was recorded."
+            "description": "The report was recorded, or had been already."
+          },
+          "400": {
+            "$ref": "#/components/responses/Refused"
           },
           "401": {
             "$ref": "#/components/responses/Refused"
@@ -248,7 +252,7 @@
         ]
       },
       "Report": {
-        "description": "What an Environment tells the control plane about itself.",
+        "description": "What an Environment tells the control plane about itself. A report that changes the Run's durable record carries a seq; one that does not costs nothing to take twice.",
         "oneOf": [
           {
             "$ref": "#/components/schemas/Connected"
@@ -316,10 +320,17 @@
         "properties": {
           "kind": {
             "const": "started"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "description": "Where this report sits in the sequence the Environment numbers. The control plane takes each number once, so a report replayed after an answer that never arrived changes the record once."
           }
         },
         "required": [
-          "kind"
+          "kind",
+          "seq"
         ]
       },
       "Said": {
@@ -331,10 +342,17 @@
           },
           "message": {
             "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "description": "Where this report sits in the sequence the Environment numbers. The control plane takes each number once, so a report replayed after an answer that never arrived changes the record once."
           }
         },
         "required": [
           "kind",
+          "seq",
           "message"
         ]
       },
@@ -347,10 +365,17 @@
           },
           "usage": {
             "$ref": "#/components/schemas/Usage"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "description": "Where this report sits in the sequence the Environment numbers. The control plane takes each number once, so a report replayed after an answer that never arrived changes the record once."
           }
         },
         "required": [
           "kind",
+          "seq",
           "usage"
         ]
       },
@@ -363,10 +388,17 @@
           },
           "exit": {
             "$ref": "#/components/schemas/Exit"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "description": "Where this report sits in the sequence the Environment numbers. The control plane takes each number once, so a report replayed after an answer that never arrived changes the record once."
           }
         },
         "required": [
           "kind",
+          "seq",
           "exit"
         ]
       },

@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use kestrel::domain::RunId;
-use kestrel::link::Report;
+use kestrel::link::Reported;
 use kestrel::link::credential::Secret;
 use reqwest::{Client, Response, StatusCode, header};
 
@@ -122,12 +122,12 @@ impl Link {
         &self,
         run: RunId,
         credential: Option<&Secret>,
-        report: &Report,
+        reported: &Reported,
     ) -> Response {
         self.report_body(
             run,
             credential,
-            &serde_json::to_value(report).expect("a report"),
+            &serde_json::to_value(reported).expect("a report"),
         )
         .await
     }

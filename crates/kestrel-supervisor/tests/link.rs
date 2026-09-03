@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use kestrel_supervisor::link::{Error, Exit, INSTRUCTIONS, Instruction, Link, REPORTS, Report};
+use kestrel_supervisor::link::{
+    Error, Exit, INSTRUCTIONS, Instruction, Link, REPORTS, Report, Reported,
+};
 
 #[derive(Debug, Clone)]
 struct Asked {
@@ -152,14 +154,19 @@ fn connected() -> Report {
     }
 }
 
-fn everything_it_reports() -> Vec<Report> {
+/// Numbered as the supervisor numbers them, so a report the document requires a seq on and
+/// the client sends without one fails here.
+fn everything_it_reports() -> Vec<(Option<i64>, Report)> {
     vec![
-        connected(),
-        Report::Heartbeat,
-        Report::Started,
-        Report::Finished {
-            exit: Exit::Succeeded,
-        },
+        (None, connected()),
+        (None, Report::Heartbeat),
+        (Some(1), Report::Started),
+        (
+            Some(2),
+            Report::Finished {
+                exit: Exit::Succeeded,
+            },
+        ),
     ]
 }
 
@@ -237,7 +244,23 @@ async fn a_refused_credential_is_not_something_to_reconnect_through() {
 
     assert!(matches!(link.open(None).await, Err(Error::Refused(_))));
     assert!(matches!(
-        link.report(&connected()).await,
+        link.report(&connected(), None).await,
+        Err(Error::Refused(_))
+    ));
+}
+
+/// A report the link would not take is not one to send again: the seq it carried is the seq
+/// a replay would carry, and the answer would be the same.
+#[tokio::test]
+async fn a_report_the_link_would_not_take_is_not_something_to_send_again() {
+    let stub = Stub::answering(
+        400,
+        "application/json",
+        "{\"message\":\"the report 2 skips one this run has yet to report\"}",
+    );
+
+    assert!(matches!(
+        stub.link().report(&Report::Started, Some(2)).await,
         Err(Error::Refused(_))
     ));
 }
@@ -247,7 +270,7 @@ async fn reporting_posts_to_the_runs_reports() {
     let stub = Stub::answering(202, "application/json", "");
 
     stub.link()
-        .report(&connected())
+        .report(&connected(), None)
         .await
         .expect("the report should be accepted");
 
@@ -350,8 +373,12 @@ fn the_client_recognises_every_instruction_the_published_document_declares() {
 fn every_report_the_client_sends_carries_what_the_published_document_requires() {
     let published = published();
 
-    for report in everything_it_reports() {
-        let sent = serde_json::to_value(&report).expect("a report should serialise");
+    for (seq, report) in everything_it_reports() {
+        let sent = serde_json::to_value(Reported {
+            seq,
+            report: &report,
+        })
+        .expect("a report should serialise");
         let kind = sent["kind"].as_str().expect("a report carries its kind");
 
         let schema = declared(&published, "Report")

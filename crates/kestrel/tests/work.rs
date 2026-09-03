@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
-use kestrel::link::Report;
+use kestrel::link::{Report, Reported};
 use support::Harness;
 use support::environment::Environment;
 use support::link_client::Link;
@@ -155,9 +155,12 @@ async fn an_environment_that_reports_its_run_failed_ends_it_failed() {
         .report(
             run.id,
             Some(&credential),
-            &Report::Finished {
-                exit: Exit::Failed {
-                    because: "the agent could not open a pull request".to_owned(),
+            &Reported {
+                seq: Some(1),
+                report: Report::Finished {
+                    exit: Exit::Failed {
+                        because: "the agent could not open a pull request".to_owned(),
+                    },
                 },
             },
         )

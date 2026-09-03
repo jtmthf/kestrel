@@ -30,8 +30,17 @@ pub struct Supervisor {
 
 impl Supervisor {
     pub fn provision(link: &str, run: RunId, credential: &Secret) -> Self {
+        Self::provision_playing(link, run, credential, scripted_agent::Script::Speaks)
+    }
+
+    pub fn provision_playing(
+        link: &str,
+        run: RunId,
+        credential: &Secret,
+        script: scripted_agent::Script,
+    ) -> Self {
         let run = run.to_string();
-        let runtime = scripted_agent::playing(scripted_agent::Script::Speaks);
+        let runtime = scripted_agent::playing(script);
         let mut environment = LocalExec
             .provision(
                 binary(),

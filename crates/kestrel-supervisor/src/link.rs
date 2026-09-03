@@ -2,7 +2,7 @@
 //! types with the control plane that serves it.
 
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
-use reqwest::{Client, Response, StatusCode, header};
+use reqwest::{Client, Response, header};
 use serde::{Deserialize, Serialize};
 
 pub const INSTRUCTIONS: &str = "/link/runs/{run}/instructions";
@@ -47,6 +47,16 @@ pub enum Report {
     Finished { exit: Exit },
 }
 
+/// A report as it goes on the wire. The seq is what lets the control plane take a report once
+/// however many times a reconnect sends it, and only what changes the Run's record carries one.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Reported<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<i64>,
+    #[serde(flatten)]
+    pub report: &'a Report,
+}
+
 /// How the work this Environment was provisioned for went. Everything the control plane makes
 /// of it is the control plane's business.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -78,7 +88,7 @@ pub struct Delivered {
 
 #[derive(Debug)]
 pub enum Error {
-    /// The link declined this Environment. Reconnecting with the same credential will not help.
+    /// The link declined this Environment, or what it sent. Sending it again will not help.
     Refused(String),
     Lost(String),
 }
@@ -121,12 +131,12 @@ impl Link {
         }
     }
 
-    pub async fn report(&self, report: &Report) -> Result<(), Error> {
+    pub async fn report(&self, report: &Report, seq: Option<i64>) -> Result<(), Error> {
         let response = self
             .client
             .post(self.url(REPORTS))
             .bearer_auth(&self.credential)
-            .json(report)
+            .json(&Reported { seq, report })
             .send()
             .await?;
 
@@ -219,10 +229,8 @@ impl Instructions {
 }
 
 async fn refuse_if_declined(response: Response) -> Result<Response, Error> {
-    match response.status() {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
-            Err(Error::Refused(response.text().await?))
-        }
-        _ => Ok(response),
+    match response.status().is_client_error() {
+        true => Err(Error::Refused(response.text().await?)),
+        false => Ok(response),
     }
 }
