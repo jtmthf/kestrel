@@ -14,6 +14,9 @@ pub enum Script {
     Predates,
     /// Works at a turn that never ends, so nothing the agent does is what ends the Run.
     Dawdles,
+    /// Speaks, but takes long enough over the turn that the control plane can be killed and
+    /// restarted while the Run is still in flight.
+    Lingers,
 }
 
 impl Script {
@@ -24,6 +27,7 @@ impl Script {
             Script::Dies => "dies",
             Script::Predates => "predates",
             Script::Dawdles => "dawdles",
+            Script::Lingers => "lingers",
         }
     }
 }

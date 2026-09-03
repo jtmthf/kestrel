@@ -137,6 +137,7 @@
       "post": {
         "operationId": "report",
         "summary": "Report something about an Environment to the control plane.",
+        "description": "Delivery is at-least-once: an Environment that loses the answer to a report sends it again under the same seq, and the control plane takes it once. A seq that skips one the Run has yet to report is refused.",
         "parameters": [
           {
             "$ref": "#/components/parameters/run"
@@ -154,7 +155,10 @@
         },
         "responses": {
           "202": {
-            "description": "The report was recorded."
+            "description": "The report was recorded, or had been already."
+          },
+          "400": {
+            "$ref": "#/components/responses/Refused"
           },
           "401": {
             "$ref": "#/components/responses/Refused"
@@ -248,7 +252,7 @@
         ]
       },
       "Report": {
-        "description": "What an Environment tells the control plane about itself.",
+        "description": "What an Environment tells the control plane about itself. A report that belongs to its ordered account of the turn carries a seq and is taken once; what it says about itself costs nothing to take twice.",
         "oneOf": [
           {
             "$ref": "#/components/schemas/Connected"
@@ -316,10 +320,14 @@
         "properties": {
           "kind": {
             "const": "started"
+          },
+          "seq": {
+            "$ref": "#/components/schemas/Seq"
           }
         },
         "required": [
-          "kind"
+          "kind",
+          "seq"
         ]
       },
       "Said": {
@@ -331,10 +339,14 @@
           },
           "message": {
             "type": "string"
+          },
+          "seq": {
+            "$ref": "#/components/schemas/Seq"
           }
         },
         "required": [
           "kind",
+          "seq",
           "message"
         ]
       },
@@ -347,10 +359,14 @@
           },
           "usage": {
             "$ref": "#/components/schemas/Usage"
+          },
+          "seq": {
+            "$ref": "#/components/schemas/Seq"
           }
         },
         "required": [
           "kind",
+          "seq",
           "usage"
         ]
       },
@@ -363,12 +379,22 @@
           },
           "exit": {
             "$ref": "#/components/schemas/Exit"
+          },
+          "seq": {
+            "$ref": "#/components/schemas/Seq"
           }
         },
         "required": [
           "kind",
+          "seq",
           "exit"
         ]
+      },
+      "Seq": {
+        "description": "Where a report sits in the sequence the Environment numbers. The control plane takes each number once, so a report replayed after an answer that never arrived changes the record once.",
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1
       },
       "Exit": {
         "description": "How a Run ended.",

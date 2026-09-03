@@ -13,4 +13,4 @@ workspace = true
 [dependencies]
 agent-client-protocol = "2"
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }

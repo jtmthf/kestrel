@@ -47,6 +47,29 @@ pub enum Report {
     Finished { exit: Exit },
 }
 
+impl Report {
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Report::Connected { .. } => "connected",
+            Report::Heartbeat => "heartbeat",
+            Report::Started => "started",
+            Report::Said { .. } => "said",
+            Report::Used { .. } => "used",
+            Report::Finished { .. } => "finished",
+        }
+    }
+}
+
+/// A report as it goes on the wire: the seq is what lets the control plane take it once
+/// however many times a reconnect sends it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Reported<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<i64>,
+    #[serde(flatten)]
+    pub report: &'a Report,
+}
+
 /// How the work this Environment was provisioned for went. Everything the control plane makes
 /// of it is the control plane's business.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -78,7 +101,7 @@ pub struct Delivered {
 
 #[derive(Debug)]
 pub enum Error {
-    /// The link declined this Environment. Reconnecting with the same credential will not help.
+    /// The link declined this Environment, or what it sent. Sending it again will not help.
     Refused(String),
     Lost(String),
 }
@@ -121,12 +144,12 @@ impl Link {
         }
     }
 
-    pub async fn report(&self, report: &Report) -> Result<(), Error> {
+    pub async fn report(&self, report: &Report, seq: Option<i64>) -> Result<(), Error> {
         let response = self
             .client
             .post(self.url(REPORTS))
             .bearer_auth(&self.credential)
-            .json(report)
+            .json(&Reported { seq, report })
             .send()
             .await?;
 
@@ -220,9 +243,10 @@ impl Instructions {
 
 async fn refuse_if_declined(response: Response) -> Result<Response, Error> {
     match response.status() {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
-            Err(Error::Refused(response.text().await?))
-        }
+        StatusCode::BAD_REQUEST
+        | StatusCode::UNAUTHORIZED
+        | StatusCode::FORBIDDEN
+        | StatusCode::NOT_FOUND => Err(Error::Refused(response.text().await?)),
         _ => Ok(response),
     }
 }

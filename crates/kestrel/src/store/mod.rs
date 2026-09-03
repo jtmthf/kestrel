@@ -28,6 +28,15 @@ macro_rules! runs_where {
     };
 }
 
+/// What became of a report the link was handed: the next in the Environment's sequence, one
+/// taken already — where a replay after an answer that never arrived lands — or one that
+/// skips a report the Run has yet to make, which would leave a gap nothing fills.
+pub enum Taken {
+    Next,
+    Again,
+    Skipped,
+}
+
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -522,6 +531,33 @@ impl Tx<'_> {
         Ok(started.rows_affected() > 0)
     }
 
+    /// Read and write under the same write lock every `Tx` takes up front, so the check and
+    /// whatever the report changes commit together or not at all (ADR-0004).
+    pub async fn take_report(&mut self, run: &Run, seq: i64) -> Result<Taken> {
+        let taken: i64 = sqlx::query("SELECT reports_taken FROM run WHERE id = ?")
+            .bind(run.id.to_string())
+            .fetch_one(&mut *self.transaction)
+            .await
+            .with_context(|| format!("reading what run {} has reported", run.id))?
+            .get("reports_taken");
+
+        if seq != taken + 1 {
+            return Ok(match (1..=taken).contains(&seq) {
+                true => Taken::Again,
+                false => Taken::Skipped,
+            });
+        }
+
+        sqlx::query("UPDATE run SET reports_taken = ? WHERE id = ?")
+            .bind(seq)
+            .bind(run.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("taking the report {seq} of run {}", run.id))?;
+
+        Ok(Taken::Next)
+    }
+
     /// `false` when the Run had already ended: whoever ends it first decides its exit status.
     pub async fn end_run(&mut self, run: &Run, exit: &Exit) -> Result<bool> {
         let ended = sqlx::query(
@@ -809,6 +845,92 @@ mod tests {
 
         assert!(due(whole) < due(after));
         assert_eq!(due(whole).parse::<Timestamp>().unwrap(), whole);
+    }
+
+    async fn a_run(store: &Store) -> Run {
+        let (organization, workspace, agent) = declared(store).await;
+
+        let mut tx = store.begin().await.unwrap();
+        let session = tx
+            .open_session(&organization, &workspace, &agent)
+            .await
+            .unwrap();
+        let run = tx.enqueue_run(&session).await.unwrap();
+        tx.commit().await.unwrap();
+
+        run
+    }
+
+    async fn entries(store: &Store) -> i64 {
+        let mut tx = store.begin().await.unwrap();
+        sqlx::query("SELECT COUNT(*) AS entries FROM transcript_entry")
+            .fetch_one(&mut *tx.transaction)
+            .await
+            .unwrap()
+            .get("entries")
+    }
+
+    #[tokio::test]
+    async fn a_report_is_taken_once_and_a_replay_of_it_changes_nothing() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).await.unwrap();
+        let run = a_run(&store).await;
+
+        let mut tx = store.begin().await.unwrap();
+        assert!(matches!(
+            tx.take_report(&run, 1).await.unwrap(),
+            Taken::Next
+        ));
+        assert!(matches!(
+            tx.take_report(&run, 1).await.unwrap(),
+            Taken::Again
+        ));
+        assert!(matches!(
+            tx.take_report(&run, 3).await.unwrap(),
+            Taken::Skipped
+        ));
+        assert!(matches!(
+            tx.take_report(&run, 2).await.unwrap(),
+            Taken::Next
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_report_taken_in_a_transaction_that_rolls_back_is_the_next_one_again() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).await.unwrap();
+        let run = a_run(&store).await;
+        let session = store
+            .begin()
+            .await
+            .unwrap()
+            .session(run.session)
+            .await
+            .unwrap();
+
+        let mut tx = store.begin().await.unwrap();
+        assert!(matches!(
+            tx.take_report(&run, 1).await.unwrap(),
+            Taken::Next
+        ));
+        tx.log()
+            .append(
+                &session,
+                Entry::Said {
+                    participant: "builder".to_owned(),
+                    message: "lost with the answer to it".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        drop(tx);
+
+        assert_eq!(entries(&store).await, 0);
+        let mut tx = store.begin().await.unwrap();
+        assert!(matches!(
+            tx.take_report(&run, 1).await.unwrap(),
+            Taken::Next
+        ));
     }
 
     #[tokio::test]

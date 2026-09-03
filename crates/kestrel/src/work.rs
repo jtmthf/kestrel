@@ -64,15 +64,11 @@ pub async fn runs(store: &Store, session: SessionId) -> Result<Vec<Run>> {
     tx.runs(&session).await
 }
 
-pub async fn heartbeat(store: &Store, run: &Run) -> Result<()> {
-    let mut tx = store.begin().await?;
-    tx.hold_lease(run, Timestamp::now() + LEASE).await?;
-
-    tx.commit().await
+pub async fn heartbeat(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
+    tx.hold_lease(run, Timestamp::now() + LEASE).await
 }
 
-pub async fn started(store: &Store, run: &Run) -> Result<()> {
-    let mut tx = store.begin().await?;
+pub async fn started(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
     if tx.record_started(run).await? {
         let session = tx.session(run.session).await?;
         tx.log()
@@ -80,12 +76,11 @@ pub async fn started(store: &Store, run: &Run) -> Result<()> {
             .await?;
     }
 
-    tx.commit().await
+    Ok(())
 }
 
 /// An Environment reports what its agent said; who said it is the Session's to know.
-pub async fn said(store: &Store, run: &Run, message: &str) -> Result<()> {
-    let mut tx = store.begin().await?;
+pub async fn said(tx: &mut Tx<'_>, run: &Run, message: &str) -> Result<()> {
     let session = tx.session(run.session).await?;
     tx.log()
         .append(
@@ -97,15 +92,12 @@ pub async fn said(store: &Store, run: &Run, message: &str) -> Result<()> {
         )
         .await?;
 
-    tx.commit().await
+    Ok(())
 }
 
 /// On the Run, and in no Transcript: what an agent spent is not a Session's shared state.
-pub async fn used(store: &Store, run: &Run, usage: &Usage) -> Result<()> {
-    let mut tx = store.begin().await?;
-    tx.record_usage(run, usage).await?;
-
-    tx.commit().await
+pub async fn used(tx: &mut Tx<'_>, run: &Run, usage: &Usage) -> Result<()> {
+    tx.record_usage(run, usage).await
 }
 
 pub async fn provisioned(store: &Store, run: &Run, environment: &str) -> Result<()> {

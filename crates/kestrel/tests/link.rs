@@ -11,7 +11,7 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use kestrel::domain::{Exit, Run, RunId};
 use kestrel::link::credential::Secret;
-use kestrel::link::{self, Instruction, Report};
+use kestrel::link::{self, Instruction, Report, Reported};
 use kestrel::log::Entry;
 use reqwest::{StatusCode, Version, header};
 use serde_json::json;
@@ -165,8 +165,11 @@ async fn the_link_refuses_an_environment_presenting_no_credential() {
         link.report(
             run.id,
             None,
-            &Report::Connected {
-                version: "0.0.0".to_owned()
+            &Reported {
+                seq: None,
+                report: Report::Connected {
+                    version: "0.0.0".to_owned()
+                }
             }
         )
         .await
@@ -315,17 +318,18 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
     let bodies = json!({
         "connected": {"kind": "connected", "version": "0.0.0"},
         "heartbeat": {"kind": "heartbeat"},
-        "started": {"kind": "started"},
-        "said": {"kind": "said", "message": "what the agent said"},
+        "started": {"kind": "started", "seq": 1},
+        "said": {"kind": "said", "seq": 1, "message": "what the agent said"},
         "used": {
             "kind": "used",
+            "seq": 1,
             "usage": {
                 "context_used": 1_200,
                 "context_size": 200_000,
                 "cost": {"amount": 0.42, "currency": "USD"},
             },
         },
-        "finished": {"kind": "finished", "exit": {"status": "succeeded"}},
+        "finished": {"kind": "finished", "seq": 1, "exit": {"status": "succeeded"}},
     });
     assert_eq!(
         described,

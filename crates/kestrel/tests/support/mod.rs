@@ -234,9 +234,11 @@ impl Harness {
     }
 
     pub async fn said(&self, run: &Run, message: &str) {
-        work::said(&self.store, run, message)
+        let mut tx = self.store.begin().await.expect("a transaction");
+        work::said(&mut tx, run, message)
             .await
             .expect("the message should reach the transcript");
+        tx.commit().await.expect("the message should commit");
     }
 
     pub async fn enqueue_run(&self, session: SessionId) -> Run {

@@ -2,7 +2,8 @@ pub mod link;
 pub mod permission;
 pub mod runtime;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::io::{self, Write as _};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,8 +21,10 @@ pub trait Diagnostics {
 pub struct Stderr;
 
 impl Diagnostics for Stderr {
+    /// A control plane that dies takes the pipe it was reading these over with it, and an
+    /// Environment outlives a control-plane restart (ADR-0002) rather than dying into one.
     fn info(&self, message: &str) {
-        eprintln!("{message}");
+        let _ = writeln!(io::stderr(), "{message}");
     }
 }
 
@@ -37,7 +40,9 @@ enum Attended {
 struct Attending {
     cursor: Option<String>,
     started: bool,
-    worked: Option<runtime::Worked>,
+    worked: bool,
+    taken: i64,
+    saying: VecDeque<Report>,
 }
 
 pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, String>) -> i32 {
@@ -67,7 +72,7 @@ async fn saying_it_is_alive(link: Arc<Link>) {
         tokio::time::sleep(HEARTBEAT_EVERY).await;
         // Whether the link is there at all is the attending loop's to notice and reconnect
         // through; this one says what it can, whenever it can.
-        let _ = link.report(&Report::Heartbeat).await;
+        let _ = link.report(&Report::Heartbeat, None).await;
     }
 }
 
@@ -108,9 +113,12 @@ async fn attend(
         Some(held) => diagnostics.info(&format!("link open after {held}")),
     }
 
-    link.report(&Report::Connected {
-        version: env!("CARGO_PKG_VERSION").to_owned(),
-    })
+    link.report(
+        &Report::Connected {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+        },
+        None,
+    )
     .await?;
     diagnostics.info("reported connected");
 
@@ -135,46 +143,49 @@ async fn attend(
             }
         }
         attending.started = true;
+        attending.saying.push_back(Report::Started);
     }
+    say(link, attending, diagnostics).await?;
 
-    link.report(&Report::Started).await?;
-    diagnostics.info("reported started");
-
-    if attending.worked.is_none() {
+    if !attending.worked {
         let worked = runtime::work(runtime).await;
         for subject in &worked.allowed {
             diagnostics.info(&format!("allowed once  {subject}"));
         }
-        attending.worked = Some(worked);
+        attending.saying.extend(everything_left_to_say(worked));
+        attending.worked = true;
     }
-    let worked = attending
-        .worked
-        .as_mut()
-        .expect("the turn has been worked by here");
-
-    // Each of these is dropped once the link has taken it, so a reconnect says what is left
-    // rather than saying any of it twice.
-    while let Some(message) = worked.said.front() {
-        link.report(&Report::Said {
-            message: message.clone(),
-        })
-        .await?;
-        worked.said.pop_front();
-        diagnostics.info("reported what the agent said");
-    }
-    if let Some(usage) = worked.usage.clone() {
-        link.report(&Report::Used { usage }).await?;
-        worked.usage = None;
-        diagnostics.info("reported what the agent used");
-    }
-
-    link.report(&Report::Finished {
-        exit: worked.exit.clone(),
-    })
-    .await?;
-    diagnostics.info("reported finished");
+    say(link, attending, diagnostics).await?;
 
     Ok(Attended::Finished)
+}
+
+/// Numbered from the last one the link took, and dropped once it has been taken: a reconnect
+/// says only what is left, and a replay carries the number the attempt that was lost carried.
+async fn say(
+    link: &Link,
+    attending: &mut Attending,
+    diagnostics: &dyn Diagnostics,
+) -> Result<(), link::Error> {
+    while let Some(report) = attending.saying.front() {
+        let seq = attending.taken + 1;
+        link.report(report, Some(seq)).await?;
+        let kind = report.kind();
+        attending.taken = seq;
+        attending.saying.pop_front();
+        diagnostics.info(&format!("reported {kind} {seq}"));
+    }
+
+    Ok(())
+}
+
+fn everything_left_to_say(worked: runtime::Worked) -> impl Iterator<Item = Report> {
+    worked
+        .said
+        .into_iter()
+        .map(|message| Report::Said { message })
+        .chain(worked.usage.map(|usage| Report::Used { usage }))
+        .chain(std::iter::once(Report::Finished { exit: worked.exit }))
 }
 
 fn dialled(variables: &BTreeMap<String, String>) -> Option<Link> {

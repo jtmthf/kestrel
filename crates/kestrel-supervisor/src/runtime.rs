@@ -1,7 +1,6 @@
 //! kestrel as an ACP client (ADR-0007): no contract of kestrel's, and no branch on which Agent
 //! Runtime is on the other end of one.
 
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::{Arc, Mutex};
@@ -21,7 +20,7 @@ use crate::permission::{self, Subject};
 const PROMPT: &str = "Do the work this environment was provisioned for.";
 
 pub struct Worked {
-    pub said: VecDeque<String>,
+    pub said: Vec<String>,
     pub usage: Option<Usage>,
     pub allowed: Vec<Subject>,
     pub exit: Exit,
@@ -148,7 +147,7 @@ fn ended(stop: StopReason) -> Exit {
 #[derive(Default)]
 struct Heard {
     open: Option<Message>,
-    said: VecDeque<String>,
+    said: Vec<String>,
     usage: Option<Usage>,
     allowed: Vec<Subject>,
 }
@@ -198,7 +197,7 @@ impl Heard {
 
     fn close(&mut self) {
         if let Some(open) = self.open.take() {
-            self.said.push_back(open.said);
+            self.said.push(open.said);
         }
     }
 

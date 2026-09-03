@@ -22,7 +22,7 @@ use crate::domain::{Exit, Run, RunId, Usage};
 use crate::link::credential::Secret;
 use crate::log::{self, Cursor, Unreadable, Window};
 use crate::session;
-use crate::store::Store;
+use crate::store::{Store, Taken};
 use crate::work;
 
 /// The Transcript of the Session the Run belongs to. Named for what crosses the link rather
@@ -67,6 +67,30 @@ pub enum Report {
     Said { message: String },
     Used { usage: Usage },
     Finished { exit: Exit },
+}
+
+impl Report {
+    /// Whether this report belongs to the Environment's ordered account of the turn, which
+    /// the control plane takes once; what it says about itself costs nothing to take twice.
+    const fn numbered(&self) -> bool {
+        match self {
+            Report::Connected { .. } | Report::Heartbeat => false,
+            Report::Started
+            | Report::Said { .. }
+            | Report::Used { .. }
+            | Report::Finished { .. } => true,
+        }
+    }
+}
+
+/// A report as it reaches the link: the numbering is on the envelope rather than inside any
+/// one kind of report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Reported {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<i64>,
+    #[serde(flatten)]
+    pub report: Report,
 }
 
 #[derive(Clone)]
@@ -191,41 +215,56 @@ async fn report(
     State(control_plane): State<ControlPlane>,
     Path(run): Path<String>,
     headers: HeaderMap,
-    Json(report): Json<Report>,
+    Json(Reported { seq, report }): Json<Reported>,
 ) -> Result<StatusCode, Refused> {
     let run = authenticated(&control_plane, &headers, &run).await?;
+    let mut tx = control_plane.store.begin().await?;
+
+    if report.numbered() {
+        let seq = seq.ok_or(Refused::BadRequest(
+            "a report of this kind carries a seq, and this one carries none".to_owned(),
+        ))?;
+        match tx.take_report(&run, seq).await? {
+            Taken::Next => {}
+            Taken::Again => {
+                debug!(run = %run.id, seq, "an environment reported something again");
+                return Ok(StatusCode::ACCEPTED);
+            }
+            Taken::Skipped => {
+                return Err(Refused::BadRequest(format!(
+                    "the report {seq} skips one this run has yet to report"
+                )));
+            }
+        }
+    }
 
     match report {
         Report::Connected { version } => {
-            let mut tx = control_plane.store.begin().await?;
             tx.record_connected(&run, &version).await?;
-            tx.commit().await?;
             info!(run = %run.id, version, "an environment reported itself connected");
         }
         Report::Heartbeat => {
-            work::heartbeat(&control_plane.store, &run).await?;
+            work::heartbeat(&mut tx, &run).await?;
             debug!(run = %run.id, "an environment reported itself alive");
         }
         Report::Started => {
-            work::started(&control_plane.store, &run).await?;
+            work::started(&mut tx, &run).await?;
             info!(run = %run.id, "an environment reported its run started");
         }
         Report::Said { message } => {
-            work::said(&control_plane.store, &run, &message).await?;
+            work::said(&mut tx, &run, &message).await?;
             info!(run = %run.id, "an environment reported what its agent said");
         }
         Report::Used { usage } => {
             info!(run = %run.id, %usage, "an environment reported what its agent used");
-            work::used(&control_plane.store, &run, &usage).await?;
+            work::used(&mut tx, &run, &usage).await?;
         }
         Report::Finished { exit } => {
-            let stands = match &exit {
-                Exit::Succeeded => work::complete(&control_plane.store, &run).await?,
-                Exit::Failed { because } => work::fail(&control_plane.store, &run, because).await?,
-            };
+            let stands = work::ending(&mut tx, &run, exit).await?;
             info!(run = %run.id, %stands, "an environment reported its run finished");
         }
     }
+    tx.commit().await?;
 
     Ok(StatusCode::ACCEPTED)
 }
@@ -327,4 +366,36 @@ impl IntoResponse for Refused {
 #[derive(Serialize)]
 struct Refusal {
     message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_numbered_report_carries_its_seq_beside_its_kind() {
+        let sent = serde_json::json!({"kind": "said", "seq": 3, "message": "what it said"});
+
+        let reported: Reported = serde_json::from_value(sent.clone()).expect("a report");
+
+        assert_eq!(reported.seq, Some(3));
+        assert_eq!(
+            reported.report,
+            Report::Said {
+                message: "what it said".to_owned()
+            }
+        );
+        assert_eq!(serde_json::to_value(&reported).expect("a report"), sent);
+    }
+
+    #[test]
+    fn a_report_the_environment_does_not_number_carries_no_seq() {
+        let sent = serde_json::json!({"kind": "heartbeat"});
+
+        let reported: Reported = serde_json::from_value(sent.clone()).expect("a report");
+
+        assert_eq!(reported.seq, None);
+        assert!(!reported.report.numbered());
+        assert_eq!(serde_json::to_value(&reported).expect("a report"), sent);
+    }
 }

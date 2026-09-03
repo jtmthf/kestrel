@@ -1,6 +1,8 @@
 //! A canned sequence over real stdio JSON-RPC, so the main suite drives kestrel's ACP client
 //! over the wire rather than over a shim above it, with no network and no model spend.
 
+use std::time::Duration;
+
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, ContentBlock, ContentChunk, Cost, InitializeRequest, InitializeResponse,
@@ -15,6 +17,8 @@ use clap::Parser;
 use kestrel_scripted_agent::Script;
 
 const SESSION: &str = "scripted";
+/// Long enough to kill a control plane and bring it back up under a turn that is in flight.
+const LINGER: Duration = Duration::from_secs(3);
 const TOOL_CALL: &str = "call-1";
 const ALLOW_ONCE: &str = "allow-once";
 
@@ -78,6 +82,9 @@ async fn main() -> Result<()> {
 async fn play(script: Script, connection: &ConnectionTo<Client>) -> Result<StopReason> {
     if script == Script::Dawdles {
         std::future::pending::<()>().await;
+    }
+    if script == Script::Lingers {
+        tokio::time::sleep(LINGER).await;
     }
     if script == Script::Refuses {
         say(connection, "message-1", "this is not work I will do")?;
