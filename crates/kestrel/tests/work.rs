@@ -11,6 +11,7 @@ use kestrel::link::{Report, Reported};
 use support::Harness;
 use support::environment::Environment;
 use support::link_client::Link;
+use support::repository;
 use support::supervisor;
 
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -20,9 +21,9 @@ async fn a_session(harness: &Harness) -> Session {
     harness
         .declare_workspace(
             &organization,
-            "kestrel",
-            &["https://github.com/jtmthf/kestrel".to_owned()],
-            "main",
+            repository::NAME,
+            &[repository::url().to_owned()],
+            repository::BRANCH,
         )
         .await;
     harness
@@ -114,6 +115,73 @@ async fn the_environment_a_finished_run_executed_in_is_destroyed() {
     Environment::named(ended.environment.as_deref().expect("an environment"))
         .is_gone()
         .await;
+
+    harness.teardown().await;
+}
+
+/// The Workspace is checked out into an Environment that is destroyed with its Run, so what
+/// proves it arrived is something inside the Environment reading it while the Run is in
+/// flight and writing down what it found. It waits on a file the checkout puts there last,
+/// because `git clone` makes the directory before it makes a repository of it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_workspaces_repositories_and_its_branch_are_in_the_environment_before_the_run_starts() {
+    let environment = Environment::executing(
+        "found=$(dirname \"$0\")/found\n\
+         for _ in $(seq 1 300); do [ -f kestrel/README.md ] && break; sleep 0.1; done\n\
+         git -C kestrel rev-parse --abbrev-ref HEAD > \"$found\" 2>&1\n\
+         cat kestrel/README.md >> \"$found\" 2>&1\n\
+         exit 3",
+    );
+    let harness = Harness::dispatching(environment.path()).await;
+    let session = a_session(&harness).await;
+
+    let run = harness.enqueue_run(session.id).await;
+    ended(&harness, run.id).await;
+
+    assert_eq!(
+        environment.wrote("found"),
+        "main\na workspace's repository",
+        "the workspace was not in the environment"
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_workspace_that_cannot_be_checked_out_fails_the_run_rather_than_starting_it() {
+    let harness = Harness::dispatching(supervisor::binary()).await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            repository::NAME,
+            &[repository::url().to_owned()],
+            "a-branch-nobody-cut",
+        )
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+        .await;
+    let session = harness.open_session("acme", "kestrel", "builder").await;
+
+    let run = harness.enqueue_run(session.id).await;
+    let ended = ended(&harness, run.id).await;
+
+    let Some(Exit::Failed { because }) = &ended.exit else {
+        panic!(
+            "the run ended {:?}, and its workspace names a branch that is not there",
+            ended.exit
+        );
+    };
+    assert!(
+        because.contains("could not be cloned"),
+        "unhelpful exit status: {because}"
+    );
+    assert!(
+        ended.environment.is_none(),
+        "a run that never started names the environment it was going to start in"
+    );
 
     harness.teardown().await;
 }

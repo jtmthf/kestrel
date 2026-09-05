@@ -40,6 +40,7 @@ impl Kestrel {
         Command::new(env!("CARGO_BIN_EXE_kestrel"))
             .env("KESTREL_DATA_DIR", self.data_dir.path())
             .env("KESTREL_LISTEN", listen)
+            .env("KESTREL_COMPUTE", "local-exec")
             .env("KESTREL_SUPERVISOR", support::supervisor::binary())
             .env(
                 "KESTREL_AGENT_RUNTIME",
@@ -130,13 +131,13 @@ fn declared() -> Kestrel {
     kestrel.run(&[
         "workspace",
         "declare",
-        "kestrel",
+        support::repository::NAME,
         "--organization",
         "acme",
         "--repository",
-        "https://github.com/jtmthf/kestrel",
+        support::repository::url(),
         "--branch",
-        "main",
+        support::repository::BRANCH,
     ]);
     kestrel.run(&[
         "agent",

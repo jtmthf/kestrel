@@ -9,6 +9,7 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
 use support::environment::Environment;
+use support::repository;
 use support::scripted_agent::Script;
 use support::{Harness, scripted_agent, supervisor};
 
@@ -19,9 +20,9 @@ async fn a_session(harness: &Harness) -> Session {
     harness
         .declare_workspace(
             &organization,
-            "kestrel",
-            &["https://github.com/jtmthf/kestrel".to_owned()],
-            "main",
+            repository::NAME,
+            &[repository::url().to_owned()],
+            repository::BRANCH,
         )
         .await;
     harness

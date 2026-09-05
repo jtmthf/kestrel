@@ -67,6 +67,9 @@ jobs:
       - name: Test the image
         run: cargo test --locked --package kestrel --test image -- --ignored
 
+      - name: Test the Docker driver
+        run: cargo test --locked --package kestrel --test docker -- --ignored
+
   # The runner is amd64, so nothing else builds the arm64 half of the image: the release it
   # pins, the checksum it verifies, and the architecture it selects on.
   architectures:

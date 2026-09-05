@@ -2,14 +2,16 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
 
+use crate::compute::{Docker, Driver, LocalExec};
 use crate::domain::SessionId;
 use crate::log::Cursor;
 use crate::role::work::Dispatch;
 
 const SUPERVISOR: &str = "kestrel-supervisor";
+const IMAGE: &str = "kestrel-env:latest";
 
 const ROLES: &str = "\
 Roles:
@@ -95,6 +97,34 @@ pub struct Cli {
         default_value = "opencode acp"
     )]
     agent_runtime: String,
+
+    /// The Compute driver a Run's Environment is provisioned by
+    #[arg(
+        long = "compute",
+        env = "KESTREL_COMPUTE",
+        global = true,
+        value_name = "DRIVER",
+        default_value = "docker"
+    )]
+    compute: ComputeDriver,
+
+    /// The image the Docker driver provisions an Environment from
+    #[arg(
+        long,
+        env = "KESTREL_IMAGE",
+        global = true,
+        value_name = "IMAGE",
+        default_value = IMAGE
+    )]
+    image: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ComputeDriver {
+    /// A container the Docker daemon on this machine runs
+    Docker,
+    /// A process tree on this machine
+    LocalExec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -250,13 +280,20 @@ impl Cli {
         }
     }
 
+    /// The one choice between the two `Compute` drivers, made here from configuration so that
+    /// nothing that executes a Run has to make it.
     pub fn dispatch(&self, bound: SocketAddr) -> Result<Dispatch> {
         Ok(Dispatch {
             link: self
                 .link
                 .clone()
                 .unwrap_or_else(|| format!("http://{bound}")),
-            supervisor: self.supervisor()?,
+            driver: match self.compute {
+                ComputeDriver::Docker => Driver::Docker(Docker::provisioning_from(&self.image)),
+                ComputeDriver::LocalExec => {
+                    Driver::LocalExec(LocalExec::running(self.supervisor()?))
+                }
+            },
             runtime: self.agent_runtime.clone(),
         })
     }
@@ -329,6 +366,34 @@ mod tests {
     #[test]
     fn an_unknown_command_is_rejected_rather_than_run_as_a_role() {
         assert!(Cli::try_parse_from(["kestrel", "wrok"]).is_err());
+    }
+
+    fn dispatch(argv: &[&str]) -> Dispatch {
+        parsed(argv)
+            .dispatch("127.0.0.1:7717".parse().expect("an address"))
+            .expect("the dispatch should build")
+    }
+
+    #[test]
+    fn an_environment_is_a_container_unless_configuration_says_otherwise() {
+        assert!(matches!(dispatch(&[]).driver, Driver::Docker(_)));
+    }
+
+    #[test]
+    fn the_other_driver_is_reached_by_configuration_rather_than_by_a_different_command() {
+        assert!(matches!(
+            dispatch(&["--compute", "local-exec"]).driver,
+            Driver::LocalExec(_)
+        ));
+        assert!(matches!(
+            dispatch(&["--compute", "local-exec", "work"]).driver,
+            Driver::LocalExec(_)
+        ));
+    }
+
+    #[test]
+    fn a_driver_that_is_neither_is_rejected_rather_than_falling_back() {
+        assert!(Cli::try_parse_from(["kestrel", "--compute", "firecracker"]).is_err());
     }
 
     #[test]

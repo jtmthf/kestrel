@@ -13,13 +13,15 @@ pub mod environment;
 pub mod github_stub;
 pub mod image;
 pub mod link_client;
+pub mod repository;
 pub mod scripted_agent;
 pub mod supervisor;
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use jiff::Timestamp;
+use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{Agent, Organization, Run, RunId, Session, SessionId, Workspace};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
@@ -41,10 +43,10 @@ pub struct Harness {
     roles: JoinHandle<anyhow::Result<()>>,
 }
 
-/// What an Environment the work role provisions runs.
+/// What the work role provisions an Environment with.
 #[derive(Clone)]
 pub struct Provisions {
-    supervisor: PathBuf,
+    driver: Driver,
     runtime: String,
 }
 
@@ -85,9 +87,23 @@ impl Harness {
 
     pub async fn dispatching_to(supervisor: &Path, runtime: &str) -> Self {
         Self::booted(Some(Provisions {
-            supervisor: supervisor.to_path_buf(),
+            driver: Driver::LocalExec(LocalExec::running(supervisor)),
             runtime: runtime.to_owned(),
         }))
+        .await
+    }
+
+    /// The Docker driver, on a control plane bound where a container can dial out to it.
+    pub async fn dispatching_in(image: &str, runtime: &str) -> Self {
+        let data_dir = TempDir::new().expect("a temporary data directory");
+        Self::boot_against(
+            data_dir,
+            "0.0.0.0:0".parse().expect("every interface"),
+            Some(Provisions {
+                driver: Driver::Docker(Docker::provisioning_from(image)),
+                runtime: runtime.to_owned(),
+            }),
+        )
         .await
     }
 
@@ -115,8 +131,11 @@ impl Harness {
             .expect("the control plane should bind its link");
         let address = all_in_one.address();
         let dispatch = environment.clone().map(|provisions| Dispatch {
-            link: format!("http://{address}"),
-            supervisor: provisions.supervisor,
+            link: match provisions.driver {
+                Driver::Docker(_) => format!("http://host.docker.internal:{}", address.port()),
+                Driver::LocalExec(_) => format!("http://{address}"),
+            },
+            driver: provisions.driver,
             runtime: provisions.runtime,
         });
         let roles = tokio::spawn(all_in_one.run(dispatch, shutdown.clone()));

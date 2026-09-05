@@ -1,15 +1,14 @@
-use std::path::PathBuf;
-use std::process::ExitStatus;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result, bail};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::cli::Role;
-use crate::compute::{Environment, LocalExec};
+use crate::compute::{Driver, Environment, Exited};
 use crate::domain::{Exit, Run};
 use crate::link::{self, Instruction};
+use crate::session;
 use crate::store::Store;
 use crate::timer;
 use crate::work::{self, Claimed};
@@ -20,13 +19,13 @@ const POLL: Duration = Duration::from_millis(100);
 
 pub struct Dispatch {
     pub link: String,
-    pub supervisor: PathBuf,
+    pub driver: Driver,
     pub runtime: String,
 }
 
 /// What ended the attending, rather than how the Run went.
 enum Ended {
-    Environment(ExitStatus),
+    Environment(Exited),
     TheRun(Exit),
     ControlPlane,
 }
@@ -85,9 +84,8 @@ async fn execute(
     Claimed { run, credential }: Claimed,
     shutdown: &CancellationToken,
 ) -> Result<()> {
-    let mut environment = match LocalExec.provision(
-        &dispatch.supervisor,
-        &[],
+    let mut environment = match dispatch.driver.provision(
+        run.id,
         &[
             ("KESTREL_LINK", dispatch.link.as_str()),
             ("KESTREL_RUN", &run.id.to_string()),
@@ -107,33 +105,75 @@ async fn execute(
         }
     };
 
-    let name = environment.name();
-    work::provisioned(store, &run, &name).await?;
-    link::instruct(store, &run, Instruction::Start).await?;
+    let exit = match check_out(store, &run, &mut environment).await {
+        Ok(()) => start(store, &run, environment, shutdown).await?,
+        Err(error) => {
+            destroy(&run, environment);
+            work::fail(store, &run, &error.to_string()).await?
+        }
+    };
+    info!(run = %run.id, %exit, "a run ended");
+
+    Ok(())
+}
+
+async fn start(
+    store: &Store,
+    run: &Run,
+    mut environment: Environment,
+    shutdown: &CancellationToken,
+) -> Result<Exit> {
+    // Recorded once the Workspace is in it and it is about to be started, so a Run that names
+    // an Environment is a Run something is working on.
+    let name = environment.name().to_owned();
+    work::provisioned(store, run, &name).await?;
+    link::instruct(store, run, Instruction::Start).await?;
     info!(run = %run.id, environment = name, "a run reached an environment");
 
-    let ended = attend(store, &run, &mut environment, shutdown).await;
-    if let Err(error) = LocalExec.destroy(environment) {
-        warn!(run = %run.id, %error, "an environment resisted being destroyed");
-    }
+    let ended = attend(store, run, &mut environment, shutdown).await;
+    destroy(run, environment);
 
-    let exit = match ended? {
+    Ok(match ended? {
         Ended::TheRun(exit) => exit,
-        Ended::Environment(status) => {
+        Ended::Environment(exited) => {
             let unreported =
-                format!("the environment exited {status} without reporting how the run went");
-            work::fail(store, &run, &unreported).await?
+                format!("the environment exited {exited} without reporting how the run went");
+            work::fail(store, run, &unreported).await?
         }
         Ended::ControlPlane => {
             work::fail(
                 store,
-                &run,
+                run,
                 "the control plane stopped while this run was in flight",
             )
             .await?
         }
-    };
-    info!(run = %run.id, %exit, "a run ended");
+    })
+}
+
+fn destroy(run: &Run, environment: Environment) {
+    if let Err(error) = environment.destroy() {
+        warn!(run = %run.id, %error, "an environment resisted being destroyed");
+    }
+}
+
+/// Before the Run is told to start, so nothing an agent reaches for is still arriving.
+async fn check_out(store: &Store, run: &Run, environment: &mut Environment) -> Result<()> {
+    let workspace = session::show(store, run.session).await?.workspace;
+
+    for repository in &workspace.repositories {
+        let cloning = environment
+            .exec(&["git", "clone", "--branch", &workspace.branch, repository])
+            .with_context(|| format!("{repository} could not be cloned into the environment"))?;
+        let cloned = tokio::task::spawn_blocking(move || cloning.finish()).await??;
+
+        if !cloned.exited.success() {
+            bail!(
+                "{repository} could not be cloned into the environment: {}",
+                cloned.err
+            );
+        }
+    }
 
     Ok(())
 }
@@ -149,8 +189,14 @@ async fn attend(
     shutdown: &CancellationToken,
 ) -> Result<Ended> {
     loop {
-        if let Some(status) = environment.status()? {
-            return Ok(Ended::Environment(status));
+        match environment.status() {
+            Ok(Some(exited)) => return Ok(Ended::Environment(exited)),
+            Ok(None) => {}
+            // A daemon that cannot answer is not an Environment that is gone. The Run's lease
+            // ends it if this never clears.
+            Err(error) => {
+                warn!(run = %run.id, %error, "an environment could not be asked how it is")
+            }
         }
         if let Some(exit) = work::run(store, run.id).await?.exit {
             return Ok(Ended::TheRun(exit));
