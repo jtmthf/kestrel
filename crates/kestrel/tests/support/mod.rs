@@ -10,6 +10,7 @@
 pub mod built;
 pub mod environment;
 pub mod github_stub;
+pub mod image;
 pub mod link_client;
 pub mod scripted_agent;
 pub mod supervisor;
@@ -59,6 +60,18 @@ impl Harness {
     /// nothing and a test is the only thing dispatching the Runs it opens.
     pub async fn boot() -> Self {
         Self::booted(None).await
+    }
+
+    /// Bound on every interface rather than on loopback, because what dials this one is in a
+    /// container and reaches this machine by its gateway address.
+    pub async fn boot_reachable_from_a_container() -> Self {
+        let data_dir = TempDir::new().expect("a temporary data directory");
+        Self::boot_against(
+            data_dir,
+            "0.0.0.0:0".parse().expect("every interface"),
+            None,
+        )
+        .await
     }
 
     pub async fn dispatching(supervisor: &Path) -> Self {
@@ -123,6 +136,10 @@ impl Harness {
 
     pub fn link(&self) -> String {
         format!("http://{}", self.address)
+    }
+
+    pub fn link_from_a_container(&self) -> String {
+        format!("http://host.docker.internal:{}", self.address.port())
     }
 
     pub async fn declare_organization(&self, name: &str) -> Organization {
