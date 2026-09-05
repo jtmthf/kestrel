@@ -189,8 +189,14 @@ async fn attend(
     shutdown: &CancellationToken,
 ) -> Result<Ended> {
     loop {
-        if let Some(exited) = environment.status()? {
-            return Ok(Ended::Environment(exited));
+        match environment.status() {
+            Ok(Some(exited)) => return Ok(Ended::Environment(exited)),
+            Ok(None) => {}
+            // A daemon that cannot answer is not an Environment that is gone. The Run's lease
+            // ends it if this never clears.
+            Err(error) => {
+                warn!(run = %run.id, %error, "an environment could not be asked how it is")
+            }
         }
         if let Some(exit) = work::run(store, run.id).await?.exit {
             return Ok(Ended::TheRun(exit));

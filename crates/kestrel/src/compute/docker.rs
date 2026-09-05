@@ -46,16 +46,23 @@ impl Docker {
         // Started rather than attached, so that by the time this returns the container is
         // running and an operation on it cannot race the daemon into existence.
         if let Err(error) = docker(&["start", &container]) {
-            let _ = docker(&["rm", "--force", "--volumes", &container]);
+            let _ = removed(&container);
             return Err(error);
         }
 
-        let mut logs = Command::new("docker")
+        let mut logs = match Command::new("docker")
             .args(["logs", "--follow", &container])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn()
+        {
+            Ok(logs) => logs,
+            Err(error) => {
+                let _ = removed(&container);
+                return Err(error);
+            }
+        };
 
         Ok(Environment {
             name: format!("docker/{container}"),
@@ -136,8 +143,8 @@ impl Provisioned for Container {
             &self.container,
         ]) {
             Ok(inspected) => inspected,
-            // A container the daemon no longer has is a container that is gone.
-            Err(_) => return Ok(Some(Exited::without_a_code())),
+            Err(error) if gone(&error) => return Ok(Some(Exited::without_a_code())),
+            Err(error) => return Err(error),
         };
 
         let inspected = String::from_utf8_lossy(&inspected);
@@ -160,10 +167,14 @@ impl Provisioned for Container {
         let _ = self.logs.kill();
         let _ = self.logs.wait();
 
-        match docker(&["rm", "--force", "--volumes", &self.container]) {
-            Err(error) if gone(&error) => Ok(()),
-            removed => removed.map(drop),
-        }
+        removed(&self.container)
+    }
+}
+
+fn removed(container: &str) -> io::Result<()> {
+    match docker(&["rm", "--force", "--volumes", container]) {
+        Err(error) if gone(&error) => Ok(()),
+        removed => removed.map(drop),
     }
 }
 
