@@ -121,13 +121,14 @@ async fn the_environment_a_finished_run_executed_in_is_destroyed() {
 
 /// The Workspace is checked out into an Environment that is destroyed with its Run, so what
 /// proves it arrived is something inside the Environment reading it while the Run is in
-/// flight and writing down what it found.
+/// flight and writing down what it found. It waits on a file the checkout puts there last,
+/// because `git clone` makes the directory before it makes a repository of it.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_workspaces_repositories_and_its_branch_are_in_the_environment_before_the_run_starts() {
     let environment = Environment::executing(
         "found=$(dirname \"$0\")/found\n\
-         for _ in $(seq 1 300); do [ -d kestrel ] && break; sleep 0.1; done\n\
+         for _ in $(seq 1 300); do [ -f kestrel/README.md ] && break; sleep 0.1; done\n\
          git -C kestrel rev-parse --abbrev-ref HEAD > \"$found\" 2>&1\n\
          cat kestrel/README.md >> \"$found\" 2>&1\n\
          exit 3",
