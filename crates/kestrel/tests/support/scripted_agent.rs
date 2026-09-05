@@ -12,6 +12,11 @@ pub fn playing(script: Script) -> String {
     format!("\"{}\" --script {}", binary().display(), script.as_str())
 }
 
+/// The same agent, on the path the image the Docker driver provisions from puts it on.
+pub fn playing_in_an_image(script: Script) -> String {
+    format!("kestrel-scripted-agent --script {}", script.as_str())
+}
+
 fn binary() -> &'static PathBuf {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
 

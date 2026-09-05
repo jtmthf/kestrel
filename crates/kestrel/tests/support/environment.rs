@@ -35,6 +35,15 @@ impl Environment {
         &self.path
     }
 
+    /// What the script wrote beside itself, which outlives the Environment the way what it
+    /// wrote in its Workspace does not.
+    pub fn wrote(&self, name: &str) -> String {
+        fs::read_to_string(self._directory.path().join(name))
+            .unwrap_or_else(|error| panic!("the environment wrote no {name}: {error}"))
+            .trim()
+            .to_owned()
+    }
+
     pub fn named(environment: &str) -> Pid {
         let (driver, pid) = environment
             .split_once('/')

@@ -12,6 +12,7 @@ use kestrel::link::credential::Secret;
 use super::diagnostics::Diagnostics;
 
 const IMAGE: &str = "kestrel-env:test";
+const SCRIPTED: &str = "kestrel-env-scripted:test";
 const PATIENCE: Duration = Duration::from_secs(30);
 
 pub fn built() -> &'static str {
@@ -34,6 +35,70 @@ pub fn built() -> &'static str {
     IMAGE
 }
 
+/// The image with the scripted ACP agent in it, which is the only thing an Environment needs
+/// that the shipped image has no business carrying.
+pub fn with_the_scripted_agent() -> &'static str {
+    static BUILT: OnceLock<()> = OnceLock::new();
+
+    BUILT.get_or_init(|| {
+        built();
+        docker(
+            &[
+                "build",
+                "--file",
+                "crates/kestrel/tests/support/scripted-env.Dockerfile",
+                "--tag",
+                SCRIPTED,
+                ".",
+            ],
+            "building the image with the scripted agent",
+        );
+    });
+
+    SCRIPTED
+}
+
+/// The container behind an Environment a Run recorded.
+pub struct Container(String);
+
+impl Container {
+    pub fn named(environment: &str) -> Self {
+        let (driver, container) = environment
+            .split_once('/')
+            .unwrap_or_else(|| panic!("{environment} does not name a driver and an instance"));
+        assert_eq!(driver, "docker");
+
+        Self(container.to_owned())
+    }
+
+    pub fn exec(&self, command: &[&str]) -> Ran {
+        let mut arguments = vec!["exec", &self.0];
+        arguments.extend_from_slice(command);
+
+        ran(&arguments)
+    }
+
+    pub fn kill(&self) {
+        docker(
+            &["kill", "--signal", "KILL", &self.0],
+            "killing a container",
+        );
+    }
+
+    pub async fn is_gone(&self) {
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+
+        while tokio::time::Instant::now() < deadline {
+            if ran(&["inspect", "--format", "{{.Id}}", &self.0]).code != 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        panic!("the container {} was never destroyed", self.0);
+    }
+}
+
 #[derive(Debug)]
 pub struct Ran {
     pub code: i32,
@@ -47,10 +112,14 @@ pub fn running(command: &[&str]) -> Ran {
     let mut run = vec!["run", "--rm", "--entrypoint", program, built()];
     run.extend_from_slice(arguments);
 
+    ran(&run)
+}
+
+fn ran(arguments: &[&str]) -> Ran {
     let ran = Command::new("docker")
-        .args(&run)
+        .args(arguments)
         .output()
-        .expect("docker should run the image");
+        .expect("docker should be reachable");
 
     Ran {
         code: ran.status.code().unwrap_or(-1),

@@ -7,6 +7,7 @@ const FANOUT: &str = "src/fanout.rs";
 const WORK: &str = "src/work.rs";
 const TIMER: &str = "src/timer.rs";
 const COMPUTE: &str = "src/compute";
+const ROLES: &str = "src/role";
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -53,5 +54,21 @@ fn no_sql_is_issued_from_anywhere_but_store_and_log() {
             "{} reaches for sqlx; a session's whole truth is Store's and Log's to hold",
             file.display()
         );
+    }
+}
+
+/// `Compute` is the one port with two drivers (ADR-0005), and which one executes a Run is
+/// configuration: a role that named one would be a second place to decide it.
+#[test]
+fn no_role_names_a_compute_driver() {
+    for file in rust_files(&crate_root().join(ROLES)) {
+        let source = fs::read_to_string(&file).expect("a readable source file");
+        for driver in ["Docker", "LocalExec"] {
+            assert!(
+                !source.contains(driver),
+                "{} names the {driver} driver; which one a Run executes in is configuration",
+                file.display()
+            );
+        }
     }
 }

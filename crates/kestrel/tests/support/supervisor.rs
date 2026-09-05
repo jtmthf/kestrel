@@ -2,11 +2,10 @@
 //! same link an operator would.
 
 use std::path::{Path, PathBuf};
-use std::process::ExitStatus;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use kestrel::compute::{Environment, LocalExec};
+use kestrel::compute::{Driver, Environment, Exited, LocalExec};
 use kestrel::domain::RunId;
 use kestrel::link::credential::Secret;
 
@@ -37,15 +36,13 @@ impl Supervisor {
         credential: &Secret,
         script: scripted_agent::Script,
     ) -> Self {
-        let run = run.to_string();
         let runtime = scripted_agent::playing(script);
-        let mut environment = LocalExec
+        let mut environment = Driver::LocalExec(LocalExec::running(binary()))
             .provision(
-                binary(),
-                &[],
+                run,
                 &[
                     ("KESTREL_LINK", link),
-                    ("KESTREL_RUN", &run),
+                    ("KESTREL_RUN", &run.to_string()),
                     ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
                     ("KESTREL_AGENT_RUNTIME", &runtime),
                 ],
@@ -66,17 +63,17 @@ impl Supervisor {
         self.diagnostics.wait_until_it_says(what).await;
     }
 
-    pub async fn exits(&mut self) -> ExitStatus {
+    pub async fn exits(&mut self) -> Exited {
         let deadline = tokio::time::Instant::now() + PATIENCE;
 
         loop {
-            if let Some(status) = self
+            if let Some(exited) = self
                 .environment
                 .status()
                 .expect("the supervisor should be waitable")
             {
                 self.diagnostics.drain();
-                return status;
+                return exited;
             }
             if tokio::time::Instant::now() > deadline {
                 panic!(
@@ -97,14 +94,14 @@ impl Supervisor {
     }
 
     pub fn destroy(self) {
-        LocalExec
-            .destroy(self.environment)
+        self.environment
+            .destroy()
             .expect("the environment should be destroyed");
     }
 
     /// Signals nothing: a supervisor that reported itself finished is on its way out, and
     /// reaping it is the whole of the cleanup left.
-    pub async fn finishes(mut self) -> ExitStatus {
+    pub async fn finishes(mut self) -> Exited {
         self.exits().await
     }
 }
