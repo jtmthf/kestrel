@@ -40,3 +40,46 @@ jobs:
           cargo build --locked --release --package kestrel-supervisor
           size=$(wc -c < target/release/kestrel-supervisor)
           echo "kestrel-supervisor: $size bytes ($((size / 1024)) KiB)" >> "$GITHUB_STEP_SUMMARY"
+
+  image:
+    name: kestrel-env (image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: jdx/mise-action@v4
+        with:
+          install_args: rust
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the image
+        run: |
+          started=$(date +%s)
+          docker build --file images/kestrel-env/Dockerfile --tag kestrel-env:test .
+          echo "built_in=$(($(date +%s) - started))" >> "$GITHUB_ENV"
+
+      - name: Record the image's size and build time
+        run: |
+          size=$(docker image inspect kestrel-env:test --format '{{.Size}}')
+          echo "kestrel-env: $((size / 1024 / 1024)) MiB, built from cold in ${built_in}s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test the image
+        run: cargo test --locked --package kestrel --test image -- --ignored
+
+  # The runner is amd64, so nothing else builds the arm64 half of the image: the release it
+  # pins, the checksum it verifies, and the architecture it selects on.
+  architectures:
+    name: kestrel-env (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the agent runtime for arm64
+        run: |
+          docker buildx build --platform linux/arm64 --target opencode \
+            --output type=cacheonly --file images/kestrel-env/Dockerfile .

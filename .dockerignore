@@ -1,0 +1,6 @@
+# An image builds from the repository root, and from nothing in it but the workspace.
+*
+!Cargo.lock
+!Cargo.toml
+!crates
+!rust-toolchain.toml
