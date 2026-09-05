@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod built;
+pub mod diagnostics;
 pub mod environment;
 pub mod github_stub;
 pub mod image;
@@ -62,9 +63,9 @@ impl Harness {
         Self::booted(None).await
     }
 
-    /// Bound on every interface rather than on loopback, because what dials this one is in a
+    /// Bound on every interface rather than on loopback, because what dials this one is a
     /// container and reaches this machine by its gateway address.
-    pub async fn boot_reachable_from_a_container() -> Self {
+    pub async fn boot_reachable_from_an_environment() -> Self {
         let data_dir = TempDir::new().expect("a temporary data directory");
         Self::boot_against(
             data_dir,
@@ -138,7 +139,7 @@ impl Harness {
         format!("http://{}", self.address)
     }
 
-    pub fn link_from_a_container(&self) -> String {
+    pub fn link_from_an_environment(&self) -> String {
         format!("http://host.docker.internal:{}", self.address.port())
     }
 

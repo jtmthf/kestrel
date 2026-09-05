@@ -18,17 +18,18 @@ The build context is the repository root, because the supervisor is built from s
 docker build --file images/kestrel-env/Dockerfile --tag kestrel-env .
 ```
 
-Everything the build pulls in is pinned: both base images by digest, the Rust toolchain by
+Almost everything the build pulls in is pinned: both base images by digest, the Rust toolchain by
 `rust-toolchain.toml`, the crates by `Cargo.lock` under `--locked`, and opencode by version and
-SHA-256. The release carries no checksums of its own, so bumping `OPENCODE_VERSION` means bumping
+SHA-256. The exception is apt, which resolves `git` and `ca-certificates` to whatever the Debian
+release carries on the day — the one thing here that moves without the Dockerfile changing. The release carries no checksums of its own, so bumping `OPENCODE_VERSION` means bumping
 `OPENCODE_SHA256_AMD64` and `OPENCODE_SHA256_ARM64` beside it:
 
 ```sh
 curl --location --silent "https://github.com/sst/opencode/releases/download/v<version>/opencode-linux-x64.tar.gz" | sha256sum
 ```
 
-The x64 build opencode publishes by default requires AVX2. A host without it wants the `-baseline`
-release, which is a change of one word in the download URL.
+The x64 release opencode publishes by default requires AVX2. A host without it wants the
+`-baseline` asset instead, which is a longer name in the same URL.
 
 CI writes the image's size and build time into every run's summary, so growth is visible in the run
 that causes it. The opencode binary is nearly all of the size.
@@ -50,6 +51,11 @@ docker run --rm \
 
 The supervisor dials the link outward and the image exposes no port: an Environment needs egress and
 nothing else, which is the capability every deployment target has.
+
+It runs as the unprivileged `kestrel` user in `/workspace`, which is where an ACP session's working
+directory is and where a Workspace's repositories belong. Anything written into an Environment from
+outside has to land owned by that user, and a derived image that installs packages needs `USER root`
+first.
 
 **Killing the supervisor ends the Run.** The agent is the supervisor's child over stdio, so nothing
 in the image restarts one — the entrypoint is the supervisor itself, with no init or wrapper around
@@ -74,5 +80,4 @@ USER kestrel
 ```
 
 The Agent that runs in it names `claude-code-acp` as its runtime, and the supervisor spawns that
-instead of `opencode acp`. The provider key reaches the agent through the spawn rather than the
-protocol, so nothing about the derived image changes how a credential travels.
+instead of `opencode acp`.

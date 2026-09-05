@@ -62,7 +62,24 @@ jobs:
       - name: Record the image's size and build time
         run: |
           size=$(docker image inspect kestrel-env:test --format '{{.Size}}')
-          echo "kestrel-env: $((size / 1024 / 1024)) MiB, built in ${built_in}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "kestrel-env: $((size / 1024 / 1024)) MiB, built from cold in ${built_in}s" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Test the image
         run: cargo test --locked --package kestrel --test image -- --ignored
+
+  # The runner is amd64, so nothing else builds the arm64 half of the image: the release it
+  # pins, the checksum it verifies, and the architecture it selects on.
+  architectures:
+    name: kestrel-env (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the agent runtime for arm64
+        run: |
+          docker buildx build --platform linux/arm64 --target opencode \
+            --output type=cacheonly --file images/kestrel-env/Dockerfile .

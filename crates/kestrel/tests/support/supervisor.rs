@@ -1,7 +1,6 @@
 //! The same artifact `kestrel-env` ships, in a local-exec Environment, dialling out over the
 //! same link an operator would.
 
-use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::OnceLock;
@@ -10,8 +9,8 @@ use std::time::Duration;
 use kestrel::compute::{Environment, LocalExec};
 use kestrel::domain::RunId;
 use kestrel::link::credential::Secret;
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
+use super::diagnostics::Diagnostics;
 use super::{built, scripted_agent};
 
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -24,8 +23,7 @@ pub fn binary() -> &'static Path {
 
 pub struct Supervisor {
     environment: Environment,
-    diagnostics: UnboundedReceiver<String>,
-    seen: Vec<String>,
+    diagnostics: Diagnostics,
 }
 
 impl Supervisor {
@@ -57,41 +55,15 @@ impl Supervisor {
         let pipe = environment
             .take_stderr()
             .expect("the supervisor's diagnostics should be piped");
-        let (lines, diagnostics) = unbounded_channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
-                if lines.send(line).is_err() {
-                    break;
-                }
-            }
-        });
 
         Self {
             environment,
-            diagnostics,
-            seen: Vec::new(),
+            diagnostics: Diagnostics::pumped("the supervisor", pipe),
         }
     }
 
     pub async fn wait_until_it_says(&mut self, what: &str) {
-        let deadline = tokio::time::Instant::now() + PATIENCE;
-
-        loop {
-            if self.said(what) {
-                return;
-            }
-            match tokio::time::timeout_at(deadline, self.diagnostics.recv()).await {
-                Ok(Some(line)) => self.seen.push(line),
-                Ok(None) => panic!(
-                    "the supervisor stopped saying anything before it said {what:?}. it said:\n{}",
-                    self.everything_it_said()
-                ),
-                Err(_) => panic!(
-                    "timed out waiting for the supervisor to say {what:?}. it said:\n{}",
-                    self.everything_it_said()
-                ),
-            }
-        }
+        self.diagnostics.wait_until_it_says(what).await;
     }
 
     pub async fn exits(&mut self) -> ExitStatus {
@@ -103,7 +75,7 @@ impl Supervisor {
                 .status()
                 .expect("the supervisor should be waitable")
             {
-                self.drain();
+                self.diagnostics.drain();
                 return status;
             }
             if tokio::time::Instant::now() > deadline {
@@ -117,17 +89,11 @@ impl Supervisor {
     }
 
     pub fn said(&self, what: &str) -> bool {
-        self.seen.iter().any(|line| line.contains(what))
+        self.diagnostics.said(what)
     }
 
     pub fn everything_it_said(&self) -> String {
-        self.seen.join("\n")
-    }
-
-    fn drain(&mut self) {
-        while let Ok(line) = self.diagnostics.try_recv() {
-            self.seen.push(line);
-        }
+        self.diagnostics.everything_it_said()
     }
 
     pub fn destroy(self) {
