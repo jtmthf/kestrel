@@ -69,7 +69,6 @@ pub struct Session {
     pub opened_at: Timestamp,
     pub sealed_at: Option<Timestamp>,
     pub continues: Option<SessionId>,
-    pub continued_by: Vec<SessionId>,
 }
 
 impl Session {

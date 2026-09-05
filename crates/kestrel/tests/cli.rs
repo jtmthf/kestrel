@@ -160,6 +160,30 @@ fn shown(block: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// The refusal itself, so a test asserting one never passes on a command that succeeded.
+fn refused(kestrel: &Kestrel, args: &[&str]) -> String {
+    let refusal = kestrel.try_run(args);
+    assert!(
+        !refusal.status.success(),
+        "`kestrel {}` was expected to be refused, and succeeded",
+        args.join(" ")
+    );
+    String::from_utf8_lossy(&refusal.stderr).into_owned()
+}
+
+fn opened(kestrel: &Kestrel) -> String {
+    kestrel.run(&[
+        "session",
+        "open",
+        "--organization",
+        "acme",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ])
+}
+
 #[test]
 fn first_boot_needs_no_configuration_file_to_declare_an_organization() {
     let kestrel = Kestrel::new();
@@ -322,30 +346,6 @@ fn a_session_outlives_the_process_that_opened_it() {
 
     assert_eq!(kestrel.run(&["session", "show", &id]), session);
     assert_eq!(kestrel.run(&["session", "transcript", &id]), transcript);
-}
-
-/// The refusal itself, so a test asserting one never passes on a command that succeeded.
-fn refused(kestrel: &Kestrel, args: &[&str]) -> String {
-    let refusal = kestrel.try_run(args);
-    assert!(
-        !refusal.status.success(),
-        "`kestrel {}` was expected to be refused, and succeeded",
-        args.join(" ")
-    );
-    String::from_utf8_lossy(&refusal.stderr).into_owned()
-}
-
-fn opened(kestrel: &Kestrel) -> String {
-    kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ])
 }
 
 #[test]

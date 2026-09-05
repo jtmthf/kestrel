@@ -276,7 +276,6 @@ impl Tx<'_> {
             opened_at: Timestamp::now(),
             sealed_at: None,
             continues: continues.map(|sealed| sealed.id),
-            continued_by: Vec::new(),
         };
 
         sqlx::query(
@@ -366,11 +365,12 @@ impl Tx<'_> {
                 .get::<Option<String>, _>("continues")
                 .map(|sealed| sealed.parse())
                 .transpose()?,
-            continued_by: self.continuations(id).await?,
         })
     }
 
-    async fn continuations(&mut self, sealed: SessionId) -> Result<Vec<SessionId>> {
+    /// Read on its own rather than with the Session: every path that reports a Run reads one,
+    /// and none of them looks at what continues it.
+    pub async fn continuations(&mut self, sealed: SessionId) -> Result<Vec<SessionId>> {
         sqlx::query("SELECT id FROM session WHERE continues = ? ORDER BY opened_at, id")
             .bind(sealed.to_string())
             .fetch_all(&mut *self.transaction)

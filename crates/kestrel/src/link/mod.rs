@@ -132,8 +132,7 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .with_state(ControlPlane { store, shutdown })
 }
 
-/// An instruction is how a turn is driven, so this is the door a sealed Session closes on
-/// one. Sealing needs every Run ended first, which is what makes the refusal unreachable.
+/// Sealing needs every Run ended first, which is what makes this refusal unreachable.
 pub async fn instruct(
     store: &Store,
     run: &Run,

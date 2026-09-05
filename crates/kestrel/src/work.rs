@@ -24,8 +24,6 @@ pub struct Claimed {
     pub credential: Secret,
 }
 
-/// Concurrency lives across Sessions and never within one, so a Session that already has a
-/// Run takes no other until that one ends.
 pub async fn enqueue(store: &Store, session: SessionId) -> Result<Run> {
     let mut tx = store.begin().await?;
     let session = tx.session(session).await?;

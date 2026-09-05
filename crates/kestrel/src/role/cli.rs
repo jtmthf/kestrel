@@ -100,7 +100,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             if let Some(continues) = session.continues {
                 println!("continues     {continues}");
             }
-            for continuation in &session.continued_by {
+            for continuation in session::continuations(&store, session.id).await? {
                 println!("continued-by  {continuation}");
             }
         }

@@ -67,8 +67,6 @@ async fn a_run_that_is_slow_or_blocked_still_occupies_the_slot_and_nothing_else_
     harness.teardown().await;
 }
 
-/// The concurrency the one-at-a-time rule buys: a slot held in one Session blocks nothing
-/// anywhere else.
 #[tokio::test]
 async fn a_run_in_one_session_leaves_every_other_session_free_to_take_one() {
     let harness = Harness::boot().await;
@@ -312,7 +310,7 @@ async fn work_that_continues_a_sealed_session_opens_a_new_one_that_records_it() 
         "the new session does not record the sealed one"
     );
     assert_eq!(
-        harness.show_session(sealed.id).await.continued_by,
+        harness.continuations(sealed.id).await,
         vec![continuing.id],
         "the sealed session does not read the one that continues it"
     );

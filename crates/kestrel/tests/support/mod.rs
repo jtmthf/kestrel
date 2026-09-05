@@ -222,6 +222,12 @@ impl Harness {
         session::seal(&self.store, id).await
     }
 
+    pub async fn continuations(&self, id: SessionId) -> Vec<SessionId> {
+        session::continuations(&self.store, id)
+            .await
+            .expect("the continuations should read")
+    }
+
     pub async fn show_session(&self, id: SessionId) -> Session {
         session::show(&self.store, id)
             .await

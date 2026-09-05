@@ -68,6 +68,10 @@ pub async fn show(store: &Store, id: SessionId) -> Result<Session> {
     store.begin().await?.session(id).await
 }
 
+pub async fn continuations(store: &Store, id: SessionId) -> Result<Vec<SessionId>> {
+    store.begin().await?.continuations(id).await
+}
+
 pub async fn transcript(
     store: &Store,
     id: SessionId,
