@@ -89,7 +89,8 @@ async fn a_run_holds_a_lease_from_the_moment_it_is_claimed() {
     let queued = harness.enqueue_run(session.id).await;
     assert!(queued.lease_expires_at.is_none());
 
-    let (claimed, _) = harness.dispatch_run(session.id).await;
+    let claimed = harness.claim_run().await.expect("a run to claim").run;
+    assert_eq!(claimed.id, queued.id);
     assert!(
         claimed.lease_expires_at > Some(Timestamp::now()),
         "a claimed run holds no lease"

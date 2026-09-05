@@ -185,9 +185,47 @@ impl Harness {
     }
 
     pub async fn open_session(&self, organization: &str, workspace: &str, agent: &str) -> Session {
-        session::open(&self.store, organization, workspace, agent)
+        self.try_open_session(organization, workspace, agent, None)
             .await
             .expect("the session should open")
+    }
+
+    pub async fn continue_session(
+        &self,
+        organization: &str,
+        workspace: &str,
+        agent: &str,
+        continues: SessionId,
+    ) -> Session {
+        self.try_open_session(organization, workspace, agent, Some(continues))
+            .await
+            .expect("the session should open")
+    }
+
+    pub async fn try_open_session(
+        &self,
+        organization: &str,
+        workspace: &str,
+        agent: &str,
+        continues: Option<SessionId>,
+    ) -> anyhow::Result<Session> {
+        session::open(&self.store, organization, workspace, agent, continues).await
+    }
+
+    pub async fn seal_session(&self, id: SessionId) -> Session {
+        self.try_seal_session(id)
+            .await
+            .expect("the session should seal")
+    }
+
+    pub async fn try_seal_session(&self, id: SessionId) -> anyhow::Result<Session> {
+        session::seal(&self.store, id).await
+    }
+
+    pub async fn continuations(&self, id: SessionId) -> Vec<SessionId> {
+        session::continuations(&self.store, id)
+            .await
+            .expect("the continuations should read")
     }
 
     pub async fn show_session(&self, id: SessionId) -> Session {
@@ -234,17 +272,25 @@ impl Harness {
     }
 
     pub async fn said(&self, run: &Run, message: &str) {
-        let mut tx = self.store.begin().await.expect("a transaction");
-        work::said(&mut tx, run, message)
+        self.try_said(run, message)
             .await
             .expect("the message should reach the transcript");
-        tx.commit().await.expect("the message should commit");
+    }
+
+    pub async fn try_said(&self, run: &Run, message: &str) -> anyhow::Result<()> {
+        let mut tx = self.store.begin().await.expect("a transaction");
+        work::said(&mut tx, run, message).await?;
+        tx.commit().await
     }
 
     pub async fn enqueue_run(&self, session: SessionId) -> Run {
-        work::enqueue(&self.store, session)
+        self.try_enqueue_run(session)
             .await
             .expect("the run should enqueue")
+    }
+
+    pub async fn try_enqueue_run(&self, session: SessionId) -> anyhow::Result<Run> {
+        work::enqueue(&self.store, session).await
     }
 
     /// Claims what it enqueued, standing in for the work role a `boot`ed harness leaves idle.
@@ -283,9 +329,17 @@ impl Harness {
     }
 
     pub async fn instruct(&self, run: &Run, instruction: Instruction) {
-        link::instruct(&self.store, run, instruction)
+        self.try_instruct(run, instruction)
             .await
             .expect("the instruction should send");
+    }
+
+    pub async fn try_instruct(
+        &self,
+        run: &Run,
+        instruction: Instruction,
+    ) -> anyhow::Result<link::SentInstruction> {
+        link::instruct(&self.store, run, instruction).await
     }
 
     /// A lease that is up when the caller says rather than when a real one would be. The only

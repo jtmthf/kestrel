@@ -67,6 +67,18 @@ pub struct Session {
     pub agent: Agent,
     pub state: SessionState,
     pub opened_at: Timestamp,
+    pub sealed_at: Option<Timestamp>,
+    pub continues: Option<SessionId>,
+}
+
+impl Session {
+    pub fn accepts(&self, what: &str) -> Result<()> {
+        if self.state == SessionState::Sealed {
+            bail!("the session {} is sealed, and accepts no {what}", self.id);
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]

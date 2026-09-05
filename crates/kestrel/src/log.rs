@@ -6,7 +6,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqliteConnection};
 
-use crate::domain::{Exit, RunId, Session, SessionId};
+use crate::domain::{Exit, RunId, Session, SessionId, SessionState};
 
 /// What changed a Session's shared state. Never what happened inside a Run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,18 +60,20 @@ impl<'a> Log<'a> {
         Self { connection }
     }
 
+    /// The state is read in the statement that appends rather than off the `Session` handed
+    /// in, so one sealed after the caller read it refuses all the same.
     pub async fn append(&mut self, session: &Session, entry: Entry) -> Result<TranscriptEntry> {
         let appended_at = Timestamp::now();
 
         let appended = sqlx::query(
             "INSERT INTO transcript_entry (session_id, organization_id, seq, body, appended_at)
-             VALUES (
+             SELECT
                  ?,
                  ?,
                  (SELECT COALESCE(MAX(seq), 0) + 1 FROM transcript_entry WHERE session_id = ?),
                  ?,
                  ?
-             )
+             WHERE EXISTS (SELECT 1 FROM session WHERE id = ? AND state = ?)
              RETURNING seq",
         )
         .bind(session.id.to_string())
@@ -79,9 +81,17 @@ impl<'a> Log<'a> {
         .bind(session.id.to_string())
         .bind(serde_json::to_string(&entry)?)
         .bind(appended_at.to_string())
-        .fetch_one(&mut *self.connection)
+        .bind(session.id.to_string())
+        .bind(SessionState::Open.as_str())
+        .fetch_optional(&mut *self.connection)
         .await
-        .with_context(|| format!("appending to the transcript of session {}", session.id))?;
+        .with_context(|| format!("appending to the transcript of session {}", session.id))?
+        .with_context(|| {
+            format!(
+                "the session {} is sealed, and accepts no new transcript entry",
+                session.id
+            )
+        })?;
 
         Ok(TranscriptEntry {
             seq: appended.get("seq"),

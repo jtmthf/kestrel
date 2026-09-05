@@ -1,6 +1,6 @@
 //! No dependency edges, because everything queued at 0.1 is immediately eligible (ADR-0005).
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use jiff::{SignedDuration, Timestamp};
 
 use crate::domain::{Exit, Run, RunId, SessionId, Usage};
@@ -27,6 +27,15 @@ pub struct Claimed {
 pub async fn enqueue(store: &Store, session: SessionId) -> Result<Run> {
     let mut tx = store.begin().await?;
     let session = tx.session(session).await?;
+    session.accepts("run")?;
+
+    if let Some(holding) = tx.run_holding_the_slot(&session).await? {
+        bail!(
+            "the session {} already has the run {holding} in it, and a session has one at a time",
+            session.id
+        );
+    }
+
     let run = tx.enqueue_run(&session).await?;
     tx.commit().await?;
 
