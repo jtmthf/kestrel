@@ -98,6 +98,11 @@ pub struct Cli {
     )]
     agent_runtime: String,
 
+    /// The ACP authentication method an Agent Runtime is logged in with, for one that requires
+    /// being logged in before it will open a session
+    #[arg(long, env = "KESTREL_AGENT_AUTH", global = true, value_name = "METHOD")]
+    agent_auth: Option<String>,
+
     /// The Compute driver a Run's Environment is provisioned by
     #[arg(
         long = "compute",
@@ -305,6 +310,7 @@ impl Cli {
                 }
             },
             runtime: self.agent_runtime.clone(),
+            auth: self.agent_auth.clone(),
         })
     }
 

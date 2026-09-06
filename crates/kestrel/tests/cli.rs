@@ -146,7 +146,7 @@ fn declared() -> Kestrel {
         "--organization",
         "acme",
         "--model",
-        "claude-opus-5",
+        kestrel_scripted_agent::OTHER_MODEL,
     ]);
     kestrel
 }

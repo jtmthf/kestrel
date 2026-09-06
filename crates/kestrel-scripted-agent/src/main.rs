@@ -5,21 +5,24 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, AuthMethod, AuthMethodTerminal, ContentBlock, ContentChunk, Cost,
-    InitializeRequest, InitializeResponse, MessageId, NewSessionRequest, NewSessionResponse,
+    AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodTerminal, ContentBlock, ContentChunk,
+    Cost, InitializeRequest, InitializeResponse, MessageId, NewSessionRequest, NewSessionResponse,
     PermissionOption, PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
     PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, SessionNotification, SessionUpdate, StopReason, TextContent,
-    ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
+    RequestPermissionRequest, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelect, SessionConfigSelectOption, SessionConfigValueId, SessionNotification,
+    SessionUpdate, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason,
+    TextContent, ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use clap::Parser;
-use kestrel_scripted_agent::Script;
+use kestrel_scripted_agent::{DEFAULT_MODEL, OTHER_MODEL, Script};
 
 const SESSION: &str = "scripted";
 /// Long enough to kill a control plane and bring it back up under a turn that is in flight.
 const LINGER: Duration = Duration::from_secs(3);
 const TOOL_CALL: &str = "call-1";
+const MODEL_OPTION: &str = "model";
 const ALLOW_ONCE: &str = "allow-once";
 
 #[derive(Debug, Parser)]
@@ -61,6 +64,17 @@ async fn main() -> Result<()> {
                     );
                 }
 
+                if script == Script::Insists {
+                    return responder.respond(
+                        InitializeResponse::new(ProtocolVersion::V1).auth_methods(vec![
+                            AuthMethod::Agent(AuthMethodAgent::new(
+                                "its-own",
+                                "Log in as the agent asks",
+                            )),
+                        ]),
+                    );
+                }
+
                 responder.respond(
                     InitializeResponse::new(ProtocolVersion::V1).agent_capabilities(
                         AgentCapabilities::new().prompt_capabilities(PromptCapabilities::new()),
@@ -71,7 +85,30 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |_new: NewSessionRequest, responder, _connection| {
-                responder.respond(NewSessionResponse::new(SESSION))
+                if script == Script::Insists {
+                    return responder.respond_with_error(Error::auth_required());
+                }
+
+                responder.respond(match script {
+                    Script::Decides => NewSessionResponse::new(SESSION),
+                    _ => {
+                        NewSessionResponse::new(SESSION).config_options(vec![models(DEFAULT_MODEL)])
+                    }
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |set: SetSessionConfigOptionRequest, responder, _connection| {
+                let Some(selected) = set.value.as_value_id() else {
+                    return responder.respond_with_error(
+                        Error::invalid_params().data("this agent's model is a selection"),
+                    );
+                };
+
+                responder.respond(SetSessionConfigOptionResponse::new(vec![models(
+                    selected.clone(),
+                )]))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -186,6 +223,21 @@ fn update(connection: &ConnectionTo<Client>, update: SessionUpdate) -> Result<()
 fn chunk(message: Option<&str>, said: &str) -> ContentChunk {
     ContentChunk::new(ContentBlock::Text(TextContent::new(said)))
         .message_id(message.map(MessageId::new))
+}
+
+fn models(current: impl Into<SessionConfigValueId>) -> SessionConfigOption {
+    SessionConfigOption::new(
+        MODEL_OPTION,
+        "Model",
+        SessionConfigKind::Select(SessionConfigSelect::new(
+            current,
+            vec![
+                SessionConfigSelectOption::new(DEFAULT_MODEL, DEFAULT_MODEL),
+                SessionConfigSelectOption::new(OTHER_MODEL, OTHER_MODEL),
+            ],
+        )),
+    )
+    .category(SessionConfigOptionCategory::Model)
 }
 
 fn allow_once() -> PermissionOption {

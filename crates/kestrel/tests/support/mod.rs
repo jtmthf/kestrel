@@ -15,6 +15,7 @@ pub mod docker;
 pub mod environment;
 pub mod github_stub;
 pub mod image;
+pub mod lineage;
 pub mod link_client;
 pub mod model;
 pub mod repository;
@@ -141,6 +142,7 @@ impl Harness {
             },
             driver: provisions.driver,
             runtime: provisions.runtime,
+            auth: None,
         });
         let roles = tokio::spawn(all_in_one.run(dispatch, shutdown.clone()));
 

@@ -36,6 +36,16 @@ impl Supervisor {
         credential: &Secret,
         script: scripted_agent::Script,
     ) -> Self {
+        Self::provision_selecting(link, run, credential, script, "")
+    }
+
+    pub fn provision_selecting(
+        link: &str,
+        run: RunId,
+        credential: &Secret,
+        script: scripted_agent::Script,
+        model: &str,
+    ) -> Self {
         let runtime = scripted_agent::playing(script);
         let mut environment = Driver::LocalExec(LocalExec::running(binary()))
             .provision(
@@ -45,6 +55,7 @@ impl Supervisor {
                     ("KESTREL_RUN", &run.to_string()),
                     ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
                     ("KESTREL_AGENT_RUNTIME", &runtime),
+                    ("KESTREL_AGENT_MODEL", model),
                 ],
             )
             .expect("the supervisor should spawn");

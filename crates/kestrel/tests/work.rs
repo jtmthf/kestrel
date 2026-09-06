@@ -27,7 +27,12 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+        .declare_agent(
+            &organization,
+            "builder",
+            "opencode",
+            kestrel_scripted_agent::OTHER_MODEL,
+        )
         .await;
 
     harness.open_session("acme", "kestrel", "builder").await
@@ -161,7 +166,12 @@ async fn a_workspace_that_cannot_be_checked_out_fails_the_run_rather_than_starti
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+        .declare_agent(
+            &organization,
+            "builder",
+            "opencode",
+            kestrel_scripted_agent::OTHER_MODEL,
+        )
         .await;
     let session = harness.open_session("acme", "kestrel", "builder").await;
 

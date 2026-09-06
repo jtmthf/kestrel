@@ -26,6 +26,9 @@ use support::model::{MARK, Model};
 const PATIENCE: Duration = Duration::from_secs(180);
 
 const RUNTIME: &str = "opencode acp";
+/// The model the stub endpoint serves, named as the Agent Runtime advertises it: the provider
+/// this Environment is configured with, and the one model in it.
+const MODEL: &str = "kestrel-test/canned";
 
 /// A Run, the Environment executing it, and what the supervisor in it says. Provisioned through
 /// the `Compute` port rather than through the work role, because the model the Agent Runtime is
@@ -40,7 +43,8 @@ impl Driven {
     async fn in_an_environment(harness: &Harness, model: &Model) -> Self {
         let session = a_session(harness).await;
         let (run, credential) = harness.dispatch_run(session.id).await;
-        let (environment, diagnostics) = provisioned(harness, run.id, &credential);
+        let (environment, diagnostics) =
+            provisioned(harness, run.id, &credential, &session.agent.model);
 
         let mut driven = Self {
             run,
@@ -89,7 +93,12 @@ impl Driven {
     }
 }
 
-fn provisioned(harness: &Harness, run: RunId, credential: &Secret) -> (Environment, Diagnostics) {
+fn provisioned(
+    harness: &Harness,
+    run: RunId,
+    credential: &Secret,
+    model: &str,
+) -> (Environment, Diagnostics) {
     let mut environment = Driver::Docker(Docker::provisioning_from(image::built()))
         .provision(
             run,
@@ -98,6 +107,7 @@ fn provisioned(harness: &Harness, run: RunId, credential: &Secret) -> (Environme
                 ("KESTREL_RUN", &run.to_string()),
                 ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
                 ("KESTREL_AGENT_RUNTIME", RUNTIME),
+                ("KESTREL_AGENT_MODEL", model),
             ],
         )
         .expect("the environment should provision");
@@ -137,7 +147,7 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+        .declare_agent(&organization, "builder", "opencode", MODEL)
         .await;
 
     harness.open_session("acme", "kestrel", "builder").await
@@ -203,6 +213,13 @@ async fn a_run_drives_the_agent_runtime_through_a_turn_and_ends_with_an_exit_sta
     assert!(
         !model.asked().is_empty(),
         "the run ended without the agent runtime having reached a model at all"
+    );
+    assert!(
+        driven
+            .diagnostics
+            .said(&format!("selected the model {MODEL}")),
+        "the run never set the model its agent named. the environment said:\n{}",
+        driven.diagnostics.everything_it_said()
     );
 
     driven.destroy();

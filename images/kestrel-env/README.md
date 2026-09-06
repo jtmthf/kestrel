@@ -46,8 +46,13 @@ docker run --rm \
   --env KESTREL_RUN=<run> \
   --env KESTREL_RUN_CREDENTIAL=<credential> \
   --env KESTREL_AGENT_RUNTIME='opencode acp' \
+  --env KESTREL_AGENT_MODEL=<model, as the runtime advertises it> \
   kestrel-env
 ```
+
+`KESTREL_AGENT_MODEL` is the model the Run's Agent named, set over ACP once the session is open; an
+empty one leaves the runtime on its own default. `KESTREL_AGENT_AUTH` names the ACP authentication
+method to log the agent in with, for a runtime that will not open a session until something has.
 
 The supervisor dials the link outward and the image exposes no port: an Environment needs egress and
 nothing else, which is the capability every deployment target has.
@@ -80,4 +85,7 @@ USER kestrel
 ```
 
 The Agent that runs in it names `claude-code-acp` as its runtime, and the supervisor spawns that
-instead of `opencode acp`.
+instead of `opencode acp`. An adapter usually advertises more than one way to be logged in, and ACP
+gives a client no way to choose between them, so a derived image is configured with `--agent-auth`
+as well. `crates/kestrel/tests/support/conformance-env.Dockerfile` is a worked example: the
+conformance suite's second agent, built this way and driven with nothing kestrel branches on.

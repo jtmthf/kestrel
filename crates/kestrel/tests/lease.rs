@@ -26,7 +26,12 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+        .declare_agent(
+            &organization,
+            "builder",
+            "opencode",
+            kestrel_scripted_agent::OTHER_MODEL,
+        )
         .await;
 
     harness.open_session("acme", "kestrel", "builder").await
