@@ -45,6 +45,8 @@ not reconstruct them:
 - **GCP and Azure have no GA first-party Rust SDK.** `Compute` for Cloud Run jobs and Container Apps
   dynamic sessions will be hand-rolled or generated REST at `0.7`. Known, accepted, lower priority.
 - **SQLite reaches Rust through a C dependency**, so a static musl build needs a C cross-toolchain in
-  CI. `FROM scratch` survives; the build pipeline gains a container.
+  CI. `FROM scratch` survives; the build pipeline gains a container. It does not survive:
+  [ADR-0008](0008-the-control-plane-ships-dynamically-linked.md) settles what the control-plane
+  image is linked against, and why the scratch image was never available to be bought.
 - **This repo carries a TypeScript toolchain either way**, because the `0.3` web UI is TypeScript
   regardless. The split decides where the boundary sits, not whether there is a second language.
