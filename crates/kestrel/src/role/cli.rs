@@ -1,12 +1,15 @@
-use anyhow::Result;
+use std::io::Read as _;
+
+use anyhow::{Result, bail};
 
 use crate::cli::{
-    AgentCommand, CliCommand, EventCommand, IntegrationCommand, OrganizationCommand,
-    RegisterCommand, RunCommand, SessionCommand, WorkspaceCommand,
+    AgentCommand, CliCommand, CredentialCommand, EventCommand, IntegrationCommand,
+    OrganizationCommand, RegisterCommand, RunCommand, SessionCommand, WorkspaceCommand,
 };
 use crate::domain::{Direction, IntegrationKind};
 use crate::integration::{self, Registration};
 use crate::log::Window;
+use crate::provider;
 use crate::session;
 use crate::store::Store;
 use crate::work;
@@ -75,6 +78,25 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                     agent.id, agent.name, agent.runtime, agent.model
                 );
             }
+        }
+        CliCommand::Credential(CredentialCommand::Set {
+            variable,
+            organization,
+        }) => {
+            provider::hold(&store, organization, variable, &read_the_secret()?).await?;
+            println!("{variable}");
+        }
+        CliCommand::Credential(CredentialCommand::List { organization }) => {
+            for held in provider::held(&store, organization).await? {
+                println!("{}  {}", held.variable, held.set_at);
+            }
+        }
+        CliCommand::Credential(CredentialCommand::Forget {
+            variable,
+            organization,
+        }) => {
+            provider::forget(&store, organization, variable).await?;
+            println!("{variable}");
         }
         CliCommand::Session(SessionCommand::Open {
             organization,
@@ -203,4 +225,18 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Off standard input rather than out of an argument, so a provider's key is never in a shell
+/// history or in what `ps` shows of this process.
+fn read_the_secret() -> Result<String> {
+    let mut read = String::new();
+    std::io::stdin().read_to_string(&mut read)?;
+    let secret = read.trim();
+
+    if secret.is_empty() {
+        bail!("a provider credential is read from standard input, and nothing was on it");
+    }
+
+    Ok(secret.to_owned())
 }

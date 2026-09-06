@@ -56,6 +56,22 @@ impl Stack {
         ran.out
     }
 
+    /// Down a pipe rather than as an argument, which is the only way `credential set` takes one.
+    pub fn held_a_provider_credential(&self, organization: &str, variable: &str, secret: &str) {
+        let ran = self.in_the_control_plane(&[
+            "sh",
+            "-c",
+            &format!(
+                "printf %s {secret} | kestrel credential set {variable} --organization {organization}"
+            ),
+        ]);
+        assert_eq!(
+            ran.code, 0,
+            "the stack would not hold the provider credential {variable}:\n{}",
+            ran.err
+        );
+    }
+
     pub fn in_the_control_plane(&self, command: &[&str]) -> Ran {
         let mut exec = vec!["exec", "--no-TTY", CONTROL_PLANE];
         exec.extend_from_slice(command);

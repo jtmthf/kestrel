@@ -54,6 +54,12 @@ docker run --rm \
 empty one leaves the runtime on its own default. `KESTREL_AGENT_AUTH` names the ACP authentication
 method to log the agent in with, for a runtime that will not open a session until something has.
 
+**No provider key is among them.** The **Provider Credentials** the Run's Organization holds arrive
+over the link as the supervisor spawns the agent, and reach that process's environment and nothing
+else ([ADR-0010](../../docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md)). An
+Environment run by hand this way reaches whatever the operator's own shell put in it, which is the
+one thing the shipped path does not do.
+
 The supervisor dials the link outward and the image exposes no port: an Environment needs egress and
 nothing else, which is the capability every deployment target has.
 

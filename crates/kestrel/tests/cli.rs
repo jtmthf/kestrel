@@ -1,7 +1,7 @@
 mod support;
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write as _};
 use std::net::TcpListener;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
@@ -30,6 +30,51 @@ impl Kestrel {
             .env("KESTREL_DATA_DIR", self.data_dir.path())
             .output()
             .expect("kestrel should run")
+    }
+
+    /// A Provider Credential is read from standard input rather than from an argument, so the
+    /// only way to set one is to write it down the pipe.
+    fn try_run_on_stdin(&self, args: &[&str], input: &str) -> Output {
+        let mut kestrel = Command::new(env!("CARGO_BIN_EXE_kestrel"))
+            .args(args)
+            .env("KESTREL_DATA_DIR", self.data_dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("kestrel should run");
+        kestrel
+            .stdin
+            .take()
+            .expect("stdin should be piped")
+            .write_all(input.as_bytes())
+            .expect("the secret should reach kestrel");
+
+        kestrel
+            .wait_with_output()
+            .expect("kestrel should be waitable")
+    }
+
+    fn set_credential(&self, variable: &str, organization: &str, secret: &str) -> String {
+        let output = self.try_run_on_stdin(
+            &[
+                "credential",
+                "set",
+                variable,
+                "--organization",
+                organization,
+            ],
+            secret,
+        );
+        assert!(
+            output.status.success(),
+            "`kestrel credential set {variable}` failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned()
     }
 
     /// An ephemeral port, so tests that boot one concurrently never race over kestrel's
@@ -179,6 +224,7 @@ fn declared() -> Kestrel {
         "--model",
         kestrel_scripted_agent::OTHER_MODEL,
     ]);
+    kestrel.set_credential(support::PROVIDER_KEY, "acme", support::A_PROVIDER_KEY);
     kestrel
 }
 
@@ -308,6 +354,134 @@ fn an_agent_names_the_runtime_and_model_it_participates_with() {
     assert_eq!(
         kestrel.run(&["agent", "list", "--organization", "acme"]),
         format!("{id}  builder  opencode  claude-opus-5")
+    );
+}
+
+#[test]
+fn a_provider_credential_is_held_against_an_organization_and_listed_by_variable() {
+    let kestrel = Kestrel::new();
+    kestrel.run(&["organization", "declare", "acme"]);
+
+    assert_eq!(
+        kestrel.set_credential("ANTHROPIC_API_KEY", "acme", "a-provider-key"),
+        "ANTHROPIC_API_KEY"
+    );
+
+    let listed = kestrel.run(&["credential", "list", "--organization", "acme"]);
+    assert!(
+        listed.starts_with("ANTHROPIC_API_KEY  "),
+        "unexpected listing: {listed}"
+    );
+    assert!(
+        !listed.contains("a-provider-key"),
+        "the listing carries the credential itself: {listed}"
+    );
+}
+
+/// Never an argument: one would be in the operator's shell history and in what `ps` shows of
+/// the process holding it.
+#[test]
+fn a_provider_credential_is_read_from_standard_input_and_nothing_on_it_is_refused() {
+    let kestrel = Kestrel::new();
+    kestrel.run(&["organization", "declare", "acme"]);
+
+    let refusal = kestrel.try_run_on_stdin(
+        &[
+            "credential",
+            "set",
+            "ANTHROPIC_API_KEY",
+            "--organization",
+            "acme",
+        ],
+        "\n",
+    );
+
+    assert!(!refusal.status.success());
+    assert!(
+        String::from_utf8_lossy(&refusal.stderr).contains("nothing was on it"),
+        "unhelpful refusal: {}",
+        String::from_utf8_lossy(&refusal.stderr)
+    );
+    assert_eq!(
+        kestrel.run(&["credential", "list", "--organization", "acme"]),
+        ""
+    );
+}
+
+#[test]
+fn holding_a_credential_again_replaces_the_one_held_rather_than_holding_two() {
+    let kestrel = Kestrel::new();
+    kestrel.run(&["organization", "declare", "acme"]);
+
+    kestrel.set_credential("ANTHROPIC_API_KEY", "acme", "the-first-key");
+    kestrel.set_credential("ANTHROPIC_API_KEY", "acme", "the-second-key");
+
+    assert_eq!(
+        kestrel
+            .run(&["credential", "list", "--organization", "acme"])
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_credential_an_organization_never_held_is_not_forgotten_quietly() {
+    let kestrel = Kestrel::new();
+    kestrel.run(&["organization", "declare", "acme"]);
+    kestrel.set_credential("ANTHROPIC_API_KEY", "acme", "a-provider-key");
+
+    let refusal = refused(
+        &kestrel,
+        &[
+            "credential",
+            "forget",
+            "OPENAI_API_KEY",
+            "--organization",
+            "acme",
+        ],
+    );
+    assert!(
+        refusal.contains("holds no provider credential named OPENAI_API_KEY"),
+        "unhelpful refusal: {refusal}"
+    );
+
+    assert_eq!(
+        kestrel.run(&[
+            "credential",
+            "forget",
+            "ANTHROPIC_API_KEY",
+            "--organization",
+            "acme"
+        ]),
+        "ANTHROPIC_API_KEY"
+    );
+    assert_eq!(
+        kestrel.run(&["credential", "list", "--organization", "acme"]),
+        ""
+    );
+}
+
+#[test]
+fn a_credential_cannot_be_held_against_an_organization_that_was_never_declared() {
+    let kestrel = Kestrel::new();
+
+    let refusal = kestrel.try_run_on_stdin(
+        &[
+            "credential",
+            "set",
+            "ANTHROPIC_API_KEY",
+            "--organization",
+            "acme",
+        ],
+        "a-provider-key",
+    );
+
+    assert!(!refusal.status.success());
+    assert!(
+        String::from_utf8_lossy(&refusal.stderr).contains("no organization named acme"),
+        "unhelpful refusal: {}",
+        String::from_utf8_lossy(&refusal.stderr)
     );
 }
 

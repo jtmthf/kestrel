@@ -159,6 +159,9 @@ pub enum CliCommand {
     /// Declare and list Agents
     #[command(subcommand)]
     Agent(AgentCommand),
+    /// Hold and forget the Provider Credentials an Organization's Runs reach a model with
+    #[command(subcommand)]
+    Credential(CredentialCommand),
     /// Open and read Sessions
     #[command(subcommand)]
     Session(SessionCommand),
@@ -280,6 +283,31 @@ pub enum SessionCommand {
         /// How many entries to read at most
         #[arg(long, value_name = "ENTRIES")]
         window: Option<usize>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum CredentialCommand {
+    /// Hold a Provider Credential against an Organization, read from standard input
+    Set {
+        /// The environment variable an Agent Runtime reads it from
+        variable: String,
+        /// The Organization that holds it
+        #[arg(long)]
+        organization: String,
+    },
+    /// List what an Organization holds, by the variable each is read from and never by value
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+    /// Forget a Provider Credential an Organization holds
+    Forget {
+        /// The environment variable it is read from
+        variable: String,
+        /// The Organization that holds it
+        #[arg(long)]
+        organization: String,
     },
 }
 

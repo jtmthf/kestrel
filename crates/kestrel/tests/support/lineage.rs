@@ -94,22 +94,30 @@ impl Lineage {
         }
     }
 
-    /// What the agent needs in its process environment: where the gateway is, and the key to
-    /// reach it with, which arrives through the spawn and never over ACP (ADR-0007).
-    pub fn variables(self, key: &str) -> Vec<(String, String)> {
-        let mut variables = vec![(KEY.to_owned(), key.to_owned())];
+    /// The Provider Credentials the Organization holds for this agent. They reach the agent's
+    /// own process at the spawn, and never over ACP (ADR-0007) or into the Environment.
+    pub fn credentials(self, key: &str) -> Vec<(String, String)> {
+        let mut credentials = vec![(KEY.to_owned(), key.to_owned())];
 
         if self == Lineage::Adapter {
-            variables.extend([
-                ("CODEX_API_KEY".to_owned(), key.to_owned()),
+            credentials.push(("CODEX_API_KEY".to_owned(), key.to_owned()));
+        }
+
+        credentials
+    }
+
+    /// Where the gateway is and how the agent behaves at one: configuration rather than
+    /// credentials, so the Environment is provisioned with it.
+    pub fn variables(self) -> Vec<(String, String)> {
+        match self {
+            Lineage::Native => Vec::new(),
+            Lineage::Adapter => vec![
                 ("MODEL_PROVIDER".to_owned(), "zen".to_owned()),
                 ("NO_BROWSER".to_owned(), "1".to_owned()),
                 ("INITIAL_AGENT_MODE".to_owned(), "read-only".to_owned()),
                 ("CODEX_CONFIG".to_owned(), codex_config()),
-            ]);
+            ],
         }
-
-        variables
     }
 
     /// Written into the Environment before the Run is told to start. The Agent's model is not

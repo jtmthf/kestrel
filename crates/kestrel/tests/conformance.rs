@@ -178,7 +178,7 @@ fn provisioned(
             session.agent.model.clone(),
         ),
     ];
-    variables.extend(lineage.variables(&Lineage::key()));
+    variables.extend(lineage.variables());
 
     let borrowed: Vec<(&str, &str)> = variables
         .iter()
@@ -207,6 +207,11 @@ async fn a_session(harness: &Harness, lineage: Lineage, model: &str) -> Session 
     harness
         .declare_agent(&organization, "builder", lineage.command(), model)
         .await;
+    for (variable, secret) in lineage.credentials(&Lineage::key()) {
+        harness
+            .hold_provider_credential(&organization, &variable, &secret)
+            .await;
+    }
 
     harness.open_session("acme", "kestrel", "builder").await
 }

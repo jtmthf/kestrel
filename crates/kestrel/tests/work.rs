@@ -35,6 +35,14 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
 
+    harness
+        .hold_provider_credential(
+            &organization,
+            support::PROVIDER_KEY,
+            support::A_PROVIDER_KEY,
+        )
+        .await;
+
     harness.open_session("acme", "kestrel", "builder").await
 }
 
@@ -173,6 +181,14 @@ async fn a_workspace_that_cannot_be_checked_out_fails_the_run_rather_than_starti
             kestrel_scripted_agent::OTHER_MODEL,
         )
         .await;
+    harness
+        .hold_provider_credential(
+            &organization,
+            support::PROVIDER_KEY,
+            support::A_PROVIDER_KEY,
+        )
+        .await;
+
     let session = harness.open_session("acme", "kestrel", "builder").await;
 
     let run = harness.enqueue_run(session.id).await;

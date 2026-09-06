@@ -303,6 +303,7 @@ fn the_published_openapi_document_describes_the_link_the_control_plane_serves() 
     assert_eq!(
         described,
         vec![
+            (link::CREDENTIALS.to_owned(), "get".to_owned()),
             (link::ENTRIES.to_owned(), "get".to_owned()),
             (link::INSTRUCTIONS.to_owned(), "get".to_owned()),
             (link::REPORTS.to_owned(), "post".to_owned()),

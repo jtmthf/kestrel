@@ -16,7 +16,7 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use clap::Parser;
-use kestrel_scripted_agent::{DEFAULT_MODEL, OTHER_MODEL, Script};
+use kestrel_scripted_agent::{CONFIDED, DEFAULT_MODEL, OTHER_MODEL, Script};
 
 const SESSION: &str = "scripted";
 /// Long enough to kill a control plane and bring it back up under a turn that is in flight.
@@ -134,6 +134,10 @@ async fn play(script: Script, connection: &ConnectionTo<Client>) -> Result<StopR
     if script == Script::Lingers {
         tokio::time::sleep(LINGER).await;
     }
+    if script == Script::Confides {
+        say(connection, "message-1", &confided())?;
+        return Ok(StopReason::EndTurn);
+    }
     if script == Script::Refuses {
         say(connection, "message-1", "this is not work I will do")?;
         return Ok(StopReason::Refusal);
@@ -207,6 +211,21 @@ async fn play(script: Script, connection: &ConnectionTo<Client>) -> Result<StopR
     )?;
 
     Ok(StopReason::EndTurn)
+}
+
+/// The only way a test sees where a credential reached: an agent saying what its own process
+/// was spawned with.
+fn confided() -> String {
+    let mut reached: Vec<String> = std::env::vars()
+        .filter(|(name, _)| name.starts_with(CONFIDED))
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    reached.sort();
+
+    match reached.is_empty() {
+        true => "nothing reached this agent".to_owned(),
+        false => reached.join(" "),
+    }
 }
 
 fn say(connection: &ConnectionTo<Client>, message: &str, said: &str) -> Result<()> {

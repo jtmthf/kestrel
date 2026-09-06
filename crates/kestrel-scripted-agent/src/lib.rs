@@ -2,6 +2,11 @@
 
 use clap::ValueEnum;
 
+/// The prefix of every environment variable the `Confides` script says it can see. No provider
+/// names one this way, so a real key in the environment the suite runs in cannot be said by
+/// accident.
+pub const CONFIDED: &str = "SCRIPTED_";
+
 /// The two models the agent offers a client, the first of which it runs on unasked.
 pub const DEFAULT_MODEL: &str = "scripted-mini";
 pub const OTHER_MODEL: &str = "scripted-max";
@@ -12,6 +17,8 @@ pub enum Script {
     Speaks,
     /// Says one thing and ends the turn without having finished.
     Refuses,
+    /// Says which Provider Credentials reached its own process, and nothing else.
+    Confides,
     /// Dies mid-turn without answering the prompt.
     Dies,
     /// Answers `initialize` with a protocol version it was not asked for.
@@ -34,6 +41,7 @@ impl Script {
         match self {
             Script::Speaks => "speaks",
             Script::Refuses => "refuses",
+            Script::Confides => "confides",
             Script::Dies => "dies",
             Script::Predates => "predates",
             Script::Demands => "demands",

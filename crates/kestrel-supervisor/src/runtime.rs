@@ -1,6 +1,7 @@
 //! kestrel as an ACP client (ADR-0007): no contract of kestrel's, and no branch on which Agent
 //! Runtime is on the other end of one.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::{Arc, Mutex};
@@ -43,7 +44,10 @@ pub struct Worked {
 }
 
 /// Everything that can go wrong here is an exit status: a Run ends with one however it went.
-pub async fn work(runtime: &Runtime) -> Worked {
+///
+/// `provider` reaches the agent's own process and nothing else: not this one's environment, not
+/// a file, and not ACP, which carries no credentials (ADR-0007).
+pub async fn work(runtime: &Runtime, provider: BTreeMap<String, String>) -> Worked {
     let heard = Arc::new(Mutex::new(Heard::default()));
 
     let spawn = match AcpAgent::from_str(&runtime.command) {
@@ -55,6 +59,7 @@ pub async fn work(runtime: &Runtime) -> Worked {
             )));
         }
     };
+    let spawn = AcpAgent::new(spawn.into_config().envs(provider));
 
     let stopped = Client
         .builder()

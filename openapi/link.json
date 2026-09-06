@@ -26,6 +26,42 @@
     }
   ],
   "paths": {
+    "/link/runs/{run}/credentials": {
+      "get": {
+        "operationId": "credentials",
+        "summary": "Take the Provider Credentials the Run's Organization holds.",
+        "description": "Answered as the Environment spawns its Agent Runtime, and asked at no other moment: the control plane decrypts them here, and they reach that process's environment and nothing else. An Organization holding none is answered with none. The credential a Run authenticates with is invalidated when the Run ends, so an Environment that outlives its Run is refused.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/run"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The variables the Agent Runtime is spawned with.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credentials"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "403": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
     "/link/runs/{run}/entries": {
       "get": {
         "operationId": "entries",
@@ -209,6 +245,23 @@
       }
     },
     "schemas": {
+      "Credentials": {
+        "description": "What an Agent Runtime is spawned with to reach a model provider, held by the Organization the Run belongs to.",
+        "type": "object",
+        "properties": {
+          "variables": {
+            "description": "The environment variable each credential is read from, and what it is read as.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "variables"
+        ],
+        "additionalProperties": false
+      },
       "Instruction": {
         "description": "What the control plane asks of an Environment.",
         "oneOf": [

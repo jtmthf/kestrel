@@ -15,6 +15,12 @@ The outermost boundary of ownership and access. Owns workspaces, triggers, secre
 and the audit record. A self-hosted install typically has exactly one.
 _Avoid_: tenant, account, team, org
 
+**Provider Credential**:
+What an agent runtime reaches a model provider with, named by the environment variable the runtime
+reads it from. Held by the organization, never by an agent; encrypted at rest, and reaching an
+environment only for the run that spawns an agent with it.
+_Avoid_: api key, token, provider key
+
 ### Work
 
 **Session**:
@@ -150,6 +156,8 @@ These hold by definition of the terms above; they are stated here because they a
 words from drifting.
 
 - Every durable record belongs to exactly **one** organization.
+- A provider credential is held by an **organization**, and reaches an environment only for the
+  length of a **run**. An idle or destroyed environment holds **none**.
 - A session has exactly **one** workspace. A workspace may declare **many** repositories.
 - A run executes in exactly **one** environment.
 - A **run** is the only thing kestrel executes outside a control plane. Everything else — the

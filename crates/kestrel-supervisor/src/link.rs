@@ -1,10 +1,13 @@
 //! Server-sent events down, POST up, specified by `openapi/link.json` rather than shared as
 //! types with the control plane that serves it.
 
+use std::collections::BTreeMap;
+
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::{Client, Response, StatusCode, header};
 use serde::{Deserialize, Serialize};
 
+pub const CREDENTIALS: &str = "/link/runs/{run}/credentials";
 pub const INSTRUCTIONS: &str = "/link/runs/{run}/instructions";
 pub const REPORTS: &str = "/link/runs/{run}/reports";
 
@@ -93,6 +96,13 @@ pub struct Cost {
     pub currency: String,
 }
 
+/// What the Agent Runtime is spawned with to reach a model provider. Never written down: it
+/// goes into that process's environment and dies with it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Credentials {
+    pub variables: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivered {
     pub id: String,
@@ -162,6 +172,25 @@ impl Link {
         }
 
         Ok(())
+    }
+
+    pub async fn credentials(&self) -> Result<Credentials, Error> {
+        let response = self
+            .client
+            .get(self.url(CREDENTIALS))
+            .bearer_auth(&self.credential)
+            .send()
+            .await?;
+
+        let response = refuse_if_declined(response).await?;
+        if !response.status().is_success() {
+            return Err(Error::Lost(format!(
+                "the link answered {} to a request for this run's credentials",
+                response.status().as_u16()
+            )));
+        }
+
+        Ok(response.json().await?)
     }
 
     pub async fn open(&self, cursor: Option<&str>) -> Result<Instructions, Error> {

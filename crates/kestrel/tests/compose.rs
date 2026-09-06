@@ -168,8 +168,8 @@ async fn a_run_provisions_and_destroys_an_environment_through_the_filter() {
             .then_some(())
     });
 
-    // A Run drives a real agent runtime with no credentials to reach a model with, so what
-    // ends this one is the control plane stopping under it (#39, #41).
+    // The credential this stack holds reaches no provider, so what ends this Run is the control
+    // plane stopping under it rather than anything the agent did.
     stack.comes_back();
 
     container.is_gone().await;
@@ -254,8 +254,7 @@ fn a_session(stack: &Stack) -> String {
         "--branch",
         "main",
     ]);
-    // This stack has no credentials to reach a model with (#41), so its Agent names none and
-    // the agent runtime's own default is what a Run would get.
+    // The Agent names no model, so the agent runtime's own default is what a Run would get.
     stack.ran(&[
         "agent",
         "declare",
@@ -265,6 +264,9 @@ fn a_session(stack: &Stack) -> String {
         "--model",
         "",
     ]);
+    // A Run reaches no model without one. This value reaches no provider either, which is why
+    // nothing here gets further than an Environment.
+    stack.held_a_provider_credential("acme", "OPENCODE_API_KEY", "not-a-key");
 
     stack.ran(&[
         "session",

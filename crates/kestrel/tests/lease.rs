@@ -34,6 +34,14 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
 
+    harness
+        .hold_provider_credential(
+            &organization,
+            support::PROVIDER_KEY,
+            support::A_PROVIDER_KEY,
+        )
+        .await;
+
     harness.open_session("acme", "kestrel", "builder").await
 }
 
