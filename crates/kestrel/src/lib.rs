@@ -2,6 +2,7 @@ pub mod cli;
 pub mod compute;
 pub mod domain;
 pub mod fanout;
+pub mod integration;
 pub mod link;
 pub mod log;
 pub mod role;

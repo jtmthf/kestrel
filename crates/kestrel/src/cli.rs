@@ -4,9 +4,11 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
+use jiff::SignedDuration;
 
 use crate::compute::{Docker, Driver, LocalExec};
-use crate::domain::SessionId;
+use crate::domain::{Direction, SessionId};
+use crate::integration::github;
 use crate::log::Cursor;
 use crate::role::work::Dispatch;
 
@@ -163,6 +165,67 @@ pub enum CliCommand {
     /// Enqueue and list Runs
     #[command(subcommand)]
     Run(RunCommand),
+    /// Register and list Integrations
+    #[command(subcommand)]
+    Integration(IntegrationCommand),
+    /// List the Events an Integration has discovered
+    #[command(subcommand)]
+    Event(EventCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum IntegrationCommand {
+    /// Register an Integration: a credentialed connection to an external system
+    #[command(subcommand)]
+    Register(RegisterCommand),
+    /// List every Integration in an Organization, and the directions each carries
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum RegisterCommand {
+    /// A connection to GitHub, watching one repository
+    Github {
+        /// The name it is referred to by
+        name: String,
+        /// The Organization whose credential it holds
+        #[arg(long)]
+        organization: String,
+        /// The repository it watches, as owner/name
+        #[arg(long, value_name = "OWNER/NAME")]
+        repository: String,
+        /// The credential it presents to GitHub
+        #[arg(long, env = "KESTREL_GITHUB_TOKEN", value_name = "TOKEN")]
+        token: String,
+        /// A direction it carries — inbound, outbound; repeat for both
+        #[arg(
+            long = "carries",
+            value_name = "DIRECTION",
+            default_values = ["inbound", "outbound"]
+        )]
+        carries: Vec<Direction>,
+        /// How often the poll asks GitHub what has happened
+        #[arg(long, value_name = "DURATION", default_value = "1m")]
+        interval: SignedDuration,
+        /// The API it reaches GitHub at, for an installation that is not github.com
+        #[arg(long, env = "KESTREL_GITHUB_API", value_name = "URL", default_value = github::API)]
+        api: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum EventCommand {
+    /// List the Events recorded for an Organization, most recent first
+    List {
+        #[arg(long)]
+        organization: String,
+        /// How many to list at most
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

@@ -19,6 +19,7 @@ futures-core = "0.3"
 getrandom = { version = "0.4", features = ["std"] }
 jiff = "0.2"
 libc = "0.2"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -31,6 +32,6 @@ uuid = { version = "1", features = ["serde", "v7"] }
 
 [dev-dependencies]
 kestrel-scripted-agent = { path = "../kestrel-scripted-agent" }
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["stream"] }
 tempfile = "3"
 tiny_http = "0.12"

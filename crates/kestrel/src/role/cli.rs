@@ -1,8 +1,11 @@
 use anyhow::Result;
 
 use crate::cli::{
-    AgentCommand, CliCommand, OrganizationCommand, RunCommand, SessionCommand, WorkspaceCommand,
+    AgentCommand, CliCommand, EventCommand, IntegrationCommand, OrganizationCommand,
+    RegisterCommand, RunCommand, SessionCommand, WorkspaceCommand,
 };
+use crate::domain::{Direction, IntegrationKind};
+use crate::integration::{self, Registration};
 use crate::log::Window;
 use crate::session;
 use crate::store::Store;
@@ -124,6 +127,67 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
         CliCommand::Run(RunCommand::Enqueue { session }) => {
             let run = work::enqueue(&store, *session).await?;
             println!("{}", run.id);
+        }
+        CliCommand::Integration(IntegrationCommand::Register(RegisterCommand::Github {
+            name,
+            organization,
+            repository,
+            token,
+            carries,
+            interval,
+            api,
+        })) => {
+            let integration = integration::register(
+                &store,
+                Registration {
+                    organization,
+                    name,
+                    kind: IntegrationKind::Github,
+                    repository,
+                    api,
+                    token,
+                    carries,
+                    interval: *interval,
+                },
+            )
+            .await?;
+            println!("{}", integration.id);
+        }
+        CliCommand::Integration(IntegrationCommand::List { organization }) => {
+            for integration in integration::integrations(&store, organization).await? {
+                println!(
+                    "{}  {}  {}  {}  {}  every {:#}",
+                    integration.id,
+                    integration.name,
+                    integration.kind,
+                    integration.repository,
+                    integration
+                        .carries
+                        .iter()
+                        .copied()
+                        .map(Direction::as_str)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    integration.interval
+                );
+            }
+        }
+        CliCommand::Event(EventCommand::List {
+            organization,
+            limit,
+        }) => {
+            for event in integration::events(&store, organization, *limit).await? {
+                println!(
+                    "{}  {}  {}  {}  {}  #{}  {}",
+                    event.id,
+                    event.occurrence.occurred_at,
+                    event.repository,
+                    event.occurrence.kind,
+                    event.occurrence.label.as_deref().unwrap_or("-"),
+                    event.occurrence.subject,
+                    event.occurrence.title
+                );
+            }
         }
         CliCommand::Run(RunCommand::List { session }) => {
             for run in work::runs(&store, *session).await? {

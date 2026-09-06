@@ -12,12 +12,68 @@ pub struct RecordedRequest {
     pub method: String,
     pub url: String,
     pub body: String,
+    pub headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ScriptedResponse {
     pub status: u16,
     pub body: String,
+    pub headers: Vec<(String, String)>,
+}
+
+impl ScriptedResponse {
+    pub fn ok(body: impl Into<String>) -> Self {
+        Self {
+            status: 200,
+            body: body.into(),
+            headers: Vec::new(),
+        }
+    }
+
+    pub fn answering(status: u16) -> Self {
+        Self {
+            status,
+            body: String::new(),
+            headers: Vec::new(),
+        }
+    }
+
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_owned(), value.to_owned()));
+        self
+    }
+}
+
+/// One entry as GitHub's issue-events endpoint reports it.
+pub fn labelled(id: i64, issue: i64, label: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "event": "labeled",
+        "created_at": format!("2026-09-01T12:00:{:02}Z", id % 60),
+        "actor": { "login": "jtmthf" },
+        "label": { "name": label },
+        "issue": {
+            "number": issue,
+            "title": format!("an issue numbered {issue}"),
+            "html_url": format!("https://github.com/jtmthf/kestrel/issues/{issue}"),
+        },
+    })
+}
+
+/// GitHub answers newest first, so a page reads the other way round from how it happened.
+pub fn page(events: &[serde_json::Value]) -> ScriptedResponse {
+    ScriptedResponse::ok(serde_json::Value::Array(events.to_vec()).to_string())
+}
+
+/// An exhausted quota, with a reset that has already passed so a test is not held at it.
+pub fn rate_limited() -> ScriptedResponse {
+    ScriptedResponse::answering(403)
+        .with_header("x-ratelimit-remaining", "0")
+        .with_header(
+            "x-ratelimit-reset",
+            &jiff::Timestamp::now().as_second().to_string(),
+        )
 }
 
 pub struct GithubStub {
@@ -92,6 +148,16 @@ fn respond(
     requests: &Mutex<Vec<RecordedRequest>>,
     responses: &Mutex<VecDeque<ScriptedResponse>>,
 ) {
+    let headers = request
+        .headers()
+        .iter()
+        .map(|header| {
+            (
+                header.field.as_str().as_str().to_lowercase(),
+                header.value.as_str().to_owned(),
+            )
+        })
+        .collect();
     let mut body = String::new();
     let _ = request.as_reader().read_to_string(&mut body);
 
@@ -102,6 +168,7 @@ fn respond(
             method: request.method().to_string(),
             url: request.url().to_owned(),
             body,
+            headers,
         });
 
     let scripted = responses
@@ -109,12 +176,15 @@ fn respond(
         .expect("the response queue should not be poisoned")
         .pop_front();
 
-    let (status, body) = match scripted {
-        Some(response) => (response.status, response.body),
-        None => (404, String::new()),
-    };
+    let scripted = scripted.unwrap_or_else(|| ScriptedResponse::answering(404));
 
-    let response = tiny_http::Response::from_string(body).with_status_code(status);
+    let mut response =
+        tiny_http::Response::from_string(scripted.body).with_status_code(scripted.status);
+    for (name, value) in &scripted.headers {
+        let header = tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes())
+            .expect("a header the stub was asked to send");
+        response.add_header(header);
+    }
     let _ = request.respond(response);
 }
 
@@ -190,10 +260,7 @@ mod tests {
     #[test]
     fn it_serves_a_scripted_response_and_records_the_request() {
         let stub = GithubStub::start();
-        stub.script(ScriptedResponse {
-            status: 200,
-            body: "[]".to_owned(),
-        });
+        stub.script(ScriptedResponse::ok("[]"));
 
         let (status, body) = get(&stub.base_url(), "/repos/acme/kestrel/issues/events");
 
@@ -218,14 +285,8 @@ mod tests {
     #[test]
     fn responses_are_served_in_the_order_they_were_scripted() {
         let stub = GithubStub::start();
-        stub.script(ScriptedResponse {
-            status: 200,
-            body: "first".to_owned(),
-        });
-        stub.script(ScriptedResponse {
-            status: 200,
-            body: "second".to_owned(),
-        });
+        stub.script(ScriptedResponse::ok("first"));
+        stub.script(ScriptedResponse::ok("second"));
 
         let (_, first) = get(&stub.base_url(), "/a");
         let (_, second) = get(&stub.base_url(), "/b");
@@ -237,10 +298,7 @@ mod tests {
     #[test]
     fn it_records_the_body_of_an_outbound_post() {
         let stub = GithubStub::start();
-        stub.script(ScriptedResponse {
-            status: 201,
-            body: String::new(),
-        });
+        stub.script(ScriptedResponse::answering(201));
 
         let status = post(
             &stub.base_url(),

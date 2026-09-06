@@ -2,9 +2,11 @@ use std::fmt;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::integration::credential::Token;
 
 macro_rules! identifiers {
     ($($name:ident),+ $(,)?) => {$(
@@ -33,7 +35,15 @@ macro_rules! identifiers {
     )+};
 }
 
-identifiers!(OrganizationId, WorkspaceId, AgentId, SessionId, RunId);
+identifiers!(
+    OrganizationId,
+    WorkspaceId,
+    AgentId,
+    SessionId,
+    RunId,
+    IntegrationId,
+    EventId,
+);
 
 #[derive(Debug, Clone)]
 pub struct Organization {
@@ -57,6 +67,115 @@ pub struct Agent {
     pub name: String,
     pub runtime: String,
     pub model: String,
+}
+
+/// Which way an Integration carries: events inbound, kestrel's requests outbound, or both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Inbound,
+    Outbound,
+}
+
+impl Direction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Direction::Inbound => "inbound",
+            Direction::Outbound => "outbound",
+        }
+    }
+}
+
+impl FromStr for Direction {
+    type Err = anyhow::Error;
+
+    fn from_str(direction: &str) -> Result<Self> {
+        match direction {
+            "inbound" => Ok(Direction::Inbound),
+            "outbound" => Ok(Direction::Outbound),
+            other => bail!("{other} is not a direction an integration carries"),
+        }
+    }
+}
+
+impl fmt::Display for Direction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrationKind {
+    Github,
+}
+
+impl IntegrationKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            IntegrationKind::Github => "github",
+        }
+    }
+}
+
+impl FromStr for IntegrationKind {
+    type Err = anyhow::Error;
+
+    fn from_str(kind: &str) -> Result<Self> {
+        match kind {
+            "github" => Ok(IntegrationKind::Github),
+            other => bail!("{other} is not an external system kestrel integrates with"),
+        }
+    }
+}
+
+impl fmt::Display for IntegrationKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Integration {
+    pub id: IntegrationId,
+    pub organization: OrganizationId,
+    pub name: String,
+    pub kind: IntegrationKind,
+    pub repository: String,
+    pub api: String,
+    pub credential: Token,
+    pub carries: Vec<Direction>,
+    pub interval: SignedDuration,
+    pub poll_due_at: Option<Timestamp>,
+    pub polled_through: Option<i64>,
+}
+
+impl Integration {
+    pub fn carries(&self, direction: Direction) -> bool {
+        self.carries.contains(&direction)
+    }
+}
+
+/// A thing the external system says happened, as it arrives and before kestrel has decided
+/// whether it has seen it before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Occurrence {
+    pub external_id: String,
+    pub kind: String,
+    pub actor: String,
+    pub subject: i64,
+    pub title: String,
+    pub url: String,
+    pub label: Option<String>,
+    pub occurred_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub struct Event {
+    pub id: EventId,
+    pub organization: OrganizationId,
+    pub integration: IntegrationId,
+    pub repository: String,
+    pub occurrence: Occurrence,
+    pub recorded_at: Timestamp,
 }
 
 #[derive(Debug, Clone)]
