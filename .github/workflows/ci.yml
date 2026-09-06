@@ -70,6 +70,32 @@ jobs:
       - name: Test the Docker driver
         run: cargo test --locked --package kestrel --test docker -- --ignored
 
+  control-plane:
+    name: kestrel (image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: jdx/mise-action@v4
+        with:
+          install_args: rust
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the image
+        run: |
+          started=$(date +%s)
+          docker build --file images/kestrel/Dockerfile --tag kestrel:test .
+          echo "built_in=$(($(date +%s) - started))" >> "$GITHUB_ENV"
+
+      - name: Record the image's size and build time
+        run: |
+          size=$(docker image inspect kestrel:test --format '{{.Size}}')
+          echo "kestrel: $((size / 1024 / 1024)) MiB, built from cold in ${built_in}s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test the image
+        run: cargo test --locked --package kestrel --test control_plane -- --ignored
+
   # The runner is amd64, so nothing else builds the arm64 half of the image: the release it
   # pins, the checksum it verifies, and the architecture it selects on.
   architectures:
@@ -86,3 +112,30 @@ jobs:
         run: |
           docker buildx build --platform linux/arm64 --target opencode \
             --output type=cacheonly --file images/kestrel-env/Dockerfile .
+
+  # From a clean checkout with no build cache, so what is published is what the Dockerfile
+  # yields on its own.
+  publish:
+    name: kestrel (publish)
+    needs: [workspace, control-plane]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the control-plane image
+        run: |
+          docker build --file images/kestrel/Dockerfile \
+            --tag ghcr.io/${{ github.repository }}:latest \
+            --tag ghcr.io/${{ github.repository }}:${{ github.sha }} .
+          docker push ghcr.io/${{ github.repository }}:latest
+          docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
