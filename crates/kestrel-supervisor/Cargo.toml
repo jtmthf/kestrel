@@ -10,7 +10,9 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-agent-client-protocol = "2"
+# The schema keeps `terminal` authentication behind this flag, and without it an agent that
+# offers only that is indistinguishable from one kestrel can drive.
+agent-client-protocol = { version = "2", features = ["unstable_auth_methods"] }
 percent-encoding = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }

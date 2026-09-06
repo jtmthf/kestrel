@@ -5,12 +5,12 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, ContentBlock, ContentChunk, Cost, InitializeRequest, InitializeResponse,
-    MessageId, NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, Plan,
-    PlanEntry, PlanEntryPriority, PlanEntryStatus, PromptCapabilities, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionNotification,
-    SessionUpdate, StopReason, TextContent, ToolCall, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, UsageUpdate,
+    AgentCapabilities, AuthMethod, AuthMethodTerminal, ContentBlock, ContentChunk, Cost,
+    InitializeRequest, InitializeResponse, MessageId, NewSessionRequest, NewSessionResponse,
+    PermissionOption, PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
+    PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, SessionNotification, SessionUpdate, StopReason, TextContent,
+    ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use clap::Parser;
@@ -48,6 +48,17 @@ async fn main() -> Result<()> {
 
                 if script == Script::Predates {
                     return responder.respond(InitializeResponse::new(ProtocolVersion::V0));
+                }
+
+                if script == Script::Demands {
+                    return responder.respond(
+                        InitializeResponse::new(ProtocolVersion::V1).auth_methods(vec![
+                            AuthMethod::Terminal(AuthMethodTerminal::new(
+                                "terminal",
+                                "Log in at a terminal",
+                            )),
+                        ]),
+                    );
                 }
 
                 responder.respond(

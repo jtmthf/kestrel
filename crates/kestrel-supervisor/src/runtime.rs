@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest, PromptRequest,
+    AuthMethod, ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason, TextContent,
 };
@@ -91,6 +91,10 @@ pub async fn work(command: &str) -> Worked {
                         initialized.protocol_version
                     )));
                 }
+                if needs_a_human_at_a_terminal(&initialized.auth_methods) {
+                    return Err(Error::internal_error()
+                        .data("this agent authenticates only at an interactive terminal, and nobody is at one"));
+                }
 
                 let set_up = connection
                     .send_request(NewSessionRequest::new(working_directory()))
@@ -120,6 +124,16 @@ pub async fn work(command: &str) -> Worked {
         Ok(stop) => heard.worked(ended(stop)),
         Err(error) => heard.worked(failed(error.to_string())),
     }
+}
+
+/// ACP's `terminal` method launches an interactive process for someone to log in at, so an
+/// agent offering nothing else cannot be driven headlessly and is refused here rather than
+/// prompted and left waiting (ADR-0007).
+fn needs_a_human_at_a_terminal(offered: &[AuthMethod]) -> bool {
+    !offered.is_empty()
+        && offered
+            .iter()
+            .all(|method| matches!(method, AuthMethod::Terminal(_)))
 }
 
 fn working_directory() -> PathBuf {
@@ -215,7 +229,9 @@ impl Heard {
 
 #[cfg(test)]
 mod tests {
-    use agent_client_protocol::schema::v1::{Plan, ToolCall, UsageUpdate};
+    use agent_client_protocol::schema::v1::{
+        AuthMethodAgent, AuthMethodTerminal, Plan, ToolCall, UsageUpdate,
+    };
 
     use super::*;
 
@@ -280,6 +296,26 @@ mod tests {
                 cost: None,
             })
         );
+    }
+
+    #[test]
+    fn an_agent_offering_only_a_terminal_to_log_in_at_cannot_be_driven() {
+        assert!(needs_a_human_at_a_terminal(&[AuthMethod::Terminal(
+            AuthMethodTerminal::new("terminal", "Log in at a terminal")
+        )]));
+    }
+
+    #[test]
+    fn an_agent_offering_something_else_as_well_can_be() {
+        assert!(!needs_a_human_at_a_terminal(&[
+            AuthMethod::Terminal(AuthMethodTerminal::new("terminal", "Log in at a terminal")),
+            AuthMethod::Agent(AuthMethodAgent::new("its-own", "Log in as the agent asks")),
+        ]));
+    }
+
+    #[test]
+    fn an_agent_that_offers_nothing_needs_nothing() {
+        assert!(!needs_a_human_at_a_terminal(&[]));
     }
 
     #[test]
