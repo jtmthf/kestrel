@@ -210,6 +210,8 @@ fn a_session(stack: &Stack) -> String {
         "--branch",
         "main",
     ]);
+    // This stack has no credentials to reach a model with (#41), so its Agent names none and
+    // the agent runtime's own default is what a Run would get.
     stack.ran(&[
         "agent",
         "declare",
@@ -217,7 +219,7 @@ fn a_session(stack: &Stack) -> String {
         "--organization",
         "acme",
         "--model",
-        "claude-opus-5",
+        "",
     ]);
 
     stack.ran(&[

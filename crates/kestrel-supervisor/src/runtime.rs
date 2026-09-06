@@ -7,9 +7,12 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AuthMethod, ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason, TextContent,
+    AuthMethod, AuthenticateRequest, ContentBlock, ContentChunk, ErrorCode, InitializeRequest,
+    NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigId, SessionConfigKind,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOptions,
+    SessionConfigValueId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    StopReason, TextContent,
 };
 use agent_client_protocol::{AcpAgent, Client, ConnectionTo, Error};
 
@@ -19,22 +22,36 @@ use crate::permission::{self, Subject};
 /// Nothing on the link carries work for a Run, so every Run asks the same thing.
 const PROMPT: &str = "Do the work this environment was provisioned for.";
 
+/// What this Environment was configured to drive, and what the Run asks of it. Which Agent
+/// Runtime is on the other end is the configuration's business, never this module's.
+#[derive(Debug, Default)]
+pub struct Runtime {
+    pub command: String,
+    /// The ACP authentication method to log the agent in with, for an agent that requires one.
+    pub auth: Option<String>,
+    /// The model the Run's Agent named, if it named one.
+    pub model: Option<String>,
+}
+
 pub struct Worked {
     pub said: Vec<String>,
     pub usage: Option<Usage>,
     pub allowed: Vec<Subject>,
+    /// The model the agent was set to, for a Run whose Agent named one.
+    pub selected: Option<String>,
     pub exit: Exit,
 }
 
 /// Everything that can go wrong here is an exit status: a Run ends with one however it went.
-pub async fn work(command: &str) -> Worked {
+pub async fn work(runtime: &Runtime) -> Worked {
     let heard = Arc::new(Mutex::new(Heard::default()));
 
-    let spawn = match AcpAgent::from_str(command) {
+    let spawn = match AcpAgent::from_str(&runtime.command) {
         Ok(spawn) => spawn,
         Err(error) => {
             return Heard::default().worked(failed(format!(
-                "the agent runtime {command:?} could not be spawned: {error}"
+                "the agent runtime {:?} could not be spawned: {error}",
+                runtime.command
             )));
         }
     };
@@ -78,40 +95,15 @@ pub async fn work(command: &str) -> Worked {
             },
             agent_client_protocol::on_receive_request!(),
         )
-        .connect_with(
-            spawn,
-            async |connection: ConnectionTo<agent_client_protocol::Agent>| {
-                let initialized = connection
-                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                    .block_task()
-                    .await?;
-                if initialized.protocol_version != ProtocolVersion::V1 {
-                    return Err(Error::internal_error().data(format!(
-                        "kestrel speaks ACP v1, and this agent answered v{}",
-                        initialized.protocol_version
-                    )));
-                }
-                if needs_a_human_at_a_terminal(&initialized.auth_methods) {
-                    return Err(Error::internal_error()
-                        .data("this agent authenticates only at an interactive terminal, and nobody is at one"));
-                }
+        .connect_with(spawn, {
+            // Owned rather than borrowed, because the connection outlives this call's frame.
+            let (auth, model) = (runtime.auth.clone(), runtime.model.clone());
+            let heard = Arc::clone(&heard);
 
-                let set_up = connection
-                    .send_request(NewSessionRequest::new(working_directory()))
-                    .block_task()
-                    .await?;
-
-                let answered = connection
-                    .send_request(PromptRequest::new(
-                        set_up.session_id,
-                        vec![ContentBlock::Text(TextContent::new(PROMPT))],
-                    ))
-                    .block_task()
-                    .await?;
-
-                Ok(answered.stop_reason)
-            },
-        )
+            async move |connection: ConnectionTo<agent_client_protocol::Agent>| {
+                a_turn(&connection, auth, model, &heard).await
+            }
+        })
         .await;
 
     let heard = std::mem::take(
@@ -126,6 +118,80 @@ pub async fn work(command: &str) -> Worked {
     }
 }
 
+/// Everything kestrel asks of an agent, in the order ACP has a client ask it.
+async fn a_turn(
+    connection: &ConnectionTo<agent_client_protocol::Agent>,
+    auth: Option<String>,
+    model: Option<String>,
+    heard: &Mutex<Heard>,
+) -> Result<StopReason, Error> {
+    let initialized = connection
+        .send_request(InitializeRequest::new(ProtocolVersion::V1))
+        .block_task()
+        .await?;
+    if initialized.protocol_version != ProtocolVersion::V1 {
+        return Err(Error::internal_error().data(format!(
+            "kestrel speaks ACP v1, and this agent answered v{}",
+            initialized.protocol_version
+        )));
+    }
+    if needs_a_human_at_a_terminal(&initialized.auth_methods) {
+        return Err(Error::internal_error().data(
+            "this agent authenticates only at an interactive terminal, and nobody is at one",
+        ));
+    }
+
+    if let Some(method) = auth {
+        if !initialized
+            .auth_methods
+            .iter()
+            .any(|offered| offered.id().0.as_ref() == method)
+        {
+            return Err(Error::internal_error().data(format!(
+                "kestrel is configured to log this agent in with {method:?}, and it offers {}",
+                offered(&initialized.auth_methods)
+            )));
+        }
+        connection
+            .send_request(AuthenticateRequest::new(method))
+            .block_task()
+            .await?;
+    }
+
+    let set_up = connection
+        .send_request(NewSessionRequest::new(working_directory()))
+        .block_task()
+        .await
+        .map_err(|error| unlogged_in(error, &initialized.auth_methods))?;
+
+    if let Some(model) = model {
+        let selects =
+            selects_the_model(set_up.config_options.as_deref().unwrap_or_default(), &model)?;
+        connection
+            .send_request(SetSessionConfigOptionRequest::new(
+                set_up.session_id.clone(),
+                selects,
+                SessionConfigValueId::new(model.clone()),
+            ))
+            .block_task()
+            .await?;
+        heard
+            .lock()
+            .expect("what the agent said should not be poisoned")
+            .selected = Some(model);
+    }
+
+    let answered = connection
+        .send_request(PromptRequest::new(
+            set_up.session_id,
+            vec![ContentBlock::Text(TextContent::new(PROMPT))],
+        ))
+        .block_task()
+        .await?;
+
+    Ok(answered.stop_reason)
+}
+
 /// ACP's `terminal` method launches an interactive process for someone to log in at, so an
 /// agent offering nothing else cannot be driven headlessly and is refused here rather than
 /// prompted and left waiting (ADR-0007).
@@ -134,6 +200,78 @@ fn needs_a_human_at_a_terminal(offered: &[AuthMethod]) -> bool {
         && offered
             .iter()
             .all(|method| matches!(method, AuthMethod::Terminal(_)))
+}
+
+/// ACP requires the agent to be logged in before `session/new`, and offers no way to tell which of
+/// several methods a client with nobody at a keyboard should pick, so the method is
+/// configuration and an agent that needs one kestrel was not given fails here.
+fn unlogged_in(error: Error, offered_methods: &[AuthMethod]) -> Error {
+    if error.code != ErrorCode::AuthRequired {
+        return error;
+    }
+
+    Error::internal_error().data(format!(
+        "this agent must be logged in before it answers session/new, and kestrel was configured \
+         with no method to log it in with. it offers {}",
+        offered(offered_methods)
+    ))
+}
+
+fn offered(methods: &[AuthMethod]) -> String {
+    if methods.is_empty() {
+        return "none".to_owned();
+    }
+
+    methods
+        .iter()
+        .map(|method| method.id().0.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Config options are optional and every agent ships a default (ADR-0007), so an Agent that
+/// named a model an agent cannot be set to is a Run that fails rather than one that quietly
+/// runs on something else.
+fn selects_the_model(
+    offered: &[SessionConfigOption],
+    model: &str,
+) -> Result<SessionConfigId, Error> {
+    let Some(option) = offered
+        .iter()
+        .find(|option| option.category == Some(SessionConfigOptionCategory::Model))
+    else {
+        return Err(Error::internal_error().data(format!(
+            "this agent lets no client select a model, and this run's agent named {model}"
+        )));
+    };
+    let SessionConfigKind::Select(select) = &option.kind else {
+        return Err(Error::internal_error().data(format!(
+            "this agent's model is not a selection between models, and this run's agent named {model}"
+        )));
+    };
+    if !selectable(&select.options).any(|value| value.as_ref() == model) {
+        return Err(Error::internal_error().data(format!(
+            "this agent does not offer the model {model}, which this run's agent named"
+        )));
+    }
+
+    Ok(option.id.clone())
+}
+
+fn selectable(options: &SessionConfigSelectOptions) -> impl Iterator<Item = Arc<str>> {
+    let values: Vec<Arc<str>> = match options {
+        SessionConfigSelectOptions::Ungrouped(options) => options
+            .iter()
+            .map(|option| option.value.0.clone())
+            .collect(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.iter().map(|option| option.value.0.clone()))
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    values.into_iter()
 }
 
 fn working_directory() -> PathBuf {
@@ -164,6 +302,7 @@ struct Heard {
     said: Vec<String>,
     usage: Option<Usage>,
     allowed: Vec<Subject>,
+    selected: Option<String>,
 }
 
 #[derive(Default)]
@@ -222,6 +361,7 @@ impl Heard {
             said: self.said,
             usage: self.usage,
             allowed: self.allowed,
+            selected: self.selected,
             exit,
         }
     }
@@ -230,7 +370,8 @@ impl Heard {
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::schema::v1::{
-        AuthMethodAgent, AuthMethodTerminal, Plan, ToolCall, UsageUpdate,
+        AuthMethodAgent, AuthMethodTerminal, Plan, SessionConfigSelect, SessionConfigSelectGroup,
+        SessionConfigSelectOption, ToolCall, UsageUpdate,
     };
 
     use super::*;
@@ -316,6 +457,109 @@ mod tests {
     #[test]
     fn an_agent_that_offers_nothing_needs_nothing() {
         assert!(!needs_a_human_at_a_terminal(&[]));
+    }
+
+    fn models(offered: &[&'static str]) -> Vec<SessionConfigOption> {
+        vec![
+            SessionConfigOption::new(
+                "reasoning",
+                "Reasoning",
+                SessionConfigKind::Select(SessionConfigSelect::new(
+                    "low",
+                    vec![SessionConfigSelectOption::new("low", "Low")],
+                )),
+            ),
+            SessionConfigOption::new(
+                "model",
+                "Model",
+                SessionConfigKind::Select(SessionConfigSelect::new(
+                    offered[0],
+                    offered
+                        .iter()
+                        .map(|model| SessionConfigSelectOption::new(*model, *model))
+                        .collect::<Vec<_>>(),
+                )),
+            )
+            .category(SessionConfigOptionCategory::Model),
+        ]
+    }
+
+    #[test]
+    fn the_model_a_run_named_is_set_through_the_option_the_agent_categorized_as_one() {
+        let selected = selects_the_model(&models(&["fast", "thorough"]), "thorough");
+
+        assert_eq!(
+            selected.expect("the model should be selectable").0.as_ref(),
+            "model"
+        );
+    }
+
+    #[test]
+    fn a_model_an_agent_does_not_offer_is_refused_rather_than_swapped_for_one_it_does() {
+        let refused = selects_the_model(&models(&["fast"]), "thorough")
+            .expect_err("a model the agent does not offer");
+
+        assert!(
+            refused
+                .data
+                .is_some_and(|why| why.to_string().contains("thorough"))
+        );
+    }
+
+    #[test]
+    fn an_agent_that_lets_no_client_select_a_model_fails_a_run_that_named_one() {
+        let refused =
+            selects_the_model(&[], "thorough").expect_err("an agent with no model to select");
+
+        assert!(
+            refused
+                .data
+                .is_some_and(|why| why.to_string().contains("thorough"))
+        );
+    }
+
+    #[test]
+    fn a_grouped_selection_is_searched_the_same_as_a_flat_one() {
+        let grouped = vec![
+            SessionConfigOption::new(
+                "model",
+                "Model",
+                SessionConfigKind::Select(SessionConfigSelect::new(
+                    "fast",
+                    vec![SessionConfigSelectGroup::new(
+                        "theirs",
+                        "Theirs",
+                        vec![SessionConfigSelectOption::new("thorough", "Thorough")],
+                    )],
+                )),
+            )
+            .category(SessionConfigOptionCategory::Model),
+        ];
+
+        assert!(selects_the_model(&grouped, "thorough").is_ok());
+    }
+
+    #[test]
+    fn an_agent_that_must_be_logged_in_says_what_it_offers_to_be_logged_in_with() {
+        let offered = [AuthMethod::Agent(AuthMethodAgent::new(
+            "its-own",
+            "Log in as the agent asks",
+        ))];
+
+        let refused = unlogged_in(Error::auth_required(), &offered);
+
+        assert!(
+            refused
+                .data
+                .is_some_and(|why| why.to_string().contains("its-own"))
+        );
+    }
+
+    #[test]
+    fn an_error_that_is_not_about_being_logged_in_is_carried_as_it_came() {
+        let refused = unlogged_in(Error::invalid_params().data("no"), &[]);
+
+        assert_eq!(refused.code, ErrorCode::InvalidParams);
     }
 
     #[test]

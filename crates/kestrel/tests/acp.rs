@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use kestrel::domain::{Cost, Exit, Run, RunId, RunState, Session, Usage};
 use kestrel::link::Instruction;
+use kestrel_scripted_agent::OTHER_MODEL;
 use support::Harness;
 use support::repository;
 use support::scripted_agent::{self, Script};
@@ -15,6 +16,10 @@ use support::supervisor::{self, Supervisor};
 const PATIENCE: Duration = Duration::from_secs(30);
 
 async fn a_session(harness: &Harness) -> Session {
+    a_session_naming(harness, OTHER_MODEL).await
+}
+
+async fn a_session_naming(harness: &Harness, model: &str) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
         .declare_workspace(
@@ -25,7 +30,7 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+        .declare_agent(&organization, "builder", "opencode", model)
         .await;
 
     harness.open_session("acme", "kestrel", "builder").await
@@ -50,9 +55,13 @@ async fn ended(harness: &Harness, run: RunId) -> Run {
 }
 
 async fn worked(script: Script) -> (Harness, Session, Run) {
+    worked_naming(script, OTHER_MODEL).await
+}
+
+async fn worked_naming(script: Script, model: &str) -> (Harness, Session, Run) {
     let harness =
         Harness::dispatching_to(supervisor::binary(), &scripted_agent::playing(script)).await;
-    let session = a_session(&harness).await;
+    let session = a_session_naming(&harness, model).await;
     let run = harness.enqueue_run(session.id).await;
     let ended = ended(&harness, run.id).await;
 
@@ -209,6 +218,96 @@ async fn an_agent_that_can_only_be_logged_into_at_a_terminal_fails_the_run_rathe
     };
     assert!(
         because.contains("terminal"),
+        "unhelpful exit status: {because}"
+    );
+
+    harness.teardown().await;
+}
+
+/// ACP offers a client no way to choose between the login methods an agent advertises, so the
+/// one kestrel uses is configuration, and an agent that will not work without one it was not
+/// given fails the Run rather than leaving it waiting at a login (ADR-0007).
+#[tokio::test]
+async fn an_agent_that_will_not_work_until_it_is_logged_in_fails_the_run_rather_than_hanging() {
+    let (harness, _, run) = worked(Script::Insists).await;
+
+    let Some(Exit::Failed { because }) = &run.exit else {
+        panic!(
+            "the run ended {:?}, and nothing had logged its agent in",
+            run.exit
+        );
+    };
+    assert!(
+        because.contains("its-own"),
+        "the run failed without naming what the agent offers to be logged in with: {because}"
+    );
+
+    harness.teardown().await;
+}
+
+/// A model reaches the agent through `session/set_config_option` rather than through what the
+/// Environment was built with, so changing an Agent's model is configuration (ADR-0007).
+#[tokio::test]
+async fn the_model_a_runs_agent_named_is_the_one_the_agent_is_set_to() {
+    let harness = Harness::boot().await;
+    let session = a_session(&harness).await;
+    let (run, credential) = harness.dispatch_run(session.id).await;
+
+    let mut supervisor = Supervisor::provision_selecting(
+        &harness.link(),
+        run.id,
+        &credential,
+        Script::Speaks,
+        OTHER_MODEL,
+    );
+    supervisor.wait_until_it_says("reported connected").await;
+    harness.instruct(&run, Instruction::Start).await;
+    supervisor.wait_until_it_says("reported finished").await;
+
+    assert!(
+        supervisor.said(&format!("selected the model {OTHER_MODEL}")),
+        "the supervisor never said which model it set. it said:\n{}",
+        supervisor.everything_it_said()
+    );
+    assert_eq!(ended(&harness, run.id).await.exit, Some(Exit::Succeeded));
+
+    assert!(supervisor.finishes().await.success());
+    harness.teardown().await;
+}
+
+/// Config options are optional and every agent ships a default, so a runtime may let no client
+/// choose a model at all. Running one on something other than what its Agent named would leave
+/// an audit record that lies, which is the worst of the three available outcomes (ADR-0007).
+#[tokio::test]
+async fn an_agent_that_lets_no_client_choose_a_model_fails_a_run_whose_agent_named_one() {
+    let (harness, _, run) = worked(Script::Decides).await;
+
+    let Some(Exit::Failed { because }) = &run.exit else {
+        panic!(
+            "the run ended {:?}, and its agent offers no model to select",
+            run.exit
+        );
+    };
+    assert!(
+        because.contains(OTHER_MODEL),
+        "the run failed without naming the model it could not have: {because}"
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_model_the_agent_does_not_offer_fails_the_run_rather_than_falling_back_to_a_default() {
+    let (harness, _, run) = worked_naming(Script::Speaks, "a-model-no-agent-offers").await;
+
+    let Some(Exit::Failed { because }) = &run.exit else {
+        panic!(
+            "the run ended {:?}, and its agent named a model the runtime does not offer",
+            run.exit
+        );
+    };
+    assert!(
+        because.contains("a-model-no-agent-offers"),
         "unhelpful exit status: {because}"
     );
 

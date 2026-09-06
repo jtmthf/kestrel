@@ -1,0 +1,41 @@
+name: Conformance
+
+# The v1 gate (ADR-0007), which costs network and model spend, so it runs nightly and before a
+# release is cut from a tag, and never on a per-commit build.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  acp:
+    name: ACP (two lineages)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: jdx/mise-action@v4
+        with:
+          install_args: rust
+
+      - uses: Swatinem/rust-cache@v2
+
+      # One gateway, one model and one host daemon, so a Run at a time.
+      - name: Run the suite against both agents
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: cargo test --locked --package kestrel --test conformance -- --ignored --test-threads 1
+
+      - name: Record what the suite spent
+        if: always()
+        run: |
+          echo "## What the conformance suite spent" >> "$GITHUB_STEP_SUMMARY"
+          cat target/conformance-spend.md >> "$GITHUB_STEP_SUMMARY" \
+            || echo "- no run reported what it used" >> "$GITHUB_STEP_SUMMARY"

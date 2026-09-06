@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use crate::cli::Role;
 use crate::compute::{Driver, Environment, Exited};
-use crate::domain::{Exit, Run};
+use crate::domain::{Exit, Run, Workspace};
 use crate::link::{self, Instruction};
 use crate::session;
 use crate::store::Store;
@@ -21,6 +21,7 @@ pub struct Dispatch {
     pub link: String,
     pub driver: Driver,
     pub runtime: String,
+    pub auth: Option<String>,
 }
 
 /// What ended the attending, rather than how the Run went.
@@ -84,6 +85,19 @@ async fn execute(
     Claimed { run, credential }: Claimed,
     shutdown: &CancellationToken,
 ) -> Result<()> {
+    let session = match session::show(store, run.session).await {
+        Ok(session) => session,
+        Err(error) => {
+            work::fail(
+                store,
+                &run,
+                &format!("the run's session could not be read: {error}"),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
     let mut environment = match dispatch.driver.provision(
         run.id,
         &[
@@ -91,6 +105,11 @@ async fn execute(
             ("KESTREL_RUN", &run.id.to_string()),
             ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
             ("KESTREL_AGENT_RUNTIME", dispatch.runtime.as_str()),
+            (
+                "KESTREL_AGENT_AUTH",
+                dispatch.auth.as_deref().unwrap_or_default(),
+            ),
+            ("KESTREL_AGENT_MODEL", session.agent.model.as_str()),
         ],
     ) {
         Ok(environment) => environment,
@@ -105,7 +124,7 @@ async fn execute(
         }
     };
 
-    let exit = match check_out(store, &run, &mut environment).await {
+    let exit = match check_out(&session.workspace, &mut environment).await {
         Ok(()) => start(store, &run, environment, shutdown).await?,
         Err(error) => {
             destroy(&run, environment);
@@ -158,9 +177,7 @@ fn destroy(run: &Run, environment: Environment) {
 }
 
 /// Before the Run is told to start, so nothing an agent reaches for is still arriving.
-async fn check_out(store: &Store, run: &Run, environment: &mut Environment) -> Result<()> {
-    let workspace = session::show(store, run.session).await?.workspace;
-
+async fn check_out(workspace: &Workspace, environment: &mut Environment) -> Result<()> {
     for repository in &workspace.repositories {
         let cloning = environment
             .exec(&["git", "clone", "--branch", &workspace.branch, repository])

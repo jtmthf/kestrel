@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::link::{Instruction, Link, Report};
+use crate::runtime::Runtime;
 
 const RECONNECT_AFTER: Duration = Duration::from_millis(250);
 /// Often enough that the control plane keeps its hold on this Environment through a handful
@@ -53,9 +54,13 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
             .info("no link to dial: set KESTREL_LINK, KESTREL_RUN and KESTREL_RUN_CREDENTIAL");
         return 1;
     };
-    let runtime = set(variables, "KESTREL_AGENT_RUNTIME")
-        .unwrap_or_default()
-        .to_owned();
+    let runtime = Runtime {
+        command: set(variables, "KESTREL_AGENT_RUNTIME")
+            .unwrap_or_default()
+            .to_owned(),
+        auth: set(variables, "KESTREL_AGENT_AUTH").map(str::to_owned),
+        model: set(variables, "KESTREL_AGENT_MODEL").map(str::to_owned),
+    };
     let link = Arc::new(link);
 
     // Nothing else reaches the link while a turn is being worked, so this Environment says it
@@ -76,7 +81,7 @@ async fn saying_it_is_alive(link: Arc<Link>) {
     }
 }
 
-async fn attending(link: &Link, runtime: &str, diagnostics: &dyn Diagnostics) -> i32 {
+async fn attending(link: &Link, runtime: &Runtime, diagnostics: &dyn Diagnostics) -> i32 {
     let mut attending = Attending::default();
 
     loop {
@@ -103,7 +108,7 @@ async fn attending(link: &Link, runtime: &str, diagnostics: &dyn Diagnostics) ->
 
 async fn attend(
     link: &Link,
-    runtime: &str,
+    runtime: &Runtime,
     attending: &mut Attending,
     diagnostics: &dyn Diagnostics,
 ) -> Result<Attended, link::Error> {
@@ -149,6 +154,9 @@ async fn attend(
 
     if !attending.worked {
         let worked = runtime::work(runtime).await;
+        if let Some(model) = &worked.selected {
+            diagnostics.info(&format!("selected the model {model}"));
+        }
         for subject in &worked.allowed {
             diagnostics.info(&format!("allowed once  {subject}"));
         }

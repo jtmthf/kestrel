@@ -13,6 +13,7 @@ use super::docker::{self, Ran, removed};
 
 const IMAGE: &str = "kestrel-env:test";
 const SCRIPTED: &str = "kestrel-env-scripted:test";
+const CONFORMANCE: &str = "kestrel-env-conformance:test";
 const PATIENCE: Duration = Duration::from_secs(30);
 
 pub fn built() -> &'static str {
@@ -56,6 +57,29 @@ pub fn with_the_scripted_agent() -> &'static str {
     });
 
     SCRIPTED
+}
+
+/// The image with the adapter the conformance suite's second agent is reached through, which
+/// the shipped image has no business carrying (ADR-0007).
+pub fn with_the_adapter() -> &'static str {
+    static BUILT: OnceLock<()> = OnceLock::new();
+
+    BUILT.get_or_init(|| {
+        built();
+        docker::completed(
+            &[
+                "build",
+                "--file",
+                "crates/kestrel/tests/support/conformance-env.Dockerfile",
+                "--tag",
+                CONFORMANCE,
+                ".",
+            ],
+            "building the image with the adapter",
+        );
+    });
+
+    CONFORMANCE
 }
 
 /// The container behind an Environment a Run recorded.
