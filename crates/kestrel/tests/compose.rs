@@ -197,6 +197,50 @@ fn the_stack_comes_back_up_with_every_session_it_had() {
     );
 }
 
+/// The commands `USAGE.md` walks a reader through, minus the two its neighbours already cover:
+/// `a_run_provisions_and_destroys_an_environment_through_the_filter` covers enqueueing a Run, and
+/// `the_stack_comes_back_up_with_every_session_it_had` covers surviving a restart.
+#[test]
+#[ignore = "builds images and brings a stack up"]
+fn the_commands_usage_documents_are_the_commands_that_work() {
+    let stack = Stack::up();
+    let session = a_session(&stack);
+
+    let shown = stack.ran(&["session", "show", &session]);
+    for line in [
+        format!("session       {session}"),
+        "organization  acme".to_owned(),
+        "workspace     kestrel".to_owned(),
+        "agent         builder".to_owned(),
+        "state         open".to_owned(),
+        "opened        ".to_owned(),
+    ] {
+        assert!(
+            shown.contains(&line),
+            "USAGE.md shows `{line}`, and `session show` said:\n{shown}"
+        );
+    }
+
+    let transcript = stack.in_the_control_plane(&["kestrel", "session", "transcript", &session]);
+    assert!(
+        transcript.out.contains("participant joined  builder"),
+        "USAGE.md shows the Agent joining as the first entry, and the transcript was:\n{transcript:?}"
+    );
+    assert!(
+        transcript.err.contains(&format!("cursor  {session}:1")),
+        "USAGE.md shows the cursor on stderr, and the transcript was:\n{transcript:?}"
+    );
+
+    stack.ran(&["session", "seal", &session]);
+
+    assert!(
+        stack
+            .ran(&["session", "show", &session])
+            .contains("state         sealed"),
+        "USAGE.md says sealing is visible on the Session, and it was not"
+    );
+}
+
 fn a_session(stack: &Stack) -> String {
     stack.ran(&["organization", "declare", "acme"]);
     stack.ran(&[
