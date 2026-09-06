@@ -12,13 +12,22 @@ const WORKSPACE: &str = "/workspace";
 #[derive(Debug, Clone)]
 pub struct Docker {
     image: String,
+    network: Option<String>,
 }
 
 impl Docker {
     pub fn provisioning_from(image: impl Into<String>) -> Self {
         Self {
             image: image.into(),
+            network: None,
         }
+    }
+
+    /// What a control plane in a container beside the Environment is reached over, where the
+    /// host's gateway reaches nothing.
+    pub fn on_network(mut self, network: impl Into<String>) -> Self {
+        self.network = Some(network.into());
+        self
     }
 
     pub(super) fn provision(
@@ -36,6 +45,10 @@ impl Docker {
             "--add-host".to_owned(),
             "host.docker.internal:host-gateway".to_owned(),
         ];
+        if let Some(network) = &self.network {
+            created.push("--network".to_owned());
+            created.push(network.clone());
+        }
         for (key, value) in variables {
             created.push("--env".to_owned());
             created.push(format!("{key}={value}"));

@@ -56,7 +56,10 @@ one in an image.
 **Reaching the daemon by its socket costs the unprivileged user.** The image runs as `kestrel`, and
 a bind-mounted `/var/run/docker.sock` is root's, so a by-hand run either joins that group or is
 root — which is what `--user root` above is buying, and why it is not what a deployment should do.
-A daemon reachable over TCP, named by `DOCKER_HOST`, needs neither.
+A daemon reachable over TCP, named by `DOCKER_HOST`, needs neither — which is what
+[`compose.yaml`](../../compose.yaml) does, through a proxy that forwards the requests the driver
+makes and refuses the rest
+([ADR-0009](../../docs/adr/0009-the-daemon-is-reached-through-a-filtered-proxy.md)).
 
 ## Roles
 
