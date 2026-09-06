@@ -12,14 +12,17 @@ point without losing what came before.
 
 ## Status
 
-Early, and honest about it: rung `0.1` is under construction. What runs today is two binaries that
-start and stop cleanly, the CI that builds them, and a durable Session — declare an organization, a
-workspace and an agent, open a session against them, and its state and transcript are still there
-after the process is killed. The two binaries are joined up: a supervisor inside an environment dials
-out to the control plane over the link specified in [`openapi/link.json`](openapi/link.json),
-authenticating as the run it is executing, and reconnects with its cursor when the control plane
-restarts under it. Nothing triggers, schedules or executes work yet. What the repo mostly holds is
-still the vocabulary, in [`CONTEXT.md`](CONTEXT.md), and the full planning trail in the issue
+Early, and honest about it: rung `0.1` is under construction. Sessions are durable — declare an
+organization, a workspace and an agent, open a session against them, and its state and transcript
+are still there after the process is killed. Runs execute: enqueue one and the control plane
+provisions an isolated container, clones the workspace into it, and drives opencode there by
+speaking the Agent Client Protocol over the link in [`openapi/link.json`](openapi/link.json), which
+the environment dials out to, authenticating as the run it is executing, and reconnects to with its
+cursor when the control plane restarts under it. What stops a run short of useful work is that
+nothing carries a task to it: every run asks its agent the same fixed question, and nothing triggers
+or schedules one, so every session is opened by hand.
+[`USAGE.md`](USAGE.md) walks all of that on your own machine and says where it stops. The repo also
+holds the vocabulary, in [`CONTEXT.md`](CONTEXT.md), and the full planning trail in the issue
 tracker, where every decision below is written down with its reasoning and the objections it
 survived. This document is the direction, written first so the implementation has something to be
 judged against; [`ROADMAP.md`](ROADMAP.md) is the order it gets built in, and it carries the marker
@@ -39,15 +42,8 @@ come up: the control plane, the image a run executes in, and the filtered socket
 daemon is reached through. The database is on a named volume, so bringing the stack down and up
 again keeps every session and its transcript.
 
-kestrel's surface is the CLI role on the running control plane:
-
-```sh
-docker compose exec kestrel kestrel organization declare acme
-docker compose exec kestrel kestrel workspace declare kestrel --organization acme \
-  --repository https://github.com/jtmthf/kestrel --branch main
-docker compose exec kestrel kestrel agent declare builder --organization acme --model claude-opus-5
-docker compose exec kestrel kestrel session open --organization acme --workspace kestrel --agent builder
-```
+kestrel's surface is the CLI role on the running control plane. [`USAGE.md`](USAGE.md) walks from
+here to a run that has reached and left an environment.
 
 **The control plane never holds the Docker socket.** It reaches the daemon through a proxy that
 forwards the ten requests the compute driver makes and refuses everything else, which is the
