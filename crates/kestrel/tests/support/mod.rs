@@ -25,9 +25,13 @@ pub mod supervisor;
 use std::net::SocketAddr;
 use std::path::Path;
 
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use kestrel::compute::{Docker, Driver, LocalExec};
-use kestrel::domain::{Agent, Organization, Run, RunId, Session, SessionId, Workspace};
+use kestrel::domain::{
+    Agent, Direction, Event, Integration, IntegrationKind, Organization, Run, RunId, Session,
+    SessionId, Workspace,
+};
+use kestrel::integration::{self, Registration};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
 use kestrel::log::{Cursor, Page, TranscriptEntry, Unreadable, Window};
@@ -38,6 +42,9 @@ use kestrel::work::{self, Claimed};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+/// Distinctive enough that a test can assert it is nowhere it should not be.
+pub const TOKEN: &str = "ghp_kestrel_should_never_say_this_out_loud";
 
 pub struct Harness {
     data_dir: TempDir,
@@ -225,6 +232,57 @@ impl Harness {
     pub async fn agents(&self, organization: &Organization) -> Vec<Agent> {
         let mut tx = self.store.begin().await.expect("a transaction");
         tx.agents(organization).await.expect("agents should list")
+    }
+
+    pub async fn register_integration(
+        &self,
+        organization: &str,
+        name: &str,
+        repository: &str,
+        api: &str,
+        carries: &[Direction],
+        interval: SignedDuration,
+    ) -> Integration {
+        self.try_register_integration(organization, name, repository, api, carries, interval)
+            .await
+            .expect("the integration should register")
+    }
+
+    pub async fn try_register_integration(
+        &self,
+        organization: &str,
+        name: &str,
+        repository: &str,
+        api: &str,
+        carries: &[Direction],
+        interval: SignedDuration,
+    ) -> anyhow::Result<Integration> {
+        integration::register(
+            &self.store,
+            Registration {
+                organization,
+                name,
+                kind: IntegrationKind::Github,
+                repository,
+                api,
+                token: TOKEN,
+                carries,
+                interval,
+            },
+        )
+        .await
+    }
+
+    pub async fn integrations(&self, organization: &str) -> Vec<Integration> {
+        integration::integrations(&self.store, organization)
+            .await
+            .expect("the integrations should list")
+    }
+
+    pub async fn events(&self, organization: &str) -> Vec<Event> {
+        integration::events(&self.store, organization, 100)
+            .await
+            .expect("the events should list")
     }
 
     pub async fn open_session(&self, organization: &str, workspace: &str, agent: &str) -> Session {

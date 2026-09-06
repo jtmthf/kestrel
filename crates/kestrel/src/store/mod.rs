@@ -1,19 +1,33 @@
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteRow};
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::domain::{
-    Agent, AgentId, Connected, Cost, Exit, Organization, OrganizationId, Run, RunId, RunState,
-    Session, SessionId, SessionState, Usage, Workspace, WorkspaceId,
+    Agent, AgentId, Connected, Cost, Direction, Event, EventId, Exit, Integration, IntegrationId,
+    IntegrationKind, Occurrence, Organization, OrganizationId, Run, RunId, RunState, Session,
+    SessionId, SessionState, Usage, Workspace, WorkspaceId,
 };
+use crate::integration::credential::Token;
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
 use crate::log::Log;
 
 const DATABASE: &str = "kestrel.db";
+
+macro_rules! integrations_where {
+    ($tail:literal) => {
+        concat!(
+            "SELECT id, organization_id, name, kind, repository, api, credential, inbound,
+                    outbound, interval_ms, poll_due_at, polled_through
+             FROM integration
+             WHERE ",
+            $tail
+        )
+    };
+}
 
 macro_rules! runs_where {
     ($tail:literal) => {
@@ -754,6 +768,166 @@ impl Tx<'_> {
         .collect()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "an integration is what it is declared with"
+    )]
+    pub async fn register_integration(
+        &mut self,
+        organization: &Organization,
+        name: &str,
+        kind: IntegrationKind,
+        repository: &str,
+        api: &str,
+        credential: &Token,
+        carries: &[Direction],
+        interval: SignedDuration,
+    ) -> Result<Integration> {
+        let inbound = carries.contains(&Direction::Inbound);
+        let integration = Integration {
+            id: IntegrationId::generate(),
+            organization: organization.id,
+            name: name.to_owned(),
+            kind,
+            repository: repository.to_owned(),
+            api: api.to_owned(),
+            credential: credential.clone(),
+            carries: carries.to_vec(),
+            interval,
+            // Due the moment it is registered, so an operator who registers one sees what is
+            // on the repository rather than waiting an interval to find out.
+            poll_due_at: inbound.then(Timestamp::now),
+            polled_through: None,
+        };
+
+        sqlx::query(
+            "INSERT INTO integration
+                 (id, organization_id, name, kind, repository, api, credential, inbound,
+                  outbound, interval_ms, poll_due_at, registered_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(integration.id.to_string())
+        .bind(integration.organization.to_string())
+        .bind(&integration.name)
+        .bind(integration.kind.as_str())
+        .bind(&integration.repository)
+        .bind(&integration.api)
+        .bind(credential.presented_to_the_external_system())
+        .bind(inbound)
+        .bind(carries.contains(&Direction::Outbound))
+        .bind(i64::try_from(interval.as_millis())?)
+        .bind(integration.poll_due_at.map(due))
+        .bind(Timestamp::now().to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("registering the integration {name}"))?;
+
+        Ok(integration)
+    }
+
+    pub async fn integrations(&mut self, organization: &Organization) -> Result<Vec<Integration>> {
+        sqlx::query(integrations_where!("organization_id = ? ORDER BY name"))
+            .bind(organization.id.to_string())
+            .fetch_all(&mut *self.transaction)
+            .await?
+            .iter()
+            .map(integration)
+            .collect()
+    }
+
+    /// Only an Integration that carries events inbound is polled: the direction it declares
+    /// is what it does, rather than a label beside it.
+    pub async fn integrations_due(&mut self, at: Timestamp) -> Result<Vec<Integration>> {
+        sqlx::query(integrations_where!(
+            "inbound = TRUE AND poll_due_at <= ? ORDER BY poll_due_at"
+        ))
+        .bind(due(at))
+        .fetch_all(&mut *self.transaction)
+        .await
+        .context("reading which integrations are due a poll")?
+        .iter()
+        .map(integration)
+        .collect()
+    }
+
+    /// `false` when the Event was recorded by an earlier poll whose window overlapped this
+    /// one: an Event is identified by what the external system calls it, and recorded once.
+    pub async fn record_event(
+        &mut self,
+        integration: &Integration,
+        occurrence: &Occurrence,
+    ) -> Result<bool> {
+        let recorded = sqlx::query(
+            "INSERT INTO event
+                 (id, organization_id, integration_id, external_id, repository, kind, actor,
+                  subject, title, url, label, occurred_at, recorded_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (integration_id, external_id) DO NOTHING",
+        )
+        .bind(EventId::generate().to_string())
+        .bind(integration.organization.to_string())
+        .bind(integration.id.to_string())
+        .bind(&occurrence.external_id)
+        .bind(&integration.repository)
+        .bind(&occurrence.kind)
+        .bind(&occurrence.actor)
+        .bind(occurrence.subject)
+        .bind(&occurrence.title)
+        .bind(&occurrence.url)
+        .bind(occurrence.label.as_deref())
+        .bind(occurrence.occurred_at.to_string())
+        .bind(Timestamp::now().to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| {
+            format!(
+                "recording the event {} on {}",
+                occurrence.external_id, integration.repository
+            )
+        })?;
+
+        Ok(recorded.rows_affected() > 0)
+    }
+
+    pub async fn polled(
+        &mut self,
+        integration: &Integration,
+        through: Option<i64>,
+        due_again_at: Timestamp,
+    ) -> Result<()> {
+        sqlx::query("UPDATE integration SET polled_through = ?, poll_due_at = ? WHERE id = ?")
+            .bind(through)
+            .bind(due(due_again_at))
+            .bind(integration.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("recording the poll of integration {}", integration.name))?;
+
+        Ok(())
+    }
+
+    pub async fn events(
+        &mut self,
+        organization: &Organization,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        sqlx::query(
+            "SELECT id, organization_id, integration_id, external_id, repository, kind, actor,
+                    subject, title, url, label, occurred_at, recorded_at
+             FROM event
+             WHERE organization_id = ?
+             ORDER BY occurred_at DESC, external_id DESC
+             LIMIT ?",
+        )
+        .bind(organization.id.to_string())
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&mut *self.transaction)
+        .await?
+        .iter()
+        .map(event)
+        .collect()
+    }
+
     pub async fn agents(&mut self, organization: &Organization) -> Result<Vec<Agent>> {
         sqlx::query(
             "SELECT id, organization_id, name, runtime, model
@@ -794,6 +968,50 @@ fn workspaces(rows: &[SqliteRow], organization: &Organization) -> Result<Vec<Wor
     }
 
     Ok(workspaces)
+}
+
+fn integration(row: &SqliteRow) -> Result<Integration> {
+    let mut carries = Vec::new();
+    if row.get::<bool, _>("inbound") {
+        carries.push(Direction::Inbound);
+    }
+    if row.get::<bool, _>("outbound") {
+        carries.push(Direction::Outbound);
+    }
+
+    Ok(Integration {
+        id: row.get::<String, _>("id").parse()?,
+        organization: row.get::<String, _>("organization_id").parse()?,
+        name: row.get("name"),
+        kind: row.get::<String, _>("kind").parse()?,
+        repository: row.get("repository"),
+        api: row.get("api"),
+        credential: Token::held(row.get("credential")),
+        carries,
+        interval: SignedDuration::from_millis(row.get("interval_ms")),
+        poll_due_at: timestamp(row, "poll_due_at")?,
+        polled_through: row.get("polled_through"),
+    })
+}
+
+fn event(row: &SqliteRow) -> Result<Event> {
+    Ok(Event {
+        id: row.get::<String, _>("id").parse()?,
+        organization: row.get::<String, _>("organization_id").parse()?,
+        integration: row.get::<String, _>("integration_id").parse()?,
+        repository: row.get("repository"),
+        occurrence: Occurrence {
+            external_id: row.get("external_id"),
+            kind: row.get("kind"),
+            actor: row.get("actor"),
+            subject: row.get("subject"),
+            title: row.get("title"),
+            url: row.get("url"),
+            label: row.get("label"),
+            occurred_at: row.get::<String, _>("occurred_at").parse()?,
+        },
+        recorded_at: row.get::<String, _>("recorded_at").parse()?,
+    })
 }
 
 fn agent(row: &SqliteRow) -> Result<Agent> {

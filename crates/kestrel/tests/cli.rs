@@ -4,8 +4,10 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use support::github_stub::{self, GithubStub};
 use support::scripted_agent::Script;
 use tempfile::TempDir;
 
@@ -69,6 +71,35 @@ impl Kestrel {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Everything the control plane says while it runs, at the loudest level it has, drained
+    /// as it is said so that a chatty log cannot block the process on a full pipe.
+    fn booted_saying_everything(&self) -> (Child, Arc<Mutex<String>>) {
+        let mut kestrel = Command::new(env!("CARGO_BIN_EXE_kestrel"))
+            .env("KESTREL_DATA_DIR", self.data_dir.path())
+            .env("KESTREL_LISTEN", "127.0.0.1:0")
+            .env("KESTREL_COMPUTE", "local-exec")
+            .env("KESTREL_SUPERVISOR", support::supervisor::binary())
+            .env("RUST_LOG", "trace")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("kestrel should spawn");
+
+        let stderr = kestrel.stderr.take().expect("stderr should be piped");
+        let said = Arc::new(Mutex::new(String::new()));
+        let draining = Arc::clone(&said);
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let mut said = draining.lock().expect("the log should not be poisoned");
+                said.push_str(&line);
+                said.push('\n');
+            }
+        });
+
+        (kestrel, said)
     }
 
     /// `Child::kill` is a `SIGKILL`, so nothing kestrel holds in memory is given a chance to land.
@@ -807,4 +838,110 @@ fn transcribed(transcript: &str) -> Vec<String> {
             format!("{seq}  {entry}")
         })
         .collect()
+}
+
+fn watching(kestrel: &Kestrel, stub: &GithubStub, interval: &str) -> String {
+    kestrel.run(&["organization", "declare", "acme"]);
+    kestrel.run(&[
+        "integration",
+        "register",
+        "github",
+        "hub",
+        "--organization",
+        "acme",
+        "--repository",
+        "jtmthf/kestrel",
+        "--token",
+        support::TOKEN,
+        "--api",
+        &stub.base_url(),
+        "--interval",
+        interval,
+    ])
+}
+
+#[test]
+fn the_cli_registers_an_integration_with_a_credential_and_lists_what_it_carries() {
+    let kestrel = Kestrel::new();
+    let stub = GithubStub::start();
+
+    let id = watching(&kestrel, &stub, "1m");
+
+    assert_eq!(
+        kestrel.run(&["integration", "list", "--organization", "acme"]),
+        format!("{id}  hub  github  jtmthf/kestrel  inbound,outbound  every 1m")
+    );
+}
+
+#[test]
+fn an_integration_carries_only_the_directions_it_was_registered_with() {
+    let kestrel = Kestrel::new();
+    let stub = GithubStub::start();
+    kestrel.run(&["organization", "declare", "acme"]);
+
+    kestrel.run(&[
+        "integration",
+        "register",
+        "github",
+        "hub",
+        "--organization",
+        "acme",
+        "--repository",
+        "jtmthf/kestrel",
+        "--token",
+        support::TOKEN,
+        "--api",
+        &stub.base_url(),
+        "--carries",
+        "inbound",
+    ]);
+
+    let listed = kestrel.run(&["integration", "list", "--organization", "acme"]);
+    assert!(
+        listed.contains("  inbound  "),
+        "an integration registered inbound lists as {listed}"
+    );
+}
+
+/// The one command that has a credential in it, and the whole of what kestrel says while it
+/// uses it: neither the listing an operator reads nor the log they debug from has the token.
+#[test]
+fn the_cli_lists_what_a_poll_recorded_and_the_credential_appears_in_neither_it_nor_a_log() {
+    let kestrel = Kestrel::new();
+    let stub = GithubStub::start();
+    for _ in 0..8 {
+        stub.script(github_stub::page(&[github_stub::labelled(
+            7,
+            43,
+            "ready-for-agent",
+        )]));
+    }
+    watching(&kestrel, &stub, "1ms");
+
+    let (mut booted, said) = kestrel.booted_saying_everything();
+    let listed = kestrel.until(
+        &["event", "list", "--organization", "acme"],
+        |listed| listed.contains("ready-for-agent"),
+        "listed an event polled from github",
+    );
+    let _ = booted.kill();
+    booted.wait().expect("kestrel should be waitable");
+    let said = said.lock().expect("the log should not be poisoned").clone();
+
+    assert!(
+        listed.contains("jtmthf/kestrel") && listed.contains("labeled") && listed.contains("#43"),
+        "an event listing that does not say what happened where:\n{listed}"
+    );
+    assert!(
+        !listed.contains(support::TOKEN),
+        "the listing spelled the credential out"
+    );
+    assert!(
+        !said.contains(support::TOKEN),
+        "a log line spelled the credential out"
+    );
+    assert!(
+        said.contains("a poll recorded events"),
+        "the control plane never said it polled:\n{said}"
+    );
 }
