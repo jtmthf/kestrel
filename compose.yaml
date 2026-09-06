@@ -1,0 +1,76 @@
+name: kestrel
+
+services:
+  # Every request the Docker driver makes, and no other (ADR-0009). The regexes are the
+  # documentation: what they do not match is refused with a 403 and logged with the path. The
+  # driver mounts nothing into an Environment, and `/nowhere` is how this filter says so.
+  socket-proxy:
+    image: wollomatic/socket-proxy:1@sha256:3935b709275e4ec35d6ed5a5c4a1f0d01ed31eec5e7234efc3357ecd47689002
+    command:
+      - -listenip=0.0.0.0
+      - -allowfrom=0.0.0.0/0
+      - -allowbindmountfrom=/nowhere
+      - -allowHEAD=^/_ping$$
+      - -allowGET=^/_ping$$|^(/v[0-9.]+)?/containers/[^/]+/(json|logs)$$|^(/v[0-9.]+)?/exec/[^/]+/json$$
+      - -allowPOST=^(/v[0-9.]+)?/containers/create$$|^(/v[0-9.]+)?/containers/[^/]+/(start|exec)$$|^(/v[0-9.]+)?/exec/[^/]+/start$$
+      - -allowDELETE=^(/v[0-9.]+)?/containers/[^/]+$$
+    # The socket belongs to a group whose id differs on every host, and an operator supplies
+    # nothing here, so the one container holding the socket holds it as its owner.
+    user: "0:0"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [daemon]
+    restart: unless-stopped
+
+  kestrel:
+    image: kestrel
+    build:
+      context: .
+      dockerfile: images/kestrel/Dockerfile
+    depends_on:
+      socket-proxy:
+        condition: service_started
+      kestrel-env:
+        condition: service_completed_successfully
+    environment:
+      DOCKER_HOST: tcp://socket-proxy:2375
+      KESTREL_NETWORK: kestrel-link
+      KESTREL_LINK: http://kestrel:7717
+      RUST_LOG: info
+    volumes:
+      - kestrel:/var/lib/kestrel
+    networks: [daemon, link]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, kestrel, organization, list]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Built here and started by nothing: an Environment is a container the control plane
+  # provisions for one Run, never a service beside it.
+  kestrel-env:
+    image: kestrel-env
+    build:
+      context: .
+      dockerfile: images/kestrel-env/Dockerfile
+    entrypoint: ["true"]
+    network_mode: none
+
+networks:
+  # The control plane and the filter, and nothing else. An Environment is on `link`, so
+  # nothing an agent runs can reach the daemon at all.
+  daemon:
+    internal: true
+  # Where an Environment dials the link. Named rather than left to the project prefix,
+  # because the control plane hands the name to the daemon when it provisions one.
+  link:
+    name: kestrel-link
+
+volumes:
+  kestrel:
+    name: kestrel

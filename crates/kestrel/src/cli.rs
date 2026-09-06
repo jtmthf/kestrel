@@ -117,6 +117,10 @@ pub struct Cli {
         default_value = IMAGE
     )]
     image: String,
+
+    /// The network an Environment joins, if not the daemon's default
+    #[arg(long, env = "KESTREL_NETWORK", global = true, value_name = "NETWORK")]
+    network: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -289,7 +293,13 @@ impl Cli {
                 .clone()
                 .unwrap_or_else(|| format!("http://{bound}")),
             driver: match self.compute {
-                ComputeDriver::Docker => Driver::Docker(Docker::provisioning_from(&self.image)),
+                ComputeDriver::Docker => {
+                    let docker = Docker::provisioning_from(&self.image);
+                    Driver::Docker(match &self.network {
+                        Some(network) => docker.on_network(network),
+                        None => docker,
+                    })
+                }
                 ComputeDriver::LocalExec => {
                     Driver::LocalExec(LocalExec::running(self.supervisor()?))
                 }

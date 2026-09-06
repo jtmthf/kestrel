@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod built;
+pub mod compose;
 pub mod control_plane;
 pub mod diagnostics;
 pub mod docker;

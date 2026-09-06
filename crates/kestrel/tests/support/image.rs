@@ -78,6 +78,12 @@ impl Container {
         docker::ran(&arguments)
     }
 
+    pub fn everything_it_said(&self) -> String {
+        let said = docker::ran(&["logs", &self.0]);
+
+        format!("{}\n{}", said.out, said.err)
+    }
+
     pub fn kill(&self) {
         docker::completed(
             &["kill", "--signal", "KILL", &self.0],

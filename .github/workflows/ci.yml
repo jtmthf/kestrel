@@ -96,6 +96,22 @@ jobs:
       - name: Test the image
         run: cargo test --locked --package kestrel --test control_plane -- --ignored
 
+  compose:
+    name: kestrel (compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: jdx/mise-action@v4
+        with:
+          install_args: rust
+
+      - uses: Swatinem/rust-cache@v2
+
+      # One project name, one volume and one host daemon, so the stack comes up once at a time.
+      - name: Test the compose path
+        run: cargo test --locked --package kestrel --test compose -- --ignored --test-threads 1
+
   # The runner is amd64, so nothing else builds the arm64 half of the image: the release it
   # pins, the checksum it verifies, and the architecture it selects on.
   architectures:
@@ -117,7 +133,7 @@ jobs:
   # yields on its own.
   publish:
     name: kestrel (publish)
-    needs: [workspace, control-plane]
+    needs: [workspace, control-plane, compose]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

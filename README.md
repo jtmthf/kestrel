@@ -25,6 +25,36 @@ survived. This document is the direction, written first so the implementation ha
 judged against; [`ROADMAP.md`](ROADMAP.md) is the order it gets built in, and it carries the marker
 for where the project actually is.
 
+## Running it
+
+```sh
+git clone https://github.com/jtmthf/kestrel
+cd kestrel
+docker compose up
+```
+
+One command, no kestrel configuration file, and no values for an operator to supply — kestrel
+asks for none of its own, and vendor credentials are the only thing it ever will. Three images
+come up: the control plane, the image a run executes in, and the filtered socket proxy the Docker
+daemon is reached through. The database is on a named volume, so bringing the stack down and up
+again keeps every session and its transcript.
+
+kestrel's surface is the CLI role on the running control plane:
+
+```sh
+docker compose exec kestrel kestrel organization declare acme
+docker compose exec kestrel kestrel workspace declare kestrel --organization acme \
+  --repository https://github.com/jtmthf/kestrel --branch main
+docker compose exec kestrel kestrel agent declare builder --organization acme --model claude-opus-5
+docker compose exec kestrel kestrel session open --organization acme --workspace kestrel --agent builder
+```
+
+**The control plane never holds the Docker socket.** It reaches the daemon through a proxy that
+forwards the ten requests the compute driver makes and refuses everything else, which is the
+shipped default rather than a hardening step:
+[ADR-0009](docs/adr/0009-the-daemon-is-reached-through-a-filtered-proxy.md) lists what is allowed
+and says plainly what the filter does not buy.
+
 ## What kestrel is
 
 kestrel ships as a self-hostable platform, installed and operated as one system: you point it at
