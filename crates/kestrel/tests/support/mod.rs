@@ -16,6 +16,7 @@ pub mod environment;
 pub mod github_stub;
 pub mod image;
 pub mod link_client;
+pub mod model;
 pub mod repository;
 pub mod scripted_agent;
 pub mod supervisor;

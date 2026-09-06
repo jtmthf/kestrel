@@ -70,6 +70,10 @@ jobs:
       - name: Test the Docker driver
         run: cargo test --locked --package kestrel --test docker -- --ignored
 
+      # One agent runtime, one model stub and one host daemon, so a Run at a time.
+      - name: Test the agent runtime the image ships
+        run: cargo test --locked --package kestrel --test opencode -- --ignored --test-threads 1
+
   control-plane:
     name: kestrel (image)
     runs-on: ubuntu-latest

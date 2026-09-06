@@ -12,6 +12,8 @@ pub enum Script {
     Dies,
     /// Answers `initialize` with a protocol version it was not asked for.
     Predates,
+    /// Answers `initialize` offering only a terminal to log in at.
+    Demands,
     /// Works at a turn that never ends, so nothing the agent does is what ends the Run.
     Dawdles,
     /// Speaks, but takes long enough over the turn that the control plane can be killed and
@@ -26,6 +28,7 @@ impl Script {
             Script::Refuses => "refuses",
             Script::Dies => "dies",
             Script::Predates => "predates",
+            Script::Demands => "demands",
             Script::Dawdles => "dawdles",
             Script::Lingers => "lingers",
         }

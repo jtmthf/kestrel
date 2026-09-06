@@ -198,6 +198,24 @@ async fn an_agent_that_does_not_answer_acp_v1_fails_the_run_rather_than_being_pr
 }
 
 #[tokio::test]
+async fn an_agent_that_can_only_be_logged_into_at_a_terminal_fails_the_run_rather_than_hanging() {
+    let (harness, _, run) = worked(Script::Demands).await;
+
+    let Some(Exit::Failed { because }) = &run.exit else {
+        panic!(
+            "the run ended {:?}, and nobody was at a terminal to log its agent in",
+            run.exit
+        );
+    };
+    assert!(
+        because.contains("terminal"),
+        "unhelpful exit status: {because}"
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn an_agent_that_dies_mid_turn_fails_the_run_rather_than_leaving_it_hanging() {
     let (harness, _, run) = worked(Script::Dies).await;
 

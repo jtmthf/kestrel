@@ -11,6 +11,6 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-agent-client-protocol = "2"
+agent-client-protocol = { version = "2", features = ["unstable_auth_methods"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt", "time"] }

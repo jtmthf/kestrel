@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
-const PATIENCE: Duration = Duration::from_secs(30);
+/// Long enough for a real Agent Runtime in a container to get through a whole turn, which is
+/// the slowest thing anything here waits on.
+const PATIENCE: Duration = Duration::from_secs(90);
 
 pub struct Diagnostics {
     whose: &'static str,
