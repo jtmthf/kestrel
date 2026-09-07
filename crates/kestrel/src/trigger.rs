@@ -88,7 +88,6 @@ pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
     for (trigger, event) in matched {
         fired.push(firing(store, &trigger, &event).await?);
     }
-
     Ok(fired)
 }
 

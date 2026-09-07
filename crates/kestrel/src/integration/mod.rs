@@ -76,44 +76,55 @@ pub async fn events(store: &Store, organization: &str, limit: usize) -> Result<V
 /// Integration where it was and the next one covers the same window again — which costs
 /// nothing, because an Event already recorded is recognised rather than recorded twice.
 pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> Result<Polled> {
-    let seen = match github.issue_events(integration).await {
-        Ok(seen) => seen,
-        Err(refused) => {
-            warn!(
-                integration = integration.name,
-                because = %refused,
-                "a poll came back with nothing"
-            );
-            let mut tx = store.begin().await?;
-            tx.polled(
-                integration,
-                integration.polled_through,
-                back_off(integration, &refused),
-            )
-            .await?;
-            tx.commit().await?;
-
-            return Ok(Polled::default());
-        }
-    };
-
+    let seen = github.issue_events(integration).await;
+    let comments = github.issue_comments(integration).await;
     let mut tx = store.begin().await?;
     let mut recorded = 0;
-    for occurrence in &seen.occurrences {
-        if tx.record_event(integration, occurrence).await? {
-            recorded += 1;
+
+    if let Ok(seen) = &seen {
+        for occurrence in &seen.occurrences {
+            if tx.record_event(integration, occurrence).await? {
+                recorded += 1;
+            }
         }
+    } else if let Err(refused) = &seen {
+        warn!(
+            integration = integration.name,
+            because = %refused,
+            "an event poll came back with nothing"
+        );
+    }
+    if let Ok(comments) = &comments {
+        for occurrence in &comments.occurrences {
+            if tx.record_event(integration, occurrence).await? {
+                recorded += 1;
+            }
+        }
+        tx.comments_polled(integration, comments.through).await?;
+    } else if let Err(refused) = &comments {
+        warn!(
+            integration = integration.name,
+            because = %refused,
+            "a comment poll came back with nothing"
+        );
     }
     tx.polled(
         integration,
-        seen.through,
-        Timestamp::now() + integration.interval,
+        seen.as_ref()
+            .map_or(integration.polled_through, |seen| seen.through),
+        seen.as_ref().map_or_else(
+            |refused| back_off(integration, refused),
+            |_| Timestamp::now() + integration.interval,
+        ),
     )
     .await?;
     tx.commit().await?;
 
     Ok(Polled {
-        seen: seen.occurrences.len(),
+        seen: seen.as_ref().map_or(0, |seen| seen.occurrences.len())
+            + comments
+                .as_ref()
+                .map_or(0, |comments| comments.occurrences.len()),
         recorded,
     })
 }
@@ -149,6 +160,7 @@ mod tests {
             interval,
             poll_due_at: Some(Timestamp::now()),
             polled_through: None,
+            comments_polled_through: None,
         }
     }
 

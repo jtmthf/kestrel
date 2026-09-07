@@ -38,6 +38,13 @@ impl Driver {
             Driver::LocalExec(local_exec) => local_exec.provision(run, variables),
         }
     }
+
+    pub fn destroy_named(&self, run: RunId, environment: &str) -> io::Result<()> {
+        match self {
+            Driver::Docker(_) => docker::destroy_named(environment),
+            Driver::LocalExec(_) => local_exec::destroy_named(run, environment),
+        }
+    }
 }
 
 pub struct Environment {

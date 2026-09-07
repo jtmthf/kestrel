@@ -654,6 +654,25 @@ fn a_session_takes_one_run_at_a_time() {
 }
 
 #[test]
+fn the_cli_posts_a_message_and_enqueues_the_sessions_next_run() {
+    let kestrel = declared();
+    let session = opened(&kestrel);
+
+    let run = kestrel.run(&["session", "post", &session, "please add the missing test"]);
+
+    assert!(
+        kestrel
+            .run(&["run", "list", "--session", &session])
+            .contains(&format!("{run}  -  -  queued"))
+    );
+    assert!(
+        kestrel
+            .run(&["session", "transcript", &session])
+            .contains("said  operator  please add the missing test")
+    );
+}
+
+#[test]
 fn a_session_seals_through_the_cli_only_once_no_run_is_in_flight() {
     let kestrel = declared();
     let session = opened(&kestrel);

@@ -612,6 +612,9 @@
             "$ref": "#/components/schemas/Message"
           },
           {
+            "$ref": "#/components/schemas/Messages"
+          },
+          {
             "$ref": "#/components/schemas/RunEnded"
           }
         ],
@@ -621,6 +624,7 @@
             "participant_joined": "#/components/schemas/ParticipantJoined",
             "run_started": "#/components/schemas/RunStarted",
             "said": "#/components/schemas/Message",
+            "messages": "#/components/schemas/Messages",
             "run_ended": "#/components/schemas/RunEnded"
           }
         }
@@ -674,6 +678,42 @@
         },
         "required": [
           "kind",
+          "participant",
+          "message"
+        ]
+      },
+      "Messages": {
+        "description": "Messages that arrived while a Run was active, drained as one Transcript entry.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "messages"
+          },
+          "messages": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/SpokenMessage"
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "messages"
+        ]
+      },
+      "SpokenMessage": {
+        "description": "One Participant's message within a drained group.",
+        "type": "object",
+        "properties": {
+          "participant": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
           "participant",
           "message"
         ]

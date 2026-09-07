@@ -367,16 +367,32 @@ the next sweep and never changes how the run ended.
 Register an integration with `--carries inbound` and kestrel watches the repository without ever
 writing to it.
 
+## Continue a session
+
+A new comment on the issue that opened a session posts that message to its transcript and enqueues
+another run in the same session. Each run gets a fresh environment. Before its agent starts, the
+supervisor pages the whole transcript into the runtime, so the new turn sees the originating event,
+earlier runs, and the follow-up message.
+
+If a run is active when the comment arrives, the message waits durably and one further run is
+enqueued when the active one ends. If the session has been sealed, the comment opens a new session
+whose `continues` field names the sealed one.
+
+An operator can post the same kind of message directly:
+
+```sh
+kestrel session post 01a07846-49fa-7dc0-a44b-183a63794ee3 "please add the missing test"
+```
+
+Pass `--as-participant NAME` to record a name other than `operator` in the transcript.
+
 ## Where this stops
 
-Four things you will meet following this document.
+Three things you will meet following this document.
 
-**Nothing carries a task to a run.** Every run asks its agent the same fixed question, so the work is
-undirected. This is the one that matters — everything above is machinery waiting for it.
-
-**A GitHub label is the only thing that starts work.** No Slack message, webhook or schedule does,
-a trigger matches a repository and a label and nothing else, and nothing decides which of several
-queued runs goes first.
+**GitHub is the only external system that starts work.** No Slack message, generic webhook or
+schedule does, a trigger matches a repository and a label and nothing else, and nothing decides
+which of several queued runs goes first.
 
 **A failed run is not retried.** kestrel retries dispatch and never work: a run that started and
 failed stays failed.

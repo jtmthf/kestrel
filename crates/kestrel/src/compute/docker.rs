@@ -191,6 +191,13 @@ fn removed(container: &str) -> io::Result<()> {
     }
 }
 
+pub(super) fn destroy_named(environment: &str) -> io::Result<()> {
+    let container = environment
+        .strip_prefix("docker/")
+        .ok_or_else(|| io::Error::other(format!("{environment} is not a Docker environment")))?;
+    removed(container)
+}
+
 fn docker(arguments: &[&str]) -> io::Result<Vec<u8>> {
     let ran = Command::new("docker")
         .args(arguments)

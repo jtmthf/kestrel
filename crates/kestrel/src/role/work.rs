@@ -74,6 +74,7 @@ async fn dispatching(
     shutdown: &CancellationToken,
 ) -> Result<()> {
     while !shutdown.is_cancelled() {
+        reap(store, &dispatch.driver).await?;
         match work::claim(store).await? {
             Some(claimed) => execute(store, dispatch, claimed, shutdown).await?,
             None => {
@@ -140,15 +141,34 @@ async fn execute(
             return Ok(());
         }
     };
+    work::environment_present(store, &run, environment.name()).await?;
 
     let exit = match check_out(&session.workspace, &mut environment).await {
         Ok(()) => start(store, &run, environment, shutdown).await?,
         Err(error) => {
-            destroy(&run, environment);
-            work::fail(store, &run, &error.to_string()).await?
+            let exit = work::fail(store, &run, &error.to_string()).await?;
+            if destroy(&run, environment) {
+                work::environment_gone(store, &run).await?;
+            }
+            exit
         }
     };
     info!(run = %run.id, %exit, "a run ended");
+
+    Ok(())
+}
+
+async fn reap(store: &Store, driver: &Driver) -> Result<()> {
+    for (run, environment) in work::environments_to_reap(store).await? {
+        match driver.destroy_named(run.id, &environment) {
+            Ok(()) => {
+                work::environment_gone(store, &run).await?;
+            }
+            Err(error) => {
+                warn!(run = %run.id, %error, "an ended run's environment resisted being reaped");
+            }
+        }
+    }
 
     Ok(())
 }
@@ -178,17 +198,15 @@ async fn start(
     mut environment: Environment,
     shutdown: &CancellationToken,
 ) -> Result<Exit> {
-    // Recorded once the Workspace is in it and it is about to be started, so a Run that names
-    // an Environment is a Run something is working on.
     let name = environment.name().to_owned();
     work::provisioned(store, run, &name).await?;
     link::instruct(store, run, Instruction::Start).await?;
     info!(run = %run.id, environment = name, "a run reached an environment");
 
     let ended = attend(store, run, &mut environment, shutdown).await;
-    destroy(run, environment);
+    let was_already_gone = matches!(ended, Ok(Ended::Environment(_)));
 
-    Ok(match ended? {
+    let exit = match ended? {
         Ended::TheRun(exit) => exit,
         Ended::Environment(exited) => {
             let unreported =
@@ -203,12 +221,23 @@ async fn start(
             )
             .await?
         }
-    })
+    };
+
+    let destroyed = destroy(run, environment);
+    if was_already_gone || destroyed {
+        work::environment_gone(store, run).await?;
+    }
+
+    Ok(exit)
 }
 
-fn destroy(run: &Run, environment: Environment) {
-    if let Err(error) = environment.destroy() {
-        warn!(run = %run.id, %error, "an environment resisted being destroyed");
+fn destroy(run: &Run, environment: Environment) -> bool {
+    match environment.destroy() {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(run = %run.id, %error, "an environment resisted being destroyed");
+            false
+        }
     }
 }
 

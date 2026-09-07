@@ -78,6 +78,17 @@ pub fn comment(id: i64, body: &str) -> serde_json::Value {
     })
 }
 
+pub fn issue_comment(id: i64, issue: i64, actor: &str, body: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "html_url": format!("https://github.com/jtmthf/kestrel/issues/{issue}#issuecomment-{id}"),
+        "issue_url": format!("https://api.github.com/repos/jtmthf/kestrel/issues/{issue}"),
+        "body": body,
+        "created_at": format!("2026-09-02T12:00:{:02}Z", id % 60),
+        "user": { "login": actor },
+    })
+}
+
 pub fn created(id: i64, body: &str) -> ScriptedResponse {
     ScriptedResponse {
         status: 201,
@@ -236,13 +247,17 @@ fn respond(
         .expect("the endpoint queues should not be poisoned")
         .iter_mut()
         .find(|endpoint| method == endpoint.method && url.contains(&endpoint.path))
-        .and_then(|endpoint| endpoint.responses.pop_front())
-        .or_else(|| {
+        .and_then(|endpoint| endpoint.responses.pop_front());
+    let scripted = scripted.or_else(|| {
+        if method == "GET" && url.contains("/issues/comments?") {
+            Some(ScriptedResponse::ok("[]"))
+        } else {
             responses
                 .lock()
                 .expect("the response queue should not be poisoned")
                 .pop_front()
-        });
+        }
+    });
 
     let scripted = scripted.unwrap_or_else(|| ScriptedResponse::answering(404));
 

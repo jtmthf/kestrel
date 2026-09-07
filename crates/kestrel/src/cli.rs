@@ -326,6 +326,13 @@ pub enum SessionCommand {
         /// The Session's identifier
         session: SessionId,
     },
+    /// Add a participant's message; work starts now or after the active Run ends
+    Post {
+        session: SessionId,
+        #[arg(long, default_value = "operator")]
+        as_participant: String,
+        message: String,
+    },
     /// Show a Session
     Show {
         /// The Session's identifier

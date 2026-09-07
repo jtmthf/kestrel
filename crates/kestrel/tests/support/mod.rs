@@ -492,6 +492,31 @@ impl Harness {
         tx.commit().await
     }
 
+    pub async fn post(&self, id: SessionId, participant: &str, message: &str) -> Run {
+        self.post_while_busy(id, participant, message)
+            .await
+            .expect("an idle session should enqueue a run")
+    }
+
+    pub async fn post_while_busy(
+        &self,
+        id: SessionId,
+        participant: &str,
+        message: &str,
+    ) -> Option<Run> {
+        session::post(&self.store, id, participant, message)
+            .await
+            .expect("the message should post")
+    }
+
+    pub async fn has_pending_messages(&self, id: SessionId) -> bool {
+        let mut tx = self.store.begin().await.expect("a transaction");
+        let session = tx.session(id).await.expect("the session should read");
+        tx.has_pending_messages(&session)
+            .await
+            .expect("pending messages should read")
+    }
+
     pub async fn enqueue_run(&self, session: SessionId) -> Run {
         self.try_enqueue_run(session)
             .await
@@ -541,6 +566,24 @@ impl Harness {
         work::fail(&self.store, run, because)
             .await
             .expect("the run should end");
+    }
+
+    pub async fn environment_present(&self, run: &Run, environment: &str) {
+        work::environment_present(&self.store, run, environment)
+            .await
+            .expect("the environment should be recorded");
+    }
+
+    pub async fn environments_to_reap(&self) -> Vec<(Run, String)> {
+        work::environments_to_reap(&self.store)
+            .await
+            .expect("ended environments should read")
+    }
+
+    pub async fn environment_gone(&self, run: &Run) {
+        work::environment_gone(&self.store, run)
+            .await
+            .expect("the environment should be gone");
     }
 
     pub async fn instruct(&self, run: &Run, instruction: Instruction) {

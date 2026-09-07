@@ -133,6 +133,17 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             let sealed = session::seal(&store, *session).await?;
             println!("{}", sealed.id);
         }
+        CliCommand::Session(SessionCommand::Post {
+            session,
+            as_participant,
+            message,
+        }) => {
+            let run = session::post(&store, *session, as_participant, message).await?;
+            println!(
+                "{}",
+                run.map_or_else(|| "pending".to_owned(), |run| run.id.to_string())
+            );
+        }
         CliCommand::Session(SessionCommand::Show { session }) => {
             let session = session::show(&store, *session).await?;
             println!("session       {}", session.id);

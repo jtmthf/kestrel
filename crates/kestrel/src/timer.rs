@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::domain::{Exit, RunId};
+use crate::follow_up;
 use crate::integration::github::Github;
 use crate::integration::outcome;
 use crate::integration::{self, Polled};
@@ -27,8 +28,31 @@ pub async fn sweeping(store: &Store, shutdown: &CancellationToken) -> Result<()>
         sweeping_leases(store, shutdown),
         polling(store, &github, shutdown),
         firing(store, shutdown),
+        following_up(store, shutdown),
         delivering(store, &github, shutdown)
     )?;
+
+    Ok(())
+}
+
+async fn following_up(store: &Store, shutdown: &CancellationToken) -> Result<()> {
+    while !shutdown.is_cancelled() {
+        match follow_up::receive(store).await {
+            Ok(received) => {
+                for follow_up in received {
+                    info!(
+                        event = %follow_up.event,
+                        session = %follow_up.session,
+                        run = ?follow_up.run,
+                        "a follow-up was received"
+                    );
+                }
+            }
+            Err(error) => warn!(%error, "a follow-up sweep found nothing it could do"),
+        }
+
+        tick(shutdown).await;
+    }
 
     Ok(())
 }

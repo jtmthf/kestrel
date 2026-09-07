@@ -148,6 +148,7 @@ pub struct Integration {
     pub interval: SignedDuration,
     pub poll_due_at: Option<Timestamp>,
     pub polled_through: Option<i64>,
+    pub comments_polled_through: Option<i64>,
 }
 
 impl Integration {
@@ -167,6 +168,8 @@ pub struct Occurrence {
     pub title: String,
     pub url: String,
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     pub occurred_at: Timestamp,
 }
 
