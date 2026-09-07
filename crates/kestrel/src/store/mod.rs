@@ -26,7 +26,7 @@ macro_rules! integrations_where {
     ($tail:literal) => {
         concat!(
             "SELECT id, organization_id, name, kind, repository, api, credential, inbound,
-                    outbound, interval_ms, poll_due_at, polled_through
+                    outbound, interval_ms, poll_due_at, polled_through, comments_polled_through
              FROM integration
              WHERE ",
             $tail
@@ -541,6 +541,28 @@ impl Tx<'_> {
         Ok(run)
     }
 
+    pub async fn mark_turn_pending(&mut self, session: &Session) -> Result<()> {
+        sqlx::query("UPDATE session SET turn_pending = TRUE WHERE id = ?")
+            .bind(session.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("recording a pending turn in the session {}", session.id))?;
+
+        Ok(())
+    }
+
+    pub async fn take_pending_turn(&mut self, session: &Session) -> Result<bool> {
+        let taken = sqlx::query(
+            "UPDATE session SET turn_pending = FALSE WHERE id = ? AND turn_pending = TRUE",
+        )
+        .bind(session.id.to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("taking the pending turn in the session {}", session.id))?;
+
+        Ok(taken.rows_affected() > 0)
+    }
+
     /// One statement, so two claimants cannot both take the same Run: the Run this returns
     /// was queued when the statement began, and is active and holding its lease by the time
     /// anyone else looks.
@@ -1018,6 +1040,7 @@ impl Tx<'_> {
             // on the repository rather than waiting an interval to find out.
             poll_due_at: inbound.then(Timestamp::now),
             polled_through: None,
+            comments_polled_through: None,
         };
 
         sqlx::query(
@@ -1080,8 +1103,8 @@ impl Tx<'_> {
         let recorded = sqlx::query(
             "INSERT INTO event
                  (id, organization_id, integration_id, external_id, repository, kind, actor,
-                  subject, title, url, label, occurred_at, recorded_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  subject, title, url, label, message, occurred_at, recorded_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (integration_id, external_id) DO NOTHING",
         )
         .bind(EventId::generate().to_string())
@@ -1095,6 +1118,7 @@ impl Tx<'_> {
         .bind(&occurrence.title)
         .bind(&occurrence.url)
         .bind(occurrence.label.as_deref())
+        .bind(occurrence.message.as_deref())
         .bind(occurrence.occurred_at.to_string())
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.transaction)
@@ -1126,6 +1150,26 @@ impl Tx<'_> {
         Ok(())
     }
 
+    pub async fn comments_polled(
+        &mut self,
+        integration: &Integration,
+        through: Option<i64>,
+    ) -> Result<()> {
+        sqlx::query("UPDATE integration SET comments_polled_through = ? WHERE id = ?")
+            .bind(through)
+            .bind(integration.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| {
+                format!(
+                    "recording which comments integration {} has seen",
+                    integration.name
+                )
+            })?;
+
+        Ok(())
+    }
+
     pub async fn events(
         &mut self,
         organization: &Organization,
@@ -1133,7 +1177,7 @@ impl Tx<'_> {
     ) -> Result<Vec<Event>> {
         sqlx::query(
             "SELECT id, organization_id, integration_id, external_id, repository, kind, actor,
-                    subject, title, url, label, occurred_at, recorded_at
+                    subject, title, url, label, message, occurred_at, recorded_at
              FROM event
              WHERE organization_id = ?
              ORDER BY occurred_at DESC, external_id DESC
@@ -1151,7 +1195,7 @@ impl Tx<'_> {
     pub async fn event(&mut self, id: EventId) -> Result<Event> {
         let row = sqlx::query(
             "SELECT id, organization_id, integration_id, external_id, repository, kind, actor,
-                    subject, title, url, label, occurred_at, recorded_at
+                    subject, title, url, label, message, occurred_at, recorded_at
              FROM event
              WHERE id = ?",
         )
@@ -1161,6 +1205,75 @@ impl Tx<'_> {
         .with_context(|| format!("no event {id}"))?;
 
         event(&row)
+    }
+
+    pub async fn unfollowed(&mut self, kind: &str, limit: usize) -> Result<Vec<Event>> {
+        sqlx::query(
+            "SELECT event.id, event.organization_id, event.integration_id, event.external_id,
+                    event.repository, event.kind, event.actor, event.subject, event.title,
+                    event.url, event.label, event.message, event.occurred_at, event.recorded_at
+             FROM event
+             LEFT JOIN follow_up ON follow_up.event_id = event.id
+             WHERE event.kind = ? AND follow_up.event_id IS NULL
+             ORDER BY event.occurred_at, event.external_id
+             LIMIT ?",
+        )
+        .bind(kind)
+        .bind(i64::try_from(limit)?)
+        .fetch_all(&mut *self.transaction)
+        .await?
+        .iter()
+        .map(event)
+        .collect()
+    }
+
+    pub async fn session_for_follow_up(&mut self, event: &Event) -> Result<Option<Session>> {
+        let found = sqlx::query(
+            "SELECT session.id
+             FROM session
+             JOIN event AS origin ON origin.id = session.event_id
+             WHERE session.organization_id = ?
+               AND origin.integration_id = ?
+               AND origin.repository = ?
+               AND origin.subject = ?
+               AND origin.occurred_at < ?
+             ORDER BY session.opened_at DESC, session.id DESC
+             LIMIT 1",
+        )
+        .bind(event.organization.to_string())
+        .bind(event.integration.to_string())
+        .bind(&event.repository)
+        .bind(event.occurrence.subject)
+        .bind(event.occurrence.occurred_at.to_string())
+        .fetch_optional(&mut *self.transaction)
+        .await?;
+
+        match found {
+            Some(row) => Ok(Some(
+                self.session(row.get::<String, _>("id").parse()?).await?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn record_follow_up(
+        &mut self,
+        event: &Event,
+        session: Option<&Session>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO follow_up (event_id, organization_id, session_id, received_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(event.id.to_string())
+        .bind(event.organization.to_string())
+        .bind(session.map(|session| session.id.to_string()))
+        .bind(Timestamp::now().to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("recording the follow-up event {}", event.id))?;
+
+        Ok(())
     }
 
     pub async fn integration_with_id(&mut self, id: IntegrationId) -> Result<Integration> {
@@ -1531,6 +1644,7 @@ fn integration(row: &SqliteRow) -> Result<Integration> {
         interval: SignedDuration::from_millis(row.get("interval_ms")),
         poll_due_at: timestamp(row, "poll_due_at")?,
         polled_through: row.get("polled_through"),
+        comments_polled_through: row.get("comments_polled_through"),
     })
 }
 
@@ -1548,6 +1662,7 @@ fn event(row: &SqliteRow) -> Result<Event> {
             title: row.get("title"),
             url: row.get("url"),
             label: row.get("label"),
+            message: row.get("message"),
             occurred_at: row.get::<String, _>("occurred_at").parse()?,
         },
         recorded_at: row.get::<String, _>("recorded_at").parse()?,

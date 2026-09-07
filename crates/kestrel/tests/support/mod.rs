@@ -492,6 +492,23 @@ impl Harness {
         tx.commit().await
     }
 
+    pub async fn post(&self, id: SessionId, participant: &str, message: &str) -> Run {
+        self.post_while_busy(id, participant, message)
+            .await
+            .expect("an idle session should enqueue a run")
+    }
+
+    pub async fn post_while_busy(
+        &self,
+        id: SessionId,
+        participant: &str,
+        message: &str,
+    ) -> Option<Run> {
+        session::post(&self.store, id, participant, message)
+            .await
+            .expect("the message should post")
+    }
+
     pub async fn enqueue_run(&self, session: SessionId) -> Run {
         self.try_enqueue_run(session)
             .await

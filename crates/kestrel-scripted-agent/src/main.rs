@@ -16,7 +16,9 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use clap::Parser;
-use kestrel_scripted_agent::{CONFIDED, DEFAULT_MODEL, OTHER_MODEL, Script};
+use kestrel_scripted_agent::{
+    CONFIDED, DEFAULT_MODEL, FIRST_MEMORY, LAST_MEMORY, OTHER_MODEL, Script,
+};
 
 const SESSION: &str = "scripted";
 /// Long enough to kill a control plane and bring it back up under a turn that is in flight.
@@ -113,11 +115,18 @@ async fn main() -> Result<()> {
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |_prompt: PromptRequest, responder, connection| {
+            async move |prompt: PromptRequest, responder, connection| {
+                let remembers = prompt.prompt.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::Text(text)
+                            if text.text.contains(FIRST_MEMORY) && text.text.contains(LAST_MEMORY)
+                    )
+                });
                 // The turn asks the client a question of its own, so it cannot run inside the
                 // dispatch loop that would have to carry the answer.
                 connection.clone().spawn(async move {
-                    let stop = play(script, &connection).await?;
+                    let stop = play(script, remembers, &connection).await?;
                     responder.respond(PromptResponse::new(stop))
                 })
             },
@@ -127,7 +136,11 @@ async fn main() -> Result<()> {
         .await
 }
 
-async fn play(script: Script, connection: &ConnectionTo<Client>) -> Result<StopReason> {
+async fn play(
+    script: Script,
+    remembers: bool,
+    connection: &ConnectionTo<Client>,
+) -> Result<StopReason> {
     if script == Script::Dawdles {
         std::future::pending::<()>().await;
     }
@@ -136,6 +149,14 @@ async fn play(script: Script, connection: &ConnectionTo<Client>) -> Result<StopR
     }
     if script == Script::Confides {
         say(connection, "message-1", &confided())?;
+        return Ok(StopReason::EndTurn);
+    }
+    if script == Script::Recalls {
+        let message = match remembers {
+            true => "I remember the whole earlier context",
+            false => "I forgot part of the earlier context",
+        };
+        say(connection, "message-1", message)?;
         return Ok(StopReason::EndTurn);
     }
     if script == Script::Refuses {

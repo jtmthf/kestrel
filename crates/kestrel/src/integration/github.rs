@@ -16,6 +16,7 @@ pub const API: &str = "https://api.github.com";
 /// GitHub reports a label coming off an issue as an `unlabeled` event carrying that same
 /// label, so a trigger matching on the label alone would fire on both.
 pub const LABELLED: &str = "labeled";
+pub const COMMENTED: &str = "commented";
 
 const VERSION: &str = "2022-11-28";
 const PER_PAGE: usize = 100;
@@ -96,6 +97,60 @@ impl Github {
                 warn!(
                     integration = integration.name,
                     "github had more events waiting than one poll reads"
+                );
+            }
+        }
+
+        newest_first.reverse();
+        Ok(Seen {
+            occurrences: newest_first,
+            through,
+        })
+    }
+
+    pub async fn issue_comments(&self, integration: &Integration) -> Result<Seen, Refused> {
+        let repository = repository(&integration.repository).map_err(Refused::Failed)?;
+        let mut newest_first = Vec::new();
+        let mut through = integration.comments_polled_through;
+
+        for page in 1..=PAGES {
+            let response = self
+                .request(
+                    reqwest::Method::GET,
+                    integration,
+                    &format!(
+                        "repos/{repository}/issues/comments?sort=created&direction=desc&per_page={PER_PAGE}&page={page}"
+                    ),
+                )
+                .send()
+                .await
+                .map_err(|error| {
+                    Refused::Failed(anyhow!("the comments on {repository} could not be polled: {error}"))
+                })?;
+            let reported: Vec<IssueComment> =
+                answered(response, &format!("the comments on {repository}")).await?;
+            let short = reported.len() < PER_PAGE;
+            let reached = reported
+                .iter()
+                .any(|comment| Some(comment.id) <= integration.comments_polled_through);
+
+            for comment in reported {
+                through = through.max(Some(comment.id));
+                if Some(comment.id) > integration.comments_polled_through
+                    && !comment.body.contains("<!-- kestrel run ")
+                    && let Some(occurrence) = comment.occurrence()
+                {
+                    newest_first.push(occurrence);
+                }
+            }
+
+            if short || reached || integration.comments_polled_through.is_none() {
+                break;
+            }
+            if page == PAGES {
+                warn!(
+                    integration = integration.name,
+                    "github had more comments waiting than one poll reads"
                 );
             }
         }
@@ -258,6 +313,7 @@ fn occurrence(event: IssueEvent) -> Option<Occurrence> {
         title: issue.title,
         url: issue.html_url,
         label: event.label.map(|label| label.name),
+        message: None,
         occurred_at: event.created_at.parse().ok()?,
     })
 }
@@ -319,6 +375,34 @@ struct Issue {
     number: i64,
     title: String,
     html_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IssueComment {
+    id: i64,
+    body: String,
+    created_at: String,
+    html_url: String,
+    issue_url: String,
+    user: Option<Actor>,
+}
+
+impl IssueComment {
+    fn occurrence(self) -> Option<Occurrence> {
+        let subject = self.issue_url.rsplit('/').next()?.parse().ok()?;
+
+        Some(Occurrence {
+            external_id: format!("comment:{}", self.id),
+            kind: COMMENTED.to_owned(),
+            actor: self.user.map(|user| user.login).unwrap_or_default(),
+            subject,
+            title: String::new(),
+            url: self.html_url,
+            label: None,
+            message: Some(self.body),
+            occurred_at: self.created_at.parse().ok()?,
+        })
+    }
 }
 
 #[cfg(test)]

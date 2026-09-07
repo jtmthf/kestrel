@@ -60,7 +60,11 @@ struct Selects {
 ///
 /// `provider` reaches the agent's own process and nothing else: not this one's environment, not
 /// a file, and not ACP, which carries no credentials (ADR-0007).
-pub async fn work(runtime: &Runtime, provider: BTreeMap<String, String>) -> Worked {
+pub async fn work(
+    runtime: &Runtime,
+    provider: BTreeMap<String, String>,
+    entries: &[serde_json::Value],
+) -> Worked {
     let heard = Arc::new(Mutex::new(Heard::default()));
 
     let spawn = match AcpAgent::from_str(&runtime.command) {
@@ -119,7 +123,7 @@ pub async fn work(runtime: &Runtime, provider: BTreeMap<String, String>) -> Work
             let heard = Arc::clone(&heard);
 
             async move |connection: ConnectionTo<agent_client_protocol::Agent>| {
-                a_turn(&connection, auth, model, &heard).await
+                a_turn(&connection, auth, model, entries, &heard).await
             }
         })
         .await;
@@ -141,6 +145,7 @@ async fn a_turn(
     connection: &ConnectionTo<agent_client_protocol::Agent>,
     auth: Option<String>,
     model: Option<String>,
+    entries: &[serde_json::Value],
     heard: &Mutex<Heard>,
 ) -> Result<StopReason, Error> {
     let initialized = connection
@@ -205,12 +210,25 @@ async fn a_turn(
     let answered = connection
         .send_request(PromptRequest::new(
             set_up.session_id,
-            vec![ContentBlock::Text(TextContent::new(PROMPT))],
+            vec![ContentBlock::Text(TextContent::new(prompt(entries)))],
         ))
         .block_task()
         .await?;
 
     Ok(answered.stop_reason)
+}
+
+fn prompt(entries: &[serde_json::Value]) -> String {
+    if entries.is_empty() {
+        return PROMPT.to_owned();
+    }
+
+    let context = entries
+        .iter()
+        .map(serde_json::Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Earlier context, oldest first:\n{context}\n\n{PROMPT}")
 }
 
 /// ACP's `terminal` method launches an interactive process for someone to log in at, so an

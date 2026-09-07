@@ -171,6 +171,9 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
             .await?;
         tx.invalidate_credentials(run).await?;
         outcome::record(tx, run, &session, &exit).await?;
+        if tx.take_pending_turn(&session).await? {
+            tx.enqueue_run(&session).await?;
+        }
         exit
     } else {
         tx.run(run.id)

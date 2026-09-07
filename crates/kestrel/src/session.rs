@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use crate::domain::{Event, Organization, Session, SessionId, SessionState};
+use crate::domain::{Event, Organization, Run, RunState, Session, SessionId, SessionState};
 use crate::fanout::{self, Change};
 use crate::log::{Cursor, Entry, Page, Unreadable, Window};
 use crate::store::{Store, Tx};
@@ -87,6 +87,47 @@ pub async fn started_by(store: &Store, session: &Session) -> Result<Option<Event
 
 pub async fn continuations(store: &Store, id: SessionId) -> Result<Vec<SessionId>> {
     store.begin().await?.continuations(id).await
+}
+
+pub async fn post(
+    store: &Store,
+    id: SessionId,
+    participant: &str,
+    message: &str,
+) -> Result<Option<Run>> {
+    let mut tx = store.begin().await?;
+    let session = tx.session(id).await?;
+    let run = post_in(&mut tx, &session, participant, message).await?;
+    tx.commit().await?;
+
+    Ok(run)
+}
+
+pub(crate) async fn post_in(
+    tx: &mut Tx<'_>,
+    session: &Session,
+    participant: &str,
+    message: &str,
+) -> Result<Option<Run>> {
+    session.accepts("message")?;
+    tx.log()
+        .append(
+            session,
+            Entry::Said {
+                participant: participant.to_owned(),
+                message: message.to_owned(),
+            },
+        )
+        .await?;
+
+    if let Some(holding) = tx.run_holding_the_slot(session).await? {
+        if tx.run(holding).await?.state == RunState::Active {
+            tx.mark_turn_pending(session).await?;
+        }
+        Ok(None)
+    } else {
+        Ok(Some(tx.enqueue_run(session).await?))
+    }
 }
 
 pub async fn transcript(

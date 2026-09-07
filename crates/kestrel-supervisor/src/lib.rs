@@ -44,6 +44,7 @@ struct Attending {
     worked: bool,
     taken: i64,
     saying: VecDeque<Report>,
+    entries: Option<Vec<serde_json::Value>>,
 }
 
 pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, String>) -> i32 {
@@ -153,6 +154,9 @@ async fn attend(
     say(link, attending, diagnostics).await?;
 
     if !attending.worked {
+        if attending.entries.is_none() {
+            attending.entries = Some(all_entries(link).await?);
+        }
         let provider = link.credentials().await?.variables;
         if !provider.is_empty() {
             diagnostics.info(&format!(
@@ -161,7 +165,12 @@ async fn attend(
             ));
         }
 
-        let worked = runtime::work(runtime, provider).await;
+        let worked = runtime::work(
+            runtime,
+            provider,
+            attending.entries.as_deref().unwrap_or_default(),
+        )
+        .await;
         if let Some(on) = &worked.on {
             diagnostics.info(&format!("on the model {}", on.model));
         }
@@ -174,6 +183,20 @@ async fn attend(
     say(link, attending, diagnostics).await?;
 
     Ok(Attended::Finished)
+}
+
+async fn all_entries(link: &Link) -> Result<Vec<serde_json::Value>, link::Error> {
+    let mut entries = Vec::new();
+    let mut cursor = None;
+
+    loop {
+        let page = link.entries(cursor.as_deref()).await?;
+        entries.extend(page.entries.into_iter().map(|recorded| recorded.entry));
+        cursor = page.cursor;
+        if !page.more {
+            return Ok(entries);
+        }
+    }
 }
 
 /// Numbered from the last one the link took, and dropped once it has been taken: a reconnect

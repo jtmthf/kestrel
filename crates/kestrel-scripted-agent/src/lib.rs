@@ -10,6 +10,8 @@ pub const CONFIDED: &str = "SCRIPTED_";
 /// The two models the agent offers a client, the first of which it runs on unasked.
 pub const DEFAULT_MODEL: &str = "scripted-mini";
 pub const OTHER_MODEL: &str = "scripted-max";
+pub const FIRST_MEMORY: &str = "the first remembered message";
+pub const LAST_MEMORY: &str = "the last remembered message";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Script {
@@ -19,6 +21,8 @@ pub enum Script {
     Refuses,
     /// Says which Provider Credentials reached its own process, and nothing else.
     Confides,
+    /// Says whether both ends of a long earlier context reached its prompt.
+    Recalls,
     /// Dies mid-turn without answering the prompt.
     Dies,
     /// Answers `initialize` with a protocol version it was not asked for.
@@ -42,6 +46,7 @@ impl Script {
             Script::Speaks => "speaks",
             Script::Refuses => "refuses",
             Script::Confides => "confides",
+            Script::Recalls => "recalls",
             Script::Dies => "dies",
             Script::Predates => "predates",
             Script::Demands => "demands",

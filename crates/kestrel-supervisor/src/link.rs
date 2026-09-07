@@ -8,6 +8,7 @@ use reqwest::{Client, Response, StatusCode, header};
 use serde::{Deserialize, Serialize};
 
 pub const CREDENTIALS: &str = "/link/runs/{run}/credentials";
+pub const ENTRIES: &str = "/link/runs/{run}/entries";
 pub const INSTRUCTIONS: &str = "/link/runs/{run}/instructions";
 pub const REPORTS: &str = "/link/runs/{run}/reports";
 
@@ -111,6 +112,18 @@ pub struct Delivered {
     pub instruction: Instruction,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct Page {
+    pub entries: Vec<Recorded>,
+    pub cursor: Option<String>,
+    pub more: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Recorded {
+    pub entry: serde_json::Value,
+}
+
 #[derive(Debug)]
 pub enum Error {
     /// The link declined this Environment, or what it sent. Sending it again will not help.
@@ -188,6 +201,28 @@ impl Link {
         if !response.status().is_success() {
             return Err(Error::Lost(format!(
                 "the link answered {} to a request for this run's credentials",
+                response.status().as_u16()
+            )));
+        }
+
+        Ok(response.json().await?)
+    }
+
+    pub async fn entries(&self, cursor: Option<&str>) -> Result<Page, Error> {
+        let url = match cursor {
+            Some(cursor) => format!(
+                "{}?cursor={}",
+                self.url(ENTRIES),
+                utf8_percent_encode(cursor, NON_ALPHANUMERIC)
+            ),
+            None => self.url(ENTRIES),
+        };
+        let request = self.client.get(url).bearer_auth(&self.credential);
+
+        let response = refuse_if_declined(request.send().await?).await?;
+        if !response.status().is_success() {
+            return Err(Error::Lost(format!(
+                "the link answered {} to a request for entries",
                 response.status().as_u16()
             )));
         }
