@@ -1,9 +1,12 @@
 # Roadmap
 
-> **We are here: `0.1`, kestrel opens its own PRs.** No rung is closed. The repo holds the
-> vocabulary in [`CONTEXT.md`](CONTEXT.md) and the direction in [`README.md`](README.md); the code
-> so far is the two binaries and CI, and a Session that is durable from the moment it is opened.
-> Nothing triggers, schedules or executes work yet.
+> **We are here: `0.2`, kestrel works the backlog.** `0.1` is closed: an issue labelled
+> `ready-for-agent` on this repository is worked with no human action after the labelling, a pull
+> request lands, and the outcome round-trips to the issue it came from —
+> [`docs/acceptance-0.1.md`](docs/acceptance-0.1.md) is the acceptance run and what it found. The repo
+> holds the vocabulary in [`CONTEXT.md`](CONTEXT.md) and the direction in [`README.md`](README.md).
+> Nothing schedules more than one run in flight per session yet, and a repository's existing label
+> history is a bootstrap hazard `docs/acceptance-0.1.md` names rather than one kestrel guards against.
 
 Seven rungs from an empty repository to v1, and no dates. Each is a `0.N` release, and each is named
 by a class of kestrel's own work rather than by a feature list, because the ladder is walked by
