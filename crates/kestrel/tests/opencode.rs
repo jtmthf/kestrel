@@ -219,9 +219,7 @@ async fn a_run_drives_the_agent_runtime_through_a_turn_and_ends_with_an_exit_sta
         "the run ended without the agent runtime having reached a model at all"
     );
     assert!(
-        driven
-            .diagnostics
-            .said(&format!("selected the model {MODEL}")),
+        driven.diagnostics.said(&format!("on the model {MODEL}")),
         "the run never set the model its agent named. the environment said:\n{}",
         driven.diagnostics.everything_it_said()
     );

@@ -311,7 +311,7 @@ async fn a_turn_once(lineage: Lineage) -> Judged {
     assert!(
         driven
             .diagnostics
-            .said(&format!("selected the model {}", lineage.model())),
+            .said(&format!("on the model {}", lineage.model())),
         "ACP: `session/set_config_option` sets the model a client asked for. {driven}"
     );
 
