@@ -29,6 +29,9 @@ pub enum Entry {
         participant: String,
         message: String,
     },
+    Messages {
+        messages: Vec<Message>,
+    },
     RunEnded {
         run: RunId,
         exit: Exit,
@@ -60,9 +63,24 @@ impl fmt::Display for Entry {
                 participant,
                 message,
             } => write!(f, "said  {participant}  {message}"),
+            Entry::Messages { messages } => write!(
+                f,
+                "messages  {}",
+                messages
+                    .iter()
+                    .map(|message| format!("{}  {}", message.participant, message.message))
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            ),
             Entry::RunEnded { run, exit } => write!(f, "run ended  {run}  {exit}"),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Message {
+    pub participant: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone)]

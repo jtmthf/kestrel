@@ -3,6 +3,7 @@ pub mod cli;
 pub mod compute;
 pub mod domain;
 pub mod fanout;
+pub mod follow_up;
 pub mod hex;
 pub mod integration;
 pub mod keyring;

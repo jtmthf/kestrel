@@ -63,7 +63,7 @@ struct Selects {
 pub async fn work(
     runtime: &Runtime,
     provider: BTreeMap<String, String>,
-    entries: &[serde_json::Value],
+    entries: &[crate::link::Entry],
 ) -> Worked {
     let heard = Arc::new(Mutex::new(Heard::default()));
 
@@ -145,7 +145,7 @@ async fn a_turn(
     connection: &ConnectionTo<agent_client_protocol::Agent>,
     auth: Option<String>,
     model: Option<String>,
-    entries: &[serde_json::Value],
+    entries: &[crate::link::Entry],
     heard: &Mutex<Heard>,
 ) -> Result<StopReason, Error> {
     let initialized = connection
@@ -218,14 +218,14 @@ async fn a_turn(
     Ok(answered.stop_reason)
 }
 
-fn prompt(entries: &[serde_json::Value]) -> String {
+fn prompt(entries: &[crate::link::Entry]) -> String {
     if entries.is_empty() {
         return PROMPT.to_owned();
     }
 
     let context = entries
         .iter()
-        .map(serde_json::Value::to_string)
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
     format!("Earlier context, oldest first:\n{context}\n\n{PROMPT}")

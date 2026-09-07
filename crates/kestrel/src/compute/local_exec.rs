@@ -165,6 +165,28 @@ fn removed(workspace: &Path) -> io::Result<()> {
     }
 }
 
+pub(super) fn destroy_named(run: RunId, environment: &str) -> io::Result<()> {
+    let pid: i32 = environment
+        .strip_prefix("local-exec/")
+        .ok_or_else(|| io::Error::other(format!("{environment} is not a local environment")))?
+        .parse()
+        .map_err(|error| io::Error::other(format!("{environment} has no process id: {error}")))?;
+
+    #[cfg(unix)]
+    {
+        #[allow(unsafe_code)]
+        let killed = unsafe { libc::killpg(pid, libc::SIGKILL) };
+        if killed == -1 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
+            }
+        }
+    }
+
+    removed(&std::env::temp_dir().join(format!("kestrel-{run}")))
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::io::{BufRead, BufReader};

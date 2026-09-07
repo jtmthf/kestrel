@@ -12,7 +12,7 @@ use jiff::{SignedDuration, Timestamp};
 use kestrel::domain::{Exit, Run, RunId};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction, Report, Reported};
-use kestrel::log::Entry;
+use kestrel::log::{Entry, Message};
 use reqwest::{StatusCode, Version, header};
 use serde_json::json;
 use support::Harness;
@@ -506,6 +506,12 @@ fn the_published_openapi_document_describes_every_transcript_entry_the_link_serv
         Entry::Said {
             participant: "builder".to_owned(),
             message: "what the agent said".to_owned(),
+        },
+        Entry::Messages {
+            messages: vec![Message {
+                participant: "operator".to_owned(),
+                message: "what arrived while it worked".to_owned(),
+            }],
         },
         Entry::RunEnded {
             run: RunId::generate(),

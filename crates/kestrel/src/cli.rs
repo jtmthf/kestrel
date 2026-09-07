@@ -326,14 +326,11 @@ pub enum SessionCommand {
         /// The Session's identifier
         session: SessionId,
     },
-    /// Post a message into an open Session and enqueue its next Run
+    /// Add a participant's message; work starts now or after the active Run ends
     Post {
-        /// The Session to continue
         session: SessionId,
-        /// Who is speaking in the Transcript
         #[arg(long, default_value = "operator")]
         as_participant: String,
-        /// What to say
         message: String,
     },
     /// Show a Session

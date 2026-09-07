@@ -47,7 +47,10 @@ pub async fn seal(store: &Store, id: SessionId) -> Result<Session> {
     if session.state == SessionState::Sealed {
         bail!("the session {id} is already sealed, and a sealed session is never reopened");
     }
-    if let Some(holding) = tx.run_holding_the_slot(&session).await? {
+    if let Some(holding) = tx.run_holding_the_slot(&session).await?
+        && (tx.run(holding).await?.state != RunState::Ended
+            || tx.has_pending_messages(&session).await?)
+    {
         bail!("the run {holding} is still in flight in the session {id}");
     }
 
@@ -110,6 +113,16 @@ pub(crate) async fn post_in(
     message: &str,
 ) -> Result<Option<Run>> {
     session.accepts("message")?;
+
+    let holding = tx.run_holding_the_slot(session).await?;
+    if let Some(holding) = holding
+        && tx.run(holding).await?.state != RunState::Queued
+    {
+        tx.add_pending_message(session, participant, message)
+            .await?;
+        return Ok(None);
+    }
+
     tx.log()
         .append(
             session,
@@ -120,13 +133,9 @@ pub(crate) async fn post_in(
         )
         .await?;
 
-    if let Some(holding) = tx.run_holding_the_slot(session).await? {
-        if tx.run(holding).await?.state == RunState::Active {
-            tx.mark_turn_pending(session).await?;
-        }
-        Ok(None)
-    } else {
-        Ok(Some(tx.enqueue_run(session).await?))
+    match holding {
+        Some(_) => Ok(None),
+        None => Ok(Some(tx.enqueue_run(session).await?)),
     }
 }
 

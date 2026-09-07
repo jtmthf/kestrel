@@ -113,7 +113,8 @@ impl Github {
         let mut newest_first = Vec::new();
         let mut through = integration.comments_polled_through;
 
-        for page in 1..=PAGES {
+        let mut page = 1;
+        loop {
             let response = self
                 .request(
                     reqwest::Method::GET,
@@ -147,12 +148,7 @@ impl Github {
             if short || reached || integration.comments_polled_through.is_none() {
                 break;
             }
-            if page == PAGES {
-                warn!(
-                    integration = integration.name,
-                    "github had more comments waiting than one poll reads"
-                );
-            }
+            page += 1;
         }
 
         newest_first.reverse();

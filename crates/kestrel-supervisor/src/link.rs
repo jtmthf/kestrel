@@ -121,7 +121,17 @@ pub struct Page {
 
 #[derive(Debug, Deserialize)]
 pub struct Recorded {
-    pub entry: serde_json::Value,
+    pub entry: Entry,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
+pub struct Entry(serde_json::Value);
+
+impl std::fmt::Display for Entry {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(out)
+    }
 }
 
 #[derive(Debug)]

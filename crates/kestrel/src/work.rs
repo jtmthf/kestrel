@@ -6,8 +6,8 @@ use jiff::{SignedDuration, Timestamp};
 use crate::domain::{Exit, Run, RunId, SessionId, Usage};
 use crate::integration::outcome;
 use crate::link::credential::Secret;
-use crate::log::Entry;
-use crate::store::{Store, Tx};
+use crate::log::{Entry, Message};
+use crate::store::{PendingMessage, Store, Tx};
 
 /// Long enough that no Run outlives its own credential at 0.1, short enough that one left
 /// behind by a control plane that died before ending its Run stops working on its own.
@@ -131,6 +131,26 @@ pub async fn provisioned(store: &Store, run: &Run, environment: &str) -> Result<
     tx.commit().await
 }
 
+pub async fn environment_present(store: &Store, run: &Run, environment: &str) -> Result<()> {
+    let mut tx = store.begin().await?;
+    tx.record_environment_present(run, environment).await?;
+
+    tx.commit().await
+}
+
+pub async fn environments_to_reap(store: &Store) -> Result<Vec<(Run, String)>> {
+    store.begin().await?.environments_to_reap().await
+}
+
+pub async fn environment_gone(store: &Store, run: &Run) -> Result<Option<Run>> {
+    let mut tx = store.begin().await?;
+    tx.record_environment_gone(run).await?;
+    let continued = continue_pending(&mut tx, run.session).await?;
+    tx.commit().await?;
+
+    Ok(continued)
+}
+
 pub async fn complete(store: &Store, run: &Run) -> Result<Exit> {
     end(store, run, Exit::Succeeded).await
 }
@@ -171,8 +191,8 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
             .await?;
         tx.invalidate_credentials(run).await?;
         outcome::record(tx, run, &session, &exit).await?;
-        if tx.take_pending_turn(&session).await? {
-            tx.enqueue_run(&session).await?;
+        if tx.environment_is_gone(run).await? {
+            continue_pending(tx, run.session).await?;
         }
         exit
     } else {
@@ -183,4 +203,32 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
     };
 
     Ok(stands)
+}
+
+async fn continue_pending(tx: &mut Tx<'_>, session: SessionId) -> Result<Option<Run>> {
+    let session = tx.session(session).await?;
+    if tx.run_holding_the_slot(&session).await?.is_some() {
+        return Ok(None);
+    }
+
+    let pending = tx.take_pending_messages(&session).await?;
+    if pending.is_empty() {
+        return Ok(None);
+    }
+
+    tx.log().append(&session, pending_entry(pending)).await?;
+
+    Ok(Some(tx.enqueue_run(&session).await?))
+}
+
+fn pending_entry(pending: Vec<PendingMessage>) -> Entry {
+    Entry::Messages {
+        messages: pending
+            .into_iter()
+            .map(|pending| Message {
+                participant: pending.participant,
+                message: pending.body,
+            })
+            .collect(),
+    }
 }
