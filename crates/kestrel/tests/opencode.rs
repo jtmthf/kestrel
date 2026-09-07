@@ -43,8 +43,12 @@ impl Driven {
     async fn in_an_environment(harness: &Harness, model: &Model) -> Self {
         let session = a_session(harness).await;
         let (run, credential) = harness.dispatch_run(session.id).await;
-        let (environment, diagnostics) =
-            provisioned(harness, run.id, &credential, &session.agent.model);
+        let (environment, diagnostics) = provisioned(
+            harness,
+            run.id,
+            &credential,
+            session.agent.model.as_deref().unwrap_or_default(),
+        );
 
         let mut driven = Self {
             run,
@@ -147,7 +151,7 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", MODEL)
+        .declare_agent(&organization, "builder", "opencode", Some(MODEL))
         .await;
 
     harness.open_session("acme", "kestrel", "builder").await

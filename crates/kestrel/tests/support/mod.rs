@@ -26,6 +26,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use jiff::{SignedDuration, Timestamp};
+use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
     Agent, Direction, Event, Integration, IntegrationKind, Organization, Run, RunId, Session,
@@ -224,15 +225,32 @@ impl Harness {
         organization: &Organization,
         name: &str,
         runtime: &str,
-        model: &str,
+        model: Option<&str>,
     ) -> Agent {
-        let mut tx = self.store.begin().await.expect("a transaction");
-        let agent = tx
-            .declare_agent(organization, name, runtime, model)
+        self.try_declare_agent(organization, name, runtime, model)
             .await
-            .expect("the agent should declare");
-        tx.commit().await.expect("the declaration should commit");
-        agent
+            .expect("the agent should declare")
+    }
+
+    pub async fn try_declare_agent(
+        &self,
+        organization: &Organization,
+        name: &str,
+        runtime: &str,
+        model: Option<&str>,
+    ) -> anyhow::Result<Agent> {
+        agent::declare(&self.store, &organization.name, name, runtime, model).await
+    }
+
+    pub async fn set_agent_model(
+        &self,
+        organization: &Organization,
+        name: &str,
+        model: Option<&str>,
+    ) -> Agent {
+        agent::set_model(&self.store, &organization.name, name, model)
+            .await
+            .expect("the model should change")
     }
 
     pub async fn agents(&self, organization: &Organization) -> Vec<Agent> {

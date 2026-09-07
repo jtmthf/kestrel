@@ -38,7 +38,7 @@ async fn a_session(harness: &Harness) -> Session {
             &organization,
             "builder",
             "opencode",
-            kestrel_scripted_agent::OTHER_MODEL,
+            Some(kestrel_scripted_agent::OTHER_MODEL),
         )
         .await;
 

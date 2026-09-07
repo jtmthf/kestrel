@@ -358,6 +358,84 @@ fn an_agent_names_the_runtime_and_model_it_participates_with() {
 }
 
 #[test]
+fn an_agent_that_names_no_model_lists_as_naming_none() {
+    let kestrel = Kestrel::new();
+    kestrel.run(&["organization", "declare", "acme"]);
+
+    let id = kestrel.run(&["agent", "declare", "builder", "--organization", "acme"]);
+
+    assert_eq!(
+        kestrel.run(&["agent", "list", "--organization", "acme"]),
+        format!("{id}  builder  opencode  -")
+    );
+}
+
+#[test]
+fn an_agents_model_changes_through_the_cli_rather_than_by_declaring_it_again() {
+    let kestrel = Kestrel::new();
+    kestrel.run(&["organization", "declare", "acme"]);
+    let id = kestrel.run(&[
+        "agent",
+        "declare",
+        "builder",
+        "--organization",
+        "acme",
+        "--model",
+        "claude-opus-5",
+    ]);
+
+    assert_eq!(
+        kestrel.run(&[
+            "agent",
+            "model",
+            "builder",
+            "--organization",
+            "acme",
+            "--model",
+            "claude-sonnet-5",
+        ]),
+        "claude-sonnet-5"
+    );
+
+    assert_eq!(
+        kestrel.run(&["agent", "list", "--organization", "acme"]),
+        format!("{id}  builder  opencode  claude-sonnet-5")
+    );
+    assert_eq!(
+        kestrel.run(&["agent", "model", "builder", "--organization", "acme"]),
+        "-"
+    );
+}
+
+/// What a runtime offers is learned from the Runs it has worked, so an Agent naming a model
+/// outside it is refused at the CLI rather than at a dispatch that would fail.
+#[test]
+fn a_model_a_known_runtime_does_not_advertise_is_refused_when_the_agent_is_declared() {
+    let kestrel = declared();
+    let session = opened(&kestrel);
+    kestrel.run(&["run", "enqueue", "--session", &session]);
+    dispatched(&kestrel, &session);
+
+    let refusal = refused(
+        &kestrel,
+        &[
+            "agent",
+            "declare",
+            "reviewer",
+            "--organization",
+            "acme",
+            "--model",
+            "a-model-no-agent-offers",
+        ],
+    );
+
+    assert!(
+        refusal.contains(kestrel_scripted_agent::DEFAULT_MODEL),
+        "the refusal does not say what the runtime offers: {refusal}"
+    );
+}
+
+#[test]
 fn a_provider_credential_is_held_against_an_organization_and_listed_by_variable() {
     let kestrel = Kestrel::new();
     kestrel.run(&["organization", "declare", "acme"]);
@@ -763,7 +841,7 @@ fn a_run_enqueued_through_the_cli_is_dispatched_and_lists_where_it_executed() {
 
     assert_eq!(
         kestrel.run(&["run", "list", "--session", &session]),
-        format!("{run}  -  queued")
+        format!("{run}  -  -  queued")
     );
 
     let listed = dispatched(&kestrel, &session);
@@ -776,6 +854,7 @@ fn a_run_enqueued_through_the_cli_is_dispatched_and_lists_where_it_executed() {
             .is_some_and(|environment| environment.starts_with("local-exec/")),
         "the run does not list the environment it executed in"
     );
+    assert_eq!(listed.next(), Some(kestrel_scripted_agent::OTHER_MODEL));
     assert_eq!(listed.next(), Some("succeeded"));
 }
 

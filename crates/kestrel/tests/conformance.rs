@@ -175,7 +175,7 @@ fn provisioned(
         ("KESTREL_AGENT_AUTH".to_owned(), auth.to_owned()),
         (
             "KESTREL_AGENT_MODEL".to_owned(),
-            session.agent.model.clone(),
+            session.agent.model.clone().unwrap_or_default(),
         ),
     ];
     variables.extend(lineage.variables());
@@ -205,7 +205,7 @@ async fn a_session(harness: &Harness, lineage: Lineage, model: &str) -> Session 
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", lineage.command(), model)
+        .declare_agent(&organization, "builder", lineage.command(), Some(model))
         .await;
     for (variable, secret) in lineage.credentials(&Lineage::key()) {
         harness

@@ -19,7 +19,7 @@ async fn declare_fixture(harness: &Harness) {
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+        .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 }
 
@@ -369,7 +369,7 @@ async fn a_sealed_session_in_another_organization_is_not_continued() {
         )
         .await;
     harness
-        .declare_agent(&globex, "builder", "opencode", "claude-opus-5")
+        .declare_agent(&globex, "builder", "opencode", Some("claude-opus-5"))
         .await;
 
     let refusal = harness

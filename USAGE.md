@@ -68,11 +68,22 @@ An **agent** is a configured identity rather than a running process: the agent r
 it, and the model it works with.
 
 ```sh
-kestrel agent declare builder --organization acme --model ""
+kestrel agent declare builder --organization acme
 ```
 
-The empty `--model` asks for whatever the agent runtime's own default is, which is what you want
-here. Name a specific model and the run fails at model selection unless that runtime offers it.
+Naming no `--model` asks for whatever the agent runtime's own default is, which is what you want
+here; the run records which model that turned out to be. Name a specific model and the run fails at
+model selection unless that runtime offers it.
+
+Changing an agent's model is configuration rather than a rebuild, and a run already in flight stays
+on the model it was dispatched with:
+
+```sh
+kestrel agent model builder --organization acme --model anthropic/claude-opus-4-5
+```
+
+Once a run has worked, kestrel knows what that runtime advertised, and refuses a model outside it
+where you declare it rather than where it would be dispatched.
 
 `kestrel organization list`, `kestrel workspace list --organization acme` and
 `kestrel agent list --organization acme` show what you have declared.
@@ -128,11 +139,12 @@ kestrel run list --session 01a07846-49fa-7dc0-a44b-183a63794ee3
 ```
 
 ```
-01a07846-5d97-7230-9315-bfef2a644006  docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006  active
+01a07846-5d97-7230-9315-bfef2a644006  docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006  -  active
 ```
 
-The middle column is the environment. It is a real container, and the supervisor inside it says what
-it is doing:
+The second column is the environment, and the third is the model the run is on, which it says once
+the turn is over. The environment is a real container, and the supervisor inside it says what it is
+doing:
 
 ```sh
 docker logs -f kestrel-01a07846-5d97-7230-9315-bfef2a644006

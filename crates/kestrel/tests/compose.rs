@@ -255,15 +255,7 @@ fn a_session(stack: &Stack) -> String {
         "main",
     ]);
     // The Agent names no model, so the agent runtime's own default is what a Run would get.
-    stack.ran(&[
-        "agent",
-        "declare",
-        "builder",
-        "--organization",
-        "acme",
-        "--model",
-        "",
-    ]);
+    stack.ran(&["agent", "declare", "builder", "--organization", "acme"]);
     // A Run reaches no model without one. This value reaches no provider either, which is why
     // nothing here gets further than an Environment.
     stack.held_a_provider_credential("acme", "OPENCODE_API_KEY", "not-a-key");
@@ -292,7 +284,7 @@ fn listed(stack: &Stack, session: &str, run: &str) -> Listed {
         .lines()
         .find(|line| line.starts_with(run))
         .unwrap_or_else(|| panic!("{run} is not among the session's runs:\n{listed}"));
-    let [_, environment, went] = line.split("  ").collect::<Vec<_>>()[..] else {
+    let [_, environment, _model, went] = line.split("  ").collect::<Vec<_>>()[..] else {
         panic!("a run is listed as {line:?}");
     };
 

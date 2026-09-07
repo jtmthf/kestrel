@@ -38,9 +38,22 @@ pub struct Worked {
     pub said: Vec<String>,
     pub usage: Option<Usage>,
     pub allowed: Vec<Subject>,
-    /// The model the agent was set to, for a Run whose Agent named one.
-    pub selected: Option<String>,
+    pub on: Option<On>,
     pub exit: Exit,
+}
+
+/// Which model the agent works the turn on — the one its Agent named, or the one the runtime
+/// defaults to when it named none — and every model the runtime offered to be set to.
+pub struct On {
+    pub model: String,
+    pub offered: Vec<String>,
+}
+
+/// What to ask the agent to set, and what it is on once it has. Nothing is set for an Agent
+/// that named no model: the agent is already on the default it advertised.
+struct Selects {
+    id: Option<SessionConfigId>,
+    on: On,
 }
 
 /// Everything that can go wrong here is an exit status: a Run ends with one however it went.
@@ -169,21 +182,24 @@ async fn a_turn(
         .await
         .map_err(|error| unlogged_in(error, &initialized.auth_methods))?;
 
-    if let Some(model) = model {
-        let selects =
-            selects_the_model(set_up.config_options.as_deref().unwrap_or_default(), &model)?;
-        connection
-            .send_request(SetSessionConfigOptionRequest::new(
-                set_up.session_id.clone(),
-                selects,
-                SessionConfigValueId::new(model.clone()),
-            ))
-            .block_task()
-            .await?;
+    if let Some(selects) = selects_the_model(
+        set_up.config_options.as_deref().unwrap_or_default(),
+        model.as_deref(),
+    )? {
+        if let Some(id) = selects.id {
+            connection
+                .send_request(SetSessionConfigOptionRequest::new(
+                    set_up.session_id.clone(),
+                    id,
+                    SessionConfigValueId::new(selects.on.model.clone()),
+                ))
+                .block_task()
+                .await?;
+        }
         heard
             .lock()
             .expect("what the agent said should not be poisoned")
-            .selected = Some(model);
+            .on = Some(selects.on);
     }
 
     let answered = connection
@@ -234,36 +250,58 @@ fn offered(methods: &[AuthMethod]) -> String {
         .join(", ")
 }
 
-/// Config options are optional and every agent ships a default (ADR-0007), so an Agent that
-/// named a model an agent cannot be set to is a Run that fails rather than one that quietly
-/// runs on something else.
+/// Config options are optional and every agent ships a default (ADR-0007), so an agent may
+/// offer no model to select. One whose Agent named a model then fails rather than quietly
+/// running on something else; one whose Agent named none runs on a model nobody can name.
 fn selects_the_model(
     offered: &[SessionConfigOption],
-    model: &str,
-) -> Result<SessionConfigId, Error> {
-    let Some(option) = offered
+    named: Option<&str>,
+) -> Result<Option<Selects>, Error> {
+    let selectable = offered
         .iter()
         .find(|option| option.category == Some(SessionConfigOptionCategory::Model))
-    else {
-        return Err(Error::internal_error().data(format!(
-            "this agent lets no client select a model, and this run's agent named {model}"
-        )));
+        .and_then(|option| match &option.kind {
+            SessionConfigKind::Select(select) => Some((&option.id, select)),
+            _ => None,
+        });
+
+    let Some((id, select)) = selectable else {
+        return match named {
+            Some(model) => Err(Error::internal_error().data(format!(
+                "this agent lets no client select a model, and this run's agent named {model}"
+            ))),
+            None => Ok(None),
+        };
     };
-    let SessionConfigKind::Select(select) = &option.kind else {
-        return Err(Error::internal_error().data(format!(
-            "this agent's model is not a selection between models, and this run's agent named {model}"
-        )));
+    let offered: Vec<String> = selectable_values(&select.options)
+        .map(|value| value.to_string())
+        .collect();
+
+    let Some(model) = named else {
+        return Ok(Some(Selects {
+            id: None,
+            on: On {
+                model: select.current_value.0.to_string(),
+                offered,
+            },
+        }));
     };
-    if !selectable(&select.options).any(|value| value.as_ref() == model) {
+    if !offered.iter().any(|value| value == model) {
         return Err(Error::internal_error().data(format!(
             "this agent does not offer the model {model}, which this run's agent named"
         )));
     }
 
-    Ok(option.id.clone())
+    Ok(Some(Selects {
+        id: Some(id.clone()),
+        on: On {
+            model: model.to_owned(),
+            offered,
+        },
+    }))
 }
 
-fn selectable(options: &SessionConfigSelectOptions) -> impl Iterator<Item = Arc<str>> {
+fn selectable_values(options: &SessionConfigSelectOptions) -> impl Iterator<Item = Arc<str>> {
     let values: Vec<Arc<str>> = match options {
         SessionConfigSelectOptions::Ungrouped(options) => options
             .iter()
@@ -307,7 +345,7 @@ struct Heard {
     said: Vec<String>,
     usage: Option<Usage>,
     allowed: Vec<Subject>,
-    selected: Option<String>,
+    on: Option<On>,
 }
 
 #[derive(Default)]
@@ -366,7 +404,7 @@ impl Heard {
             said: self.said,
             usage: self.usage,
             allowed: self.allowed,
-            selected: self.selected,
+            on: self.on,
             exit,
         }
     }
@@ -491,18 +529,30 @@ mod tests {
 
     #[test]
     fn the_model_a_run_named_is_set_through_the_option_the_agent_categorized_as_one() {
-        let selected = selects_the_model(&models(&["fast", "thorough"]), "thorough");
+        let selects = selects_the_model(&models(&["fast", "thorough"]), Some("thorough"))
+            .expect("the model should be selectable")
+            .expect("an agent that offers a model");
 
-        assert_eq!(
-            selected.expect("the model should be selectable").0.as_ref(),
-            "model"
-        );
+        assert_eq!(selects.id.expect("a model to set").0.as_ref(), "model");
+        assert_eq!(selects.on.model, "thorough");
+        assert_eq!(selects.on.offered, ["fast", "thorough"]);
+    }
+
+    #[test]
+    fn a_run_that_named_no_model_sets_nothing_and_is_on_what_the_agent_already_was() {
+        let selects = selects_the_model(&models(&["fast", "thorough"]), None)
+            .expect("naming no model should not fail")
+            .expect("an agent that offers a model");
+
+        assert!(selects.id.is_none());
+        assert_eq!(selects.on.model, "fast");
     }
 
     #[test]
     fn a_model_an_agent_does_not_offer_is_refused_rather_than_swapped_for_one_it_does() {
-        let refused = selects_the_model(&models(&["fast"]), "thorough")
-            .expect_err("a model the agent does not offer");
+        let refused = selects_the_model(&models(&["fast"]), Some("thorough"))
+            .err()
+            .expect("a model the agent does not offer");
 
         assert!(
             refused
@@ -513,13 +563,23 @@ mod tests {
 
     #[test]
     fn an_agent_that_lets_no_client_select_a_model_fails_a_run_that_named_one() {
-        let refused =
-            selects_the_model(&[], "thorough").expect_err("an agent with no model to select");
+        let refused = selects_the_model(&[], Some("thorough"))
+            .err()
+            .expect("an agent with no model to select");
 
         assert!(
             refused
                 .data
                 .is_some_and(|why| why.to_string().contains("thorough"))
+        );
+    }
+
+    #[test]
+    fn an_agent_that_lets_no_client_select_a_model_works_a_run_that_named_none() {
+        assert!(
+            selects_the_model(&[], None)
+                .expect("naming no model should not fail")
+                .is_none()
         );
     }
 
@@ -541,7 +601,7 @@ mod tests {
             .category(SessionConfigOptionCategory::Model),
         ];
 
-        assert!(selects_the_model(&grouped, "thorough").is_ok());
+        assert!(selects_the_model(&grouped, Some("thorough")).is_ok());
     }
 
     #[test]

@@ -162,8 +162,8 @@ async fn attend(
         }
 
         let worked = runtime::work(runtime, provider).await;
-        if let Some(model) = &worked.selected {
-            diagnostics.info(&format!("selected the model {model}"));
+        if let Some(on) = &worked.on {
+            diagnostics.info(&format!("on the model {}", on.model));
         }
         for subject in &worked.allowed {
             diagnostics.info(&format!("allowed once  {subject}"));
@@ -197,9 +197,18 @@ async fn say(
 
 fn everything_left_to_say(worked: runtime::Worked) -> impl Iterator<Item = Report> {
     worked
-        .said
+        .on
+        .map(|on| Report::Model {
+            model: on.model,
+            offered: on.offered,
+        })
         .into_iter()
-        .map(|message| Report::Said { message })
+        .chain(
+            worked
+                .said
+                .into_iter()
+                .map(|message| Report::Said { message }),
+        )
         .chain(worked.usage.map(|usage| Report::Used { usage }))
         .chain(std::iter::once(Report::Finished { exit: worked.exit }))
 }

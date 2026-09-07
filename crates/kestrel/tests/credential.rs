@@ -36,7 +36,7 @@ async fn a_session(harness: &Harness, organization: &str, held: Option<&str>) ->
         )
         .await;
     harness
-        .declare_agent(&declared, "builder", "opencode", OTHER_MODEL)
+        .declare_agent(&declared, "builder", "opencode", Some(OTHER_MODEL))
         .await;
     if let Some(secret) = held {
         harness

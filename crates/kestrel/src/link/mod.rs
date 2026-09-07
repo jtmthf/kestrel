@@ -67,6 +67,7 @@ pub enum Report {
     Connected { version: String },
     Heartbeat,
     Started,
+    Model { model: String, offered: Vec<String> },
     Said { message: String },
     Used { usage: Usage },
     Finished { exit: Exit },
@@ -79,6 +80,7 @@ impl Report {
         match self {
             Report::Connected { .. } | Report::Heartbeat => false,
             Report::Started
+            | Report::Model { .. }
             | Report::Said { .. }
             | Report::Used { .. }
             | Report::Finished { .. } => true,
@@ -279,6 +281,10 @@ async fn report(
         Report::Started => {
             work::started(&mut tx, &run).await?;
             info!(run = %run.id, "an environment reported its run started");
+        }
+        Report::Model { model, offered } => {
+            work::on_the_model(&mut tx, &run, &model, &offered).await?;
+            info!(run = %run.id, model, "an environment reported the model its agent is on");
         }
         Report::Said { message } => {
             work::said(&mut tx, &run, &message).await?;
