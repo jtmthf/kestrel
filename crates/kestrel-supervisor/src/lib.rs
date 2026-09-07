@@ -153,7 +153,15 @@ async fn attend(
     say(link, attending, diagnostics).await?;
 
     if !attending.worked {
-        let worked = runtime::work(runtime).await;
+        let provider = link.credentials().await?.variables;
+        if !provider.is_empty() {
+            diagnostics.info(&format!(
+                "carrying {} into the agent runtime",
+                provider.keys().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+
+        let worked = runtime::work(runtime, provider).await;
         if let Some(model) = &worked.selected {
             diagnostics.info(&format!("selected the model {model}"));
         }

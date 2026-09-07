@@ -3,6 +3,7 @@
 
 pub mod credential;
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -21,10 +22,12 @@ use tracing::{debug, info, warn};
 use crate::domain::{Exit, Run, RunId, Usage};
 use crate::link::credential::Secret;
 use crate::log::{self, Cursor, Unreadable, Window};
+use crate::provider;
 use crate::session;
 use crate::store::{Store, Taken};
 use crate::work;
 
+pub const CREDENTIALS: &str = "/link/runs/{run}/credentials";
 /// The Transcript of the Session the Run belongs to. Named for what crosses the link rather
 /// than for what it is, because the supervisor is a courier and may not know (ADR-0002).
 pub const ENTRIES: &str = "/link/runs/{run}/entries";
@@ -111,6 +114,11 @@ struct Paging {
 }
 
 #[derive(Serialize)]
+struct Credentials {
+    variables: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
 struct Entries {
     entries: Vec<Recorded>,
     cursor: Option<String>,
@@ -126,6 +134,7 @@ struct Recorded {
 
 pub fn router(store: Store, shutdown: CancellationToken) -> Router {
     Router::new()
+        .route(CREDENTIALS, get(credentials))
         .route(ENTRIES, get(entries))
         .route(INSTRUCTIONS, get(instructions))
         .route(REPORTS, post(report))
@@ -178,6 +187,24 @@ async fn instructions(
     };
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)))
+}
+
+/// The Provider Credentials of the Run's Organization, decrypted here and held nowhere else:
+/// an Environment asks as it spawns its Agent Runtime, and an idle one never asks.
+async fn credentials(
+    State(control_plane): State<ControlPlane>,
+    Path(run): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<Credentials>, Refused> {
+    let run = authenticated(&control_plane, &headers, &run).await?;
+    let variables = provider::reaching(&control_plane.store, run.organization).await?;
+    info!(
+        run = %run.id,
+        variables = variables.keys().cloned().collect::<Vec<_>>().join(", "),
+        "an environment took the credentials its run needs"
+    );
+
+    Ok(Json(Credentials { variables }))
 }
 
 async fn entries(

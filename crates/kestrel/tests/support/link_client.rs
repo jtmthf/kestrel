@@ -118,6 +118,17 @@ impl Link {
         request.send().await.expect("the link should answer")
     }
 
+    pub async fn credentials(&self, run: RunId, credential: Option<&Secret>) -> Response {
+        let mut request = self
+            .client
+            .get(format!("{}/link/runs/{run}/credentials", self.base));
+        if let Some(credential) = credential {
+            request = request.bearer_auth(credential.as_str());
+        }
+
+        request.send().await.expect("the link should answer")
+    }
+
     pub async fn report(
         &self,
         run: RunId,

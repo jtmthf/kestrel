@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use jiff::{SignedDuration, Timestamp};
@@ -11,9 +13,11 @@ use crate::domain::{
     SessionId, SessionState, Usage, Workspace, WorkspaceId,
 };
 use crate::integration::credential::Token;
+use crate::keyring::Keyring;
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
 use crate::log::Log;
+use crate::provider::Held;
 
 const DATABASE: &str = "kestrel.db";
 
@@ -54,6 +58,7 @@ pub enum Taken {
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
+    keyring: Arc<Keyring>,
 }
 
 impl Store {
@@ -77,7 +82,10 @@ impl Store {
             .await
             .context("migrating kestrel's database")?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            keyring: Arc::new(Keyring::beside(data_dir)?),
+        })
     }
 
     /// A `Tx` that is dropped rather than committed rolls back, which is how a read is scoped
@@ -87,12 +95,14 @@ impl Store {
     pub async fn begin(&self) -> Result<Tx<'_>> {
         Ok(Tx {
             transaction: self.pool.begin_with("BEGIN IMMEDIATE").await?,
+            keyring: &self.keyring,
         })
     }
 }
 
 pub struct Tx<'a> {
     transaction: Transaction<'a, Sqlite>,
+    keyring: &'a Keyring,
 }
 
 impl Tx<'_> {
@@ -712,6 +722,100 @@ impl Tx<'_> {
             .transpose()
     }
 
+    pub async fn hold_provider_credential(
+        &mut self,
+        organization: OrganizationId,
+        variable: &str,
+        secret: &str,
+    ) -> Result<()> {
+        let sealed = self
+            .keyring
+            .seal(&bound_to(organization, variable), secret)?;
+
+        sqlx::query(
+            "INSERT INTO provider_credential (organization_id, variable, sealed, set_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT (organization_id, variable)
+             DO UPDATE SET sealed = excluded.sealed, set_at = excluded.set_at",
+        )
+        .bind(organization.to_string())
+        .bind(variable)
+        .bind(sealed)
+        .bind(Timestamp::now().to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("holding the provider credential {variable}"))?;
+
+        Ok(())
+    }
+
+    pub async fn provider_credentials_held(
+        &mut self,
+        organization: OrganizationId,
+    ) -> Result<Vec<Held>> {
+        sqlx::query(
+            "SELECT variable, set_at
+             FROM provider_credential
+             WHERE organization_id = ?
+             ORDER BY variable",
+        )
+        .bind(organization.to_string())
+        .fetch_all(&mut *self.transaction)
+        .await?
+        .iter()
+        .map(|row| {
+            Ok(Held {
+                variable: row.get("variable"),
+                set_at: row.get::<String, _>("set_at").parse()?,
+            })
+        })
+        .collect()
+    }
+
+    /// The one place a Provider Credential is decrypted.
+    pub async fn provider_credentials(
+        &mut self,
+        organization: OrganizationId,
+    ) -> Result<BTreeMap<String, String>> {
+        sqlx::query(
+            "SELECT variable, sealed
+             FROM provider_credential
+             WHERE organization_id = ?
+             ORDER BY variable",
+        )
+        .bind(organization.to_string())
+        .fetch_all(&mut *self.transaction)
+        .await?
+        .iter()
+        .map(|row| {
+            let variable: String = row.get("variable");
+            let secret = self
+                .keyring
+                .unseal(&bound_to(organization, &variable), row.get("sealed"))
+                .with_context(|| format!("opening the provider credential {variable}"))?;
+
+            Ok((variable, secret))
+        })
+        .collect()
+    }
+
+    pub async fn forget_provider_credential(
+        &mut self,
+        organization: OrganizationId,
+        variable: &str,
+    ) -> Result<bool> {
+        let forgotten = sqlx::query(
+            "DELETE FROM provider_credential WHERE organization_id = ? AND variable = ?",
+        )
+        .bind(organization.to_string())
+        .bind(variable)
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("forgetting the provider credential {variable}"))?;
+
+        Ok(forgotten.rows_affected() > 0)
+    }
+
     pub async fn send_instruction(
         &mut self,
         run: &Run,
@@ -1077,6 +1181,12 @@ fn timestamp(row: &SqliteRow, column: &str) -> Result<Option<Timestamp>> {
         .map(|at| at.parse())
         .transpose()
         .map_err(Into::into)
+}
+
+/// What a sealed credential is authenticated against, so one moved to another organization's
+/// row, or to another variable's, no longer opens.
+fn bound_to(organization: OrganizationId, variable: &str) -> String {
+    format!("{organization}/{variable}")
 }
 
 fn organization(row: &SqliteRow) -> Result<Organization> {

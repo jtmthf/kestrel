@@ -35,6 +35,7 @@ use kestrel::integration::{self, Registration};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
 use kestrel::log::{Cursor, Page, TranscriptEntry, Unreadable, Window};
+use kestrel::provider::{self, Held};
 use kestrel::role::work::Dispatch;
 use kestrel::session;
 use kestrel::store::Store;
@@ -45,6 +46,11 @@ use tokio_util::sync::CancellationToken;
 
 /// Distinctive enough that a test can assert it is nowhere it should not be.
 pub const TOKEN: &str = "ghp_kestrel_should_never_say_this_out_loud";
+
+/// The Provider Credential every fixture holds: a Run reaches no model without one, and the
+/// scripted agent's `Confides` script says it can see this one.
+pub const PROVIDER_KEY: &str = "SCRIPTED_API_KEY";
+pub const A_PROVIDER_KEY: &str = "a-provider-key";
 
 pub struct Harness {
     data_dir: TempDir,
@@ -283,6 +289,23 @@ impl Harness {
         integration::events(&self.store, organization, 100)
             .await
             .expect("the events should list")
+    }
+
+    pub async fn hold_provider_credential(
+        &self,
+        organization: &Organization,
+        variable: &str,
+        secret: &str,
+    ) {
+        provider::hold(&self.store, &organization.name, variable, secret)
+            .await
+            .expect("the provider credential should be held");
+    }
+
+    pub async fn provider_credentials_held(&self, organization: &Organization) -> Vec<Held> {
+        provider::held(&self.store, &organization.name)
+            .await
+            .expect("what the organization holds should list")
     }
 
     pub async fn open_session(&self, organization: &str, workspace: &str, agent: &str) -> Session {

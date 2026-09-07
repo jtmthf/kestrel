@@ -45,6 +45,12 @@ again keeps every session and its transcript.
 kestrel's surface is the CLI role on the running control plane. [`USAGE.md`](USAGE.md) walks from
 here to a run that has reached and left an environment.
 
+**A provider key is the one value kestrel asks for, and it is the operator's.** It is held by the
+organization, encrypted with a key kestrel generates at first boot beside its database, and reaches
+an environment only as the agent it belongs to is spawned:
+[ADR-0010](docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md) says where it does
+and does not go.
+
 **The control plane never holds the Docker socket.** It reaches the daemon through a proxy that
 forwards the ten requests the compute driver makes and refuses everything else, which is the
 shipped default rather than a hardening step:

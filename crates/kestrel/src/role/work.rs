@@ -6,8 +6,9 @@ use tracing::{info, warn};
 
 use crate::cli::Role;
 use crate::compute::{Driver, Environment, Exited};
-use crate::domain::{Exit, Run, Workspace};
+use crate::domain::{Exit, Run, Session, Workspace};
 use crate::link::{self, Instruction};
+use crate::provider;
 use crate::session;
 use crate::store::Store;
 use crate::timer;
@@ -22,6 +23,14 @@ pub struct Dispatch {
     pub driver: Driver,
     pub runtime: String,
     pub auth: Option<String>,
+}
+
+impl Dispatch {
+    fn logs_the_agent_in(&self) -> bool {
+        self.auth
+            .as_deref()
+            .is_some_and(|method| !method.is_empty())
+    }
 }
 
 /// What ended the attending, rather than how the Run went.
@@ -98,6 +107,11 @@ async fn execute(
         }
     };
 
+    if let Err(error) = a_way_to_reach_a_model(store, dispatch, &session).await {
+        work::fail(store, &run, &error.to_string()).await?;
+        return Ok(());
+    }
+
     let mut environment = match dispatch.driver.provision(
         run.id,
         &[
@@ -134,6 +148,25 @@ async fn execute(
     info!(run = %run.id, %exit, "a run ended");
 
     Ok(())
+}
+
+/// An Agent Runtime reaches a model with a Provider Credential its Organization holds, or by
+/// an ACP login kestrel was configured with. A Run with neither fails here rather than inside
+/// an Environment provisioned to find that out.
+async fn a_way_to_reach_a_model(
+    store: &Store,
+    dispatch: &Dispatch,
+    session: &Session,
+) -> Result<()> {
+    if dispatch.logs_the_agent_in() || provider::holds_any(store, session.organization.id).await? {
+        return Ok(());
+    }
+
+    bail!(
+        "the organization {} holds no provider credential, and this run's agent runtime was \
+         given no other way to reach a model",
+        session.organization.name
+    )
 }
 
 async fn start(
