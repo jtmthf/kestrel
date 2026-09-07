@@ -24,14 +24,16 @@ _Avoid_: api key, token, provider key
 ### Work
 
 **Session**:
-The durable, joinable thread of work. Owns its history, its participants, and its event log, and
-survives restarts. Contains many runs over its life. A session is open or sealed; a sealed session
+The durable, joinable thread of work. Owns its history, its participants, its event log, and the
+resolved checkout its work happens against, and survives restarts. Contains many runs over its life. A session is open or sealed; a sealed session
 is readable but accepts no run, no turn, and no new transcript entry.
 _Avoid_: thread, conversation, mission
 
 **Run**:
 One execution of an agent runtime inside one environment, on behalf of a session. Has a start, an
-end, and an exit status. Work that is queued but not yet started is a run in a queued state.
+end, and an exit status. Work that is queued but not yet started is a run in a queued state. The
+model driving the runtime's main loop belongs to the run, not to the session; what that loop reaches
+for beneath itself is the runtime's business.
 _Avoid_: job, task, execution, invocation
 
 **Approval**:
@@ -56,16 +58,35 @@ _Avoid_: log, event stream, history
 ### Cause
 
 **Event**:
-A single immutable thing that happened in a system kestrel does not own — an issue labelled, a Slack
-message posted, a webhook delivered, a schedule elapsed.
-_Avoid_: signal, notification, hook
+A single immutable thing that happened, recorded as a CloudEvent: an id, the source that produced
+it, the type that source calls it, when it occurred, and its payload. Named in the vocabulary of the
+system that produced it — kestrel translates nothing into a vocabulary of its own, and mints one type
+only, for its own schedules elapsing.
+_Avoid_: signal, notification, hook, payload
 
 **Trigger**:
-A standing, configured rule that matches events and starts work. Named, listable, disableable. A
-trigger is the rule, never an individual firing; the session records the event that started it. A
-trigger may name a workflow; when it does, each firing begins a campaign, and the session it starts
-belongs to that campaign.
-_Avoid_: subscription, listener, automation
+A standing, configured rule that starts work: what it matches, the brief it renders, and the agent
+and workspace it starts that work with. Named, listable, disableable, and bounded by a firing
+budget. A trigger is the rule, never an individual firing; the session records the event that
+started it. One that declares a schedule in place of a match fires on its own elapsing. A trigger
+may name a workflow; when it does, each firing begins a campaign, and the session it starts belongs
+to that campaign.
+_Avoid_: subscription, listener, automation, matcher
+
+**Firing**:
+One trigger matching one event, and the work that match starts. A firing either opens a session or
+feeds an open one it correlates to.
+_Avoid_: match, activation, invocation, execution
+
+**Brief**:
+The rendered text a firing hands to a session, and the session's first transcript entry. A human
+writes it as a template over the event; kestrel assembles nothing.
+_Avoid_: prompt, task, instruction, request
+
+**Correlation**:
+The key that decides whether a session for this work already exists. Rendered from the event by the
+trigger, held by the session, and unique among an organization's open sessions.
+_Avoid_: dedup key, thread id, subject
 
 **Integration**:
 A configured, credentialed connection to an external system. Carries events inbound and kestrel's
@@ -76,8 +97,8 @@ _Avoid_: connector, provider, app, plugin
 **Workflow**:
 A standing, declared process: the roster of agents that may be enqueued, and the caps and failure
 tolerances that bound one enactment of it. The sequence is not declared — a run grows it at runtime
-by enqueueing further sessions — but nothing outside the roster may be enqueued. Trigger is to event
-as workflow is to campaign: the configured noun declares, the runtime noun happens.
+by enqueueing further sessions — but nothing outside the roster may be enqueued. Trigger is to
+firing as workflow is to campaign: the configured noun declares, the runtime noun happens.
 _Avoid_: pipeline, recipe, playbook
 
 **Campaign**:
@@ -111,8 +132,9 @@ contract. Docker is the default; hosted backends are drivers alongside it.
 _Avoid_: provider, infrastructure, cloud, executor
 
 **Workspace**:
-The durable declaration of what a session's work happens against — repositories, branch, setup.
-Belongs to the session and outlives every environment built from it.
+The durable declaration of what a session's work may happen against — repositories, defaults, setup.
+Declared once and named by many sessions; it is what a session's checkout is resolved from, never
+the checkout itself.
 _Avoid_: checkout, working tree, project
 
 ### Actors
@@ -159,6 +181,20 @@ words from drifting.
 - A provider credential is held by an **organization**, and reaches an environment only for the
   length of a **run**. An idle or destroyed environment holds **none**.
 - A session has exactly **one** workspace. A workspace may declare **many** repositories.
+- An event supplies **data**, never **authority**. Branch, brief and correlation are rendered
+  from an event; agent, workspace, model and policy are named in a declaration a human reviewed.
+- A request that does not **authenticate** never becomes an event. One that authenticated and
+  matched no trigger is still recorded.
+- **Events expire; transcript entries never do.** An event stream is unbounded volume from systems
+  kestrel does not control; a transcript is bounded by work kestrel chose to do.
+- A trigger renders its brief **once** per firing. A brief that cannot be rendered **fails** the
+  firing and starts nothing.
+- A trigger's agent applies when a firing **opens** a session, never when it **feeds** one. A
+  session's agent is fixed for its life.
+- A session's correlation is unique among an organization's **open** sessions. A sealed session
+  holds its correlation against nothing.
+- A firing **never** interrupts a run. Events arriving while a run is active are pending, and drain
+  into **one** transcript entry and **one** run when it ends.
 - A run executes in exactly **one** environment.
 - A **run** is the only thing kestrel executes outside a control plane. Everything else — the
   store, the link, dispatch, the CLI — happens inside one.
