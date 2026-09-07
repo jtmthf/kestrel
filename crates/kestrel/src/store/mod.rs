@@ -38,7 +38,8 @@ macro_rules! runs_where {
         concat!(
             "SELECT id, organization_id, session_id, state, exit, exit_because, environment,
                     enqueued_at, started_at, ended_at, lease_expires_at, connected_at,
-                    supervisor_version, context_used, context_size, cost_amount, cost_currency
+                    supervisor_version, model, context_used, context_size, cost_amount,
+                    cost_currency
              FROM run
              WHERE ",
             $tail
@@ -237,14 +238,14 @@ impl Tx<'_> {
         organization: &Organization,
         name: &str,
         runtime: &str,
-        model: &str,
+        model: Option<&str>,
     ) -> Result<Agent> {
         let agent = Agent {
             id: AgentId::generate(),
             organization: organization.id,
             name: name.to_owned(),
             runtime: runtime.to_owned(),
-            model: model.to_owned(),
+            model: model.map(str::to_owned),
         };
 
         sqlx::query(
@@ -282,6 +283,22 @@ impl Tx<'_> {
         })?;
 
         agent(&found)
+    }
+
+    /// A Run in flight was provisioned with the model its Agent named when it was dispatched,
+    /// and is not reached by this.
+    pub async fn set_agent_model(&mut self, agent: &Agent, model: Option<&str>) -> Result<Agent> {
+        sqlx::query("UPDATE agent SET model = ? WHERE id = ?")
+            .bind(model)
+            .bind(agent.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("changing the model the agent {} works with", agent.name))?;
+
+        Ok(Agent {
+            model: model.map(str::to_owned),
+            ..agent.clone()
+        })
     }
 
     pub async fn open_session(
@@ -458,6 +475,7 @@ impl Tx<'_> {
             state: RunState::Queued,
             exit: None,
             environment: None,
+            model: None,
             enqueued_at: Timestamp::now(),
             started_at: None,
             ended_at: None,
@@ -559,6 +577,63 @@ impl Tx<'_> {
         .with_context(|| format!("recording what run {} used", run.id))?;
 
         Ok(())
+    }
+
+    pub async fn record_model(&mut self, run: &Run, model: &str) -> Result<()> {
+        sqlx::query("UPDATE run SET model = ? WHERE id = ?")
+            .bind(model)
+            .bind(run.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("recording the model run {} is on", run.id))?;
+
+        Ok(())
+    }
+
+    /// What one Agent Runtime advertised, kept per Organization because an installation of it
+    /// offers what that organization's own configuration reaches.
+    pub async fn record_models_advertised(
+        &mut self,
+        organization: OrganizationId,
+        runtime: &str,
+        models: &[String],
+    ) -> Result<()> {
+        for model in models {
+            sqlx::query(
+                "INSERT INTO runtime_model (organization_id, runtime, model, advertised_at)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT (organization_id, runtime, model)
+                 DO UPDATE SET advertised_at = excluded.advertised_at",
+            )
+            .bind(organization.to_string())
+            .bind(runtime)
+            .bind(model)
+            .bind(Timestamp::now().to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("recording that {runtime} advertises {model}"))?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn models_advertised(
+        &mut self,
+        organization: OrganizationId,
+        runtime: &str,
+    ) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT model
+             FROM runtime_model
+             WHERE organization_id = ? AND runtime = ?
+             ORDER BY model",
+        )
+        .bind(organization.to_string())
+        .bind(runtime)
+        .fetch_all(&mut *self.transaction)
+        .await?;
+
+        Ok(rows.iter().map(|row| row.get("model")).collect())
     }
 
     pub async fn record_environment(&mut self, run: &Run, environment: &str) -> Result<()> {
@@ -1141,6 +1216,7 @@ fn run(row: &SqliteRow) -> Result<Run> {
             .map(|status| Exit::read(&status, row.get("exit_because")))
             .transpose()?,
         environment: row.get("environment"),
+        model: row.get("model"),
         enqueued_at: row.get::<String, _>("enqueued_at").parse()?,
         started_at: timestamp(row, "started_at")?,
         ended_at: timestamp(row, "ended_at")?,
@@ -1216,7 +1292,7 @@ mod tests {
             .await
             .unwrap();
         let agent = tx
-            .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+            .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
             .await
             .unwrap();
         tx.commit().await.unwrap();

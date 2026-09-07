@@ -39,7 +39,7 @@ async fn declared(harness: &Harness) {
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+        .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 }
 
@@ -320,6 +320,12 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
         "connected": {"kind": "connected", "version": "0.0.0"},
         "heartbeat": {"kind": "heartbeat"},
         "started": {"kind": "started", "seq": 1},
+        "model": {
+            "kind": "model",
+            "seq": 1,
+            "model": "scripted-mini",
+            "offered": ["scripted-mini", "scripted-max"],
+        },
         "said": {"kind": "said", "seq": 1, "message": "what the agent said"},
         "used": {
             "kind": "used",

@@ -317,6 +317,9 @@
             "$ref": "#/components/schemas/Started"
           },
           {
+            "$ref": "#/components/schemas/Model"
+          },
+          {
             "$ref": "#/components/schemas/Said"
           },
           {
@@ -332,6 +335,7 @@
             "connected": "#/components/schemas/Connected",
             "heartbeat": "#/components/schemas/Heartbeat",
             "started": "#/components/schemas/Started",
+            "model": "#/components/schemas/Model",
             "said": "#/components/schemas/Said",
             "used": "#/components/schemas/Used",
             "finished": "#/components/schemas/Finished"
@@ -381,6 +385,34 @@
         "required": [
           "kind",
           "seq"
+        ]
+      },
+      "Model": {
+        "description": "Which model the Agent Runtime is on for this turn — the one the Run's Agent named, or the runtime's own default when it named none — and every model it offered to be set to. Absent for a runtime that lets no client select one at all.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "model"
+          },
+          "model": {
+            "type": "string"
+          },
+          "offered": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every model the runtime advertised at session setup."
+          },
+          "seq": {
+            "$ref": "#/components/schemas/Seq"
+          }
+        },
+        "required": [
+          "kind",
+          "seq",
+          "model",
+          "offered"
         ]
       },
       "Said": {

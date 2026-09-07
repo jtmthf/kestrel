@@ -2,6 +2,7 @@ use std::io::Read as _;
 
 use anyhow::{Result, bail};
 
+use crate::agent;
 use crate::cli::{
     AgentCommand, CliCommand, CredentialCommand, EventCommand, IntegrationCommand,
     OrganizationCommand, RegisterCommand, RunCommand, SessionCommand, WorkspaceCommand,
@@ -61,21 +62,26 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             runtime,
             model,
         }) => {
-            let mut tx = store.begin().await?;
-            let organization = tx.organization_named(organization).await?;
-            let agent = tx
-                .declare_agent(&organization, name, runtime, model)
-                .await?;
-            tx.commit().await?;
-            println!("{}", agent.id);
+            let declared =
+                agent::declare(&store, organization, name, runtime, model.as_deref()).await?;
+            println!("{}", declared.id);
+        }
+        CliCommand::Agent(AgentCommand::Model {
+            name,
+            organization,
+            model,
+        }) => {
+            let changed = agent::set_model(&store, organization, name, model.as_deref()).await?;
+            println!("{}", changed.model.as_deref().unwrap_or("-"));
         }
         CliCommand::Agent(AgentCommand::List { organization }) => {
-            let mut tx = store.begin().await?;
-            let organization = tx.organization_named(organization).await?;
-            for agent in tx.agents(&organization).await? {
+            for agent in agent::agents(&store, organization).await? {
                 println!(
                     "{}  {}  {}  {}",
-                    agent.id, agent.name, agent.runtime, agent.model
+                    agent.id,
+                    agent.name,
+                    agent.runtime,
+                    agent.model.as_deref().unwrap_or("-")
                 );
             }
         }
@@ -214,9 +220,10 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
         CliCommand::Run(RunCommand::List { session }) => {
             for run in work::runs(&store, *session).await? {
                 println!(
-                    "{}  {}  {}",
+                    "{}  {}  {}  {}",
                     run.id,
                     run.environment.as_deref().unwrap_or("-"),
+                    run.model.as_deref().unwrap_or("-"),
                     run.exit
                         .map_or_else(|| run.state.to_string(), |exit| exit.to_string())
                 );

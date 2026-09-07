@@ -323,9 +323,20 @@ pub enum AgentCommand {
         /// The Agent Runtime that drives it
         #[arg(long, default_value = "opencode")]
         runtime: String,
-        /// The model it works with
+        /// The model it works with, or none for whatever its Agent Runtime defaults to
         #[arg(long)]
-        model: String,
+        model: Option<String>,
+    },
+    /// Change the model an Agent works with, leaving every Run in flight on the one it has
+    Model {
+        /// The name it is referred to by
+        name: String,
+        /// The Organization it belongs to
+        #[arg(long)]
+        organization: String,
+        /// The model it works with, or none for whatever its Agent Runtime defaults to
+        #[arg(long)]
+        model: Option<String>,
     },
     /// List every Agent in an Organization
     List {

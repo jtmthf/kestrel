@@ -66,7 +66,8 @@ pub struct Agent {
     pub organization: OrganizationId,
     pub name: String,
     pub runtime: String,
-    pub model: String,
+    /// None when the Agent names none, and the Agent Runtime's own default is the answer.
+    pub model: Option<String>,
 }
 
 /// Which way an Integration carries: events inbound, kestrel's requests outbound, or both.
@@ -208,6 +209,8 @@ pub struct Run {
     pub state: RunState,
     pub exit: Option<Exit>,
     pub environment: Option<String>,
+    /// What the Agent Runtime was on, once it has said; never what the Agent named.
+    pub model: Option<String>,
     pub enqueued_at: Timestamp,
     pub started_at: Option<Timestamp>,
     pub ended_at: Option<Timestamp>,

@@ -43,8 +43,12 @@ impl Driven {
     async fn in_an_environment(harness: &Harness, model: &Model) -> Self {
         let session = a_session(harness).await;
         let (run, credential) = harness.dispatch_run(session.id).await;
-        let (environment, diagnostics) =
-            provisioned(harness, run.id, &credential, &session.agent.model);
+        let (environment, diagnostics) = provisioned(
+            harness,
+            run.id,
+            &credential,
+            session.agent.model.as_deref().unwrap_or_default(),
+        );
 
         let mut driven = Self {
             run,
@@ -147,7 +151,7 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", MODEL)
+        .declare_agent(&organization, "builder", "opencode", Some(MODEL))
         .await;
 
     harness.open_session("acme", "kestrel", "builder").await
@@ -215,9 +219,7 @@ async fn a_run_drives_the_agent_runtime_through_a_turn_and_ends_with_an_exit_sta
         "the run ended without the agent runtime having reached a model at all"
     );
     assert!(
-        driven
-            .diagnostics
-            .said(&format!("selected the model {MODEL}")),
+        driven.diagnostics.said(&format!("on the model {MODEL}")),
         "the run never set the model its agent named. the environment said:\n{}",
         driven.diagnostics.everything_it_said()
     );

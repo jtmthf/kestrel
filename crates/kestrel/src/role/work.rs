@@ -123,7 +123,10 @@ async fn execute(
                 "KESTREL_AGENT_AUTH",
                 dispatch.auth.as_deref().unwrap_or_default(),
             ),
-            ("KESTREL_AGENT_MODEL", session.agent.model.as_str()),
+            (
+                "KESTREL_AGENT_MODEL",
+                session.agent.model.as_deref().unwrap_or_default(),
+            ),
         ],
     ) {
         Ok(environment) => environment,

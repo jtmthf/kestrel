@@ -7,19 +7,22 @@ use std::time::Duration;
 
 use kestrel::domain::{Cost, Exit, Run, RunId, RunState, Session, Usage};
 use kestrel::link::Instruction;
-use kestrel_scripted_agent::OTHER_MODEL;
+use kestrel_scripted_agent::{DEFAULT_MODEL, OTHER_MODEL};
 use support::Harness;
 use support::repository;
 use support::scripted_agent::{self, Script};
 use support::supervisor::{self, Supervisor};
 
 const PATIENCE: Duration = Duration::from_secs(30);
+/// The Agent Runtime the harness actually drives, so what a Run sees it advertise is recorded
+/// against the name an Agent declared here names.
+const RUNTIME: &str = "scripted";
 
 async fn a_session(harness: &Harness) -> Session {
-    a_session_naming(harness, OTHER_MODEL).await
+    a_session_naming(harness, Some(OTHER_MODEL)).await
 }
 
-async fn a_session_naming(harness: &Harness, model: &str) -> Session {
+async fn a_session_naming(harness: &Harness, model: Option<&str>) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
         .declare_workspace(
@@ -30,7 +33,7 @@ async fn a_session_naming(harness: &Harness, model: &str) -> Session {
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", model)
+        .declare_agent(&organization, "builder", RUNTIME, model)
         .await;
 
     harness
@@ -42,6 +45,23 @@ async fn a_session_naming(harness: &Harness, model: &str) -> Session {
         .await;
 
     harness.open_session("acme", "kestrel", "builder").await
+}
+
+/// A Run the work role has provisioned an Environment for, and is therefore past reading its
+/// Agent's model.
+async fn in_flight(harness: &Harness, run: RunId) {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+
+    loop {
+        if harness.run(run).await.environment.is_some() {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the run {run} never reached an environment"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 async fn ended(harness: &Harness, run: RunId) -> Run {
@@ -63,10 +83,10 @@ async fn ended(harness: &Harness, run: RunId) -> Run {
 }
 
 async fn worked(script: Script) -> (Harness, Session, Run) {
-    worked_naming(script, OTHER_MODEL).await
+    worked_naming(script, Some(OTHER_MODEL)).await
 }
 
-async fn worked_naming(script: Script, model: &str) -> (Harness, Session, Run) {
+async fn worked_naming(script: Script, model: Option<&str>) -> (Harness, Session, Run) {
     let harness =
         Harness::dispatching_to(supervisor::binary(), &scripted_agent::playing(script)).await;
     let session = a_session_naming(&harness, model).await;
@@ -254,7 +274,8 @@ async fn an_agent_that_will_not_work_until_it_is_logged_in_fails_the_run_rather_
 }
 
 /// A model reaches the agent through `session/set_config_option` rather than through what the
-/// Environment was built with, so changing an Agent's model is configuration (ADR-0007).
+/// Environment was built with, so changing an Agent's model is configuration (ADR-0007). What
+/// the agent was set to is on the Run, where nothing inside the Environment has to be believed.
 #[tokio::test]
 async fn the_model_a_runs_agent_named_is_the_one_the_agent_is_set_to() {
     let harness = Harness::boot().await;
@@ -272,14 +293,84 @@ async fn the_model_a_runs_agent_named_is_the_one_the_agent_is_set_to() {
     harness.instruct(&run, Instruction::Start).await;
     supervisor.wait_until_it_says("reported finished").await;
 
-    assert!(
-        supervisor.said(&format!("selected the model {OTHER_MODEL}")),
-        "the supervisor never said which model it set. it said:\n{}",
-        supervisor.everything_it_said()
-    );
-    assert_eq!(ended(&harness, run.id).await.exit, Some(Exit::Succeeded));
+    let ended = ended(&harness, run.id).await;
+    assert_eq!(ended.exit, Some(Exit::Succeeded));
+    assert_eq!(ended.model.as_deref(), Some(OTHER_MODEL));
 
     assert!(supervisor.finishes().await.success());
+    harness.teardown().await;
+}
+
+/// The runtime's default is the honest answer for an Agent that named no model, and a Run that
+/// could not say which model that was would leave an audit record that says nothing (ADR-0007).
+#[tokio::test]
+async fn an_agent_that_names_no_model_runs_on_the_runtimes_default_and_the_run_records_which() {
+    let (harness, _, run) = worked_naming(Script::Speaks, None).await;
+
+    assert_eq!(run.exit, Some(Exit::Succeeded));
+    assert_eq!(run.model.as_deref(), Some(DEFAULT_MODEL));
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn two_agents_with_different_models_produce_runs_on_different_models() {
+    let harness = Harness::dispatching_to(
+        supervisor::binary(),
+        &scripted_agent::playing(Script::Speaks),
+    )
+    .await;
+    let session = a_session_naming(&harness, Some(OTHER_MODEL)).await;
+    harness
+        .declare_agent(
+            &session.organization,
+            "reviewer",
+            RUNTIME,
+            Some(DEFAULT_MODEL),
+        )
+        .await;
+    let reviewing = harness
+        .open_session("acme", repository::NAME, "reviewer")
+        .await;
+
+    let built = harness.enqueue_run(session.id).await;
+    let built = ended(&harness, built.id).await;
+    let reviewed = harness.enqueue_run(reviewing.id).await;
+    let reviewed = ended(&harness, reviewed.id).await;
+
+    assert_eq!(built.model.as_deref(), Some(OTHER_MODEL));
+    assert_eq!(reviewed.model.as_deref(), Some(DEFAULT_MODEL));
+
+    harness.teardown().await;
+}
+
+/// An Agent's model is configuration rather than a rebuild, and a Run already in flight was
+/// handed the model it was dispatched with.
+#[tokio::test]
+async fn changing_an_agents_model_leaves_a_run_already_in_flight_on_the_one_it_started_on() {
+    let harness = Harness::dispatching_to(
+        supervisor::binary(),
+        &scripted_agent::playing(Script::Lingers),
+    )
+    .await;
+    let session = a_session_naming(&harness, Some(OTHER_MODEL)).await;
+    let run = harness.enqueue_run(session.id).await;
+    in_flight(&harness, run.id).await;
+
+    harness
+        .set_agent_model(&session.organization, "builder", Some(DEFAULT_MODEL))
+        .await;
+    assert_eq!(
+        harness.run(run.id).await.state,
+        RunState::Active,
+        "the run was over before its agent's model changed"
+    );
+
+    assert_eq!(
+        ended(&harness, run.id).await.model.as_deref(),
+        Some(OTHER_MODEL)
+    );
+
     harness.teardown().await;
 }
 
@@ -306,7 +397,7 @@ async fn an_agent_that_lets_no_client_choose_a_model_fails_a_run_whose_agent_nam
 
 #[tokio::test]
 async fn a_model_the_agent_does_not_offer_fails_the_run_rather_than_falling_back_to_a_default() {
-    let (harness, _, run) = worked_naming(Script::Speaks, "a-model-no-agent-offers").await;
+    let (harness, _, run) = worked_naming(Script::Speaks, Some("a-model-no-agent-offers")).await;
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
@@ -317,6 +408,32 @@ async fn a_model_the_agent_does_not_offer_fails_the_run_rather_than_falling_back
     assert!(
         because.contains("a-model-no-agent-offers"),
         "unhelpful exit status: {because}"
+    );
+
+    harness.teardown().await;
+}
+
+/// What a runtime advertises is only ever learned from a Run, so once one has been worked, an
+/// Agent naming a model outside it is refused where saying so costs nothing.
+#[tokio::test]
+async fn a_model_a_known_runtime_does_not_advertise_is_refused_when_the_agent_is_declared() {
+    let (harness, session, run) = worked(Script::Speaks).await;
+    assert_eq!(run.exit, Some(Exit::Succeeded));
+
+    let refused = harness
+        .try_declare_agent(
+            &session.organization,
+            "reviewer",
+            RUNTIME,
+            Some("a-model-no-agent-offers"),
+        )
+        .await
+        .expect_err("a model the runtime was never seen to advertise")
+        .to_string();
+
+    assert!(
+        refused.contains(DEFAULT_MODEL) && refused.contains(OTHER_MODEL),
+        "the refusal does not say what the runtime offers: {refused}"
     );
 
     harness.teardown().await;

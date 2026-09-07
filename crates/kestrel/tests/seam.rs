@@ -18,7 +18,7 @@ async fn declare_fixture(harness: &Harness) {
         )
         .await;
     harness
-        .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+        .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 }
 
@@ -94,7 +94,7 @@ async fn declaring_a_workspace_and_an_agent_lists_them_back() {
         )
         .await;
     let agent = harness
-        .declare_agent(&organization, "builder", "opencode", "claude-opus-5")
+        .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 
     let workspaces = harness.workspaces(&organization).await;

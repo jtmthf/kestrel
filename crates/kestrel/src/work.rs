@@ -104,6 +104,20 @@ pub async fn said(tx: &mut Tx<'_>, run: &Run, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// On the Run, so what executed is on the record whether the Agent named it or the runtime
+/// chose it; the models offered beside it are what a later declaration is refused against.
+pub async fn on_the_model(
+    tx: &mut Tx<'_>,
+    run: &Run,
+    model: &str,
+    offered: &[String],
+) -> Result<()> {
+    let session = tx.session(run.session).await?;
+    tx.record_model(run, model).await?;
+    tx.record_models_advertised(session.organization.id, &session.agent.runtime, offered)
+        .await
+}
+
 /// On the Run, and in no Transcript: what an agent spent is not a Session's shared state.
 pub async fn used(tx: &mut Tx<'_>, run: &Run, usage: &Usage) -> Result<()> {
     tx.record_usage(run, usage).await
