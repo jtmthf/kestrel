@@ -95,3 +95,12 @@ instead of `opencode acp`. An adapter usually advertises more than one way to be
 gives a client no way to choose between them, so a derived image is configured with `--agent-auth`
 as well. `crates/kestrel/tests/support/conformance-env.Dockerfile` is a worked example: the
 conformance suite's second agent, built this way and driven with nothing kestrel branches on.
+
+`images/kestrel-env-github/Dockerfile` is the same pattern for a different gap: nothing in the base
+image can reach GitHub's API, so an agent that clones a repository can read and write files in it
+but has no way to open a pull request on it. The derived image adds `gh`, pinned and checksummed the
+same way opencode is above. Nothing here logs it in — a `GH_TOKEN` an Organization holds reaches the
+agent's process the same way a provider credential does
+([ADR-0010](../../docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md)), and `gh`
+reads that variable itself. Point `KESTREL_IMAGE` at `kestrel-env-github` for a Workspace that needs
+this; the base image stays exactly what this document opens by saying it carries.
