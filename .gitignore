@@ -3,3 +3,5 @@ node_modules/
 target/
 dist/
 .claude/worktrees/
+compose.override.yaml
+compose.override.yml
