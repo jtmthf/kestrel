@@ -180,6 +180,21 @@ pub struct Event {
     pub recorded_at: Timestamp,
 }
 
+/// A Run's exit status on its way back to the surface that started the Session, composed when
+/// the Run ended and posted once however many attempts that takes.
+#[derive(Debug, Clone)]
+pub struct Outcome {
+    pub run: RunId,
+    pub organization: OrganizationId,
+    pub integration: IntegrationId,
+    pub event: EventId,
+    pub subject: i64,
+    pub body: String,
+    /// Set before a request goes out and left set: a Run whose Session was told nothing yet
+    /// but which has been attempted may already have a comment on the issue.
+    pub attempted_at: Option<Timestamp>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerState {
     Enabled,

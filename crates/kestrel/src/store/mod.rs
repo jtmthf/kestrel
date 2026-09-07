@@ -9,8 +9,9 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::domain::{
     Agent, AgentId, Connected, Cost, Direction, Event, EventId, Exit, Integration, IntegrationId,
-    IntegrationKind, Occurrence, Organization, OrganizationId, Run, RunId, RunState, Session,
-    SessionId, SessionState, Trigger, TriggerId, TriggerState, Usage, Workspace, WorkspaceId,
+    IntegrationKind, Occurrence, Organization, OrganizationId, Outcome, Run, RunId, RunState,
+    Session, SessionId, SessionState, Trigger, TriggerId, TriggerState, Usage, Workspace,
+    WorkspaceId,
 };
 use crate::integration::credential::Token;
 use crate::keyring::Keyring;
@@ -1162,6 +1163,109 @@ impl Tx<'_> {
         event(&row)
     }
 
+    pub async fn integration_with_id(&mut self, id: IntegrationId) -> Result<Integration> {
+        let row = sqlx::query(integrations_where!("id = ?"))
+            .bind(id.to_string())
+            .fetch_optional(&mut *self.transaction)
+            .await?
+            .with_context(|| format!("no integration {id}"))?;
+
+        integration(&row)
+    }
+
+    /// Due the moment it is recorded, and recorded in the transaction that ends the Run, so a
+    /// Run that ended has an outcome to deliver and one that did not has nothing to withdraw.
+    pub async fn record_outcome(
+        &mut self,
+        run: &Run,
+        integration: &Integration,
+        event: &Event,
+        body: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO outcome
+                 (run_id, organization_id, integration_id, event_id, subject, body, due_at,
+                  recorded_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (run_id) DO NOTHING",
+        )
+        .bind(run.id.to_string())
+        .bind(run.organization.to_string())
+        .bind(integration.id.to_string())
+        .bind(event.id.to_string())
+        .bind(event.occurrence.subject)
+        .bind(body)
+        .bind(due(Timestamp::now()))
+        .bind(Timestamp::now().to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("recording what to say back about the run {}", run.id))?;
+
+        Ok(())
+    }
+
+    pub async fn outcomes_due(&mut self, at: Timestamp) -> Result<Vec<Outcome>> {
+        sqlx::query(
+            "SELECT run_id, organization_id, integration_id, event_id, subject, body,
+                    attempted_at
+             FROM outcome
+             WHERE due_at <= ?
+             ORDER BY due_at",
+        )
+        .bind(due(at))
+        .fetch_all(&mut *self.transaction)
+        .await
+        .context("reading which outcomes are due a delivery")?
+        .iter()
+        .map(outcome)
+        .collect()
+    }
+
+    /// Committed before the request goes out rather than after it comes back: what this
+    /// records is that a comment may now exist, which is true from the moment kestrel asks.
+    pub async fn attempting_outcome(&mut self, outcome: &Outcome, at: Timestamp) -> Result<()> {
+        sqlx::query("UPDATE outcome SET attempted_at = ? WHERE run_id = ?")
+            .bind(at.to_string())
+            .bind(outcome.run.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| {
+                format!("recording an attempt at the outcome of run {}", outcome.run)
+            })?;
+
+        Ok(())
+    }
+
+    pub async fn outcome_delivered(&mut self, outcome: &Outcome, to: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE outcome SET delivered_at = ?, delivered_to = ?, due_at = NULL
+             WHERE run_id = ?",
+        )
+        .bind(Timestamp::now().to_string())
+        .bind(to)
+        .bind(outcome.run.to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("recording the outcome of run {} as said", outcome.run))?;
+
+        Ok(())
+    }
+
+    pub async fn outcome_deferred(
+        &mut self,
+        outcome: &Outcome,
+        due_again_at: Timestamp,
+    ) -> Result<()> {
+        sqlx::query("UPDATE outcome SET due_at = ? WHERE run_id = ?")
+            .bind(due(due_again_at))
+            .bind(outcome.run.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("deferring the outcome of run {}", outcome.run))?;
+
+        Ok(())
+    }
+
     pub async fn declare_trigger(
         &mut self,
         organization: &Organization,
@@ -1447,6 +1551,18 @@ fn event(row: &SqliteRow) -> Result<Event> {
             occurred_at: row.get::<String, _>("occurred_at").parse()?,
         },
         recorded_at: row.get::<String, _>("recorded_at").parse()?,
+    })
+}
+
+fn outcome(row: &SqliteRow) -> Result<Outcome> {
+    Ok(Outcome {
+        run: row.get::<String, _>("run_id").parse()?,
+        organization: row.get::<String, _>("organization_id").parse()?,
+        integration: row.get::<String, _>("integration_id").parse()?,
+        event: row.get::<String, _>("event_id").parse()?,
+        subject: row.get("subject"),
+        body: row.get("body"),
+        attempted_at: timestamp(row, "attempted_at")?,
     })
 }
 

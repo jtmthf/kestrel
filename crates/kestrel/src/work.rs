@@ -4,6 +4,7 @@ use anyhow::{Context as _, Result, bail};
 use jiff::{SignedDuration, Timestamp};
 
 use crate::domain::{Exit, Run, RunId, SessionId, Usage};
+use crate::integration::outcome;
 use crate::link::credential::Secret;
 use crate::log::Entry;
 use crate::store::{Store, Tx};
@@ -169,6 +170,7 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
             )
             .await?;
         tx.invalidate_credentials(run).await?;
+        outcome::record(tx, run, &session, &exit).await?;
         exit
     } else {
         tx.run(run.id)

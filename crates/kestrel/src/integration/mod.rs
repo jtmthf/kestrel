@@ -1,5 +1,6 @@
 pub mod credential;
 pub mod github;
+pub mod outcome;
 
 use anyhow::{Result, bail};
 use jiff::{SignedDuration, Timestamp};
