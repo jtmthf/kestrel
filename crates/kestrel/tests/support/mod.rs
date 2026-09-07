@@ -537,6 +537,12 @@ impl Harness {
             .expect("the run should end");
     }
 
+    pub async fn fail_run(&self, run: &Run, because: &str) {
+        work::fail(&self.store, run, because)
+            .await
+            .expect("the run should end");
+    }
+
     pub async fn instruct(&self, run: &Run, instruction: Instruction) {
         self.try_instruct(run, instruction)
             .await

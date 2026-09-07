@@ -69,6 +69,23 @@ pub fn issue_event(id: i64, issue: i64, kind: &str, label: &str) -> serde_json::
     })
 }
 
+/// One comment as GitHub reports it, and as it answers a newly posted one.
+pub fn comment(id: i64, body: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "html_url": format!("https://github.com/jtmthf/kestrel/issues/43#issuecomment-{id}"),
+        "body": body,
+    })
+}
+
+pub fn created(id: i64, body: &str) -> ScriptedResponse {
+    ScriptedResponse {
+        status: 201,
+        body: comment(id, body).to_string(),
+        headers: Vec::new(),
+    }
+}
+
 /// GitHub answers newest first, so a page reads the other way round from how it happened.
 pub fn page(events: &[serde_json::Value]) -> ScriptedResponse {
     ScriptedResponse::ok(serde_json::Value::Array(events.to_vec()).to_string())
@@ -84,10 +101,19 @@ pub fn rate_limited() -> ScriptedResponse {
         )
 }
 
+/// A queue of responses for one endpoint, so a sweep polling for events cannot take a
+/// response scripted for an outbound comment.
+struct Endpoint {
+    method: String,
+    path: String,
+    responses: VecDeque<ScriptedResponse>,
+}
+
 pub struct GithubStub {
     port: u16,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     responses: Arc<Mutex<VecDeque<ScriptedResponse>>>,
+    endpoints: Arc<Mutex<Vec<Endpoint>>>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -103,11 +129,13 @@ impl GithubStub {
 
         let requests = Arc::new(Mutex::new(Vec::new()));
         let responses = Arc::new(Mutex::new(VecDeque::new()));
+        let endpoints = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
 
         let thread = {
             let requests = Arc::clone(&requests);
             let responses = Arc::clone(&responses);
+            let endpoints = Arc::clone(&endpoints);
             let stop = Arc::clone(&stop);
 
             std::thread::spawn(move || {
@@ -118,7 +146,7 @@ impl GithubStub {
                         Err(_) => break,
                     };
 
-                    respond(request, &requests, &responses);
+                    respond(request, &requests, &responses, &endpoints);
                 }
             })
         };
@@ -127,6 +155,7 @@ impl GithubStub {
             port,
             requests,
             responses,
+            endpoints,
             stop,
             thread: Some(thread),
         }
@@ -143,6 +172,26 @@ impl GithubStub {
             .push_back(response);
     }
 
+    /// Scripts a response for one endpoint, matched by method and by a fragment of the path.
+    pub fn script_answer(&self, method: &str, path: &str, response: ScriptedResponse) {
+        let mut endpoints = self
+            .endpoints
+            .lock()
+            .expect("the endpoint queues should not be poisoned");
+
+        match endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.method == method && endpoint.path == path)
+        {
+            Some(endpoint) => endpoint.responses.push_back(response),
+            None => endpoints.push(Endpoint {
+                method: method.to_owned(),
+                path: path.to_owned(),
+                responses: VecDeque::from([response]),
+            }),
+        }
+    }
+
     pub fn requests(&self) -> Vec<RecordedRequest> {
         self.requests
             .lock()
@@ -155,6 +204,7 @@ fn respond(
     mut request: tiny_http::Request,
     requests: &Mutex<Vec<RecordedRequest>>,
     responses: &Mutex<VecDeque<ScriptedResponse>>,
+    endpoints: &Mutex<Vec<Endpoint>>,
 ) {
     let headers = request
         .headers()
@@ -179,10 +229,20 @@ fn respond(
             headers,
         });
 
-    let scripted = responses
+    let method = request.method().to_string();
+    let url = request.url().to_owned();
+    let scripted = endpoints
         .lock()
-        .expect("the response queue should not be poisoned")
-        .pop_front();
+        .expect("the endpoint queues should not be poisoned")
+        .iter_mut()
+        .find(|endpoint| method == endpoint.method && url.contains(&endpoint.path))
+        .and_then(|endpoint| endpoint.responses.pop_front())
+        .or_else(|| {
+            responses
+                .lock()
+                .expect("the response queue should not be poisoned")
+                .pop_front()
+        });
 
     let scripted = scripted.unwrap_or_else(|| ScriptedResponse::answering(404));
 

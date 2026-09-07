@@ -121,6 +121,31 @@ impl<'a> Log<'a> {
         })
     }
 
+    /// The last thing the Session's Agent said. Read rather than derived: the Transcript is
+    /// where a message lives, and nothing about the Session's state is being rebuilt from it.
+    pub async fn last_said(&mut self, session: &Session) -> Result<Option<String>> {
+        let latest = sqlx::query(
+            "SELECT body
+             FROM transcript_entry
+             WHERE session_id = ? AND json_extract(body, '$.kind') = 'said'
+             ORDER BY seq DESC
+             LIMIT 1",
+        )
+        .bind(session.id.to_string())
+        .fetch_optional(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading the transcript of session {}", session.id))?;
+
+        let Some(row) = latest else {
+            return Ok(None);
+        };
+
+        Ok(match serde_json::from_str(row.get("body"))? {
+            Entry::Said { message, .. } => Some(message),
+            _ => None,
+        })
+    }
+
     pub async fn page(
         &mut self,
         session: &Session,

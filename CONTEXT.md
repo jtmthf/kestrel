@@ -94,6 +94,12 @@ requests outbound; an integration may do either direction or both, and declares 
 Linear, GitHub and a plain webhook are all integrations.
 _Avoid_: connector, provider, app, plugin
 
+**Outcome**:
+What kestrel says back where the work came from: one run's exit status and what its agent said last,
+carried outbound by the integration the event arrived through. Composed when the run ends and said
+once, however many attempts that takes; a session no event started has none.
+_Avoid_: result, notification, callback, reply
+
 **Workflow**:
 A standing, declared process: the roster of agents that may be enqueued, and the caps and failure
 tolerances that bound one enactment of it. The sequence is not declared — a run grows it at runtime
@@ -196,6 +202,8 @@ words from drifting.
 - A firing **never** interrupts a run. Events arriving while a run is active are pending, and drain
   into **one** transcript entry and **one** run when it ends.
 - A run executes in exactly **one** environment.
+- A run's outcome reaches the surface that started its session **once**, however many attempts that
+  takes, and saying it changes **nothing** about the run's exit status.
 - A **run** is the only thing kestrel executes outside a control plane. Everything else — the
   store, the link, dispatch, the CLI — happens inside one.
 - At most **one** run is active in a session at a time. Concurrency is across sessions, **never**

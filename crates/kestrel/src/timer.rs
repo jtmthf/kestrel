@@ -10,6 +10,7 @@ use tracing::{info, warn};
 
 use crate::domain::{Exit, RunId};
 use crate::integration::github::Github;
+use crate::integration::outcome;
 use crate::integration::{self, Polled};
 use crate::store::Store;
 use crate::trigger;
@@ -18,12 +19,15 @@ use crate::work;
 const SWEEP: Duration = Duration::from_millis(500);
 
 pub async fn sweeping(store: &Store, shutdown: &CancellationToken) -> Result<()> {
+    let github = Github::dialling_out()?;
+
     // Beside the lease sweep rather than in it: a poll waits on GitHub, and a lease left
     // unswept for the length of an HTTP request is a Session wedged for that long.
     tokio::try_join!(
         sweeping_leases(store, shutdown),
-        polling(store, shutdown),
-        firing(store, shutdown)
+        polling(store, &github, shutdown),
+        firing(store, shutdown),
+        delivering(store, &github, shutdown)
     )?;
 
     Ok(())
@@ -48,13 +52,28 @@ async fn sweeping_leases(store: &Store, shutdown: &CancellationToken) -> Result<
     Ok(())
 }
 
-async fn polling(store: &Store, shutdown: &CancellationToken) -> Result<()> {
-    let github = Github::dialling_out()?;
-
+async fn polling(store: &Store, github: &Github, shutdown: &CancellationToken) -> Result<()> {
     while !shutdown.is_cancelled() {
-        match poll(store, &github).await {
+        match poll(store, github).await {
             Ok(()) => {}
             Err(error) => warn!(%error, "a poll found nothing it could do"),
+        }
+
+        tick(shutdown).await;
+    }
+
+    Ok(())
+}
+
+/// A sweep of its own rather than the tail of the transaction that ends a Run: what a Run
+/// ended as is durable the moment it ends, and saying so out loud is a request to somebody
+/// else's system that may be refused, deferred and asked again without any of that reaching
+/// the Run.
+async fn delivering(store: &Store, github: &Github, shutdown: &CancellationToken) -> Result<()> {
+    while !shutdown.is_cancelled() {
+        match deliver(store, github).await {
+            Ok(()) => {}
+            Err(error) => warn!(%error, "a delivery found nothing it could do"),
         }
 
         tick(shutdown).await;
@@ -113,6 +132,21 @@ async fn sweep(store: &Store) -> Result<Vec<(RunId, Exit)>> {
     tx.commit().await?;
 
     Ok(expired)
+}
+
+async fn deliver(store: &Store, github: &Github) -> Result<()> {
+    let due = {
+        let mut tx = store.begin().await?;
+        tx.outcomes_due(Timestamp::now()).await?
+    };
+
+    for outcome in due {
+        if let Some(comment) = outcome::deliver(store, github, &outcome).await? {
+            info!(run = %outcome.run, comment, "a run's outcome reached the issue it came from");
+        }
+    }
+
+    Ok(())
 }
 
 /// One at a time, so the write lock is held for a poll's transaction rather than for its wait

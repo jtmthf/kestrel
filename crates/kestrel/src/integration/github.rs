@@ -5,7 +5,8 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use jiff::Timestamp;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Response, StatusCode};
-use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::domain::{Integration, Occurrence};
@@ -112,41 +113,114 @@ impl Github {
         repository: &str,
         page: usize,
     ) -> Result<Vec<IssueEvent>, Refused> {
-        let url = format!(
-            "{}/repos/{repository}/issues/events?per_page={PER_PAGE}&page={page}",
-            integration.api.trim_end_matches('/')
-        );
-
         let response = self
-            .client
-            .get(&url)
-            .header("accept", "application/vnd.github+json")
-            .header("x-github-api-version", VERSION)
-            .bearer_auth(integration.credential.presented_to_the_external_system())
+            .request(
+                reqwest::Method::GET,
+                integration,
+                &format!("repos/{repository}/issues/events?per_page={PER_PAGE}&page={page}"),
+            )
             .send()
             .await
             .map_err(|error| {
                 Refused::Failed(anyhow!("{repository} could not be polled: {error}"))
             })?;
 
-        answered(response, repository).await
+        answered(response, &format!("the events on {repository}")).await
+    }
+
+    /// The comment kestrel leaves on the issue the work came from. What comes back is where
+    /// it landed, so a delivery that is asked again recognises its own comment.
+    pub async fn comment(
+        &self,
+        integration: &Integration,
+        subject: i64,
+        body: &str,
+    ) -> Result<Comment, Refused> {
+        let repository = repository(&integration.repository).map_err(Refused::Failed)?;
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                integration,
+                &format!("repos/{repository}/issues/{subject}/comments"),
+            )
+            .json(&Body { body })
+            .send()
+            .await
+            .map_err(|error| {
+                Refused::Failed(anyhow!(
+                    "{repository}#{subject} could not be commented on: {error}"
+                ))
+            })?;
+
+        answered(response, &format!("a comment on {repository}#{subject}")).await
+    }
+
+    /// Whether a comment carrying `marker` is already on the issue. `since` bounds the read to
+    /// the window an attempt could have landed in, so this is one page rather than a walk back
+    /// through everything an issue has ever collected.
+    pub async fn comment_carrying(
+        &self,
+        integration: &Integration,
+        subject: i64,
+        marker: &str,
+        since: Timestamp,
+    ) -> Result<Option<Comment>, Refused> {
+        let repository = repository(&integration.repository).map_err(Refused::Failed)?;
+        let response = self
+            .request(
+                reqwest::Method::GET,
+                integration,
+                &format!(
+                    "repos/{repository}/issues/{subject}/comments?per_page={PER_PAGE}&since={since}"
+                ),
+            )
+            .send()
+            .await
+            .map_err(|error| {
+                Refused::Failed(anyhow!(
+                    "the comments on {repository}#{subject} could not be read: {error}"
+                ))
+            })?;
+
+        let comments: Vec<Comment> =
+            answered(response, &format!("the comments on {repository}#{subject}")).await?;
+
+        Ok(comments
+            .into_iter()
+            .find(|comment| comment.body.contains(marker)))
+    }
+
+    fn request(
+        &self,
+        method: reqwest::Method,
+        integration: &Integration,
+        path: &str,
+    ) -> reqwest::RequestBuilder {
+        self.client
+            .request(
+                method,
+                format!("{}/{path}", integration.api.trim_end_matches('/')),
+            )
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", VERSION)
+            .bearer_auth(integration.credential.presented_to_the_external_system())
     }
 }
 
-async fn answered(response: Response, repository: &str) -> Result<Vec<IssueEvent>, Refused> {
+async fn answered<T: DeserializeOwned>(response: Response, asked_for: &str) -> Result<T, Refused> {
     let status = response.status();
     if let Some(until) = rate_limited(status, response.headers()) {
         return Err(Refused::RateLimited { until });
     }
     if !status.is_success() {
         return Err(Refused::Failed(anyhow!(
-            "github answered {status} for the events on {repository}"
+            "github answered {status} for {asked_for}"
         )));
     }
 
     response.json().await.map_err(|error| {
         Refused::Failed(anyhow!(
-            "github's account of the events on {repository} could not be read: {error}"
+            "github's account of {asked_for} could not be read: {error}"
         ))
     })
 }
@@ -205,6 +279,19 @@ pub fn repository(repository: &str) -> Result<String> {
     }
 
     Ok(format!("{owner}/{name}"))
+}
+
+/// One comment as GitHub reports it, and what it answers a newly posted one with.
+#[derive(Debug, Deserialize)]
+pub struct Comment {
+    pub html_url: String,
+    #[serde(default)]
+    body: String,
+}
+
+#[derive(Serialize)]
+struct Body<'a> {
+    body: &'a str,
 }
 
 #[derive(Debug, Deserialize)]

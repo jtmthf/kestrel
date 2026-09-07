@@ -342,6 +342,31 @@ disabled
 
 `kestrel trigger enable ready --organization acme` puts it back.
 
+## The answer comes back to the issue
+
+An integration carries kestrel's requests outbound as well as events inbound, and the one you
+registered above declares both. So when the run ends, the issue that started it gets a comment:
+
+```
+**kestrel** — run succeeded
+
+> Opened https://github.com/jtmthf/kestrel/pull/92 with the fix and a regression test.
+
+Session `01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04` · run `01a07c33-2f88-7a05-bb31-58c0d9e4d7f0`
+```
+
+The quoted part is the last thing the agent said. kestrel reasons about no git and never learns
+which pull request was opened — if there is a link there, it is there because the agent named it.
+A run that failed gets a comment too, saying so and saying why.
+
+Exactly one comment per run, whatever happens in between. The comment carries a marker naming the
+run, so a control plane killed between sending it and hearing back reads the issue on the way up,
+recognises its own comment and does not leave a second. A comment GitHub refuses is tried again on
+the next sweep and never changes how the run ended.
+
+Register an integration with `--carries inbound` and kestrel watches the repository without ever
+writing to it.
+
 ## Where this stops
 
 Four things you will meet following this document.
