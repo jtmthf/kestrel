@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-use crate::domain::{Organization, Session, SessionId, SessionState};
+use crate::domain::{Event, Organization, Session, SessionId, SessionState};
 use crate::fanout::{self, Change};
 use crate::log::{Cursor, Entry, Page, Unreadable, Window};
 use crate::store::{Store, Tx};
@@ -23,7 +23,7 @@ pub async fn open(
     };
 
     let session = tx
-        .open_session(&organization, &workspace, &agent, continues.as_ref())
+        .open_session(&organization, &workspace, &agent, continues.as_ref(), None)
         .await?;
     tx.log()
         .append(
@@ -66,6 +66,23 @@ pub async fn seal(store: &Store, id: SessionId) -> Result<Session> {
 
 pub async fn show(store: &Store, id: SessionId) -> Result<Session> {
     store.begin().await?.session(id).await
+}
+
+pub async fn sessions(store: &Store, organization: &str) -> Result<Vec<Session>> {
+    let mut tx = store.begin().await?;
+    let organization = tx.organization_named(organization).await?;
+
+    tx.sessions(&organization).await
+}
+
+/// Read on its own rather than with the Session: most Sessions were opened by a person, and
+/// every path that reports one would otherwise pay for the Event none of them has.
+pub async fn started_by(store: &Store, session: &Session) -> Result<Option<Event>> {
+    let Some(event) = session.started_by else {
+        return Ok(None);
+    };
+
+    Ok(Some(store.begin().await?.event(event).await?))
 }
 
 pub async fn continuations(store: &Store, id: SessionId) -> Result<Vec<SessionId>> {

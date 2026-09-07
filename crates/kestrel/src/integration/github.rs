@@ -12,6 +12,10 @@ use crate::domain::{Integration, Occurrence};
 
 pub const API: &str = "https://api.github.com";
 
+/// GitHub reports a label coming off an issue as an `unlabeled` event carrying that same
+/// label, so a trigger matching on the label alone would fire on both.
+pub const LABELLED: &str = "labeled";
+
 const VERSION: &str = "2022-11-28";
 const PER_PAGE: usize = 100;
 const REQUEST: Duration = Duration::from_secs(30);

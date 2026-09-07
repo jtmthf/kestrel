@@ -18,7 +18,7 @@ clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
 futures-core = "0.3"
 getrandom = { version = "0.4", features = ["std"] }
-jiff = "0.2"
+jiff = { version = "0.2", features = ["serde"] }
 libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }

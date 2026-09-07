@@ -5,7 +5,8 @@ use anyhow::{Result, bail};
 use crate::agent;
 use crate::cli::{
     AgentCommand, CliCommand, CredentialCommand, EventCommand, IntegrationCommand,
-    OrganizationCommand, RegisterCommand, RunCommand, SessionCommand, WorkspaceCommand,
+    OrganizationCommand, RegisterCommand, RunCommand, SessionCommand, TriggerCommand,
+    WorkspaceCommand,
 };
 use crate::domain::{Direction, IntegrationKind};
 use crate::integration::{self, Registration};
@@ -13,6 +14,7 @@ use crate::log::Window;
 use crate::provider;
 use crate::session;
 use crate::store::Store;
+use crate::trigger::{self, Declaration};
 use crate::work;
 
 pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
@@ -113,6 +115,20 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             let session = session::open(&store, organization, workspace, agent, *continues).await?;
             println!("{}", session.id);
         }
+        CliCommand::Session(SessionCommand::List { organization }) => {
+            for session in session::sessions(&store, organization).await? {
+                println!(
+                    "{}  {}  {}  {}  {}",
+                    session.id,
+                    session.state,
+                    session.workspace.name,
+                    session.agent.name,
+                    session
+                        .started_by
+                        .map_or_else(|| "-".to_owned(), |event| event.to_string())
+                );
+            }
+        }
         CliCommand::Session(SessionCommand::Seal { session }) => {
             let sealed = session::seal(&store, *session).await?;
             println!("{}", sealed.id);
@@ -127,6 +143,9 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!("opened        {}", session.opened_at);
             if let Some(sealed_at) = session.sealed_at {
                 println!("sealed        {sealed_at}");
+            }
+            if let Some(event) = session::started_by(&store, &session).await? {
+                println!("event         {}  {}", event.id, event.occurrence.url);
             }
             if let Some(continues) = session.continues {
                 println!("continues     {continues}");
@@ -199,6 +218,64 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                     integration.interval
                 );
             }
+        }
+        CliCommand::Trigger(TriggerCommand::Declare {
+            name,
+            organization,
+            repository,
+            label,
+            workspace,
+            agent,
+        }) => {
+            let trigger = trigger::declare(
+                &store,
+                Declaration {
+                    organization,
+                    name,
+                    repository,
+                    label,
+                    workspace,
+                    agent,
+                },
+            )
+            .await?;
+            println!("{}", trigger.id);
+        }
+        CliCommand::Trigger(TriggerCommand::List { organization }) => {
+            for trigger in trigger::triggers(&store, organization).await? {
+                println!(
+                    "{}  {}  {}  {}  {}  {}  {}",
+                    trigger.id,
+                    trigger.name,
+                    trigger.state,
+                    trigger.repository,
+                    trigger.label,
+                    trigger.workspace.name,
+                    trigger.agent.name
+                );
+            }
+        }
+        CliCommand::Trigger(TriggerCommand::Show { name, organization }) => {
+            let trigger = trigger::show(&store, organization, name).await?;
+            println!("trigger       {}", trigger.id);
+            println!("organization  {}", trigger.organization.name);
+            println!("name          {}", trigger.name);
+            println!("state         {}", trigger.state);
+            println!(
+                "matches       {} labelled {}",
+                trigger.repository, trigger.label
+            );
+            println!("workspace     {}", trigger.workspace.name);
+            println!("agent         {}", trigger.agent.name);
+            println!("declared      {}", trigger.declared_at);
+        }
+        CliCommand::Trigger(TriggerCommand::Disable { name, organization }) => {
+            let trigger = trigger::disable(&store, organization, name).await?;
+            println!("{}", trigger.state);
+        }
+        CliCommand::Trigger(TriggerCommand::Enable { name, organization }) => {
+            let trigger = trigger::enable(&store, organization, name).await?;
+            println!("{}", trigger.state);
         }
         CliCommand::Event(EventCommand::List {
             organization,

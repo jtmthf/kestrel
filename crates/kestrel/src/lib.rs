@@ -15,6 +15,7 @@ pub mod shutdown;
 pub mod store;
 pub mod telemetry;
 pub mod timer;
+pub mod trigger;
 pub mod work;
 
 use tokio_util::sync::CancellationToken;
