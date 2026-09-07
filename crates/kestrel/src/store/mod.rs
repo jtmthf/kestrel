@@ -10,7 +10,7 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use crate::domain::{
     Agent, AgentId, Connected, Cost, Direction, Event, EventId, Exit, Integration, IntegrationId,
     IntegrationKind, Occurrence, Organization, OrganizationId, Run, RunId, RunState, Session,
-    SessionId, SessionState, Usage, Workspace, WorkspaceId,
+    SessionId, SessionState, Trigger, TriggerId, TriggerState, Usage, Workspace, WorkspaceId,
 };
 use crate::integration::credential::Token;
 use crate::keyring::Keyring;
@@ -27,6 +27,18 @@ macro_rules! integrations_where {
             "SELECT id, organization_id, name, kind, repository, api, credential, inbound,
                     outbound, interval_ms, poll_due_at, polled_through
              FROM integration
+             WHERE ",
+            $tail
+        )
+    };
+}
+
+macro_rules! triggers_where {
+    ($tail:literal) => {
+        concat!(
+            "SELECT id, organization_id, name, repository, label, workspace_id, agent_id, state,
+                    declared_at
+             FROM trigger
              WHERE ",
             $tail
         )
@@ -307,6 +319,7 @@ impl Tx<'_> {
         workspace: &Workspace,
         agent: &Agent,
         continues: Option<&Session>,
+        started_by: Option<&Event>,
     ) -> Result<Session> {
         let session = Session {
             id: SessionId::generate(),
@@ -317,12 +330,14 @@ impl Tx<'_> {
             opened_at: Timestamp::now(),
             sealed_at: None,
             continues: continues.map(|sealed| sealed.id),
+            started_by: started_by.map(|event| event.id),
         };
 
         sqlx::query(
             "INSERT INTO session
-                 (id, organization_id, workspace_id, agent_id, state, opened_at, continues)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (id, organization_id, workspace_id, agent_id, state, opened_at, continues,
+                  event_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.to_string())
         .bind(organization.id.to_string())
@@ -331,6 +346,7 @@ impl Tx<'_> {
         .bind(session.state.as_str())
         .bind(session.opened_at.to_string())
         .bind(session.continues.map(|sealed| sealed.to_string()))
+        .bind(session.started_by.map(|event| event.to_string()))
         .execute(&mut *self.transaction)
         .await
         .context("opening a session")?;
@@ -375,7 +391,8 @@ impl Tx<'_> {
 
     pub async fn session(&mut self, id: SessionId) -> Result<Session> {
         let row = sqlx::query(
-            "SELECT organization_id, workspace_id, agent_id, state, opened_at, sealed_at, continues
+            "SELECT organization_id, workspace_id, agent_id, state, opened_at, sealed_at,
+                    continues, event_id
              FROM session
              WHERE id = ?",
         )
@@ -406,7 +423,30 @@ impl Tx<'_> {
                 .get::<Option<String>, _>("continues")
                 .map(|sealed| sealed.parse())
                 .transpose()?,
+            started_by: row
+                .get::<Option<String>, _>("event_id")
+                .map(|event| event.parse())
+                .transpose()?,
         })
+    }
+
+    pub async fn sessions(&mut self, organization: &Organization) -> Result<Vec<Session>> {
+        let ids =
+            sqlx::query("SELECT id FROM session WHERE organization_id = ? ORDER BY opened_at, id")
+                .bind(organization.id.to_string())
+                .fetch_all(&mut *self.transaction)
+                .await
+                .context("reading an organization's sessions")?
+                .iter()
+                .map(|row| Ok(row.get::<String, _>("id").parse()?))
+                .collect::<Result<Vec<SessionId>>>()?;
+
+        let mut sessions = Vec::with_capacity(ids.len());
+        for id in ids {
+            sessions.push(self.session(id).await?);
+        }
+
+        Ok(sessions)
     }
 
     /// Read on its own rather than with the Session: every path that reports a Run reads one,
@@ -1107,6 +1147,223 @@ impl Tx<'_> {
         .collect()
     }
 
+    pub async fn event(&mut self, id: EventId) -> Result<Event> {
+        let row = sqlx::query(
+            "SELECT id, organization_id, integration_id, external_id, repository, kind, actor,
+                    subject, title, url, label, occurred_at, recorded_at
+             FROM event
+             WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&mut *self.transaction)
+        .await?
+        .with_context(|| format!("no event {id}"))?;
+
+        event(&row)
+    }
+
+    pub async fn declare_trigger(
+        &mut self,
+        organization: &Organization,
+        name: &str,
+        matching: (&str, &str),
+        workspace: &Workspace,
+        agent: &Agent,
+    ) -> Result<Trigger> {
+        let (repository, label) = matching;
+        let trigger = Trigger {
+            id: TriggerId::generate(),
+            organization: organization.clone(),
+            name: name.to_owned(),
+            repository: repository.to_owned(),
+            label: label.to_owned(),
+            workspace: workspace.clone(),
+            agent: agent.clone(),
+            state: TriggerState::Enabled,
+            declared_at: Timestamp::now(),
+        };
+
+        sqlx::query(
+            "INSERT INTO trigger
+                 (id, organization_id, name, repository, label, workspace_id, agent_id, state,
+                  declared_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(trigger.id.to_string())
+        .bind(organization.id.to_string())
+        .bind(&trigger.name)
+        .bind(&trigger.repository)
+        .bind(&trigger.label)
+        .bind(workspace.id.to_string())
+        .bind(agent.id.to_string())
+        .bind(trigger.state.as_str())
+        .bind(trigger.declared_at.to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| format!("declaring the trigger {name}"))?;
+
+        Ok(trigger)
+    }
+
+    pub async fn triggers(&mut self, organization: &Organization) -> Result<Vec<Trigger>> {
+        let rows = sqlx::query(triggers_where!("organization_id = ? ORDER BY name"))
+            .bind(organization.id.to_string())
+            .fetch_all(&mut *self.transaction)
+            .await
+            .context("reading an organization's triggers")?;
+
+        let mut triggers = Vec::with_capacity(rows.len());
+        for row in &rows {
+            triggers.push(self.trigger(row).await?);
+        }
+
+        Ok(triggers)
+    }
+
+    pub async fn trigger_named(
+        &mut self,
+        organization: &Organization,
+        name: &str,
+    ) -> Result<Trigger> {
+        let row = sqlx::query(triggers_where!("organization_id = ? AND name = ?"))
+            .bind(organization.id.to_string())
+            .bind(name)
+            .fetch_optional(&mut *self.transaction)
+            .await?
+            .with_context(|| {
+                format!(
+                    "no trigger named {name} in the organization {}",
+                    organization.name
+                )
+            })?;
+
+        self.trigger(&row).await
+    }
+
+    pub async fn set_trigger_state(
+        &mut self,
+        trigger: &Trigger,
+        state: TriggerState,
+    ) -> Result<Trigger> {
+        sqlx::query("UPDATE trigger SET state = ? WHERE id = ?")
+            .bind(state.as_str())
+            .bind(trigger.id.to_string())
+            .execute(&mut *self.transaction)
+            .await
+            .with_context(|| format!("changing whether the trigger {} fires", trigger.name))?;
+
+        Ok(Trigger {
+            state,
+            ..trigger.clone()
+        })
+    }
+
+    /// A Trigger fires at most once per Event, and the firing already recorded is what says
+    /// so.
+    pub async fn unfired_matches(
+        &mut self,
+        kind: &str,
+        most: usize,
+    ) -> Result<Vec<(Trigger, Event)>> {
+        let rows = sqlx::query(
+            "SELECT trigger.id AS trigger_id, event.id AS event_id
+             FROM trigger
+             JOIN event
+               ON event.organization_id = trigger.organization_id
+              AND event.repository = trigger.repository
+              AND event.kind = ?
+              AND event.label = trigger.label
+             WHERE trigger.state = ?
+               AND NOT EXISTS (
+                   SELECT 1 FROM firing
+                   WHERE firing.trigger_id = trigger.id AND firing.event_id = event.id
+               )
+             ORDER BY event.occurred_at, event.id
+             LIMIT ?",
+        )
+        .bind(kind)
+        .bind(TriggerState::Enabled.as_str())
+        .bind(i64::try_from(most)?)
+        .fetch_all(&mut *self.transaction)
+        .await
+        .context("reading which events a trigger has yet to fire for")?;
+
+        let mut matched = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let trigger = self
+                .trigger_with_id(row.get::<String, _>("trigger_id").parse()?)
+                .await?;
+            let event = self
+                .event(row.get::<String, _>("event_id").parse()?)
+                .await?;
+            matched.push((trigger, event));
+        }
+
+        Ok(matched)
+    }
+
+    pub async fn record_firing(
+        &mut self,
+        trigger: &Trigger,
+        event: &Event,
+        session: &Session,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO firing
+                 (trigger_id, event_id, organization_id, session_id, fired_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(trigger.id.to_string())
+        .bind(event.id.to_string())
+        .bind(trigger.organization.id.to_string())
+        .bind(session.id.to_string())
+        .bind(Timestamp::now().to_string())
+        .execute(&mut *self.transaction)
+        .await
+        .with_context(|| {
+            format!(
+                "recording that the trigger {} fired for the event {}",
+                trigger.name, event.id
+            )
+        })?;
+
+        Ok(())
+    }
+
+    async fn trigger_with_id(&mut self, id: TriggerId) -> Result<Trigger> {
+        let row = sqlx::query(triggers_where!("id = ?"))
+            .bind(id.to_string())
+            .fetch_optional(&mut *self.transaction)
+            .await?
+            .with_context(|| format!("no trigger {id}"))?;
+
+        self.trigger(&row).await
+    }
+
+    async fn trigger(&mut self, row: &SqliteRow) -> Result<Trigger> {
+        let organization = self
+            .organization_with_id(row.get::<String, _>("organization_id").parse()?)
+            .await?;
+        let workspace = self
+            .workspace_with_id(&organization, row.get::<String, _>("workspace_id").parse()?)
+            .await?;
+        let agent = self
+            .agent_with_id(&organization, row.get::<String, _>("agent_id").parse()?)
+            .await?;
+
+        Ok(Trigger {
+            id: row.get::<String, _>("id").parse()?,
+            organization,
+            name: row.get("name"),
+            repository: row.get("repository"),
+            label: row.get("label"),
+            workspace,
+            agent,
+            state: row.get::<String, _>("state").parse()?,
+            declared_at: row.get::<String, _>("declared_at").parse()?,
+        })
+    }
+
     pub async fn agents(&mut self, organization: &Organization) -> Result<Vec<Agent>> {
         sqlx::query(
             "SELECT id, organization_id, name, runtime, model
@@ -1314,7 +1571,7 @@ mod tests {
 
         let mut tx = store.begin().await.unwrap();
         let session = tx
-            .open_session(&organization, &workspace, &agent, None)
+            .open_session(&organization, &workspace, &agent, None, None)
             .await
             .unwrap();
         let run = tx.enqueue_run(&session).await.unwrap();
@@ -1403,7 +1660,7 @@ mod tests {
 
         let mut tx = store.begin().await.unwrap();
         let session = tx
-            .open_session(&organization, &workspace, &agent, None)
+            .open_session(&organization, &workspace, &agent, None, None)
             .await
             .unwrap();
         tx.log()

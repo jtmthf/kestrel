@@ -171,9 +171,62 @@ pub enum CliCommand {
     /// Register and list Integrations
     #[command(subcommand)]
     Integration(IntegrationCommand),
+    /// Declare, inspect and disable Triggers
+    #[command(subcommand)]
+    Trigger(TriggerCommand),
     /// List the Events an Integration has discovered
     #[command(subcommand)]
     Event(EventCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum TriggerCommand {
+    /// Declare a Trigger: what it matches, and the Agent and Workspace it starts work with
+    Declare {
+        /// The name it is referred to by
+        name: String,
+        /// The Organization it belongs to
+        #[arg(long)]
+        organization: String,
+        /// The repository whose Events it matches, as owner/name
+        #[arg(long, value_name = "OWNER/NAME")]
+        repository: String,
+        /// The label an issue is labelled with for it to fire
+        #[arg(long)]
+        label: String,
+        /// The Workspace a firing's work happens against
+        #[arg(long)]
+        workspace: String,
+        /// The Agent a firing starts work with
+        #[arg(long)]
+        agent: String,
+    },
+    /// List every Trigger in an Organization, and what each matches
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+    /// Show a Trigger
+    Show {
+        /// The name it is referred to by
+        name: String,
+        #[arg(long)]
+        organization: String,
+    },
+    /// Stop a Trigger firing, without forgetting it
+    Disable {
+        /// The name it is referred to by
+        name: String,
+        #[arg(long)]
+        organization: String,
+    },
+    /// Let a disabled Trigger fire again
+    Enable {
+        /// The name it is referred to by
+        name: String,
+        #[arg(long)]
+        organization: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -262,6 +315,11 @@ pub enum SessionCommand {
         /// The sealed Session this one carries on from
         #[arg(long, value_name = "SESSION")]
         continues: Option<SessionId>,
+    },
+    /// List every Session in an Organization, with the Event that started each
+    List {
+        #[arg(long)]
+        organization: String,
     },
     /// Seal a Session: readable ever after, and never reopened
     Seal {

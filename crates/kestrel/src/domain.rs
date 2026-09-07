@@ -43,6 +43,7 @@ identifiers!(
     RunId,
     IntegrationId,
     EventId,
+    TriggerId,
 );
 
 #[derive(Debug, Clone)]
@@ -157,7 +158,7 @@ impl Integration {
 
 /// A thing the external system says happened, as it arrives and before kestrel has decided
 /// whether it has seen it before.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Occurrence {
     pub external_id: String,
     pub kind: String,
@@ -179,6 +180,53 @@ pub struct Event {
     pub recorded_at: Timestamp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerState {
+    Enabled,
+    Disabled,
+}
+
+impl TriggerState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TriggerState::Enabled => "enabled",
+            TriggerState::Disabled => "disabled",
+        }
+    }
+}
+
+impl FromStr for TriggerState {
+    type Err = anyhow::Error;
+
+    fn from_str(state: &str) -> Result<Self> {
+        match state {
+            "enabled" => Ok(TriggerState::Enabled),
+            "disabled" => Ok(TriggerState::Disabled),
+            other => bail!("{other} is not a state a trigger can be in"),
+        }
+    }
+}
+
+impl fmt::Display for TriggerState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The rule, never an individual firing.
+#[derive(Debug, Clone)]
+pub struct Trigger {
+    pub id: TriggerId,
+    pub organization: Organization,
+    pub name: String,
+    pub repository: String,
+    pub label: String,
+    pub workspace: Workspace,
+    pub agent: Agent,
+    pub state: TriggerState,
+    pub declared_at: Timestamp,
+}
+
 #[derive(Debug, Clone)]
 pub struct Session {
     pub id: SessionId,
@@ -189,6 +237,7 @@ pub struct Session {
     pub opened_at: Timestamp,
     pub sealed_at: Option<Timestamp>,
     pub continues: Option<SessionId>,
+    pub started_by: Option<EventId>,
 }
 
 impl Session {

@@ -12,6 +12,7 @@ use crate::domain::{Exit, RunId};
 use crate::integration::github::Github;
 use crate::integration::{self, Polled};
 use crate::store::Store;
+use crate::trigger;
 use crate::work;
 
 const SWEEP: Duration = Duration::from_millis(500);
@@ -19,7 +20,11 @@ const SWEEP: Duration = Duration::from_millis(500);
 pub async fn sweeping(store: &Store, shutdown: &CancellationToken) -> Result<()> {
     // Beside the lease sweep rather than in it: a poll waits on GitHub, and a lease left
     // unswept for the length of an HTTP request is a Session wedged for that long.
-    tokio::try_join!(sweeping_leases(store, shutdown), polling(store, shutdown))?;
+    tokio::try_join!(
+        sweeping_leases(store, shutdown),
+        polling(store, shutdown),
+        firing(store, shutdown)
+    )?;
 
     Ok(())
 }
@@ -50,6 +55,31 @@ async fn polling(store: &Store, shutdown: &CancellationToken) -> Result<()> {
         match poll(store, &github).await {
             Ok(()) => {}
             Err(error) => warn!(%error, "a poll found nothing it could do"),
+        }
+
+        tick(shutdown).await;
+    }
+
+    Ok(())
+}
+
+/// Matching is its own sweep rather than the tail of a poll, so a Trigger declared after an
+/// Event was recorded still fires for it, and a control plane that stopped between recording
+/// an Event and firing for it finds it on the way back up.
+async fn firing(store: &Store, shutdown: &CancellationToken) -> Result<()> {
+    while !shutdown.is_cancelled() {
+        match trigger::fire(store).await {
+            Ok(fired) => {
+                for firing in fired {
+                    info!(
+                        event = %firing.event,
+                        session = %firing.session,
+                        run = %firing.run,
+                        "a trigger fired"
+                    );
+                }
+            }
+            Err(error) => warn!(%error, "a firing found nothing it could do"),
         }
 
         tick(shutdown).await;

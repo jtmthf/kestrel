@@ -30,7 +30,7 @@ use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
     Agent, Direction, Event, Integration, IntegrationKind, Organization, Run, RunId, Session,
-    SessionId, Workspace,
+    SessionId, Trigger, Workspace,
 };
 use kestrel::integration::{self, Registration};
 use kestrel::link::credential::Secret;
@@ -40,6 +40,7 @@ use kestrel::provider::{self, Held};
 use kestrel::role::work::Dispatch;
 use kestrel::session;
 use kestrel::store::Store;
+use kestrel::trigger::{self, Declaration};
 use kestrel::work::{self, Claimed};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
@@ -309,6 +310,66 @@ impl Harness {
             .expect("the events should list")
     }
 
+    pub async fn declare_trigger(
+        &self,
+        organization: &str,
+        name: &str,
+        matching: (&str, &str),
+        workspace: &str,
+        agent: &str,
+    ) -> Trigger {
+        self.try_declare_trigger(organization, name, matching, workspace, agent)
+            .await
+            .expect("the trigger should declare")
+    }
+
+    pub async fn try_declare_trigger(
+        &self,
+        organization: &str,
+        name: &str,
+        matching: (&str, &str),
+        workspace: &str,
+        agent: &str,
+    ) -> anyhow::Result<Trigger> {
+        let (repository, label) = matching;
+        trigger::declare(
+            &self.store,
+            Declaration {
+                organization,
+                name,
+                repository,
+                label,
+                workspace,
+                agent,
+            },
+        )
+        .await
+    }
+
+    pub async fn triggers(&self, organization: &str) -> Vec<Trigger> {
+        trigger::triggers(&self.store, organization)
+            .await
+            .expect("the triggers should list")
+    }
+
+    pub async fn show_trigger(&self, organization: &str, name: &str) -> Trigger {
+        trigger::show(&self.store, organization, name)
+            .await
+            .expect("the trigger should show")
+    }
+
+    pub async fn disable_trigger(&self, organization: &str, name: &str) -> Trigger {
+        trigger::disable(&self.store, organization, name)
+            .await
+            .expect("the trigger should disable")
+    }
+
+    pub async fn enable_trigger(&self, organization: &str, name: &str) -> Trigger {
+        trigger::enable(&self.store, organization, name)
+            .await
+            .expect("the trigger should enable")
+    }
+
     pub async fn hold_provider_credential(
         &self,
         organization: &Organization,
@@ -368,6 +429,12 @@ impl Harness {
         session::continuations(&self.store, id)
             .await
             .expect("the continuations should read")
+    }
+
+    pub async fn sessions(&self, organization: &str) -> Vec<Session> {
+        session::sessions(&self.store, organization)
+            .await
+            .expect("the sessions should list")
     }
 
     pub async fn show_session(&self, id: SessionId) -> Session {

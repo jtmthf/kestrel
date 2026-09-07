@@ -262,6 +262,86 @@ opened        2026-09-06T20:00:03.652235801Z
 continues     01a07846-49fa-7dc0-a44b-183a63794ee3
 ```
 
+## Let a label start the work
+
+Every session above you opened by hand. A **trigger** is the standing rule that opens one for you:
+what it matches, and the agent and workspace it starts that work with.
+
+kestrel has to be able to see the repository first. An **integration** is a credentialed connection
+to an external system, and it declares which directions it carries — events inbound, kestrel's
+requests outbound, or both:
+
+```sh
+kestrel integration register github origin \
+  --organization acme \
+  --repository jtmthf/kestrel \
+  --token ghp_your_token
+```
+
+It discovers events by polling every minute rather than by webhook, so nothing here needs an inbound
+address or a tunnel. A first poll reads one page: an integration sees what happens from the moment
+you register it, and not the repository's back history.
+
+```sh
+kestrel event list --organization acme
+```
+
+```
+01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77  2026-09-07T14:01:58Z  jtmthf/kestrel  labeled  ready-for-agent  #44  0.1/21: The GitHub Trigger opens a Session from an Event
+```
+
+Now the rule itself:
+
+```sh
+kestrel trigger declare ready \
+  --organization acme \
+  --repository jtmthf/kestrel \
+  --label ready-for-agent \
+  --workspace kestrel \
+  --agent builder
+```
+
+Label an issue on that repository `ready-for-agent`, and within a poll interval there is a session
+open with a run queued behind it, which nobody asked for:
+
+```sh
+kestrel session list --organization acme
+```
+
+```
+01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04  open  kestrel  builder  01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
+```
+
+The last column is the event that started it. `kestrel session show` prints it beside the issue it
+came from, and the event is the session's first transcript entry:
+
+```
+1  2026-09-07T14:02:03.118Z  trigger fired  ready  jtmthf labeled ready-for-agent on jtmthf/kestrel#44  0.1/21: The GitHub Trigger opens a Session from an Event  https://github.com/jtmthf/kestrel/issues/44
+2  2026-09-07T14:02:03.118Z  participant joined  builder
+```
+
+A trigger fires at most once per event, so the same label arriving in two overlapping poll windows
+opens one session and not two. Taking the label off and putting it back is a new event, and starts
+new work.
+
+**The event chooses nothing.** The agent, the workspace and the model come from the declaration you
+just applied; only the data comes from the event. Anyone who can label an issue on a public
+repository could otherwise pick which agent's credentials the run gets
+([ADR-0013](docs/adr/0013-an-event-supplies-data-never-authority.md)).
+
+`kestrel trigger list --organization acme` shows what each one matches. Disabling stops one firing
+without forgetting what it was:
+
+```sh
+kestrel trigger disable ready --organization acme
+```
+
+```
+disabled
+```
+
+`kestrel trigger enable ready --organization acme` puts it back.
+
 ## Where this stops
 
 Four things you will meet following this document.
@@ -269,9 +349,9 @@ Four things you will meet following this document.
 **Nothing carries a task to a run.** Every run asks its agent the same fixed question, so the work is
 undirected. This is the one that matters — everything above is machinery waiting for it.
 
-**Nothing triggers or schedules a run.** Every session here was opened by hand. No GitHub issue,
-Slack message, webhook or schedule starts one, and nothing decides which of several queued runs goes
-first.
+**A GitHub label is the only thing that starts work.** No Slack message, webhook or schedule does,
+a trigger matches a repository and a label and nothing else, and nothing decides which of several
+queued runs goes first.
 
 **A failed run is not retried.** kestrel retries dispatch and never work: a run that started and
 failed stays failed.

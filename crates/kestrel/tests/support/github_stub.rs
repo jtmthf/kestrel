@@ -45,11 +45,19 @@ impl ScriptedResponse {
     }
 }
 
-/// One entry as GitHub's issue-events endpoint reports it.
 pub fn labelled(id: i64, issue: i64, label: &str) -> serde_json::Value {
+    issue_event(id, issue, "labeled", label)
+}
+
+pub fn unlabelled(id: i64, issue: i64, label: &str) -> serde_json::Value {
+    issue_event(id, issue, "unlabeled", label)
+}
+
+/// One entry as GitHub's issue-events endpoint reports it.
+pub fn issue_event(id: i64, issue: i64, kind: &str, label: &str) -> serde_json::Value {
     serde_json::json!({
         "id": id,
-        "event": "labeled",
+        "event": kind,
         "created_at": format!("2026-09-01T12:00:{:02}Z", id % 60),
         "actor": { "login": "jtmthf" },
         "label": { "name": label },
