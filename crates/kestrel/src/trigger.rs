@@ -36,13 +36,15 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
     let repository = github::repository(declaration.repository)?;
 
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(declaration.organization).await?;
+    let organization = tx.organizations().named(declaration.organization).await?;
     let workspace = tx
-        .workspace_named(&organization, declaration.workspace)
+        .workspaces()
+        .named(&organization, declaration.workspace)
         .await?;
-    let agent = tx.agent_named(&organization, declaration.agent).await?;
+    let agent = tx.agents().named(&organization, declaration.agent).await?;
     let trigger = tx
-        .declare_trigger(
+        .triggers()
+        .declare(
             &organization,
             declaration.name,
             (&repository, declaration.label),
@@ -57,16 +59,16 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
 
 pub async fn triggers(store: &Store, organization: &str) -> Result<Vec<Trigger>> {
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
+    let organization = tx.organizations().named(organization).await?;
 
-    tx.triggers(&organization).await
+    tx.triggers().all(&organization).await
 }
 
 pub async fn show(store: &Store, organization: &str, name: &str) -> Result<Trigger> {
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
+    let organization = tx.organizations().named(organization).await?;
 
-    tx.trigger_named(&organization, name).await
+    tx.triggers().named(&organization, name).await
 }
 
 pub async fn disable(store: &Store, organization: &str, name: &str) -> Result<Trigger> {
@@ -81,7 +83,9 @@ pub async fn enable(store: &Store, organization: &str, name: &str) -> Result<Tri
 pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
     let matched = {
         let mut tx = store.begin().await?;
-        tx.unfired_matches(github::LABELLED, AT_A_TIME).await?
+        tx.triggers()
+            .unfired_matches(github::LABELLED, AT_A_TIME)
+            .await?
     };
 
     let mut fired = Vec::with_capacity(matched.len());
@@ -96,7 +100,8 @@ pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
 async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired> {
     let mut tx = store.begin().await?;
     let session = tx
-        .open_session(
+        .sessions()
+        .open(
             &trigger.organization,
             &trigger.workspace,
             &trigger.agent,
@@ -124,8 +129,10 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
         )
         .await?;
 
-    let run = tx.enqueue_run(&session).await?;
-    tx.record_firing(trigger, event, &session).await?;
+    let run = tx.sessions().enqueue_run(&session).await?;
+    tx.triggers()
+        .record_firing(trigger, event, &session)
+        .await?;
     tx.commit().await?;
     fanout::publish(Change::SessionOpened(&session));
 
@@ -143,9 +150,9 @@ async fn set(
     state: TriggerState,
 ) -> Result<Trigger> {
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
-    let trigger = tx.trigger_named(&organization, name).await?;
-    let changed = tx.set_trigger_state(&trigger, state).await?;
+    let organization = tx.organizations().named(organization).await?;
+    let trigger = tx.triggers().named(&organization, name).await?;
+    let changed = tx.triggers().set_state(&trigger, state).await?;
     tx.commit().await?;
 
     Ok(changed)

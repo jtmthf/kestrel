@@ -146,7 +146,7 @@ async fn sweep(store: &Store) -> Result<Vec<(RunId, Exit)>> {
     let mut tx = store.begin().await?;
     let mut expired = Vec::new();
 
-    for run in tx.expired_leases(Timestamp::now()).await? {
+    for run in tx.sessions().expired_leases(Timestamp::now()).await? {
         let exit = Exit::Failed {
             because: "the environment stopped holding the run's lease out, and it expired"
                 .to_owned(),
@@ -161,7 +161,7 @@ async fn sweep(store: &Store) -> Result<Vec<(RunId, Exit)>> {
 async fn deliver(store: &Store, github: &Github) -> Result<()> {
     let due = {
         let mut tx = store.begin().await?;
-        tx.outcomes_due(Timestamp::now()).await?
+        tx.integrations().outcomes_due(Timestamp::now()).await?
     };
 
     for outcome in due {
@@ -179,7 +179,7 @@ async fn deliver(store: &Store, github: &Github) -> Result<()> {
 async fn poll(store: &Store, github: &Github) -> Result<()> {
     let due = {
         let mut tx = store.begin().await?;
-        tx.integrations_due(Timestamp::now()).await?
+        tx.integrations().due(Timestamp::now()).await?
     };
 
     for integration in due {

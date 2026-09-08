@@ -21,13 +21,13 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
     match command {
         CliCommand::Organization(OrganizationCommand::Declare { name }) => {
             let mut tx = store.begin().await?;
-            let organization = tx.declare_organization(name).await?;
+            let organization = tx.organizations().declare(name).await?;
             tx.commit().await?;
             println!("{}", organization.id);
         }
         CliCommand::Organization(OrganizationCommand::List) => {
             let mut tx = store.begin().await?;
-            for organization in tx.organizations().await? {
+            for organization in tx.organizations().all().await? {
                 println!("{}  {}", organization.id, organization.name);
             }
         }
@@ -38,17 +38,18 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             branch,
         }) => {
             let mut tx = store.begin().await?;
-            let organization = tx.organization_named(organization).await?;
+            let organization = tx.organizations().named(organization).await?;
             let workspace = tx
-                .declare_workspace(&organization, name, repositories, branch)
+                .workspaces()
+                .declare(&organization, name, repositories, branch)
                 .await?;
             tx.commit().await?;
             println!("{}", workspace.id);
         }
         CliCommand::Workspace(WorkspaceCommand::List { organization }) => {
             let mut tx = store.begin().await?;
-            let organization = tx.organization_named(organization).await?;
-            for workspace in tx.workspaces(&organization).await? {
+            let organization = tx.organizations().named(organization).await?;
+            for workspace in tx.workspaces().all(&organization).await? {
                 println!(
                     "{}  {}  {}  {}",
                     workspace.id,

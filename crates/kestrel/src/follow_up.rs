@@ -17,7 +17,9 @@ pub struct Received {
 pub async fn receive(store: &Store) -> Result<Vec<Received>> {
     let events = {
         let mut tx = store.begin().await?;
-        tx.unfollowed(github::COMMENTED, AT_A_TIME).await?
+        tx.integrations()
+            .unfollowed(github::COMMENTED, AT_A_TIME)
+            .await?
     };
 
     let mut received = Vec::with_capacity(events.len());
@@ -31,6 +33,7 @@ pub async fn receive(store: &Store) -> Result<Vec<Received>> {
 async fn receiving(store: &Store, event: &Event) -> Result<Received> {
     let mut tx = store.begin().await?;
     let mut session = tx
+        .integrations()
         .session_for_follow_up(event)
         .await?
         .expect("an unfollowed event has an originating session");
@@ -38,6 +41,7 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
 
     if session.state == SessionState::Sealed {
         let origin = tx
+            .integrations()
             .event(
                 session
                     .started_by
@@ -45,7 +49,8 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
             )
             .await?;
         session = tx
-            .open_session(
+            .sessions()
+            .open(
                 &session.organization,
                 &session.workspace,
                 &session.agent,
@@ -71,7 +76,7 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
         event.occurrence.message.as_deref().unwrap_or_default(),
     )
     .await?;
-    tx.record_follow_up(event, &session).await?;
+    tx.integrations().record_follow_up(event, &session).await?;
     tx.commit().await?;
 
     if let Some(opened) = &opened {

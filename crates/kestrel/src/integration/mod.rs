@@ -39,9 +39,10 @@ pub async fn register(store: &Store, registration: Registration<'_>) -> Result<I
     let repository = github::repository(registration.repository)?;
 
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(registration.organization).await?;
+    let organization = tx.organizations().named(registration.organization).await?;
     let integration = tx
-        .register_integration(
+        .integrations()
+        .register(
             &organization,
             registration.name,
             registration.kind,
@@ -59,16 +60,16 @@ pub async fn register(store: &Store, registration: Registration<'_>) -> Result<I
 
 pub async fn integrations(store: &Store, organization: &str) -> Result<Vec<Integration>> {
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
+    let organization = tx.organizations().named(organization).await?;
 
-    tx.integrations(&organization).await
+    tx.integrations().all(&organization).await
 }
 
 pub async fn events(store: &Store, organization: &str, limit: usize) -> Result<Vec<Event>> {
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
+    let organization = tx.organizations().named(organization).await?;
 
-    tx.events(&organization, limit).await
+    tx.integrations().events(&organization, limit).await
 }
 
 /// One poll of one Integration. Every Event the poll saw and what it was polled through are
@@ -83,7 +84,11 @@ pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> 
 
     if let Ok(seen) = &seen {
         for occurrence in &seen.occurrences {
-            if tx.record_event(integration, occurrence).await? {
+            if tx
+                .integrations()
+                .record_event(integration, occurrence)
+                .await?
+            {
                 recorded += 1;
             }
         }
@@ -96,11 +101,17 @@ pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> 
     }
     if let Ok(comments) = &comments {
         for occurrence in &comments.occurrences {
-            if tx.record_event(integration, occurrence).await? {
+            if tx
+                .integrations()
+                .record_event(integration, occurrence)
+                .await?
+            {
                 recorded += 1;
             }
         }
-        tx.comments_polled(integration, comments.through).await?;
+        tx.integrations()
+            .comments_polled(integration, comments.through)
+            .await?;
     } else if let Err(refused) = &comments {
         warn!(
             integration = integration.name,
@@ -108,16 +119,17 @@ pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> 
             "a comment poll came back with nothing"
         );
     }
-    tx.polled(
-        integration,
-        seen.as_ref()
-            .map_or(integration.polled_through, |seen| seen.through),
-        seen.as_ref().map_or_else(
-            |refused| back_off(integration, refused),
-            |_| Timestamp::now() + integration.interval,
-        ),
-    )
-    .await?;
+    tx.integrations()
+        .polled(
+            integration,
+            seen.as_ref()
+                .map_or(integration.polled_through, |seen| seen.through),
+            seen.as_ref().map_or_else(
+                |refused| back_off(integration, refused),
+                |_| Timestamp::now() + integration.interval,
+            ),
+        )
+        .await?;
     tx.commit().await?;
 
     Ok(Polled {

@@ -15,11 +15,12 @@ pub async fn declare(
 ) -> Result<Agent> {
     let model = names(model);
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
+    let organization = tx.organizations().named(organization).await?;
     advertised(&mut tx, &organization, runtime, model).await?;
 
     let agent = tx
-        .declare_agent(&organization, name, runtime, model)
+        .agents()
+        .declare(&organization, name, runtime, model)
         .await?;
     tx.commit().await?;
 
@@ -34,11 +35,11 @@ pub async fn set_model(
 ) -> Result<Agent> {
     let model = names(model);
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
-    let agent = tx.agent_named(&organization, name).await?;
+    let organization = tx.organizations().named(organization).await?;
+    let agent = tx.agents().named(&organization, name).await?;
     advertised(&mut tx, &organization, &agent.runtime, model).await?;
 
-    let agent = tx.set_agent_model(&agent, model).await?;
+    let agent = tx.agents().set_model(&agent, model).await?;
     tx.commit().await?;
 
     Ok(agent)
@@ -46,9 +47,9 @@ pub async fn set_model(
 
 pub async fn agents(store: &Store, organization: &str) -> Result<Vec<Agent>> {
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
+    let organization = tx.organizations().named(organization).await?;
 
-    tx.agents(&organization).await
+    tx.agents().all(&organization).await
 }
 
 /// A model named as nothing is a model nobody named.
@@ -68,7 +69,10 @@ async fn advertised(
     let Some(model) = model else {
         return Ok(());
     };
-    let advertised = tx.models_advertised(organization.id, runtime).await?;
+    let advertised = tx
+        .agents()
+        .models_advertised(organization.id, runtime)
+        .await?;
 
     if advertised.is_empty() || advertised.iter().any(|offered| offered == model) {
         return Ok(());
