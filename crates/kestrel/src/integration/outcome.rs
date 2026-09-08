@@ -27,8 +27,8 @@ pub(crate) async fn record(
         return Ok(());
     };
 
-    let event = tx.event(started_by).await?;
-    let integration = tx.integration_with_id(event.integration).await?;
+    let event = tx.integrations().event(started_by).await?;
+    let integration = tx.integrations().with_id(event.integration).await?;
     if !integration.carries(Direction::Outbound) {
         warn!(
             integration = integration.name,
@@ -42,7 +42,9 @@ pub(crate) async fn record(
     let said = tx.log().last_said(session).await?;
     let body = body(session, run, exit, said.as_deref());
 
-    tx.record_outcome(run, &integration, &event, &body).await
+    tx.integrations()
+        .record_outcome(run, &integration, &event, &body)
+        .await
 }
 
 /// One delivery attempt. What comes back is where the comment landed, or nothing — a refusal
@@ -51,7 +53,7 @@ pub(crate) async fn record(
 pub async fn deliver(store: &Store, github: &Github, outcome: &Outcome) -> Result<Option<String>> {
     let integration = {
         let mut tx = store.begin().await?;
-        tx.integration_with_id(outcome.integration).await?
+        tx.integrations().with_id(outcome.integration).await?
     };
 
     // An earlier attempt went out and never came back, so a comment may already be there.
@@ -72,7 +74,9 @@ pub async fn deliver(store: &Store, github: &Github, outcome: &Outcome) -> Resul
     }
 
     let mut tx = store.begin().await?;
-    tx.attempting_outcome(outcome, Timestamp::now()).await?;
+    tx.integrations()
+        .attempting_outcome(outcome, Timestamp::now())
+        .await?;
     tx.commit().await?;
 
     match github
@@ -86,7 +90,7 @@ pub async fn deliver(store: &Store, github: &Github, outcome: &Outcome) -> Resul
 
 async fn delivered(store: &Store, outcome: &Outcome, to: &str) -> Result<Option<String>> {
     let mut tx = store.begin().await?;
-    tx.outcome_delivered(outcome, to).await?;
+    tx.integrations().outcome_delivered(outcome, to).await?;
     tx.commit().await?;
 
     Ok(Some(to.to_owned()))
@@ -106,7 +110,8 @@ async fn deferred(
     );
 
     let mut tx = store.begin().await?;
-    tx.outcome_deferred(outcome, back_off(integration, refused))
+    tx.integrations()
+        .outcome_deferred(outcome, back_off(integration, refused))
         .await?;
     tx.commit().await?;
 

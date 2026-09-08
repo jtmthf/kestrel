@@ -24,8 +24,9 @@ pub async fn hold(store: &Store, organization: &str, variable: &str, secret: &st
     }
 
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
-    tx.hold_provider_credential(organization.id, variable, secret)
+    let organization = tx.organizations().named(organization).await?;
+    tx.organizations()
+        .hold_provider_credential(organization.id, variable, secret)
         .await?;
 
     tx.commit().await
@@ -33,16 +34,19 @@ pub async fn hold(store: &Store, organization: &str, variable: &str, secret: &st
 
 pub async fn held(store: &Store, organization: &str) -> Result<Vec<Held>> {
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
+    let organization = tx.organizations().named(organization).await?;
 
-    tx.provider_credentials_held(organization.id).await
+    tx.organizations()
+        .provider_credentials_held(organization.id)
+        .await
 }
 
 pub async fn forget(store: &Store, organization: &str, variable: &str) -> Result<()> {
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
+    let organization = tx.organizations().named(organization).await?;
 
     if !tx
+        .organizations()
         .forget_provider_credential(organization.id, variable)
         .await?
     {
@@ -60,6 +64,7 @@ pub async fn holds_any(store: &Store, organization: OrganizationId) -> Result<bo
     Ok(!store
         .begin()
         .await?
+        .organizations()
         .provider_credentials_held(organization)
         .await?
         .is_empty())
@@ -72,6 +77,7 @@ pub async fn reaching(
     store
         .begin()
         .await?
+        .organizations()
         .provider_credentials(organization)
         .await
 }

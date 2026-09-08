@@ -24,7 +24,8 @@ use crate::link::credential::Secret;
 use crate::log::{self, Cursor, Unreadable, Window};
 use crate::provider;
 use crate::session;
-use crate::store::{Store, Taken};
+use crate::store::Store;
+use crate::store::session::Taken;
 use crate::work;
 
 pub const CREDENTIALS: &str = "/link/runs/{run}/credentials";
@@ -150,8 +151,8 @@ pub async fn instruct(
     instruction: Instruction,
 ) -> Result<SentInstruction> {
     let mut tx = store.begin().await?;
-    tx.session(run.session).await?.accepts("turn")?;
-    let sent = tx.send_instruction(run, instruction).await?;
+    tx.sessions().get(run.session).await?.accepts("turn")?;
+    let sent = tx.sessions().send_instruction(run, instruction).await?;
     tx.commit().await?;
 
     Ok(sent)
@@ -255,7 +256,7 @@ async fn report(
         let seq = seq.ok_or(Refused::BadRequest(
             "a report of this kind carries a seq, and this one carries none".to_owned(),
         ))?;
-        match tx.take_report(&run, seq).await? {
+        match tx.sessions().take_report(&run, seq).await? {
             Taken::Next => {}
             Taken::Again => {
                 debug!(run = %run.id, seq, "an environment reported something again");
@@ -271,7 +272,7 @@ async fn report(
 
     match report {
         Report::Connected { version } => {
-            tx.record_connected(&run, &version).await?;
+            tx.sessions().record_connected(&run, &version).await?;
             info!(run = %run.id, version, "an environment reported itself connected");
         }
         Report::Heartbeat => {
@@ -306,10 +307,10 @@ async fn report(
 
 async fn waiting(store: &Store, run: RunId, cursor: i64) -> Result<Waiting> {
     let mut tx = store.begin().await?;
-    let the_run_ended = tx.run(run).await?.ended_at.is_some();
+    let the_run_ended = tx.sessions().run(run).await?.ended_at.is_some();
 
     Ok(Waiting {
-        instructions: tx.instructions_after(run, cursor).await?,
+        instructions: tx.sessions().instructions_after(run, cursor).await?,
         the_run_ended,
     })
 }
@@ -324,6 +325,7 @@ async fn authenticated(
 
     let mut tx = control_plane.store.begin().await?;
     let credential = tx
+        .sessions()
         .credential(&secret.digest())
         .await?
         .ok_or(Refused::Unauthorized("no credential kestrel issued"))?;
@@ -335,7 +337,7 @@ async fn authenticated(
         return Err(Refused::Forbidden("the credential belongs to another run"));
     }
 
-    Ok(tx.run(run).await?)
+    Ok(tx.sessions().run(run).await?)
 }
 
 fn bearer(headers: &HeaderMap) -> Option<Secret> {

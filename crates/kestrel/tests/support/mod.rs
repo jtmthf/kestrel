@@ -186,7 +186,8 @@ impl Harness {
     pub async fn declare_organization(&self, name: &str) -> Organization {
         let mut tx = self.store.begin().await.expect("a transaction");
         let organization = tx
-            .declare_organization(name)
+            .organizations()
+            .declare(name)
             .await
             .expect("the organization should declare");
         tx.commit().await.expect("the declaration should commit");
@@ -195,7 +196,10 @@ impl Harness {
 
     pub async fn organizations(&self) -> Vec<Organization> {
         let mut tx = self.store.begin().await.expect("a transaction");
-        tx.organizations().await.expect("organizations should list")
+        tx.organizations()
+            .all()
+            .await
+            .expect("organizations should list")
     }
 
     pub async fn declare_workspace(
@@ -207,7 +211,8 @@ impl Harness {
     ) -> Workspace {
         let mut tx = self.store.begin().await.expect("a transaction");
         let workspace = tx
-            .declare_workspace(organization, name, repositories, branch)
+            .workspaces()
+            .declare(organization, name, repositories, branch)
             .await
             .expect("the workspace should declare");
         tx.commit().await.expect("the declaration should commit");
@@ -216,7 +221,8 @@ impl Harness {
 
     pub async fn workspaces(&self, organization: &Organization) -> Vec<Workspace> {
         let mut tx = self.store.begin().await.expect("a transaction");
-        tx.workspaces(organization)
+        tx.workspaces()
+            .all(organization)
             .await
             .expect("workspaces should list")
     }
@@ -256,7 +262,10 @@ impl Harness {
 
     pub async fn agents(&self, organization: &Organization) -> Vec<Agent> {
         let mut tx = self.store.begin().await.expect("a transaction");
-        tx.agents(organization).await.expect("agents should list")
+        tx.agents()
+            .all(organization)
+            .await
+            .expect("agents should list")
     }
 
     pub async fn register_integration(
@@ -511,8 +520,13 @@ impl Harness {
 
     pub async fn has_pending_messages(&self, id: SessionId) -> bool {
         let mut tx = self.store.begin().await.expect("a transaction");
-        let session = tx.session(id).await.expect("the session should read");
-        tx.has_pending_messages(&session)
+        let session = tx
+            .sessions()
+            .get(id)
+            .await
+            .expect("the session should read");
+        tx.sessions()
+            .has_pending_messages(&session)
             .await
             .expect("pending messages should read")
     }
@@ -604,7 +618,8 @@ impl Harness {
     /// way to watch a sweep without waiting a whole lease out.
     pub async fn lease_until(&self, run: &Run, expires_at: Timestamp) {
         let mut tx = self.store.begin().await.expect("a transaction");
-        tx.hold_lease(run, expires_at)
+        tx.sessions()
+            .hold_lease(run, expires_at)
             .await
             .expect("the lease should hold");
         tx.commit().await.expect("the lease should commit");
@@ -615,7 +630,8 @@ impl Harness {
     pub async fn issue_credential(&self, run: &Run, expires_at: Timestamp) -> Secret {
         let secret = Secret::mint();
         let mut tx = self.store.begin().await.expect("a transaction");
-        tx.issue_credential(run, &secret.digest(), expires_at)
+        tx.sessions()
+            .issue_credential(run, &secret.digest(), expires_at)
             .await
             .expect("the credential should issue");
         tx.commit().await.expect("the credential should commit");
@@ -676,7 +692,8 @@ impl Stopped {
             .await
             .expect("the database should still be there");
         let mut tx = store.begin().await.expect("a transaction");
-        tx.hold_lease(run, expires_at)
+        tx.sessions()
+            .hold_lease(run, expires_at)
             .await
             .expect("the lease should hold");
         tx.commit().await.expect("the lease should commit");

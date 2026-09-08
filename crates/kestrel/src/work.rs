@@ -7,7 +7,8 @@ use crate::domain::{Exit, Run, RunId, SessionId, Usage};
 use crate::integration::outcome;
 use crate::link::credential::Secret;
 use crate::log::{Entry, Message};
-use crate::store::{PendingMessage, Store, Tx};
+use crate::store::session::PendingMessage;
+use crate::store::{Store, Tx};
 
 /// Long enough that no Run outlives its own credential at 0.1, short enough that one left
 /// behind by a control plane that died before ending its Run stops working on its own.
@@ -27,17 +28,17 @@ pub struct Claimed {
 
 pub async fn enqueue(store: &Store, session: SessionId) -> Result<Run> {
     let mut tx = store.begin().await?;
-    let session = tx.session(session).await?;
+    let session = tx.sessions().get(session).await?;
     session.accepts("run")?;
 
-    if let Some(holding) = tx.run_holding_the_slot(&session).await? {
+    if let Some(holding) = tx.sessions().run_holding_the_slot(&session).await? {
         bail!(
             "the session {} already has the run {holding} in it, and a session has one at a time",
             session.id
         );
     }
 
-    let run = tx.enqueue_run(&session).await?;
+    let run = tx.sessions().enqueue_run(&session).await?;
     tx.commit().await?;
 
     Ok(run)
@@ -47,40 +48,43 @@ pub async fn enqueue(store: &Store, session: SessionId) -> Result<Run> {
 /// second claimant asking at the same moment is handed something else, or nothing.
 pub async fn claim(store: &Store) -> Result<Option<Claimed>> {
     let mut tx = store.begin().await?;
-    let Some(run) = tx.claim_run(Timestamp::now() + LEASE).await? else {
+    let Some(run) = tx.sessions().claim_run(Timestamp::now() + LEASE).await? else {
         return Ok(None);
     };
 
     let credential = Secret::mint();
-    tx.issue_credential(
-        &run,
-        &credential.digest(),
-        Timestamp::now() + CREDENTIAL_LIFETIME,
-    )
-    .await?;
+    tx.sessions()
+        .issue_credential(
+            &run,
+            &credential.digest(),
+            Timestamp::now() + CREDENTIAL_LIFETIME,
+        )
+        .await?;
     tx.commit().await?;
 
     Ok(Some(Claimed { run, credential }))
 }
 
 pub async fn run(store: &Store, id: RunId) -> Result<Run> {
-    store.begin().await?.run(id).await
+    store.begin().await?.sessions().run(id).await
 }
 
 pub async fn runs(store: &Store, session: SessionId) -> Result<Vec<Run>> {
     let mut tx = store.begin().await?;
-    let session = tx.session(session).await?;
+    let session = tx.sessions().get(session).await?;
 
-    tx.runs(&session).await
+    tx.sessions().runs(&session).await
 }
 
 pub async fn heartbeat(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
-    tx.hold_lease(run, Timestamp::now() + LEASE).await
+    tx.sessions()
+        .hold_lease(run, Timestamp::now() + LEASE)
+        .await
 }
 
 pub async fn started(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
-    if tx.record_started(run).await? {
-        let session = tx.session(run.session).await?;
+    if tx.sessions().record_started(run).await? {
+        let session = tx.sessions().get(run.session).await?;
         tx.log()
             .append(&session, Entry::RunStarted { run: run.id })
             .await?;
@@ -91,7 +95,7 @@ pub async fn started(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
 
 /// An Environment reports what its agent said; who said it is the Session's to know.
 pub async fn said(tx: &mut Tx<'_>, run: &Run, message: &str) -> Result<()> {
-    let session = tx.session(run.session).await?;
+    let session = tx.sessions().get(run.session).await?;
     tx.log()
         .append(
             &session,
@@ -113,38 +117,41 @@ pub async fn on_the_model(
     model: &str,
     offered: &[String],
 ) -> Result<()> {
-    let session = tx.session(run.session).await?;
-    tx.record_model(run, model).await?;
-    tx.record_models_advertised(session.organization.id, &session.agent.runtime, offered)
+    let session = tx.sessions().get(run.session).await?;
+    tx.sessions().record_model(run, model).await?;
+    tx.agents()
+        .record_models_advertised(session.organization.id, &session.agent.runtime, offered)
         .await
 }
 
 /// On the Run, and in no Transcript: what an agent spent is not a Session's shared state.
 pub async fn used(tx: &mut Tx<'_>, run: &Run, usage: &Usage) -> Result<()> {
-    tx.record_usage(run, usage).await
+    tx.sessions().record_usage(run, usage).await
 }
 
 pub async fn provisioned(store: &Store, run: &Run, environment: &str) -> Result<()> {
     let mut tx = store.begin().await?;
-    tx.record_environment(run, environment).await?;
+    tx.sessions().record_environment(run, environment).await?;
 
     tx.commit().await
 }
 
 pub async fn environment_present(store: &Store, run: &Run, environment: &str) -> Result<()> {
     let mut tx = store.begin().await?;
-    tx.record_environment_present(run, environment).await?;
+    tx.sessions()
+        .record_environment_present(run, environment)
+        .await?;
 
     tx.commit().await
 }
 
 pub async fn environments_to_reap(store: &Store) -> Result<Vec<(Run, String)>> {
-    store.begin().await?.environments_to_reap().await
+    store.begin().await?.sessions().environments_to_reap().await
 }
 
 pub async fn environment_gone(store: &Store, run: &Run) -> Result<Option<Run>> {
     let mut tx = store.begin().await?;
-    tx.record_environment_gone(run).await?;
+    tx.sessions().record_environment_gone(run).await?;
     let continued = continue_pending(&mut tx, run.session).await?;
     tx.commit().await?;
 
@@ -178,8 +185,8 @@ async fn end(store: &Store, run: &Run, exit: Exit) -> Result<Exit> {
 /// claimant finding it gone, `timer` finding its lease expired — decides the exit status, and
 /// what comes back is the one that stands.
 pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exit> {
-    let stands = if tx.end_run(run, &exit).await? {
-        let session = tx.session(run.session).await?;
+    let stands = if tx.sessions().end_run(run, &exit).await? {
+        let session = tx.sessions().get(run.session).await?;
         tx.log()
             .append(
                 &session,
@@ -189,14 +196,15 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
                 },
             )
             .await?;
-        tx.invalidate_credentials(run).await?;
+        tx.sessions().invalidate_credentials(run).await?;
         outcome::record(tx, run, &session, &exit).await?;
-        if tx.environment_is_gone(run).await? {
+        if tx.sessions().environment_is_gone(run).await? {
             continue_pending(tx, run.session).await?;
         }
         exit
     } else {
-        tx.run(run.id)
+        tx.sessions()
+            .run(run.id)
             .await?
             .exit
             .context("a run that has ended has an exit status")?
@@ -206,19 +214,24 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
 }
 
 async fn continue_pending(tx: &mut Tx<'_>, session: SessionId) -> Result<Option<Run>> {
-    let session = tx.session(session).await?;
-    if tx.run_holding_the_slot(&session).await?.is_some() {
+    let session = tx.sessions().get(session).await?;
+    if tx
+        .sessions()
+        .run_holding_the_slot(&session)
+        .await?
+        .is_some()
+    {
         return Ok(None);
     }
 
-    let pending = tx.take_pending_messages(&session).await?;
+    let pending = tx.sessions().take_pending_messages(&session).await?;
     if pending.is_empty() {
         return Ok(None);
     }
 
     tx.log().append(&session, pending_entry(pending)).await?;
 
-    Ok(Some(tx.enqueue_run(&session).await?))
+    Ok(Some(tx.sessions().enqueue_run(&session).await?))
 }
 
 fn pending_entry(pending: Vec<PendingMessage>) -> Entry {

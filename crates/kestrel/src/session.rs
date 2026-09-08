@@ -14,16 +14,17 @@ pub async fn open(
 ) -> Result<Session> {
     let mut tx = store.begin().await?;
 
-    let organization = tx.organization_named(organization).await?;
-    let workspace = tx.workspace_named(&organization, workspace).await?;
-    let agent = tx.agent_named(&organization, agent).await?;
+    let organization = tx.organizations().named(organization).await?;
+    let workspace = tx.workspaces().named(&organization, workspace).await?;
+    let agent = tx.agents().named(&organization, agent).await?;
     let continues = match continues {
         Some(sealed) => Some(continued(&mut tx, &organization, sealed).await?),
         None => None,
     };
 
     let session = tx
-        .open_session(&organization, &workspace, &agent, continues.as_ref(), None)
+        .sessions()
+        .open(&organization, &workspace, &agent, continues.as_ref(), None)
         .await?;
     tx.log()
         .append(
@@ -42,19 +43,19 @@ pub async fn open(
 
 pub async fn seal(store: &Store, id: SessionId) -> Result<Session> {
     let mut tx = store.begin().await?;
-    let session = tx.session(id).await?;
+    let session = tx.sessions().get(id).await?;
 
     if session.state == SessionState::Sealed {
         bail!("the session {id} is already sealed, and a sealed session is never reopened");
     }
-    if let Some(holding) = tx.run_holding_the_slot(&session).await?
-        && (tx.run(holding).await?.state != RunState::Ended
-            || tx.has_pending_messages(&session).await?)
+    if let Some(holding) = tx.sessions().run_holding_the_slot(&session).await?
+        && (tx.sessions().run(holding).await?.state != RunState::Ended
+            || tx.sessions().has_pending_messages(&session).await?)
     {
         bail!("the run {holding} is still in flight in the session {id}");
     }
 
-    let sealed_at = tx.seal_session(&session).await?;
+    let sealed_at = tx.sessions().seal(&session).await?;
     tx.commit().await?;
 
     let sealed = Session {
@@ -68,14 +69,14 @@ pub async fn seal(store: &Store, id: SessionId) -> Result<Session> {
 }
 
 pub async fn show(store: &Store, id: SessionId) -> Result<Session> {
-    store.begin().await?.session(id).await
+    store.begin().await?.sessions().get(id).await
 }
 
 pub async fn sessions(store: &Store, organization: &str) -> Result<Vec<Session>> {
     let mut tx = store.begin().await?;
-    let organization = tx.organization_named(organization).await?;
+    let organization = tx.organizations().named(organization).await?;
 
-    tx.sessions(&organization).await
+    tx.sessions().all(&organization).await
 }
 
 /// Read on its own rather than with the Session: most Sessions were opened by a person, and
@@ -85,11 +86,13 @@ pub async fn started_by(store: &Store, session: &Session) -> Result<Option<Event
         return Ok(None);
     };
 
-    Ok(Some(store.begin().await?.event(event).await?))
+    Ok(Some(
+        store.begin().await?.integrations().event(event).await?,
+    ))
 }
 
 pub async fn continuations(store: &Store, id: SessionId) -> Result<Vec<SessionId>> {
-    store.begin().await?.continuations(id).await
+    store.begin().await?.sessions().continuations(id).await
 }
 
 pub async fn post(
@@ -99,7 +102,7 @@ pub async fn post(
     message: &str,
 ) -> Result<Option<Run>> {
     let mut tx = store.begin().await?;
-    let session = tx.session(id).await?;
+    let session = tx.sessions().get(id).await?;
     let run = post_in(&mut tx, &session, participant, message).await?;
     tx.commit().await?;
 
@@ -114,11 +117,12 @@ pub(crate) async fn post_in(
 ) -> Result<Option<Run>> {
     session.accepts("message")?;
 
-    let holding = tx.run_holding_the_slot(session).await?;
+    let holding = tx.sessions().run_holding_the_slot(session).await?;
     if let Some(holding) = holding
-        && tx.run(holding).await?.state != RunState::Queued
+        && tx.sessions().run(holding).await?.state != RunState::Queued
     {
-        tx.add_pending_message(session, participant, message)
+        tx.sessions()
+            .add_pending_message(session, participant, message)
             .await?;
         return Ok(None);
     }
@@ -135,7 +139,7 @@ pub(crate) async fn post_in(
 
     match holding {
         Some(_) => Ok(None),
-        None => Ok(Some(tx.enqueue_run(session).await?)),
+        None => Ok(Some(tx.sessions().enqueue_run(session).await?)),
     }
 }
 
@@ -146,14 +150,14 @@ pub async fn transcript(
     window: Window,
 ) -> Result<Page, Unreadable> {
     let mut tx = store.begin().await?;
-    let session = tx.session(id).await?;
+    let session = tx.sessions().get(id).await?;
 
     tx.log().page(&session, from, window).await
 }
 
 /// Only a sealed Session is continued: work an open one could still take belongs in it.
 async fn continued(tx: &mut Tx<'_>, organization: &Organization, id: SessionId) -> Result<Session> {
-    let sealed = tx.session(id).await?;
+    let sealed = tx.sessions().get(id).await?;
 
     if sealed.organization.id != organization.id {
         bail!(
