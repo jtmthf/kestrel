@@ -305,15 +305,50 @@ impl<'a> Sessions<'a> {
         Ok(row.get("pending"))
     }
 
+    pub async fn declare_blocked(&mut self, run: &Run, blocker: &Run) -> Result<()> {
+        if run.organization != blocker.organization {
+            anyhow::bail!(
+                "the run {} and the run {} it is blocked on are in different organizations",
+                run.id,
+                blocker.id
+            );
+        }
+
+        sqlx::query(
+            "INSERT INTO run_dependency (run_id, blocker_id, organization_id)
+             VALUES (?, ?, ?)",
+        )
+        .bind(run.id.to_string())
+        .bind(blocker.id.to_string())
+        .bind(run.organization.to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("declaring the run {} blocked on {}", run.id, blocker.id))?;
+
+        Ok(())
+    }
+
     /// One statement, so two claimants cannot both take the same Run: the Run this returns
     /// was queued when the statement began, and is active and holding its lease by the time
-    /// anyone else looks.
+    /// anyone else looks. A Run with a blocker that has not ended successfully is removed
+    /// from the ready order, never reordered around.
     pub async fn claim_run(&mut self, lease_until: Timestamp) -> Result<Option<Run>> {
         let claimed = sqlx::query(
             "UPDATE run
              SET state = ?, claimed_at = ?, lease_expires_at = ?
              WHERE id = (
-                 SELECT id FROM run WHERE state = ? ORDER BY enqueued_at, id LIMIT 1
+                 SELECT r.id
+                 FROM run AS r
+                 WHERE r.state = ?
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM run_dependency AS d
+                       JOIN run AS b ON b.id = d.blocker_id
+                       WHERE d.run_id = r.id
+                         AND NOT (b.state = ? AND b.exit IS ?)
+                   )
+                 ORDER BY r.enqueued_at, r.id
+                 LIMIT 1
              )
              RETURNING id",
         )
@@ -321,6 +356,8 @@ impl<'a> Sessions<'a> {
         .bind(Timestamp::now().to_string())
         .bind(due(lease_until))
         .bind(RunState::Queued.as_str())
+        .bind(RunState::Ended.as_str())
+        .bind(Exit::Succeeded.status())
         .fetch_optional(&mut *self.connection)
         .await
         .context("claiming a queued run")?;
