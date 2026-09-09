@@ -26,6 +26,8 @@ fn eagerly() -> SignedDuration {
     SignedDuration::from_millis(1)
 }
 
+/// The Trigger comes before the poll: an Event recorded before the Trigger was declared fires
+/// nothing.
 async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
     let organization = harness.declare_organization("acme").await;
     harness
@@ -40,6 +42,9 @@ async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
     harness
+        .declare_trigger("acme", "ready", (REPOSITORY, READY), "kestrel", "builder")
+        .await;
+    harness
         .register_integration(
             "acme",
             "github",
@@ -48,9 +53,6 @@ async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
             carries,
             eagerly(),
         )
-        .await;
-    harness
-        .declare_trigger("acme", "ready", (REPOSITORY, READY), "kestrel", "builder")
         .await;
 }
 

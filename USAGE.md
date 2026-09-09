@@ -279,8 +279,8 @@ kestrel integration register github origin \
 ```
 
 It discovers events by polling every minute rather than by webhook, so nothing here needs an inbound
-address or a tunnel. A first poll reads one page: an integration sees what happens from the moment
-you register it, and not the repository's back history.
+address or a tunnel. A first poll reads one page and stops, so an integration starts from roughly
+the moment you register it rather than walking the repository's whole back history.
 
 ```sh
 kestrel event list --organization acme
@@ -323,6 +323,11 @@ came from, and the event is the session's first transcript entry:
 A trigger fires at most once per event, so the same label arriving in two overlapping poll windows
 opens one session and not two. Taking the label off and putting it back is a new event, and starts
 new work.
+
+A trigger also fires only for events recorded after it was declared, so what kestrel already saw on
+the repository before you declared it opens nothing, however long that backlog is. That is why the
+integration comes first above: its first poll reads a page of what has already happened, and a
+trigger declared after that leaves it alone.
 
 **The event chooses nothing.** The agent, the workspace and the model come from the declaration you
 just applied; only the data comes from the event. Anyone who can label an issue on a public

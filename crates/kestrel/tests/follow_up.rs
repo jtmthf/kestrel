@@ -34,6 +34,8 @@ async fn a_session(harness: &Harness) -> kestrel::domain::Session {
     harness.open_session("acme", "kestrel", "builder").await
 }
 
+/// The Trigger comes before the poll: an Event recorded before the Trigger was declared fires
+/// nothing.
 async fn watching(harness: &Harness, stub: &GithubStub) {
     let organization = harness.declare_organization("acme").await;
     harness
@@ -43,6 +45,15 @@ async fn watching(harness: &Harness, stub: &GithubStub) {
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
     harness
+        .declare_trigger(
+            "acme",
+            "ready",
+            (REPOSITORY, "ready-for-agent"),
+            "kestrel",
+            "builder",
+        )
+        .await;
+    harness
         .register_integration(
             "acme",
             "github",
@@ -50,15 +61,6 @@ async fn watching(harness: &Harness, stub: &GithubStub) {
             &stub.base_url(),
             &[Direction::Inbound],
             SignedDuration::from_millis(1),
-        )
-        .await;
-    harness
-        .declare_trigger(
-            "acme",
-            "ready",
-            (REPOSITORY, "ready-for-agent"),
-            "kestrel",
-            "builder",
         )
         .await;
 }
