@@ -110,6 +110,7 @@ workspace     kestrel
 agent         builder
 state         open
 opened        2026-09-06T19:51:07.514310886Z
+last active   2026-09-06T19:51:07.514310886Z
 ```
 
 It already has a transcript, because opening it put the agent in as a participant:
@@ -242,6 +243,10 @@ It accepts no further runs:
 Error: the session 01a07846-49fa-7dc0-a44b-183a63794ee3 is sealed, and accepts no run
 ```
 
+A session seals itself too. `last active` moves when the session opens, when a run is enqueued into
+it, and when one of its runs ends; a session that has sat at the same `last active` for 24 hours with
+no run holding its slot is sealed by kestrel, exactly as the command above would have.
+
 Work that would have continued it starts a new session that records the sealed one:
 
 ```sh
@@ -259,6 +264,7 @@ workspace     kestrel
 agent         builder
 state         open
 opened        2026-09-06T20:00:03.652235801Z
+last active   2026-09-06T20:00:03.652235801Z
 continues     01a07846-49fa-7dc0-a44b-183a63794ee3
 ```
 

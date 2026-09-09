@@ -253,6 +253,7 @@ pub struct Session {
     pub agent: Agent,
     pub state: SessionState,
     pub opened_at: Timestamp,
+    pub last_active_at: Timestamp,
     pub sealed_at: Option<Timestamp>,
     pub continues: Option<SessionId>,
     pub started_by: Option<EventId>,

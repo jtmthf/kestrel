@@ -625,6 +625,17 @@ impl Harness {
         tx.commit().await.expect("the lease should commit");
     }
 
+    /// Backdates when a Session was last active, the way `lease_until` backdates a lease: the
+    /// only way to watch the idle sweep without waiting the window out.
+    pub async fn last_active(&self, session: &Session, at: Timestamp) {
+        let mut tx = self.store.begin().await.expect("a transaction");
+        tx.sessions()
+            .record_active(session.id, at)
+            .await
+            .expect("the session should record when it was last active");
+        tx.commit().await.expect("the record should commit");
+    }
+
     /// A second credential for the same Run, with an expiry the caller chooses. The only way
     /// to hold an expired one without waiting out a real credential's life.
     pub async fn issue_credential(&self, run: &Run, expires_at: Timestamp) -> Secret {

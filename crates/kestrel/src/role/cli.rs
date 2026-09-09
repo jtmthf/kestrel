@@ -153,6 +153,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!("agent         {}", session.agent.name);
             println!("state         {}", session.state);
             println!("opened        {}", session.opened_at);
+            println!("last active   {}", session.last_active_at);
             if let Some(sealed_at) = session.sealed_at {
                 println!("sealed        {sealed_at}");
             }

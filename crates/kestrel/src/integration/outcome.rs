@@ -176,6 +176,7 @@ mod tests {
             organization,
             state: SessionState::Open,
             opened_at: Timestamp::now(),
+            last_active_at: Timestamp::now(),
             sealed_at: None,
             continues: None,
             started_by: None,

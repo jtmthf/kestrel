@@ -246,6 +246,8 @@ words from drifting.
 - A session is **open** or **sealed**. Sealing is not deletion: a sealed session is readable and is
   **never** reopened. Work that would have continued it starts a **new** session, which records the
   sealed one.
+- A session idle for a **day** seals itself. Sealing unattended is the same operation as sealing by
+  hand; a session with a run holding its slot never seals, however old it is.
 - kestrel **never** expires a transcript entry. An entry leaves a transcript only by **deliberate
   deletion**.
 - A deletion inside a transcript is **itself recorded** in that transcript, so what a reader sees is
