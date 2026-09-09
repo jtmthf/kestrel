@@ -4,5 +4,3 @@ CREATE TABLE run_dependency (
     organization_id TEXT NOT NULL REFERENCES organization (id),
     PRIMARY KEY (run_id, blocker_id)
 ) STRICT;
-
-CREATE INDEX run_dependency_ready ON run_dependency (run_id);

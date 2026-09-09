@@ -305,15 +305,12 @@ impl<'a> Sessions<'a> {
         Ok(row.get("pending"))
     }
 
-    /// A Run is declared blocked on another by the work that depends on it; nothing kestrel
-    /// does itself declares one, and the two must belong to the same organization.
-    pub async fn declare_blocked(&mut self, run: RunId, blocker: RunId) -> Result<()> {
-        let organization = self.run(run).await?.organization;
-        let blocker_organization = self.run(blocker).await?.organization;
-
-        if organization != blocker_organization {
+    pub async fn declare_blocked(&mut self, run: &Run, blocker: &Run) -> Result<()> {
+        if run.organization != blocker.organization {
             anyhow::bail!(
-                "the run {run} and the run {blocker} it is blocked on are in different organizations"
+                "the run {} and the run {} it is blocked on are in different organizations",
+                run.id,
+                blocker.id
             );
         }
 
@@ -321,12 +318,12 @@ impl<'a> Sessions<'a> {
             "INSERT INTO run_dependency (run_id, blocker_id, organization_id)
              VALUES (?, ?, ?)",
         )
-        .bind(run.to_string())
-        .bind(blocker.to_string())
-        .bind(organization.to_string())
+        .bind(run.id.to_string())
+        .bind(blocker.id.to_string())
+        .bind(run.organization.to_string())
         .execute(&mut *self.connection)
         .await
-        .with_context(|| format!("declaring the run {run} blocked on {blocker}"))?;
+        .with_context(|| format!("declaring the run {} blocked on {}", run.id, blocker.id))?;
 
         Ok(())
     }
@@ -348,7 +345,7 @@ impl<'a> Sessions<'a> {
                        FROM run_dependency AS d
                        JOIN run AS b ON b.id = d.blocker_id
                        WHERE d.run_id = r.id
-                         AND NOT (b.state = 'ended' AND b.exit = 'succeeded')
+                         AND NOT (b.state = ? AND b.exit IS ?)
                    )
                  ORDER BY r.enqueued_at, r.id
                  LIMIT 1
@@ -359,6 +356,8 @@ impl<'a> Sessions<'a> {
         .bind(Timestamp::now().to_string())
         .bind(due(lease_until))
         .bind(RunState::Queued.as_str())
+        .bind(RunState::Ended.as_str())
+        .bind(Exit::Succeeded.status())
         .fetch_optional(&mut *self.connection)
         .await
         .context("claiming a queued run")?;

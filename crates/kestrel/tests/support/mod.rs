@@ -558,9 +558,7 @@ impl Harness {
             .expect("the claim should ask")
     }
 
-    /// The only caller of the dependency edge there is: nothing kestrel does itself declares
-    /// one, so a test reaches for this to stand in for a Workflow's fan-in step.
-    pub async fn block_run(&self, run: RunId, blocker: RunId) {
+    pub async fn block_run(&self, run: &Run, blocker: &Run) {
         let mut tx = self.store.begin().await.expect("a transaction");
         tx.sessions()
             .declare_blocked(run, blocker)
@@ -591,6 +589,25 @@ impl Harness {
         work::fail(&self.store, run, because)
             .await
             .expect("the run should end");
+    }
+
+    /// The `ended`/NULL row migration 0003 leaves behind for every Run predating kestrel
+    /// scheduling. `end_run` always records an exit, so nothing reachable through the store
+    /// produces one.
+    pub async fn end_run_without_an_exit(&self, run: &Run) {
+        let database = self.data_dir().join("kestrel.db");
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
+            .await
+            .expect("the database should open");
+
+        sqlx::query("UPDATE run SET state = 'ended', ended_at = ?, exit = NULL WHERE id = ?")
+            .bind(jiff::Timestamp::now().to_string())
+            .bind(run.id.to_string())
+            .execute(&pool)
+            .await
+            .expect("the run should end without an exit");
+
+        pool.close().await;
     }
 
     pub async fn environment_present(&self, run: &Run, environment: &str) {

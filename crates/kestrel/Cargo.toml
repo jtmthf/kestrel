@@ -34,5 +34,6 @@ uuid = { version = "1", features = ["serde", "v7"] }
 [dev-dependencies]
 kestrel-scripted-agent = { path = "../kestrel-scripted-agent" }
 reqwest = { version = "0.13", default-features = false, features = ["stream"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3"
 tiny_http = "0.12"
