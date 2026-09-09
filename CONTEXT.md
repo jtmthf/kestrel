@@ -18,20 +18,21 @@ _Avoid_: tenant, account, team, org
 **Provider Credential**:
 What an agent runtime reaches a model provider with, named by the environment variable the runtime
 reads it from. Held by the organization, never by an agent; encrypted at rest, and reaching an
-environment only for the run that spawns an agent with it.
+instance only for the run that spawns an agent with it.
 _Avoid_: api key, token, provider key
 
 ### Work
 
 **Session**:
-The durable, joinable thread of work. Owns its history, its participants, its event log, and the
-resolved checkout its work happens against, and survives restarts. Contains many runs over its life. A session is open or sealed; a sealed session
+The durable, joinable thread of work. Owns its history, its participants, its event log, the
+resolved checkout and branch its work happens against, and the instance its runs execute on, and
+survives restarts. Contains many runs over its life. A session is open or sealed; a sealed session
 is readable but accepts no run, no turn, and no new transcript entry.
 _Avoid_: thread, conversation, mission
 
 **Run**:
-One execution of an agent runtime inside one environment, on behalf of a session. Has a start, an
-end, and an exit status. Work that is queued but not yet started is a run in a queued state. The
+One execution of an agent runtime on one instance, on behalf of a session. Has a start, an end, and
+an exit status. Work that is queued but not yet started is a run in a queued state. The
 model driving the runtime's main loop belongs to the run, not to the session; what that loop reaches
 for beneath itself is the runtime's business.
 _Avoid_: job, task, execution, invocation
@@ -49,19 +50,23 @@ permission — anything that could exceed an agent's policy is an approval, not 
 _Avoid_: ask, prompt, clarification, input
 
 **Transcript**:
-The ordered, replayable record of what happened between a session's participants — messages, run
-boundaries, participant joins, and the resolution of every approval and question. It records what
-changed the session's shared state, never what happened inside a run: an agent's reasoning and tool
-calls are the run's business, not the session's. What a human reads when they join a session late.
+The ordered, replayable record of a session, in three kinds. **Shared state**: messages, run
+boundaries, participant joins, the branch a run works on and the pull request it opened, and the
+resolution of every approval and question. **Narration**: what the agent said to itself — its
+thoughts and its plans. **Detail**: a run's tool calls and their results. One order and one cursor
+across all three; a read names the kinds it wants, and shared state alone is what a human gets when
+they join a session late. Every entry records a completed unit and never a fragment of one, so the
+record has no gaps to reconcile.
 _Avoid_: log, event stream, history
 
 ### Cause
 
 **Event**:
 A single immutable thing that happened, recorded as a CloudEvent: an id, the source that produced
-it, the type that source calls it, when it occurred, and its payload. Named in the vocabulary of the
-system that produced it — kestrel translates nothing into a vocabulary of its own, and mints one type
-only, for its own schedules elapsing.
+it, the type that source calls it, when it occurred, and its payload. An event from an integration
+is named in the vocabulary of the system that produced it: kestrel translates nothing into a
+vocabulary of its own. kestrel mints events for what kestrel itself does — a schedule elapsing, and
+an operator's push — which is not translation, and carries no authority for being internal.
 _Avoid_: signal, notification, hook, payload
 
 **Trigger**:
@@ -117,9 +122,9 @@ _Avoid_: execution, batch, initiative, rollout
 ### Place
 
 **Control Plane**:
-The durable process kestrel runs as. It holds the store, serves the link environments dial out to,
+The durable process kestrel runs as. It holds the store, serves the link instances dial out to,
 and dispatches runs onto them. Everything an operator asks for and everything a participant commands
-is decided here; an environment is the only thing that executes outside it.
+is decided here; an instance is the only thing that executes outside it.
 _Avoid_: server, backend, daemon, coordinator
 
 **Role**:
@@ -134,13 +139,21 @@ its own and executing nothing. The CLI is the first one.
 _Avoid_: frontend, console, cli, tool
 
 **Environment**:
-The isolated compute instance a run executes in. Disposable, provisioned by a compute backend, and
-destroyed when finished.
+The declaration of what a run may execute on: its image, its size, and the setup layered over them.
+Named, declared once, selected per run, and derivable from a repository's own `devcontainer.json`.
+What an instance is provisioned from, never the instance itself.
+_Avoid_: image, template, class, runner
+
+**Instance**:
+The isolated compute a run executes on, provisioned from an environment. Lives until the session it
+serves seals, and is never reaped while it holds work that exists nowhere else. A backend may suspend
+an idle one and resume it unasked; kestrel never learns that it did.
 _Avoid_: sandbox, container, machine, box
 
 **Compute Backend**:
-A pluggable implementation that provisions and destroys environments, which kestrel drives through a
-contract. Docker is the default; hosted backends are drivers alongside it.
+A pluggable implementation that provisions and destroys instances, which kestrel drives through a
+contract. kestrel tells it when an instance is idle; what it does about that is its own business.
+Docker is the default; hosted backends are drivers alongside it.
 _Avoid_: provider, infrastructure, cloud, executor
 
 **Workspace**:
@@ -178,8 +191,9 @@ declares the ceiling, an agent is granted at most that, and effective policy is 
 _Avoid_: permission, rule, guardrail, ask
 
 **Audit Record**:
-The organization-scoped, append-only record of every governed decision: what was attempted, the
-policy that decided it, who resolved it, and the outcome. Distinct from a transcript — a transcript
+The organization-scoped, append-only record of every decision kestrel made unattended: what was
+decided, the inputs it was decided from, and the verdict. A governed decision is one kind of entry,
+carrying additionally the policy that decided it and who resolved it. Distinct from a transcript — a transcript
 is one session's narrative, an audit record spans every session in the organization, and outlives
 them.
 _Avoid_: log, trail, history, ledger
@@ -190,15 +204,21 @@ These hold by definition of the terms above; they are stated here because they a
 words from drifting.
 
 - Every durable record belongs to exactly **one** organization.
-- A provider credential is held by an **organization**, and reaches an environment only for the
-  length of a **run**. An idle or destroyed environment holds **none**.
+- A provider credential is held by an **organization**, and reaches an instance only for the
+  length of a **run**. An idle or destroyed instance holds **none**. An instance outlives the runs
+  it serves, so it holds a credential for a **fraction** of its own life.
 - A session has exactly **one** workspace. A workspace may declare **many** repositories.
-- An event supplies **data**, never **authority**. Branch, brief and correlation are rendered
-  from an event; agent, workspace, model and policy are named in a declaration a human reviewed.
+- An event supplies **data**, never **authority**. Brief and correlation are rendered from an
+  event; agent, workspace, environment, model and policy are named in a declaration a human
+  reviewed.
+- Authority comes from the **authenticated request** that minted an event, never from the event.
+  An event kestrel minted for itself is no more trusted than one an integration delivered.
 - A request that does not **authenticate** never becomes an event. One that authenticated and
   matched no trigger is still recorded.
-- **Events expire; transcript entries never do.** An event stream is unbounded volume from systems
-  kestrel does not control; a transcript is bounded by work kestrel chose to do.
+- **Events expire; a transcript's shared-state entries never do.** An event stream is unbounded
+  volume from systems kestrel does not control, and a run's narration and detail are unbounded
+  volume from an agent kestrel does not write. Only shared state is bounded by work kestrel chose to
+  do, and only shared state carries the never-expires promise.
 - A trigger renders its brief **once** per firing. A brief that cannot be rendered **fails** the
   firing and starts nothing.
 - A trigger's agent applies when a firing **opens** a session, never when it **feeds** one. A
@@ -207,9 +227,16 @@ words from drifting.
   holds its correlation against nothing.
 - A firing **never** interrupts a run. Events arriving while a run is active are pending, and drain
   into **one** transcript entry and **one** run when it ends.
-- A run executes in exactly **one** environment.
+- A run executes on exactly **one** instance, provisioned from exactly **one** environment.
+- An instance lives until the session it serves **seals**, and is **never** reaped while it holds
+  work that exists nowhere else.
+- kestrel never learns that a backend **suspended** an instance. An idle hint is information, not a
+  capability: an adapter that ignores it is expensive, never degraded.
+- A run's branch is **declared** by kestrel, never invented by an agent. kestrel runs no git
+  command; it learns what happened from what a supervisor reports and what an integration delivers.
 - A run's outcome reaches the surface that started its session **once**, however many attempts that
-  takes, and saying it changes **nothing** about the run's exit status.
+  takes, and saying it changes **nothing** about the run's exit status. A run's exit status says how
+  the **turn** went, and never whether the work was any good.
 - A **run** is the only thing kestrel executes outside a control plane. Everything else — the
   store, the link, dispatch — happens inside one. A client runs outside and executes nothing: it
   asks, and the control plane decides.
@@ -247,10 +274,12 @@ words from drifting.
 - A session is **open** or **sealed**. Sealing is not deletion: a sealed session is readable and is
   **never** reopened. Work that would have continued it starts a **new** session, which records the
   sealed one.
+- Every decision kestrel makes **unattended** records the inputs it was decided from and its
+  verdict, whether or not a policy was consulted.
 - A session idle for a **day** seals itself. Sealing unattended is the same operation as sealing by
   hand; a session with a run holding its slot never seals, however old it is.
-- kestrel **never** expires a transcript entry. An entry leaves a transcript only by **deliberate
-  deletion**.
+- kestrel **never** expires a **shared-state** transcript entry. Narration and detail have a
+  retention window; an entry of any other kind leaves a transcript only by **deliberate deletion**.
 - A deletion inside a transcript is **itself recorded** in that transcript, so what a reader sees is
   gap-free.
 - Deleting a session removes **nothing** from the audit record.
@@ -283,3 +312,10 @@ Slack, or to any other external system, is an **Integration**.
 
 **Fleet**: a view, not an entity — every running session looked at once. If the operator surface
 needs a name, that is a UI name, not vocabulary.
+
+**Runner**: GitHub's word for a long-lived shared worker drawn from a pool and registered to a
+repository, which is close to the opposite of a per-session **Instance**. Using it would import that
+expectation. The declaration is an **Environment**; the compute is an **Instance**.
+
+**Environment Class**: two words for one thing, and Ona's compromise for the same problem. kestrel
+resolves it by moving **Environment** to the declaration rather than qualifying it.
