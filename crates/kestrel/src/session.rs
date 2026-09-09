@@ -1,9 +1,14 @@
 use anyhow::{Result, bail};
+use jiff::{SignedDuration, Timestamp};
 
-use crate::domain::{Event, Organization, Run, RunState, Session, SessionId, SessionState};
+use crate::domain::{Event, Organization, Run, RunId, RunState, Session, SessionId, SessionState};
 use crate::fanout::{self, Change};
 use crate::log::{Cursor, Entry, Page, Unreadable, Window};
 use crate::store::{Store, Tx};
+
+/// Generous, because kestrel has no signal that a human is watching a Session: duration is
+/// standing in for presence.
+const IDLE: SignedDuration = SignedDuration::from_hours(24);
 
 pub async fn open(
     store: &Store,
@@ -48,10 +53,7 @@ pub async fn seal(store: &Store, id: SessionId) -> Result<Session> {
     if session.state == SessionState::Sealed {
         bail!("the session {id} is already sealed, and a sealed session is never reopened");
     }
-    if let Some(holding) = tx.sessions().run_holding_the_slot(&session).await?
-        && (tx.sessions().run(holding).await?.state != RunState::Ended
-            || tx.sessions().has_pending_messages(&session).await?)
-    {
+    if let Some(holding) = in_flight(&mut tx, &session).await? {
         bail!("the run {holding} is still in flight in the session {id}");
     }
 
@@ -66,6 +68,43 @@ pub async fn seal(store: &Store, id: SessionId) -> Result<Session> {
     fanout::publish(Change::SessionSealed(&sealed));
 
     Ok(sealed)
+}
+
+/// Unattended sealing, through the same command a person seals with, so nothing here can
+/// decide differently to `seal`.
+pub async fn seal_idle(store: &Store) -> Result<Vec<Session>> {
+    let mut sealed = Vec::new();
+
+    for id in idle(store).await? {
+        sealed.push(seal(store, id).await?);
+    }
+
+    Ok(sealed)
+}
+
+async fn idle(store: &Store) -> Result<Vec<SessionId>> {
+    let mut tx = store.begin().await?;
+    let mut idle = Vec::new();
+
+    for session in tx.sessions().idle(Timestamp::now() - IDLE).await? {
+        if in_flight(&mut tx, &session).await?.is_none() {
+            idle.push(session.id);
+        }
+    }
+
+    Ok(idle)
+}
+
+/// What keeps a Session from sealing: a Run that has not ended, or one that has while
+/// messages are still waiting on it.
+async fn in_flight(tx: &mut Tx<'_>, session: &Session) -> Result<Option<RunId>> {
+    let Some(holding) = tx.sessions().run_holding_the_slot(session).await? else {
+        return Ok(None);
+    };
+    let still_going = tx.sessions().run(holding).await?.state != RunState::Ended
+        || tx.sessions().has_pending_messages(session).await?;
+
+    Ok(still_going.then_some(holding))
 }
 
 pub async fn show(store: &Store, id: SessionId) -> Result<Session> {

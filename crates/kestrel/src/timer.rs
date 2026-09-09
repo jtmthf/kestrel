@@ -13,6 +13,7 @@ use crate::follow_up;
 use crate::integration::github::Github;
 use crate::integration::outcome;
 use crate::integration::{self, Polled};
+use crate::session;
 use crate::store::Store;
 use crate::trigger;
 use crate::work;
@@ -29,6 +30,7 @@ pub async fn sweeping(store: &Store, shutdown: &CancellationToken) -> Result<()>
         polling(store, &github, shutdown),
         firing(store, shutdown),
         following_up(store, shutdown),
+        sealing_idle_sessions(store, shutdown),
         delivering(store, &github, shutdown)
     )?;
 
@@ -49,6 +51,23 @@ async fn following_up(store: &Store, shutdown: &CancellationToken) -> Result<()>
                 }
             }
             Err(error) => warn!(%error, "a follow-up sweep found nothing it could do"),
+        }
+
+        tick(shutdown).await;
+    }
+
+    Ok(())
+}
+
+async fn sealing_idle_sessions(store: &Store, shutdown: &CancellationToken) -> Result<()> {
+    while !shutdown.is_cancelled() {
+        match session::seal_idle(store).await {
+            Ok(sealed) => {
+                for session in sealed {
+                    info!(session = %session.id, "an idle session sealed itself");
+                }
+            }
+            Err(error) => warn!(%error, "an idle sweep found nothing it could do"),
         }
 
         tick(shutdown).await;

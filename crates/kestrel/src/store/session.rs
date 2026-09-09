@@ -56,13 +56,15 @@ impl<'a> Sessions<'a> {
         continues: Option<&Session>,
         started_by: Option<&Event>,
     ) -> Result<Session> {
+        let opened_at = Timestamp::now();
         let session = Session {
             id: SessionId::generate(),
             organization: organization.clone(),
             workspace: workspace.clone(),
             agent: agent.clone(),
             state: SessionState::Open,
-            opened_at: Timestamp::now(),
+            opened_at,
+            last_active_at: opened_at,
             sealed_at: None,
             continues: continues.map(|sealed| sealed.id),
             started_by: started_by.map(|event| event.id),
@@ -70,9 +72,9 @@ impl<'a> Sessions<'a> {
 
         sqlx::query(
             "INSERT INTO session
-                 (id, organization_id, workspace_id, agent_id, state, opened_at, continues,
-                  event_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (id, organization_id, workspace_id, agent_id, state, opened_at, last_active_at,
+                  continues, event_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.to_string())
         .bind(organization.id.to_string())
@@ -80,6 +82,7 @@ impl<'a> Sessions<'a> {
         .bind(agent.id.to_string())
         .bind(session.state.as_str())
         .bind(session.opened_at.to_string())
+        .bind(due(session.last_active_at))
         .bind(session.continues.map(|sealed| sealed.to_string()))
         .bind(session.started_by.map(|event| event.to_string()))
         .execute(&mut *self.connection)
@@ -101,6 +104,41 @@ impl<'a> Sessions<'a> {
             .with_context(|| format!("sealing the session {}", session.id))?;
 
         Ok(sealed_at)
+    }
+
+    pub async fn record_active(&mut self, session: SessionId, at: Timestamp) -> Result<()> {
+        sqlx::query("UPDATE session SET last_active_at = ? WHERE id = ?")
+            .bind(due(at))
+            .bind(session.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("recording the session {session} active"))?;
+
+        Ok(())
+    }
+
+    pub async fn idle(&mut self, before: Timestamp) -> Result<Vec<Session>> {
+        let ids = sqlx::query(
+            "SELECT id
+             FROM session
+             WHERE state = ? AND last_active_at <= ?
+             ORDER BY last_active_at, id",
+        )
+        .bind(SessionState::Open.as_str())
+        .bind(due(before))
+        .fetch_all(&mut *self.connection)
+        .await
+        .context("sweeping idle sessions")?
+        .iter()
+        .map(|row| Ok(row.get::<String, _>("id").parse()?))
+        .collect::<Result<Vec<SessionId>>>()?;
+
+        let mut idle = Vec::with_capacity(ids.len());
+        for id in ids {
+            idle.push(read(&mut *self.connection, id).await?);
+        }
+
+        Ok(idle)
     }
 
     pub async fn get(&mut self, id: SessionId) -> Result<Session> {
@@ -190,6 +228,8 @@ impl<'a> Sessions<'a> {
         .execute(&mut *self.connection)
         .await
         .with_context(|| format!("enqueueing a run in the session {}", session.id))?;
+
+        self.record_active(session.id, run.enqueued_at).await?;
 
         Ok(run)
     }
@@ -514,7 +554,12 @@ impl<'a> Sessions<'a> {
         .await
         .with_context(|| format!("ending the run {}", run.id))?;
 
-        Ok(ended.rows_affected() > 0)
+        if ended.rows_affected() == 0 {
+            return Ok(false);
+        }
+        self.record_active(run.session, Timestamp::now()).await?;
+
+        Ok(true)
     }
 
     pub async fn issue_credential(
@@ -638,8 +683,8 @@ impl<'a> Sessions<'a> {
 
 pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Result<Session> {
     let row = sqlx::query(
-        "SELECT organization_id, workspace_id, agent_id, state, opened_at, sealed_at,
-                continues, event_id
+        "SELECT organization_id, workspace_id, agent_id, state, opened_at, last_active_at,
+                sealed_at, continues, event_id
          FROM session
          WHERE id = ?",
     )
@@ -670,6 +715,7 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
         agent,
         state: row.get::<String, _>("state").parse()?,
         opened_at: row.get::<String, _>("opened_at").parse()?,
+        last_active_at: row.get::<String, _>("last_active_at").parse()?,
         sealed_at: timestamp(&row, "sealed_at")?,
         continues: row
             .get::<Option<String>, _>("continues")
