@@ -305,15 +305,53 @@ impl<'a> Sessions<'a> {
         Ok(row.get("pending"))
     }
 
+    /// A Run is declared blocked on another by the work that depends on it; nothing kestrel
+    /// does itself declares one, and the two must belong to the same organization.
+    pub async fn declare_blocked(&mut self, run: RunId, blocker: RunId) -> Result<()> {
+        let organization = self.run(run).await?.organization;
+        let blocker_organization = self.run(blocker).await?.organization;
+
+        if organization != blocker_organization {
+            anyhow::bail!(
+                "the run {run} and the run {blocker} it is blocked on are in different organizations"
+            );
+        }
+
+        sqlx::query(
+            "INSERT INTO run_dependency (run_id, blocker_id, organization_id)
+             VALUES (?, ?, ?)",
+        )
+        .bind(run.to_string())
+        .bind(blocker.to_string())
+        .bind(organization.to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("declaring the run {run} blocked on {blocker}"))?;
+
+        Ok(())
+    }
+
     /// One statement, so two claimants cannot both take the same Run: the Run this returns
     /// was queued when the statement began, and is active and holding its lease by the time
-    /// anyone else looks.
+    /// anyone else looks. A Run with a blocker that has not ended successfully is removed
+    /// from the ready order, never reordered around.
     pub async fn claim_run(&mut self, lease_until: Timestamp) -> Result<Option<Run>> {
         let claimed = sqlx::query(
             "UPDATE run
              SET state = ?, claimed_at = ?, lease_expires_at = ?
              WHERE id = (
-                 SELECT id FROM run WHERE state = ? ORDER BY enqueued_at, id LIMIT 1
+                 SELECT r.id
+                 FROM run AS r
+                 WHERE r.state = ?
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM run_dependency AS d
+                       JOIN run AS b ON b.id = d.blocker_id
+                       WHERE d.run_id = r.id
+                         AND NOT (b.state = 'ended' AND b.exit = 'succeeded')
+                   )
+                 ORDER BY r.enqueued_at, r.id
+                 LIMIT 1
              )
              RETURNING id",
         )

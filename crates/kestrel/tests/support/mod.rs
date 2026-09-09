@@ -558,6 +558,17 @@ impl Harness {
             .expect("the claim should ask")
     }
 
+    /// The only caller of the dependency edge there is: nothing kestrel does itself declares
+    /// one, so a test reaches for this to stand in for a Workflow's fan-in step.
+    pub async fn block_run(&self, run: RunId, blocker: RunId) {
+        let mut tx = self.store.begin().await.expect("a transaction");
+        tx.sessions()
+            .declare_blocked(run, blocker)
+            .await
+            .expect("the run should be declared blocked");
+        tx.commit().await.expect("the declaration should commit");
+    }
+
     pub async fn run(&self, id: RunId) -> Run {
         work::run(&self.store, id)
             .await
