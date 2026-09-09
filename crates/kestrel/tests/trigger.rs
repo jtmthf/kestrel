@@ -1,6 +1,7 @@
 //! The rule that turns an Event into work (0.1/21). Labelling an issue opens a Session with
 //! the Event as its first Transcript entry and a Run queued behind it, with nobody in the
-//! loop; a Trigger fires at most once per Event, and one that is disabled fires for nothing.
+//! loop; a Trigger fires at most once per Event, never for an Event recorded before it was
+//! declared, and one that is disabled fires for nothing.
 
 mod support;
 
@@ -23,9 +24,9 @@ fn eagerly() -> SignedDuration {
     SignedDuration::from_millis(1)
 }
 
-/// An organization with somewhere for work to happen, someone to do it, and a poll watching
-/// the repository. The Trigger is the one thing each test declares for itself.
-async fn watching(harness: &Harness, stub: &GithubStub) {
+/// An organization with somewhere for work to happen and someone to do it. The Trigger is the
+/// one thing each test declares for itself.
+async fn an_organization(harness: &Harness) {
     let organization = harness.declare_organization("acme").await;
     harness
         .declare_workspace(
@@ -38,6 +39,11 @@ async fn watching(harness: &Harness, stub: &GithubStub) {
     harness
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
+}
+
+/// The poll that records what happens on the repository, started after the Trigger the test
+/// is about: an Event recorded before a Trigger was declared fires nothing.
+async fn watching(harness: &Harness, stub: &GithubStub) {
     harness
         .register_integration(
             "acme",
@@ -97,8 +103,9 @@ async fn labelling_an_issue_opens_a_session_and_enqueues_a_run() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
+    an_organization(&harness).await;
     ready_for_agent(&harness).await;
+    watching(&harness, &stub).await;
 
     let session = opened(&harness).await;
 
@@ -117,8 +124,9 @@ async fn the_event_is_the_sessions_first_transcript_entry() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
+    an_organization(&harness).await;
     ready_for_agent(&harness).await;
+    watching(&harness, &stub).await;
 
     let session = opened(&harness).await;
     let transcript = harness.transcript(session.id).await;
@@ -149,8 +157,9 @@ async fn the_session_records_the_event_that_started_it() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
+    an_organization(&harness).await;
     ready_for_agent(&harness).await;
+    watching(&harness, &stub).await;
 
     let session = opened(&harness).await;
     let events = harness.events("acme").await;
@@ -169,8 +178,9 @@ async fn relabelling_the_same_issue_twice_opens_exactly_one_session() {
     stub.script(relabelled.clone());
     stub.script(relabelled);
     let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
+    an_organization(&harness).await;
     ready_for_agent(&harness).await;
+    watching(&harness, &stub).await;
 
     opened(&harness).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -195,8 +205,9 @@ async fn an_event_matching_no_trigger_opens_nothing() {
         "needs-triage",
     )]));
     let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
+    an_organization(&harness).await;
     ready_for_agent(&harness).await;
+    watching(&harness, &stub).await;
 
     nothing_opens(&harness).await;
 
@@ -210,8 +221,9 @@ async fn taking_the_label_back_off_fires_nothing() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::unlabelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
+    an_organization(&harness).await;
     ready_for_agent(&harness).await;
+    watching(&harness, &stub).await;
 
     nothing_opens(&harness).await;
 
@@ -223,9 +235,10 @@ async fn a_disabled_trigger_fires_for_nothing() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
+    an_organization(&harness).await;
     ready_for_agent(&harness).await;
     harness.disable_trigger("acme", "ready").await;
+    watching(&harness, &stub).await;
 
     nothing_opens(&harness).await;
 
@@ -238,8 +251,9 @@ async fn a_disabled_trigger_fires_for_nothing() {
 async fn a_trigger_is_named_listed_and_disabled() {
     let stub = GithubStub::start();
     let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
+    an_organization(&harness).await;
     ready_for_agent(&harness).await;
+    watching(&harness, &stub).await;
 
     let listed = harness.triggers("acme").await;
     assert_eq!(listed.len(), 1);
@@ -266,26 +280,32 @@ async fn a_trigger_is_named_listed_and_disabled() {
     harness.teardown().await;
 }
 
-/// A Trigger declared after the Event was recorded still fires for it: matching is a sweep of
-/// its own rather than the tail of the poll that recorded the Event.
+/// Turning automation on never works a backlog. A Trigger declared against a repository whose
+/// history kestrel already holds opens nothing for that history, however many sweeps pass over
+/// it; catching one up is a deliberate act, and declaring a Trigger is not it.
 #[tokio::test]
-async fn a_trigger_fires_for_an_event_recorded_before_it_was_declared() {
+async fn a_trigger_never_fires_for_events_recorded_before_it_was_declared() {
     let stub = GithubStub::start();
-    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    stub.script(github_stub::page(&[
+        github_stub::labelled(9, 45, READY),
+        github_stub::labelled(8, 44, READY),
+        github_stub::labelled(7, 43, READY),
+    ]));
     let harness = Harness::boot().await;
+    an_organization(&harness).await;
     watching(&harness, &stub).await;
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while harness.events("acme").await.is_empty() {
+    while harness.events("acme").await.len() < 3 {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the event was never recorded"
+            "the repository's history was never recorded"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     ready_for_agent(&harness).await;
 
-    assert_eq!(opened(&harness).await.workspace.name, "kestrel");
+    nothing_opens(&harness).await;
 
     harness.teardown().await;
 }
@@ -295,7 +315,7 @@ async fn a_trigger_fires_only_for_the_repository_it_names() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
+    an_organization(&harness).await;
     harness
         .declare_trigger(
             "acme",
@@ -305,6 +325,7 @@ async fn a_trigger_fires_only_for_the_repository_it_names() {
             "builder",
         )
         .await;
+    watching(&harness, &stub).await;
 
     nothing_opens(&harness).await;
 
@@ -313,9 +334,8 @@ async fn a_trigger_fires_only_for_the_repository_it_names() {
 
 #[tokio::test]
 async fn a_trigger_names_a_repository_as_owner_and_name() {
-    let stub = GithubStub::start();
     let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
+    an_organization(&harness).await;
 
     let refusal = harness
         .try_declare_trigger("acme", "ready", ("kestrel", READY), "kestrel", "builder")

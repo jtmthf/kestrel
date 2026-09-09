@@ -106,9 +106,8 @@ async fn delivering(store: &Store, github: &Github, shutdown: &CancellationToken
     Ok(())
 }
 
-/// Matching is its own sweep rather than the tail of a poll, so a Trigger declared after an
-/// Event was recorded still fires for it, and a control plane that stopped between recording
-/// an Event and firing for it finds it on the way back up.
+/// Matching is its own sweep rather than the tail of a poll, so a control plane that stopped
+/// between recording an Event and firing for it finds it on the way back up.
 async fn firing(store: &Store, shutdown: &CancellationToken) -> Result<()> {
     while !shutdown.is_cancelled() {
         match trigger::fire(store).await {

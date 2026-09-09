@@ -118,7 +118,8 @@ impl<'a> Triggers<'a> {
     }
 
     /// A Trigger fires at most once per Event, and the firing already recorded is what says
-    /// so.
+    /// so. An Event recorded before the Trigger was declared is never matched at all:
+    /// declaring a Trigger is not how a repository's existing history gets worked.
     pub async fn unfired_matches(
         &mut self,
         kind: &str,
@@ -133,6 +134,7 @@ impl<'a> Triggers<'a> {
               AND event.kind = ?
               AND event.label = trigger.label
              WHERE trigger.state = ?
+               AND event.recorded_at >= trigger.declared_at
                AND NOT EXISTS (
                    SELECT 1 FROM firing
                    WHERE firing.trigger_id = trigger.id AND firing.event_id = event.id

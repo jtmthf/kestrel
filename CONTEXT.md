@@ -68,9 +68,10 @@ _Avoid_: signal, notification, hook, payload
 A standing, configured rule that starts work: what it matches, the brief it renders, and the agent
 and workspace it starts that work with. Named, listable, disableable, and bounded by a firing
 budget. A trigger is the rule, never an individual firing; the session records the event that
-started it. One that declares a schedule in place of a match fires on its own elapsing. A trigger
-may name a workflow; when it does, each firing begins a campaign, and the session it starts belongs
-to that campaign.
+started it. A trigger matches only events recorded after it was declared: working the history a
+repository already holds is a deliberate act, and declaring a trigger is not it. One that declares
+a schedule in place of a match fires on its own elapsing. A trigger may name a workflow; when it
+does, each firing begins a campaign, and the session it starts belongs to that campaign.
 _Avoid_: subscription, listener, automation, matcher
 
 **Firing**:

@@ -68,11 +68,11 @@ kestrel trigger declare ready --organization acme --repository jtmthf/kestrel \
   --label ready-for-agent --workspace kestrel --agent builder
 ```
 
-**Read [finding 2](#what-this-run-found) before pointing this at a repository that already has
-`ready-for-agent` history.** Declaring a trigger does not scope its matches to events from that
-moment on: the next sweep matches every occurrence already recorded that fits its filter and no
-trigger has matched yet, up to 32 at a time
-(`crates/kestrel/src/trigger.rs`'s `AT_A_TIME`). On this repository, that history already exists.
+[Finding 2](#what-this-run-found) is what this cost on the day: the first poll records a page of
+what has already happened on the repository, and declaring the trigger then swept all of it. A
+trigger now fires only for events recorded after it was declared
+([#106](https://github.com/jtmthf/kestrel/issues/106)), so registering the integration before the
+trigger — the order above — leaves that history alone.
 
 ## 6. Label an issue, and watch
 
