@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
@@ -14,6 +15,7 @@ use crate::role::work::Dispatch;
 
 const SUPERVISOR: &str = "kestrel-supervisor";
 const IMAGE: &str = "kestrel-env:latest";
+const DEFAULT_MAX_ACTIVE_RUNS: NonZeroUsize = NonZeroUsize::new(2).unwrap();
 
 const ROLES: &str = "\
 Roles:
@@ -128,6 +130,16 @@ pub struct Cli {
     /// The network an Environment joins, if not the daemon's default
     #[arg(long, env = "KESTREL_NETWORK", global = true, value_name = "NETWORK")]
     network: Option<String>,
+
+    /// Excess Runs stay queued; zero would leave the backlog unable to make progress
+    #[arg(
+        long,
+        env = "KESTREL_MAX_ACTIVE_RUNS",
+        global = true,
+        value_name = "RUNS",
+        default_value_t = DEFAULT_MAX_ACTIVE_RUNS
+    )]
+    max_active_runs: NonZeroUsize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -478,6 +490,7 @@ impl Cli {
             },
             runtime: self.agent_runtime.clone(),
             auth: self.agent_auth.clone(),
+            max_active_runs: self.max_active_runs,
         })
     }
 
@@ -577,6 +590,20 @@ mod tests {
     #[test]
     fn a_driver_that_is_neither_is_rejected_rather_than_falling_back() {
         assert!(Cli::try_parse_from(["kestrel", "--compute", "firecracker"]).is_err());
+    }
+
+    #[test]
+    fn two_runs_may_be_active_unless_configuration_says_otherwise() {
+        assert_eq!(dispatch(&[]).max_active_runs.get(), 2);
+        assert_eq!(
+            dispatch(&["--max-active-runs", "5"]).max_active_runs.get(),
+            5
+        );
+    }
+
+    #[test]
+    fn an_active_run_limit_of_zero_is_rejected() {
+        assert!(Cli::try_parse_from(["kestrel", "--max-active-runs", "0"]).is_err());
     }
 
     #[test]

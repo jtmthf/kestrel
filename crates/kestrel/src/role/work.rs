@@ -1,6 +1,8 @@
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -18,11 +20,13 @@ use crate::work::{self, Claimed};
 /// `Store` again rather than by being told.
 const POLL: Duration = Duration::from_millis(100);
 
+#[derive(Clone)]
 pub struct Dispatch {
     pub link: String,
     pub driver: Driver,
     pub runtime: String,
     pub auth: Option<String>,
+    pub max_active_runs: NonZeroUsize,
 }
 
 impl Dispatch {
@@ -73,17 +77,32 @@ async fn dispatching(
     dispatch: &Dispatch,
     shutdown: &CancellationToken,
 ) -> Result<()> {
+    let mut active = JoinSet::new();
+
     while !shutdown.is_cancelled() {
         reap(store, &dispatch.driver).await?;
-        match work::claim(store).await? {
-            Some(claimed) => execute(store, dispatch, claimed, shutdown).await?,
-            None => {
-                tokio::select! {
-                    () = tokio::time::sleep(POLL) => {}
-                    () = shutdown.cancelled() => {}
-                }
-            }
+        if active.len() < dispatch.max_active_runs.get()
+            && let Some(claimed) = work::claim(store).await?
+        {
+            let store = store.clone();
+            let dispatch = dispatch.clone();
+            let shutdown = shutdown.clone();
+            active.spawn(async move { execute(&store, &dispatch, claimed, &shutdown).await });
+            continue;
         }
+
+        tokio::select! {
+            finished = active.join_next(), if !active.is_empty() => {
+                finished.expect("an active run")
+                    .context("a run's execution task failed")??;
+            }
+            () = tokio::time::sleep(POLL) => {}
+            () = shutdown.cancelled() => {}
+        }
+    }
+
+    while let Some(finished) = active.join_next().await {
+        finished.context("a run's execution task failed")??;
     }
 
     Ok(())

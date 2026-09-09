@@ -135,6 +135,11 @@ kestrel run enqueue --session 01a07846-49fa-7dc0-a44b-183a63794ee3
 Within seconds the control plane claims it, provisions a container, clones the workspace's
 repositories into it, and starts an agent runtime there which dials back over the link.
 
+The work role dispatches up to two runs at once by default. That conservative default leaves room on
+a laptop for two repository checkouts, supervisors, and agent runtimes. Set
+`KESTREL_MAX_ACTIVE_RUNS` on the control-plane container, or pass `--max-active-runs RUNS`, to choose
+a different positive limit; runs beyond it remain queued until active ones end.
+
 ```sh
 kestrel run list --session 01a07846-49fa-7dc0-a44b-183a63794ee3
 ```

@@ -23,6 +23,7 @@ pub mod scripted_agent;
 pub mod supervisor;
 
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::Path;
 
 use jiff::{SignedDuration, Timestamp};
@@ -68,6 +69,7 @@ pub struct Harness {
 pub struct Provisions {
     driver: Driver,
     runtime: String,
+    max_active_runs: NonZeroUsize,
 }
 
 /// Comes back on the address it was listening on, so what an Environment already dialled
@@ -106,9 +108,14 @@ impl Harness {
     }
 
     pub async fn dispatching_to(supervisor: &Path, runtime: &str) -> Self {
+        Self::dispatching_up_to(supervisor, runtime, 2).await
+    }
+
+    pub async fn dispatching_up_to(supervisor: &Path, runtime: &str, maximum: usize) -> Self {
         Self::booted(Some(Provisions {
             driver: Driver::LocalExec(LocalExec::running(supervisor)),
             runtime: runtime.to_owned(),
+            max_active_runs: NonZeroUsize::new(maximum).expect("at least one active run"),
         }))
         .await
     }
@@ -122,6 +129,7 @@ impl Harness {
             Some(Provisions {
                 driver: Driver::Docker(Docker::provisioning_from(image)),
                 runtime: runtime.to_owned(),
+                max_active_runs: NonZeroUsize::new(2).unwrap(),
             }),
         )
         .await
@@ -158,6 +166,7 @@ impl Harness {
             driver: provisions.driver,
             runtime: provisions.runtime,
             auth: None,
+            max_active_runs: provisions.max_active_runs,
         });
         let roles = tokio::spawn(all_in_one.run(dispatch, shutdown.clone()));
 
