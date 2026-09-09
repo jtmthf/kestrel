@@ -114,6 +114,10 @@ unit of session continuity — reconnecting with a cursor is the normal path rat
 and presence is best-effort and never gates anything, because a stale presence entry that could block
 an approval would deadlock the session it was meant to describe.
 
+**The client is where joining surfaces.** A session watched as it happens is the client's first
+interactive view, over the event stream
+[ADR-0015](docs/adr/0015-the-cli-is-a-client-not-a-role.md) puts on the operator boundary.
+
 ### 0.4 — kestrel asks before it acts
 
 kestrel does work you would not have let it do unsupervised: policy enforced at the execution layer
@@ -130,6 +134,12 @@ Approvals are proven here over GitHub and the generic webhook rather than over S
 adapter against a governance model that this rung is still inventing is the coupling depth-first
 exists to avoid, and the generic webhook gives approvals a second surface without a second
 integration.
+
+**The client answers approvals interactively**, which is what makes working an agent in the cloud
+feel like working one locally. The agent half already exists — the supervisor answers ACP's
+permission request, today by allowing once — so what this rung adds is the path outward to the person
+watching, and an operator identity worth authorising, which
+[ADR-0015](docs/adr/0015-the-cli-is-a-client-not-a-role.md) defers to exactly here.
 
 ### 0.5 — kestrel runs multi-step work
 

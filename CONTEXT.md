@@ -117,15 +117,20 @@ _Avoid_: execution, batch, initiative, rollout
 
 **Control Plane**:
 The durable process kestrel runs as. It holds the store, serves the link environments dial out to,
-and dispatches runs onto them. Everything an operator runs and everything a participant commands
-happens here; an environment is the only thing outside it.
+and dispatches runs onto them. Everything an operator asks for and everything a participant commands
+is decided here; an environment is the only thing that executes outside it.
 _Avoid_: server, backend, daemon, coordinator
 
 **Role**:
-One of three jobs a control plane performs, selected on the command line: `serve` answers the link,
-`work` claims and dispatches runs, and the CLI does one thing and exits. A role is how a control
-plane may be split across processes, never a different program.
+One of two jobs a control plane performs, selected on the command line: `serve` answers the link and
+the clients, and `work` claims and dispatches runs. A role is how a control plane may be split across
+processes, never a different program.
 _Avoid_: mode, command, service, process
+
+**Client**:
+A program a person drives that reaches a control plane over a published boundary, holding no store of
+its own and executing nothing. The CLI is the first one.
+_Avoid_: frontend, console, cli, tool
 
 **Environment**:
 The isolated compute instance a run executes in. Disposable, provisioned by a compute backend, and
@@ -205,7 +210,8 @@ words from drifting.
 - A run's outcome reaches the surface that started its session **once**, however many attempts that
   takes, and saying it changes **nothing** about the run's exit status.
 - A **run** is the only thing kestrel executes outside a control plane. Everything else — the
-  store, the link, dispatch, the CLI — happens inside one.
+  store, the link, dispatch — happens inside one. A client runs outside and executes nothing: it
+  asks, and the control plane decides.
 - At most **one** run is active in a session at a time. Concurrency is across sessions, **never**
   within one.
 - A run blocked on an approval still occupies that **one** active-run slot. Nothing else holds that
