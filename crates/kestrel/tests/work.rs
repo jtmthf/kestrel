@@ -12,6 +12,7 @@ use support::Harness;
 use support::environment::Environment;
 use support::link_client::Link;
 use support::repository;
+use support::scripted_agent::{self, Script};
 use support::supervisor;
 
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -67,6 +68,99 @@ async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -
 
 async fn ended(harness: &Harness, run: RunId) -> Run {
     until(harness, run, "ended", |run| run.state == RunState::Ended).await
+}
+
+#[tokio::test]
+async fn runs_in_distinct_sessions_start_at_the_same_time() {
+    let harness = Harness::dispatching_up_to(
+        supervisor::binary(),
+        &scripted_agent::playing(Script::Dawdles),
+        2,
+    )
+    .await;
+    let first_session = a_session(&harness).await;
+    let second_session = harness.open_session("acme", "kestrel", "builder").await;
+    let first = harness.enqueue_run(first_session.id).await;
+    let second = harness.enqueue_run(second_session.id).await;
+
+    let second = until(&harness, second.id, "started", |run| {
+        run.started_at.is_some()
+    })
+    .await;
+
+    assert_eq!(harness.run(first.id).await.state, RunState::Active);
+    assert_eq!(second.state, RunState::Active);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn the_active_run_limit_queues_excess_work_and_releases_it_as_runs_end() {
+    let harness = Harness::dispatching_up_to(
+        supervisor::binary(),
+        &scripted_agent::playing(Script::Dawdles),
+        1,
+    )
+    .await;
+    let first_session = a_session(&harness).await;
+    let second_session = harness.open_session("acme", "kestrel", "builder").await;
+    let third_session = harness.open_session("acme", "kestrel", "builder").await;
+    let first = harness.enqueue_run(first_session.id).await;
+    let second = harness.enqueue_run(second_session.id).await;
+    let third = harness.enqueue_run(third_session.id).await;
+
+    let first = until(&harness, first.id, "started", |run| {
+        run.started_at.is_some()
+    })
+    .await;
+    assert_eq!(harness.run(second.id).await.state, RunState::Queued);
+    assert_eq!(harness.run(third.id).await.state, RunState::Queued);
+
+    harness.complete_run(&first).await;
+    let second = until(&harness, second.id, "started", |run| {
+        run.started_at.is_some()
+    })
+    .await;
+    assert_eq!(harness.run(third.id).await.state, RunState::Queued);
+
+    harness.complete_run(&second).await;
+    let third = until(&harness, third.id, "started", |run| {
+        run.started_at.is_some()
+    })
+    .await;
+    assert_eq!(third.state, RunState::Active);
+
+    harness.teardown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stopping_with_several_runs_in_flight_ends_each_and_destroys_their_environments() {
+    let environment = Environment::executing("sleep 300");
+    let harness = Harness::dispatching_up_to(environment.path(), "unused", 2).await;
+    let first_session = a_session(&harness).await;
+    let second_session = harness.open_session("acme", "kestrel", "builder").await;
+    let first = harness.enqueue_run(first_session.id).await;
+    let second = harness.enqueue_run(second_session.id).await;
+    let first = until(&harness, first.id, "reached an environment", |run| {
+        run.environment.is_some()
+    })
+    .await;
+    let second = until(&harness, second.id, "reached an environment", |run| {
+        run.environment.is_some()
+    })
+    .await;
+
+    let stopped = harness.teardown().await;
+
+    for run in [first, second] {
+        let ended = stopped.run(run.id).await;
+        assert_eq!(ended.state, RunState::Ended);
+        assert!(matches!(ended.exit, Some(Exit::Failed { .. })));
+        Environment::named(run.environment.as_deref().expect("an environment"))
+            .is_gone()
+            .await;
+    }
 }
 
 #[tokio::test]

@@ -164,6 +164,35 @@ async fn a_lease_that_expires_leaves_its_session_no_active_run() {
 }
 
 #[tokio::test]
+async fn one_parallel_runs_expired_lease_leaves_the_other_run_active() {
+    let harness = Harness::dispatching_up_to(
+        supervisor::binary(),
+        &scripted_agent::playing(Script::Dawdles),
+        2,
+    )
+    .await;
+    let first_session = a_session(&harness).await;
+    let second_session = harness.open_session("acme", "kestrel", "builder").await;
+    let first = harness.enqueue_run(first_session.id).await;
+    let second = harness.enqueue_run(second_session.id).await;
+    let first = until(&harness, first.id, "started", |run| {
+        run.started_at.is_some()
+    })
+    .await;
+    until(&harness, second.id, "started", |run| {
+        run.started_at.is_some()
+    })
+    .await;
+
+    harness.lease_until(&first, a_moment_ago()).await;
+    swept(&harness, first.id).await;
+
+    assert_eq!(harness.run(second.id).await.state, RunState::Active);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn a_run_failed_by_lease_expiry_is_never_dispatched_again() {
     let harness = Harness::boot().await;
     let session = a_session(&harness).await;
