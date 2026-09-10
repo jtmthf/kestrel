@@ -316,6 +316,9 @@ pub enum RunState {
     Queued,
     Active,
     Ended,
+    /// Terminal like `Ended`, but with no exit status: a queued Run whose declared tolerance
+    /// can no longer be met never ran, so nothing failed.
+    Unreachable,
 }
 
 impl RunState {
@@ -324,6 +327,7 @@ impl RunState {
             RunState::Queued => "queued",
             RunState::Active => "active",
             RunState::Ended => "ended",
+            RunState::Unreachable => "unreachable",
         }
     }
 }
@@ -336,6 +340,7 @@ impl FromStr for RunState {
             "queued" => Ok(RunState::Queued),
             "active" => Ok(RunState::Active),
             "ended" => Ok(RunState::Ended),
+            "unreachable" => Ok(RunState::Unreachable),
             other => bail!("{other} is not a state a run can be in"),
         }
     }

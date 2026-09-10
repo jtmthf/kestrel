@@ -1,5 +1,3 @@
-//! No dependency edges, because everything queued at 0.1 is immediately eligible (ADR-0005).
-
 use anyhow::{Context as _, Result, bail};
 use jiff::{SignedDuration, Timestamp};
 
@@ -198,6 +196,9 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
             .await?;
         tx.sessions().invalidate_credentials(run).await?;
         outcome::record(tx, run, &session, &exit).await?;
+        if let Exit::Failed { .. } = exit {
+            cascade_unreachable(tx, run.id).await?;
+        }
         if tx.sessions().environment_is_gone(run).await? {
             continue_pending(tx, run.session).await?;
         }
@@ -211,6 +212,24 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
     };
 
     Ok(stands)
+}
+
+/// Tolerance defaults to all-must-succeed, so a Run that failed makes every Run still queued
+/// on it unreachable — and whatever was in turn waiting on one of those, since a blocker that
+/// will never succeed cannot meet an all-must-succeed tolerance either. Never touches a Run
+/// a claimant already took past this blocker before it failed.
+async fn cascade_unreachable(tx: &mut Tx<'_>, blocker: RunId) -> Result<()> {
+    let mut newly_unreachable = vec![blocker];
+
+    while let Some(blocker) = newly_unreachable.pop() {
+        for dependent in tx.sessions().dependents_of(blocker).await? {
+            if tx.sessions().mark_unreachable(&dependent).await? {
+                newly_unreachable.push(dependent.id);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 async fn continue_pending(tx: &mut Tx<'_>, session: SessionId) -> Result<Option<Run>> {
