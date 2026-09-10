@@ -62,7 +62,7 @@ every read.
 
 ### 0.1 — kestrel opens its own PRs
 
-A trigger matches an event, a session opens, a run is scheduled in an environment, and a pull request
+A trigger matches an event, a session opens, a run is scheduled on an Instance, and a pull request
 lands on this repository. The class of work is issues labelled `ready-for-agent`: they are worked by
 kestrel rather than by a person in a terminal, and the rung closes when that is how they are worked
 by default.
@@ -77,10 +77,16 @@ Some of what lands here is invisible on the day it ships and impossible to add c
 the `Organization` column on every durable record, the transcript's entry granularity and the fact
 that state is held as current values rather than replayed out of history, the `sealed` state on a
 session, the run-held lease, and the bounded-window-plus-paging transcript read. That last one is
-needed here rather than at `0.3`, because environments are disposable from the first commit, so a run
-resuming on a cold environment needs the paging read before any human has ever joined a session. The
-lease is here rather than at `0.2` for a neighbouring reason: without one, an environment that dies
-mid-run leaves its run active forever, holding the session's one active-run slot, so the session
+needed here rather than at `0.3`, because a resumed run reads the transcript for context, and the
+need arrives before any human has ever joined a session. The reason this rung first gave for the read
+— compute disposable from the first commit — is history: ADR-0018 gave it up, and an Instance now
+lives until its session seals
+([ADR-0018](docs/adr/0018-an-instance-lives-until-its-session-seals.md)). The read keeps its seat for
+a resumed run whose box is not there to resume into — one archived once its work was safely pushed,
+or lost outright — where a fresh Instance is provisioned and restored from the remote, and the
+transcript is what the run reads for context. The lease is here rather than at `0.2` for a
+neighbouring reason: without one, an Instance that dies mid-run leaves its run active forever,
+holding the session's one active-run slot, so the session
 never seals — and a rung that promises an interrupted run ends with an explicit exit status cannot
 ship a session that wedges permanently. Also settled here by omission: what happens inside a run is
 the run's business, not the session's, and gets no promise and no name.
@@ -93,15 +99,25 @@ order. The lease itself landed at `0.1`; what arrives here is the graph its expi
 rule that expiry fails a run rather than re-dispatching it. Sessions also start sealing themselves
 here, on idle expiry, riding the same timer sweep that reaps leases.
 
+Durability arrives with it, because "works the backlog" is false while a run can take its own output
+down with it. An Instance now outlives its runs, and is never reaped while it holds work that exists
+nowhere else: the supervisor closes every turn by reporting the checkout's git state, kestrel judges
+recovery from what is committed, pushed, uncommitted and untracked — never from an agent's assertion
+— and a session's next run finds the same Instance and the checkout exactly as the last run left it,
+so a follow-up can commit and push what a finished turn left behind. kestrel also declares the branch
+its runs work on, which is what makes that restore possible and, at `0.3`, the pull request learnable
+([ADR-0018](docs/adr/0018-an-instance-lives-until-its-session-seals.md),
+[ADR-0019](docs/adr/0019-kestrel-declares-the-branch-and-learns-the-pull-request.md)). A cap on live
+Instances at the Organization bounds what keeping the box costs.
+
 Concurrency arrives with it, and it lives **across** sessions and never within one: at most one run
 is active in a session, always. That is the project's most surprising design decision, and it is what
 lets a backlog be worked in parallel without turn-taking inside a session becoming a lock problem.
 
-**This is the weakest boundary on the ladder, and it is flagged rather than defended.** If `0.1`
-lands with storage and the transcript done properly, `0.2` may turn out small. A rung that turns out
-easy is a better outcome than a rung quietly hiding four subsystems, so the boundary stays where it
-is — but "kestrel worked an issue" and "kestrel worked this week's issues" are different claims, and
-the second one is where a helper becomes a factory.
+**This is the weakest boundary on the ladder, and it is flagged rather than defended.** A rung that
+turns out easy is a better outcome than a rung quietly hiding four subsystems, so the boundary stays
+where it is — but "kestrel worked an issue" and "kestrel worked this week's issues" are different
+claims, and the second one is where a helper becomes a factory.
 
 ### 0.3 — kestrel's work is joinable mid-flight
 
@@ -109,11 +125,21 @@ You pick up a running session instead of reading a finished one. Multiplayer is 
 designed to the weakest transport kestrel supports, so every deployment gets the same guarantees and
 the faster ones are only faster.
 
-The rung is smaller than it sounds, because `0.1` already built the read: joining is a second
-consumer of the same bounded window and cursor a resuming run already uses. A connection is never the
-unit of session continuity — reconnecting with a cursor is the normal path rather than a fallback —
-and presence is best-effort and never gates anything, because a stale presence entry that could block
-an approval would deadlock the session it was meant to describe.
+The rung is bigger than the read `0.1` built, and this is where the transcript catches up. It is
+rewritten into three kinds under one order and one cursor — shared state, narration, and detail — and
+a read names the kinds it wants, with shared state alone the page a human gets joining late. Reports
+stop being drained at run end and go up as they happen, so a session is readable in real time and an
+agent stuck thrashing is visible while it thrashes, not after
+([ADR-0020](docs/adr/0020-the-transcript-records-what-the-runtime-emits-in-kinds.md)).
+
+Learning the pull request lands here too, as shared state rather than run detail: the branch `0.2`
+declared correlates the `pull_request` event the integration already delivers, so a joining human
+knows a pull request exists without the tool calls that pushed it
+([ADR-0019](docs/adr/0019-kestrel-declares-the-branch-and-learns-the-pull-request.md)). Joining is a
+second consumer of the same bounded window and cursor a resuming run already uses. A connection is
+never the unit of session continuity — reconnecting with a cursor is the normal path rather than a
+fallback — and presence is best-effort and never gates anything, because a stale presence entry that
+could block an approval would deadlock the session it was meant to describe.
 
 **The client is where joining surfaces.** A session watched as it happens is the client's first
 interactive view, over the event stream
@@ -123,8 +149,11 @@ interactive view, over the event stream
 
 kestrel does work you would not have let it do unsupervised: policy enforced at the execution layer
 rather than by prompt, an approval that reaches a human where they already are, and an audit record
-of every governed decision. Deliberate deletion lands here too, along with the tombstone that keeps a
-transcript gap-free and the rule that deleting a session removes nothing from the audit record.
+wider than the choices policy consults it on — every decision kestrel made unattended records the
+inputs it was decided from and its verdict, whether or not a policy was consulted, and a governed
+decision is one kind of entry among them. Deliberate deletion lands here too, along with the tombstone
+that keeps a transcript gap-free and the rule that deleting a session removes nothing from the audit
+record.
 
 **This is the rung on which kestrel becomes usable by someone who is not the maintainer.** Below it,
 kestrel acts on your repository with no approval path and no audit record: defensible for the one
@@ -153,9 +182,11 @@ only queued work does not bind.
 
 A handoff is an enqueue and never a message. There is no coordination bus: what kestrel delivers is
 ordering and once-only dispatch, the brief passes as the new session's first transcript entry — the
-same shape a trigger already has with an event — and artifacts pass through the workspace, whose
-branches the enqueuer names, because kestrel does not reason about git. `0.1` already writes those
-first entries; this rung only adds a second kind of writer.
+same shape a trigger already has with an event — and artifacts pass through the workspace on the
+branch kestrel declared for the session, a name known before any run starts and a source of facts
+kestrel receives from the supervisor and the integration rather than inventing for itself, since it
+runs no git command ([ADR-0019](docs/adr/0019-kestrel-declares-the-branch-and-learns-the-pull-request.md)).
+`0.1` already writes those first entries; this rung only adds a second kind of writer.
 
 **Governance precedes workflows as a constraint, not a preference.** A workflow's approval step is
 governance machinery, so `0.4` has to land first. The README lists the two as independent
@@ -174,7 +205,14 @@ kestrel develops itself on infrastructure that is not your laptop. Postgres join
 pluggable layer ships its second real implementation — the rule of two — which is the same work as
 standing the eight deployment targets up, since both are the question of whether a contract survives
 being driven twice. Multi-tenancy becomes a capability here, on the `Organization` boundary that has
-been in every record since rung one.
+been in every record since rung one. The Environment arrives as the declaration `0.1` was always
+pointing at: an image, a size, and the setup layered over them, named once and selected per run,
+which retires the per-language images that carried the interim, with the archive timeout configured
+on it ([ADR-0017](docs/adr/0017-the-environment-is-declared-the-instance-is-provisioned.md)). The
+advisory idle hint arrives with it: kestrel tells a compute backend when an Instance is idle and lets
+the backend's economics do the rest — a hint that is information rather than a capability, because a
+backend that ignores it is expensive, never degraded
+([ADR-0018](docs/adr/0018-an-instance-lives-until-its-session-seals.md)).
 
 The eight targets are the top of the ladder and not the on-ramp. At kestrel's capability floor you
 are committing to a server on every one of them — you are renting it monthly instead of running it —
