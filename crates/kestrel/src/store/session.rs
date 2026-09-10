@@ -178,18 +178,20 @@ impl<'a> Sessions<'a> {
     }
 
     /// The slot is taken from the moment work is enqueued rather than from the moment it is
-    /// dispatched: two Runs queued in one Session would otherwise both be handed out.
+    /// dispatched: two Runs queued in one Session would otherwise both be handed out. A Run
+    /// that turned out unreachable never occupied it any longer than one that ended does.
     pub async fn run_holding_the_slot(&mut self, session: &Session) -> Result<Option<RunId>> {
         let holding = sqlx::query(
             "SELECT id
              FROM run
              WHERE session_id = ?
-               AND (state != ? OR environment_state = 'present')
+               AND (state NOT IN (?, ?) OR environment_state = 'present')
              ORDER BY enqueued_at, id
              LIMIT 1",
         )
         .bind(session.id.to_string())
         .bind(RunState::Ended.as_str())
+        .bind(RunState::Unreachable.as_str())
         .fetch_optional(&mut *self.connection)
         .await
         .with_context(|| format!("reading what run the session {} has", session.id))?;
@@ -326,6 +328,42 @@ impl<'a> Sessions<'a> {
         .with_context(|| format!("declaring the run {} blocked on {}", run.id, blocker.id))?;
 
         Ok(())
+    }
+
+    /// Every queued Run still waiting on this one as a blocker. Tolerance defaults to
+    /// all-must-succeed, so any one of them is enough to name a dependent whose tolerance a
+    /// blocker that just ended without succeeding can no longer meet.
+    pub async fn dependents_of(&mut self, blocker: RunId) -> Result<Vec<Run>> {
+        sqlx::query(runs_where!(
+            "state = ?
+               AND id IN (SELECT run_id FROM run_dependency WHERE blocker_id = ?)
+             ORDER BY enqueued_at, id"
+        ))
+        .bind(RunState::Queued.as_str())
+        .bind(blocker.to_string())
+        .fetch_all(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading what is still waiting on the run {blocker}"))?
+        .iter()
+        .map(run)
+        .collect()
+    }
+
+    /// A queued Run whose declared tolerance can no longer be met: terminal like an ended Run,
+    /// but never claimed and never carrying an exit status, because nothing failed. `false`
+    /// when the Run was no longer queued, so a claimant that got there first stands.
+    pub async fn mark_unreachable(&mut self, run: &Run) -> Result<bool> {
+        let marked =
+            sqlx::query("UPDATE run SET state = ?, ended_at = ? WHERE id = ? AND state = ?")
+                .bind(RunState::Unreachable.as_str())
+                .bind(Timestamp::now().to_string())
+                .bind(run.id.to_string())
+                .bind(RunState::Queued.as_str())
+                .execute(&mut *self.connection)
+                .await
+                .with_context(|| format!("marking the run {} unreachable", run.id))?;
+
+        Ok(marked.rows_affected() > 0)
     }
 
     /// One statement, so two claimants cannot both take the same Run: the Run this returns

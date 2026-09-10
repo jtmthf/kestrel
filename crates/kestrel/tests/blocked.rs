@@ -219,7 +219,11 @@ async fn a_run_blocked_on_a_failed_blocker_is_never_claimed() {
         harness.claim_run().await.is_none(),
         "a run blocked on a failed run was claimed"
     );
-    assert_eq!(harness.run(dependent.id).await.state, RunState::Queued);
+    assert_eq!(
+        harness.run(dependent.id).await.state,
+        RunState::Unreachable,
+        "a failed blocker did not make its dependent unreachable"
+    );
 
     let behind = harness.open_session("acme", "kestrel", "builder").await;
     let next_in_line = harness.enqueue_run(behind.id).await;
@@ -228,7 +232,7 @@ async fn a_run_blocked_on_a_failed_blocker_is_never_claimed() {
         Some(next_in_line.id),
         "a failed blocker let the run behind it take the next turn"
     );
-    assert_eq!(harness.run(dependent.id).await.state, RunState::Queued);
+    assert_eq!(harness.run(dependent.id).await.state, RunState::Unreachable);
 
     harness.teardown().await;
 }
