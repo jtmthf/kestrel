@@ -619,6 +619,23 @@ impl Harness {
         pool.close().await;
     }
 
+    /// Backdates when Events were recorded, the way `lease_until` backdates a lease: the only
+    /// way to watch the reaping sweep without waiting the retention window out.
+    pub async fn backdate_events(&self, to: &Timestamp) {
+        let database = self.data_dir().join("kestrel.db");
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
+            .await
+            .expect("the database should open");
+
+        sqlx::query("UPDATE event SET recorded_at = ?")
+            .bind(to.to_string())
+            .execute(&pool)
+            .await
+            .expect("the events should backdate");
+
+        pool.close().await;
+    }
+
     pub async fn environment_present(&self, run: &Run, environment: &str) {
         work::environment_present(&self.store, run, environment)
             .await

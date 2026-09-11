@@ -158,19 +158,64 @@ impl Integration {
 }
 
 /// A thing the external system says happened, as it arrives and before kestrel has decided
-/// whether it has seen it before.
+/// whether it has seen it before. A CloudEvent (ADR-0011), named in the vocabulary of the
+/// system that produced it, with the whole payload as `data`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Occurrence {
-    pub external_id: String,
-    pub kind: String,
-    pub actor: String,
-    pub subject: i64,
-    pub title: String,
-    pub url: String,
-    pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    pub occurred_at: Timestamp,
+    pub id: String,
+    pub source: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub subject: Option<String>,
+    pub time: Timestamp,
+    pub data: serde_json::Value,
+}
+
+impl Occurrence {
+    /// The value a producer's vocabulary kept inside the payload rather than as an attribute,
+    /// for everything an integration does not say in `id`, `source`, `type`, `subject` or
+    /// `time`.
+    pub fn field(&self, path: &[&str]) -> Option<&serde_json::Value> {
+        let mut at = &self.data;
+        for part in path {
+            at = at.get(*part)?;
+        }
+        Some(at)
+    }
+
+    pub fn actor(&self) -> Option<&str> {
+        self.field(&["actor", "login"])
+            .or_else(|| self.field(&["user", "login"]))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn label(&self) -> Option<&str> {
+        self.field(&["label", "name"])
+            .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.field(&["issue", "title"])
+            .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn url(&self) -> Option<&str> {
+        self.field(&["html_url"])
+            .or_else(|| self.field(&["issue", "html_url"]))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn message(&self) -> Option<&str> {
+        self.field(&["body"]).and_then(serde_json::Value::as_str)
+    }
+
+    /// The `#123` in the subject as a number, for the surfaces that are shaped around one.
+    pub fn subject_issue(&self) -> Option<i64> {
+        self.subject
+            .as_deref()
+            .and_then(|subject| subject.strip_prefix('#'))
+            .and_then(|number| number.parse().ok())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -178,7 +223,6 @@ pub struct Event {
     pub id: EventId,
     pub organization: OrganizationId,
     pub integration: IntegrationId,
-    pub repository: String,
     pub occurrence: Occurrence,
     pub recorded_at: Timestamp,
 }

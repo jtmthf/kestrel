@@ -20,6 +20,9 @@ use crate::work;
 
 const SWEEP: Duration = Duration::from_millis(500);
 
+/// How old an Event must be before the reaping sweep may forget it (ADR-0011).
+const RETENTION: jiff::SignedDuration = jiff::SignedDuration::from_secs(90 * 24 * 60 * 60);
+
 pub async fn sweeping(store: &Store, shutdown: &CancellationToken) -> Result<()> {
     let github = Github::dialling_out()?;
 
@@ -31,7 +34,8 @@ pub async fn sweeping(store: &Store, shutdown: &CancellationToken) -> Result<()>
         firing(store, shutdown),
         following_up(store, shutdown),
         sealing_idle_sessions(store, shutdown),
-        delivering(store, &github, shutdown)
+        delivering(store, &github, shutdown),
+        reaping(store, shutdown)
     )?;
 
     Ok(())
@@ -123,6 +127,36 @@ async fn delivering(store: &Store, github: &Github, shutdown: &CancellationToken
     }
 
     Ok(())
+}
+
+/// Reaping forgets an Event only once nothing depends on it, so the event a Session was
+/// opened by stays as long as the Session that looks back at it.
+async fn reaping(store: &Store, shutdown: &CancellationToken) -> Result<()> {
+    while !shutdown.is_cancelled() {
+        match reap(store).await {
+            Ok(forgotten) => {
+                if forgotten > 0 {
+                    info!(forgotten, "events older than the retention window expired");
+                }
+            }
+            Err(error) => warn!(%error, "a reaping found nothing it could do"),
+        }
+
+        tick(shutdown).await;
+    }
+
+    Ok(())
+}
+
+async fn reap(store: &Store) -> Result<usize> {
+    let mut tx = store.begin().await?;
+    let forgotten = tx
+        .integrations()
+        .reap_events(Timestamp::now() - RETENTION)
+        .await?;
+    tx.commit().await?;
+
+    Ok(forgotten)
 }
 
 /// Matching is its own sweep rather than the tail of a poll, so a control plane that stopped

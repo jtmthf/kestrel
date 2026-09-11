@@ -133,7 +133,6 @@ async fn the_event_is_the_sessions_first_transcript_entry() {
 
     let Entry::TriggerFired {
         trigger,
-        repository,
         occurrence,
     } = &transcript
         .first()
@@ -143,11 +142,14 @@ async fn the_event_is_the_sessions_first_transcript_entry() {
         panic!("the first entry is {}", transcript[0].entry);
     };
     assert_eq!(trigger, "ready");
-    assert_eq!(repository, REPOSITORY);
-    assert_eq!(occurrence.subject, 43);
-    assert_eq!(occurrence.label.as_deref(), Some(READY));
-    assert_eq!(occurrence.actor, "jtmthf");
-    assert_eq!(occurrence.title, "an issue numbered 43");
+    assert_eq!(
+        occurrence.source,
+        format!("https://github.com/{REPOSITORY}")
+    );
+    assert_eq!(occurrence.subject_issue(), Some(43));
+    assert_eq!(occurrence.label(), Some(READY));
+    assert_eq!(occurrence.actor(), Some("jtmthf"));
+    assert_eq!(occurrence.title(), Some("an issue numbered 43"));
 
     harness.teardown().await;
 }

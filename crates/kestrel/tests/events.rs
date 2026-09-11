@@ -6,7 +6,7 @@ mod support;
 
 use std::time::Duration;
 
-use jiff::SignedDuration;
+use jiff::{SignedDuration, Timestamp};
 use kestrel::domain::{Direction, Event};
 use support::github_stub::{self, GithubStub, ScriptedResponse};
 use support::{Harness, TOKEN};
@@ -82,14 +82,14 @@ async fn events_on_a_watched_repository_are_recorded_and_listed() {
     let events = recorded(&harness, 1).await;
 
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].repository, REPOSITORY);
-    assert_eq!(events[0].occurrence.kind, "labeled");
     assert_eq!(
-        events[0].occurrence.label.as_deref(),
-        Some("ready-for-agent")
+        events[0].occurrence.source,
+        format!("https://github.com/{REPOSITORY}")
     );
-    assert_eq!(events[0].occurrence.subject, 43);
-    assert_eq!(events[0].occurrence.actor, "jtmthf");
+    assert_eq!(events[0].occurrence.r#type, "com.github.issues.labeled");
+    assert_eq!(events[0].occurrence.label(), Some("ready-for-agent"));
+    assert_eq!(events[0].occurrence.subject_issue(), Some(43));
+    assert_eq!(events[0].occurrence.actor(), Some("jtmthf"));
 
     harness.teardown().await;
 }
@@ -233,7 +233,64 @@ async fn a_rate_limited_poll_loses_no_event_and_records_none_twice() {
     let events = recorded(&harness, 1).await;
 
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].occurrence.subject, 43);
+    assert_eq!(events[0].occurrence.subject_issue(), Some(43));
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn an_event_older_than_the_retention_window_is_reaped() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[labelled_ready(7, 43)]));
+    let harness = Harness::boot().await;
+    watching(&harness, &stub, BOTH).await;
+    recorded(&harness, 1).await;
+
+    harness
+        .backdate_events(&(Timestamp::now() - SignedDuration::from_secs(200 * 24 * 60 * 60)))
+        .await;
+
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        if harness.events("acme").await.is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the expired event was never reaped"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_payload_over_one_mebibyte_is_refused_rather_than_stored() {
+    let stub = GithubStub::start();
+    let oversized = "x".repeat(1024 * 1024 + 1);
+    stub.script_answer(
+        "GET",
+        "/issues/events?",
+        github_stub::page(&[labelled_ready(7, 43)]),
+    );
+    stub.script_answer(
+        "GET",
+        "/issues/comments?",
+        github_stub::page(&[github_stub::issue_comment(11, 43, "jack", &oversized)]),
+    );
+    let harness = Harness::boot().await;
+    watching(&harness, &stub, BOTH).await;
+
+    polled(&stub, 4).await;
+
+    let events = harness.events("acme").await;
+    assert_eq!(
+        events.len(),
+        1,
+        "the oversized payload was stored and is {} event(s) big",
+        events.len()
+    );
 
     harness.teardown().await;
 }

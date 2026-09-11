@@ -8,7 +8,7 @@ use directories::ProjectDirs;
 use jiff::SignedDuration;
 
 use crate::compute::{Docker, Driver, LocalExec};
-use crate::domain::{Direction, SessionId};
+use crate::domain::{Direction, EventId, SessionId};
 use crate::integration::github;
 use crate::log::Cursor;
 use crate::role::work::Dispatch;
@@ -293,6 +293,11 @@ pub enum EventCommand {
         /// How many to list at most
         #[arg(long, default_value_t = 50)]
         limit: usize,
+    },
+    /// Show one Event's whole envelope and payload
+    Show {
+        #[arg(long)]
+        id: EventId,
     },
 }
 
