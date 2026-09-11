@@ -14,9 +14,9 @@ use crate::domain::{Integration, Occurrence};
 pub const API: &str = "https://api.github.com";
 
 /// GitHub reports a label coming off an issue as an `unlabeled` event carrying that same
-/// label, so a trigger matching on the label alone would fire on both.
-pub const LABELLED: &str = "labeled";
-pub const COMMENTED: &str = "commented";
+/// label, so a trigger matching on the type and label alone would fire on both.
+pub const LABELLED: &str = "com.github.issues.labeled";
+pub const COMMENTED: &str = "com.github.issue_comment.created";
 
 const VERSION: &str = "2022-11-28";
 const PER_PAGE: usize = 100;
@@ -82,10 +82,10 @@ impl Github {
             // that overlaps the last one costs a recognition rather than a duplicate.
             let reached = reported
                 .iter()
-                .any(|event| Some(event.id) <= integration.polled_through);
+                .any(|event| Some(event_id(event)) <= integration.polled_through);
             for event in reported {
-                through = through.max(Some(event.id));
-                if let Some(occurrence) = occurrence(event) {
+                through = through.max(Some(event_id(&event)));
+                if let Some(occurrence) = occurrence(&event, integration) {
                     newest_first.push(occurrence);
                 }
             }
@@ -128,18 +128,22 @@ impl Github {
                 .map_err(|error| {
                     Refused::Failed(anyhow!("the comments on {repository} could not be polled: {error}"))
                 })?;
-            let reported: Vec<IssueComment> =
+            let reported: Vec<serde_json::Value> =
                 answered(response, &format!("the comments on {repository}")).await?;
             let short = reported.len() < PER_PAGE;
             let reached = reported
                 .iter()
-                .any(|comment| Some(comment.id) <= integration.comments_polled_through);
+                .any(|comment| Some(comment_id(comment)) <= integration.comments_polled_through);
 
             for comment in reported {
-                through = through.max(Some(comment.id));
-                if Some(comment.id) > integration.comments_polled_through
-                    && !comment.body.contains("<!-- kestrel run ")
-                    && let Some(occurrence) = comment.occurrence()
+                let id = comment_id(&comment);
+                through = through.max(Some(id));
+                if Some(id) > integration.comments_polled_through
+                    && !comment
+                        .get("body")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|body| body.contains("<!-- kestrel run "))
+                    && let Some(occurrence) = comment_occurrence(&comment, integration)
                 {
                     newest_first.push(occurrence);
                 }
@@ -163,7 +167,7 @@ impl Github {
         integration: &Integration,
         repository: &str,
         page: usize,
-    ) -> Result<Vec<IssueEvent>, Refused> {
+    ) -> Result<Vec<serde_json::Value>, Refused> {
         let response = self
             .request(
                 reqwest::Method::GET,
@@ -298,20 +302,68 @@ fn number(header: Option<&HeaderValue>) -> Option<i64> {
     header?.to_str().ok()?.trim().parse().ok()
 }
 
-fn occurrence(event: IssueEvent) -> Option<Occurrence> {
-    let issue = event.issue?;
+fn event_id(event: &serde_json::Value) -> i64 {
+    event
+        .get("id")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_default()
+}
+
+fn comment_id(comment: &serde_json::Value) -> i64 {
+    comment
+        .get("id")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_default()
+}
+
+/// One entry as GitHub's issue-events endpoint reports it, wrapped whole: `data` is exactly
+/// what the source said, and every attribute kestrel keeps is read out of it.
+fn occurrence(event: &serde_json::Value, integration: &Integration) -> Option<Occurrence> {
+    let issue = event.get("issue")?;
+    let event_kind = event.get("event")?.as_str()?;
 
     Some(Occurrence {
-        external_id: event.id.to_string(),
-        kind: event.event,
-        actor: event.actor.map(|actor| actor.login).unwrap_or_default(),
-        subject: issue.number,
-        title: issue.title,
-        url: issue.html_url,
-        label: event.label.map(|label| label.name),
-        message: None,
-        occurred_at: event.created_at.parse().ok()?,
+        id: event_id(event).to_string(),
+        source: source(integration),
+        r#type: if event_kind == "labeled" {
+            LABELLED.to_owned()
+        } else {
+            format!("com.github.issues.{event_kind}")
+        },
+        subject: Some(format!("#{}", issue.get("number")?.as_i64()?)),
+        time: event.get("created_at")?.as_str()?.parse().ok()?,
+        data: event.clone(),
     })
+}
+
+fn comment_occurrence(
+    comment: &serde_json::Value,
+    integration: &Integration,
+) -> Option<Occurrence> {
+    let issue = comment
+        .get("issue_url")?
+        .as_str()?
+        .rsplit('/')
+        .next()
+        .and_then(|number| {
+            let number = number.parse::<i64>().ok()?;
+            Some(format!("#{number}"))
+        })?;
+
+    Some(Occurrence {
+        id: format!("comment:{}", comment_id(comment)),
+        source: source(integration),
+        r#type: COMMENTED.to_owned(),
+        subject: Some(issue),
+        time: comment.get("created_at")?.as_str()?.parse().ok()?,
+        data: comment.clone(),
+    })
+}
+
+/// The external resource the event is about (ADR-0011): the repository, never the
+/// integration, so an event dedups identically however kestrel learned it.
+fn source(integration: &Integration) -> String {
+    format!("https://github.com/{}", integration.repository)
 }
 
 /// `owner/name`, checked here because it is pasted into a URL rather than sent as a parameter.
@@ -344,61 +396,6 @@ pub struct Comment {
 #[derive(Serialize)]
 struct Body<'a> {
     body: &'a str,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueEvent {
-    id: i64,
-    event: String,
-    created_at: String,
-    actor: Option<Actor>,
-    label: Option<Label>,
-    issue: Option<Issue>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Actor {
-    login: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Label {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Issue {
-    number: i64,
-    title: String,
-    html_url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueComment {
-    id: i64,
-    body: String,
-    created_at: String,
-    html_url: String,
-    issue_url: String,
-    user: Option<Actor>,
-}
-
-impl IssueComment {
-    fn occurrence(self) -> Option<Occurrence> {
-        let subject = self.issue_url.rsplit('/').next()?.parse().ok()?;
-
-        Some(Occurrence {
-            external_id: format!("comment:{}", self.id),
-            kind: COMMENTED.to_owned(),
-            actor: self.user.map(|user| user.login).unwrap_or_default(),
-            subject,
-            title: String::new(),
-            url: self.html_url,
-            label: None,
-            message: Some(self.body),
-            occurred_at: self.created_at.parse().ok()?,
-        })
-    }
 }
 
 #[cfg(test)]

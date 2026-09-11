@@ -19,7 +19,6 @@ pub enum Entry {
     /// entries never do.
     TriggerFired {
         trigger: String,
-        repository: String,
         occurrence: Occurrence,
     },
     RunStarted {
@@ -46,17 +45,17 @@ impl fmt::Display for Entry {
             }
             Entry::TriggerFired {
                 trigger,
-                repository,
                 occurrence,
             } => write!(
                 f,
-                "trigger fired  {trigger}  {} {} {} on {repository}#{}  {}  {}",
-                occurrence.actor,
-                occurrence.kind,
-                occurrence.label.as_deref().unwrap_or("-"),
-                occurrence.subject,
-                occurrence.title,
-                occurrence.url
+                "trigger fired  {trigger}  {} {} {} at {}{}  {}  {}",
+                occurrence.actor().unwrap_or_default(),
+                occurrence.r#type,
+                occurrence.label().unwrap_or_default(),
+                &occurrence.source,
+                occurrence.subject.as_deref().unwrap_or_default(),
+                occurrence.title().unwrap_or_default(),
+                occurrence.url().unwrap_or_default()
             ),
             Entry::RunStarted { run } => write!(f, "run started  {run}"),
             Entry::Said {

@@ -6,10 +6,11 @@ use anyhow::{Result, bail};
 use jiff::{SignedDuration, Timestamp};
 use tracing::warn;
 
-use crate::domain::{Direction, Event, Integration, IntegrationKind};
+use crate::domain::{Direction, Event, EventId, Integration, IntegrationKind};
 use crate::integration::credential::Token;
 use crate::integration::github::{Github, Refused};
 use crate::store::Store;
+use crate::store::integration::Recorded;
 
 pub struct Registration<'a> {
     pub organization: &'a str,
@@ -72,6 +73,10 @@ pub async fn events(store: &Store, organization: &str, limit: usize) -> Result<V
     tx.integrations().events(&organization, limit).await
 }
 
+pub async fn event(store: &Store, id: EventId) -> Result<Event> {
+    store.begin().await?.integrations().event(id).await
+}
+
 /// One poll of one Integration. Every Event the poll saw and what it was polled through are
 /// written in one transaction, so a poll that is interrupted before it commits leaves the
 /// Integration where it was and the next one covers the same window again — which costs
@@ -84,12 +89,20 @@ pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> 
 
     if let Ok(seen) = &seen {
         for occurrence in &seen.occurrences {
-            if tx
+            match tx
                 .integrations()
                 .record_event(integration, occurrence)
                 .await?
             {
-                recorded += 1;
+                Recorded::Recorded => recorded += 1,
+                Recorded::Already => {}
+                Recorded::Refused { because } => {
+                    warn!(
+                        integration = integration.name,
+                        %because,
+                        "an event was refused at ingest rather than stored"
+                    );
+                }
             }
         }
     } else if let Err(refused) = &seen {
@@ -101,12 +114,20 @@ pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> 
     }
     if let Ok(comments) = &comments {
         for occurrence in &comments.occurrences {
-            if tx
+            match tx
                 .integrations()
                 .record_event(integration, occurrence)
                 .await?
             {
-                recorded += 1;
+                Recorded::Recorded => recorded += 1,
+                Recorded::Already => {}
+                Recorded::Refused { because } => {
+                    warn!(
+                        integration = integration.name,
+                        %because,
+                        "an event was refused at ingest rather than stored"
+                    );
+                }
             }
         }
         tx.integrations()

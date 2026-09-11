@@ -72,8 +72,8 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
     let run = crate::session::post_in(
         &mut tx,
         &session,
-        &event.occurrence.actor,
-        event.occurrence.message.as_deref().unwrap_or_default(),
+        event.occurrence.actor().unwrap_or_default(),
+        event.occurrence.message().unwrap_or_default(),
     )
     .await?;
     tx.integrations().record_follow_up(event, &session).await?;

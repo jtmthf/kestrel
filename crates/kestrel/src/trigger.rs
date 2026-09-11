@@ -115,7 +115,6 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
             &session,
             Entry::TriggerFired {
                 trigger: trigger.name.clone(),
-                repository: event.repository.clone(),
                 occurrence: event.occurrence.clone(),
             },
         )
