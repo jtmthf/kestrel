@@ -475,6 +475,7 @@ async fn a_comment_backlog_larger_than_ten_pages_loses_nothing() {
         poll_due_at: None,
         polled_through: None,
         comments_polled_through: Some(99),
+        last_event_refusal: None,
     };
 
     let seen = Github::dialling_out()

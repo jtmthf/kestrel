@@ -15,11 +15,11 @@ CREATE TABLE trigger (
 -- why relabelling an issue twice opens one Session.
 CREATE TABLE firing (
     trigger_id TEXT NOT NULL REFERENCES trigger (id),
-    event_id TEXT NOT NULL REFERENCES event (id),
+    event_record_id TEXT NOT NULL REFERENCES event (record_id),
     organization_id TEXT NOT NULL REFERENCES organization (id),
     session_id TEXT NOT NULL REFERENCES session (id),
     fired_at TEXT NOT NULL,
-    PRIMARY KEY (trigger_id, event_id)
+    PRIMARY KEY (trigger_id, event_record_id)
 ) STRICT;
 
-ALTER TABLE session ADD COLUMN event_id TEXT REFERENCES event (id);
+ALTER TABLE session ADD COLUMN event_record_id TEXT REFERENCES event (record_id);

@@ -160,8 +160,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             if let Some(event) = session::started_by(&store, &session).await? {
                 println!(
                     "event         {}  {}",
-                    event.id,
-                    event.occurrence.url().unwrap_or_default()
+                    event.record_id, event.occurrence.source
                 );
             }
             if let Some(continues) = session.continues {
@@ -234,7 +233,21 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                         .join(","),
                     integration.interval
                 );
+                if let Some(refusal) = integration.last_event_refusal {
+                    println!(
+                        "  refused {} {} ({} bytes) at {}: {}",
+                        refusal.source,
+                        refusal.id,
+                        refusal.bytes,
+                        refusal.observed_at,
+                        refusal.reason
+                    );
+                }
             }
+        }
+        CliCommand::Integration(IntegrationCommand::AcknowledgeRefusal { name, organization }) => {
+            integration::acknowledge_event_refusal(&store, organization, name).await?;
+            println!("acknowledged");
         }
         CliCommand::Trigger(TriggerCommand::Declare {
             name,
@@ -300,8 +313,9 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
         }) => {
             for event in integration::events(&store, organization, *limit).await? {
                 println!(
-                    "{}  {}  {}  {}  {}  {}",
-                    event.id,
+                    "record={}  id={}  time={}  source={}  type={}  subject={}  data={}",
+                    event.record_id,
+                    event.occurrence.id,
                     event.occurrence.time,
                     event.occurrence.source,
                     event.occurrence.r#type,
@@ -310,13 +324,27 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 );
             }
         }
-        CliCommand::Event(EventCommand::Show { id }) => {
-            let event = integration::event(&store, *id).await?;
-            println!("event         {}", event.id);
+        CliCommand::Event(EventCommand::Show { record, json }) => {
+            let event = integration::event(&store, *record).await?;
+            if *json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "record": event.record_id,
+                        "organization": event.organization,
+                        "integration": event.integration,
+                        "recorded_at": event.recorded_at,
+                        "event": event.occurrence,
+                    }))?
+                );
+                return Ok(());
+            }
+            println!("record        {}", event.record_id);
             println!("organization  {}", event.organization);
             println!("integration   {}", event.integration);
             println!("id            {}", event.occurrence.id);
             println!("source        {}", event.occurrence.source);
+            println!("specversion   {}", event.occurrence.specversion);
             println!("type          {}", event.occurrence.r#type);
             println!(
                 "subject       {}",

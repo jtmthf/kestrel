@@ -14,6 +14,12 @@ Single-context layout (root `CONTEXT.md` + `docs/adr/`). See `docs/agents/domain
 
 ## Code
 
+### Compatibility
+
+Kestrel is an unreleased early prototype with no users. Do not preserve backward compatibility or
+write data migrations for existing installations; change the original schema and migrations
+directly until the project is released.
+
 ### Comments
 
 **The default is no comment.** Write one only where a reader would otherwise get it wrong:

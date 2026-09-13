@@ -146,10 +146,11 @@ async fn the_event_is_the_sessions_first_transcript_entry() {
         occurrence.source,
         format!("https://github.com/{REPOSITORY}")
     );
-    assert_eq!(occurrence.subject_issue(), Some(43));
-    assert_eq!(occurrence.label(), Some(READY));
-    assert_eq!(occurrence.actor(), Some("jtmthf"));
-    assert_eq!(occurrence.title(), Some("an issue numbered 43"));
+    let data = kestrel::integration::github::EventData::new(occurrence);
+    assert_eq!(data.subject_issue(), Some(43));
+    assert_eq!(data.label(), Some(READY));
+    assert_eq!(data.actor(), Some("jtmthf"));
+    assert_eq!(data.title(), Some("an issue numbered 43"));
 
     harness.teardown().await;
 }
@@ -166,7 +167,7 @@ async fn the_session_records_the_event_that_started_it() {
     let session = opened(&harness).await;
     let events = harness.events("acme").await;
 
-    assert_eq!(session.started_by, Some(events[0].id));
+    assert_eq!(session.started_by, Some(events[0].record_id));
 
     harness.teardown().await;
 }

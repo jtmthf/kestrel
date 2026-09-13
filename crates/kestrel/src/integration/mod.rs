@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use jiff::{SignedDuration, Timestamp};
 use tracing::warn;
 
-use crate::domain::{Direction, Event, EventId, Integration, IntegrationKind};
+use crate::domain::{Direction, Event, EventRecordId, Integration, IntegrationKind};
 use crate::integration::credential::Token;
 use crate::integration::github::{Github, Refused};
 use crate::store::Store;
@@ -66,6 +66,20 @@ pub async fn integrations(store: &Store, organization: &str) -> Result<Vec<Integ
     tx.integrations().all(&organization).await
 }
 
+pub async fn acknowledge_event_refusal(
+    store: &Store,
+    organization: &str,
+    name: &str,
+) -> Result<()> {
+    let mut tx = store.begin().await?;
+    let organization = tx.organizations().named(organization).await?;
+    let integration = tx.integrations().named(&organization, name).await?;
+    tx.integrations()
+        .acknowledge_event_refusal(&integration)
+        .await?;
+    tx.commit().await
+}
+
 pub async fn events(store: &Store, organization: &str, limit: usize) -> Result<Vec<Event>> {
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
@@ -73,7 +87,7 @@ pub async fn events(store: &Store, organization: &str, limit: usize) -> Result<V
     tx.integrations().events(&organization, limit).await
 }
 
-pub async fn event(store: &Store, id: EventId) -> Result<Event> {
+pub async fn event(store: &Store, id: EventRecordId) -> Result<Event> {
     store.begin().await?.integrations().event(id).await
 }
 
@@ -194,6 +208,7 @@ mod tests {
             poll_due_at: Some(Timestamp::now()),
             polled_through: None,
             comments_polled_through: None,
+            last_event_refusal: None,
         }
     }
 

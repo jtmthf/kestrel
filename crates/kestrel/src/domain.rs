@@ -42,7 +42,7 @@ identifiers!(
     SessionId,
     RunId,
     IntegrationId,
-    EventId,
+    EventRecordId,
     TriggerId,
 );
 
@@ -149,6 +149,7 @@ pub struct Integration {
     pub poll_due_at: Option<Timestamp>,
     pub polled_through: Option<i64>,
     pub comments_polled_through: Option<i64>,
+    pub last_event_refusal: Option<EventRefusal>,
 }
 
 impl Integration {
@@ -157,13 +158,11 @@ impl Integration {
     }
 }
 
-/// A thing the external system says happened, as it arrives and before kestrel has decided
-/// whether it has seen it before. A CloudEvent (ADR-0011), named in the vocabulary of the
-/// system that produced it, with the whole payload as `data`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Occurrence {
     pub id: String,
     pub source: String,
+    pub specversion: String,
     #[serde(rename = "type")]
     pub r#type: String,
     pub subject: Option<String>,
@@ -171,60 +170,22 @@ pub struct Occurrence {
     pub data: serde_json::Value,
 }
 
-impl Occurrence {
-    /// The value a producer's vocabulary kept inside the payload rather than as an attribute,
-    /// for everything an integration does not say in `id`, `source`, `type`, `subject` or
-    /// `time`.
-    pub fn field(&self, path: &[&str]) -> Option<&serde_json::Value> {
-        let mut at = &self.data;
-        for part in path {
-            at = at.get(*part)?;
-        }
-        Some(at)
-    }
-
-    pub fn actor(&self) -> Option<&str> {
-        self.field(&["actor", "login"])
-            .or_else(|| self.field(&["user", "login"]))
-            .and_then(serde_json::Value::as_str)
-    }
-
-    pub fn label(&self) -> Option<&str> {
-        self.field(&["label", "name"])
-            .and_then(serde_json::Value::as_str)
-    }
-
-    pub fn title(&self) -> Option<&str> {
-        self.field(&["issue", "title"])
-            .and_then(serde_json::Value::as_str)
-    }
-
-    pub fn url(&self) -> Option<&str> {
-        self.field(&["html_url"])
-            .or_else(|| self.field(&["issue", "html_url"]))
-            .and_then(serde_json::Value::as_str)
-    }
-
-    pub fn message(&self) -> Option<&str> {
-        self.field(&["body"]).and_then(serde_json::Value::as_str)
-    }
-
-    /// The `#123` in the subject as a number, for the surfaces that are shaped around one.
-    pub fn subject_issue(&self) -> Option<i64> {
-        self.subject
-            .as_deref()
-            .and_then(|subject| subject.strip_prefix('#'))
-            .and_then(|number| number.parse().ok())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Event {
-    pub id: EventId,
+    pub record_id: EventRecordId,
     pub organization: OrganizationId,
     pub integration: IntegrationId,
     pub occurrence: Occurrence,
     pub recorded_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventRefusal {
+    pub source: String,
+    pub id: String,
+    pub bytes: usize,
+    pub reason: String,
+    pub observed_at: Timestamp,
 }
 
 /// A Run's exit status on its way back to the surface that started the Session, composed when
@@ -234,7 +195,7 @@ pub struct Outcome {
     pub run: RunId,
     pub organization: OrganizationId,
     pub integration: IntegrationId,
-    pub event: EventId,
+    pub event: EventRecordId,
     pub subject: i64,
     pub body: String,
     /// Set before a request goes out and left set: a Run whose Session was told nothing yet
@@ -300,7 +261,7 @@ pub struct Session {
     pub last_active_at: Timestamp,
     pub sealed_at: Option<Timestamp>,
     pub continues: Option<SessionId>,
-    pub started_by: Option<EventId>,
+    pub started_by: Option<EventRecordId>,
 }
 
 impl Session {

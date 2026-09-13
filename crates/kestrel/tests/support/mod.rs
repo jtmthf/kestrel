@@ -322,6 +322,12 @@ impl Harness {
             .expect("the integrations should list")
     }
 
+    pub async fn acknowledge_event_refusal(&self, organization: &str, name: &str) {
+        integration::acknowledge_event_refusal(&self.store, organization, name)
+            .await
+            .expect("the event refusal should be acknowledged");
+    }
+
     pub async fn events(&self, organization: &str) -> Vec<Event> {
         integration::events(&self.store, organization, 100)
             .await
@@ -615,23 +621,6 @@ impl Harness {
             .execute(&pool)
             .await
             .expect("the run should end without an exit");
-
-        pool.close().await;
-    }
-
-    /// Backdates when Events were recorded, the way `lease_until` backdates a lease: the only
-    /// way to watch the reaping sweep without waiting the retention window out.
-    pub async fn backdate_events(&self, to: &Timestamp) {
-        let database = self.data_dir().join("kestrel.db");
-        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
-            .await
-            .expect("the database should open");
-
-        sqlx::query("UPDATE event SET recorded_at = ?")
-            .bind(to.to_string())
-            .execute(&pool)
-            .await
-            .expect("the events should backdate");
 
         pool.close().await;
     }

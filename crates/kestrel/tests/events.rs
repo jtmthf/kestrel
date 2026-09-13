@@ -6,7 +6,7 @@ mod support;
 
 use std::time::Duration;
 
-use jiff::{SignedDuration, Timestamp};
+use jiff::SignedDuration;
 use kestrel::domain::{Direction, Event};
 use support::github_stub::{self, GithubStub, ScriptedResponse};
 use support::{Harness, TOKEN};
@@ -87,9 +87,11 @@ async fn events_on_a_watched_repository_are_recorded_and_listed() {
         format!("https://github.com/{REPOSITORY}")
     );
     assert_eq!(events[0].occurrence.r#type, "com.github.issues.labeled");
-    assert_eq!(events[0].occurrence.label(), Some("ready-for-agent"));
-    assert_eq!(events[0].occurrence.subject_issue(), Some(43));
-    assert_eq!(events[0].occurrence.actor(), Some("jtmthf"));
+    assert_eq!(events[0].occurrence.specversion, "1.0");
+    let data = kestrel::integration::github::EventData::new(&events[0].occurrence);
+    assert_eq!(data.label(), Some("ready-for-agent"));
+    assert_eq!(data.subject_issue(), Some(43));
+    assert_eq!(data.actor(), Some("jtmthf"));
 
     harness.teardown().await;
 }
@@ -168,6 +170,42 @@ async fn two_polls_with_an_overlapping_window_record_each_event_once() {
         "the same two events were recorded {} times over",
         events.len()
     );
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn two_integrations_in_one_organization_record_one_producer_event() {
+    let first = GithubStub::start();
+    let second = GithubStub::start();
+    first.script(github_stub::page(&[labelled_ready(7, 43)]));
+    second.script(github_stub::page(&[labelled_ready(7, 43)]));
+    let harness = Harness::boot().await;
+    harness.declare_organization("acme").await;
+    harness
+        .register_integration(
+            "acme",
+            "first",
+            REPOSITORY,
+            &first.base_url(),
+            BOTH,
+            eagerly(),
+        )
+        .await;
+    harness
+        .register_integration(
+            "acme",
+            "second",
+            REPOSITORY,
+            &second.base_url(),
+            BOTH,
+            eagerly(),
+        )
+        .await;
+
+    polled(&first, 2).await;
+    polled(&second, 2).await;
+
+    assert_eq!(harness.events("acme").await.len(), 1);
 
     harness.teardown().await;
 }
@@ -233,34 +271,10 @@ async fn a_rate_limited_poll_loses_no_event_and_records_none_twice() {
     let events = recorded(&harness, 1).await;
 
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].occurrence.subject_issue(), Some(43));
-
-    harness.teardown().await;
-}
-
-#[tokio::test]
-async fn an_event_older_than_the_retention_window_is_reaped() {
-    let stub = GithubStub::start();
-    stub.script(github_stub::page(&[labelled_ready(7, 43)]));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
-    recorded(&harness, 1).await;
-
-    harness
-        .backdate_events(&(Timestamp::now() - SignedDuration::from_secs(200 * 24 * 60 * 60)))
-        .await;
-
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-    loop {
-        if harness.events("acme").await.is_empty() {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the expired event was never reaped"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    assert_eq!(
+        kestrel::integration::github::EventData::new(&events[0].occurrence).subject_issue(),
+        Some(43)
+    );
 
     harness.teardown().await;
 }
@@ -290,6 +304,21 @@ async fn a_payload_over_one_mebibyte_is_refused_rather_than_stored() {
         1,
         "the oversized payload was stored and is {} event(s) big",
         events.len()
+    );
+    let integration = &harness.integrations("acme").await[0];
+    let refusal = integration
+        .last_event_refusal
+        .as_ref()
+        .expect("the oversized event refusal should remain visible");
+    assert_eq!(refusal.id, "comment:11");
+    assert!(refusal.bytes > 1024 * 1024);
+    assert_eq!(integration.comments_polled_through, Some(11));
+
+    harness.acknowledge_event_refusal("acme", "github").await;
+    assert!(
+        harness.integrations("acme").await[0]
+            .last_event_refusal
+            .is_none()
     );
 
     harness.teardown().await;
@@ -386,6 +415,55 @@ async fn an_integration_and_what_it_discovers_belong_to_one_organization() {
         harness.events("globex").await.is_empty(),
         "another organization can see the events acme's integration discovered"
     );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn two_organizations_keep_separate_copies_of_the_same_producer_event() {
+    let acme = GithubStub::start();
+    let globex = GithubStub::start();
+    acme.script(github_stub::page(&[labelled_ready(7, 43)]));
+    globex.script(github_stub::page(&[labelled_ready(7, 43)]));
+    let harness = Harness::boot().await;
+    harness.declare_organization("acme").await;
+    harness.declare_organization("globex").await;
+    harness
+        .register_integration(
+            "acme",
+            "github",
+            REPOSITORY,
+            &acme.base_url(),
+            BOTH,
+            eagerly(),
+        )
+        .await;
+    harness
+        .register_integration(
+            "globex",
+            "github",
+            REPOSITORY,
+            &globex.base_url(),
+            BOTH,
+            eagerly(),
+        )
+        .await;
+
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        let acme_events = harness.events("acme").await;
+        let globex_events = harness.events("globex").await;
+        if acme_events.len() == 1 && globex_events.len() == 1 {
+            assert_eq!(acme_events[0].occurrence.id, globex_events[0].occurrence.id);
+            assert_ne!(acme_events[0].record_id, globex_events[0].record_id);
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "both organizations did not retain their own Event"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     harness.teardown().await;
 }

@@ -19,7 +19,7 @@ CREATE TABLE pending_message (
 ) STRICT;
 
 CREATE TABLE follow_up (
-    event_id TEXT PRIMARY KEY REFERENCES event (id),
+    event_record_id TEXT PRIMARY KEY REFERENCES event (record_id),
     organization_id TEXT NOT NULL REFERENCES organization (id),
     session_id TEXT NOT NULL REFERENCES session (id),
     received_at TEXT NOT NULL
