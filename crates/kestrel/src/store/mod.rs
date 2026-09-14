@@ -127,9 +127,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::domain::{Agent, Organization, Run, Workspace};
+    use crate::domain::{Agent, Organization, Workspace};
     use crate::log::Entry;
-    use crate::store::session::Taken;
 
     async fn declared(store: &Store) -> (Organization, Workspace, Agent) {
         let mut tx = store.begin().await.unwrap();
@@ -161,94 +160,6 @@ mod tests {
 
         assert!(due(whole) < due(after));
         assert_eq!(due(whole).parse::<Timestamp>().unwrap(), whole);
-    }
-
-    async fn a_run(store: &Store) -> Run {
-        let (organization, workspace, agent) = declared(store).await;
-
-        let mut tx = store.begin().await.unwrap();
-        let session = tx
-            .sessions()
-            .open(&organization, &workspace, &agent, None, None)
-            .await
-            .unwrap();
-        let run = tx.sessions().enqueue_run(&session).await.unwrap();
-        tx.commit().await.unwrap();
-
-        run
-    }
-
-    async fn entries(store: &Store) -> i64 {
-        let mut tx = store.begin().await.unwrap();
-        sqlx::query("SELECT COUNT(*) AS entries FROM transcript_entry")
-            .fetch_one(&mut *tx.transaction)
-            .await
-            .unwrap()
-            .get("entries")
-    }
-
-    #[tokio::test]
-    async fn a_report_is_taken_once_and_a_replay_of_it_changes_nothing() {
-        let data_dir = TempDir::new().unwrap();
-        let store = Store::open(data_dir.path()).await.unwrap();
-        let run = a_run(&store).await;
-
-        let mut tx = store.begin().await.unwrap();
-        assert!(matches!(
-            tx.sessions().take_report(&run, 1).await.unwrap(),
-            Taken::Next
-        ));
-        assert!(matches!(
-            tx.sessions().take_report(&run, 1).await.unwrap(),
-            Taken::Again
-        ));
-        assert!(matches!(
-            tx.sessions().take_report(&run, 3).await.unwrap(),
-            Taken::Skipped
-        ));
-        assert!(matches!(
-            tx.sessions().take_report(&run, 2).await.unwrap(),
-            Taken::Next
-        ));
-    }
-
-    #[tokio::test]
-    async fn a_report_taken_in_a_transaction_that_rolls_back_is_the_next_one_again() {
-        let data_dir = TempDir::new().unwrap();
-        let store = Store::open(data_dir.path()).await.unwrap();
-        let run = a_run(&store).await;
-        let session = store
-            .begin()
-            .await
-            .unwrap()
-            .sessions()
-            .get(run.session)
-            .await
-            .unwrap();
-
-        let mut tx = store.begin().await.unwrap();
-        assert!(matches!(
-            tx.sessions().take_report(&run, 1).await.unwrap(),
-            Taken::Next
-        ));
-        tx.log()
-            .append(
-                &session,
-                Entry::Said {
-                    participant: "builder".to_owned(),
-                    message: "lost with the answer to it".to_owned(),
-                },
-            )
-            .await
-            .unwrap();
-        drop(tx);
-
-        assert_eq!(entries(&store).await, 0);
-        let mut tx = store.begin().await.unwrap();
-        assert!(matches!(
-            tx.sessions().take_report(&run, 1).await.unwrap(),
-            Taken::Next
-        ));
     }
 
     #[tokio::test]

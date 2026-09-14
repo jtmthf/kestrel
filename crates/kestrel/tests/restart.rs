@@ -8,8 +8,9 @@ use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
+use kestrel::link::Instruction;
 use kestrel::link::credential::Secret;
-use kestrel::link::{Instruction, Report, Reported};
+use kestrel::work::{Report, Reported};
 use reqwest::StatusCode;
 use serde_json::json;
 use support::Harness;

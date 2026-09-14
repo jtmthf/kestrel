@@ -36,7 +36,7 @@ use kestrel::domain::{
 use kestrel::integration::{self, Registration};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
-use kestrel::log::{Cursor, Page, TranscriptEntry, Unreadable, Window};
+use kestrel::log::{Cursor, Entry, Page, TranscriptEntry, Unreadable, Window};
 use kestrel::provider::{self, Held};
 use kestrel::role::work::Dispatch;
 use kestrel::session;
@@ -512,7 +512,16 @@ impl Harness {
 
     pub async fn try_said(&self, run: &Run, message: &str) -> anyhow::Result<()> {
         let mut tx = self.store.begin().await.expect("a transaction");
-        work::said(&mut tx, run, message).await?;
+        let session = tx.sessions().get(run.session).await?;
+        tx.log()
+            .append(
+                &session,
+                Entry::Said {
+                    participant: session.agent.name.clone(),
+                    message: message.to_owned(),
+                },
+            )
+            .await?;
         tx.commit().await
     }
 

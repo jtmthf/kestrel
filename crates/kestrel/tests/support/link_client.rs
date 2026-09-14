@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use kestrel::domain::RunId;
-use kestrel::link::Reported;
 use kestrel::link::credential::Secret;
+use kestrel::work::Reported;
 use reqwest::{Client, Response, StatusCode, header};
 
 pub struct Link {

@@ -1,15 +1,17 @@
+use std::fmt;
+
 use anyhow::{Context as _, Result, bail};
 use jiff::{SignedDuration, Timestamp};
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
 
 use crate::domain::{Exit, Run, RunId, SessionId, Usage};
 use crate::integration::outcome;
 use crate::link::credential::Secret;
 use crate::log::{Entry, Message};
-use crate::store::session::PendingMessage;
+use crate::store::session::{PendingMessage, Taken};
 use crate::store::{Store, Tx};
 
-/// Long enough that no Run outlives its own credential at 0.1, short enough that one left
-/// behind by a control plane that died before ending its Run stops working on its own.
 const CREDENTIAL_LIFETIME: SignedDuration = SignedDuration::from_hours(12);
 
 /// An Environment cannot say it is alive while the control plane is not listening, so this
@@ -22,6 +24,78 @@ const LEASE: SignedDuration = SignedDuration::from_mins(2);
 pub struct Claimed {
     pub run: Run,
     pub credential: Secret,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Report {
+    Connected { version: String },
+    Heartbeat,
+    Started,
+    Model { model: String, offered: Vec<String> },
+    Said { message: String },
+    Used { usage: Usage },
+    Finished { exit: Exit },
+}
+
+impl Report {
+    const fn numbered(&self) -> bool {
+        match self {
+            Report::Connected { .. } | Report::Heartbeat => false,
+            Report::Started
+            | Report::Model { .. }
+            | Report::Said { .. }
+            | Report::Used { .. }
+            | Report::Finished { .. } => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Reported {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<i64>,
+    #[serde(flatten)]
+    pub report: Report,
+}
+
+#[derive(Debug)]
+pub enum ReportRefused {
+    MissingSequence,
+    SkippedSequence(i64),
+    Unavailable(anyhow::Error),
+}
+
+impl fmt::Display for ReportRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingSequence => {
+                write!(
+                    f,
+                    "a report of this kind carries a seq, and this one carries none"
+                )
+            }
+            Self::SkippedSequence(seq) => {
+                write!(f, "the report {seq} skips one this run has yet to report")
+            }
+            Self::Unavailable(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ReportRefused {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unavailable(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl From<anyhow::Error> for ReportRefused {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Unavailable(error)
+    }
 }
 
 pub async fn enqueue(store: &Store, session: SessionId) -> Result<Run> {
@@ -74,57 +148,79 @@ pub async fn runs(store: &Store, session: SessionId) -> Result<Vec<Run>> {
     tx.sessions().runs(&session).await
 }
 
-pub async fn heartbeat(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
-    tx.sessions()
-        .hold_lease(run, Timestamp::now() + LEASE)
-        .await
-}
+/// Report acceptance and its effects share one transaction so a failed append remains replayable (ADR-0004).
+pub async fn report(
+    store: &Store,
+    run: &Run,
+    Reported { seq, report }: Reported,
+) -> Result<(), ReportRefused> {
+    let mut tx = store.begin().await?;
 
-pub async fn started(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
-    if tx.sessions().record_started(run).await? {
-        let session = tx.sessions().get(run.session).await?;
-        tx.log()
-            .append(&session, Entry::RunStarted { run: run.id })
-            .await?;
+    if report.numbered() {
+        let seq = seq.ok_or(ReportRefused::MissingSequence)?;
+        match tx.sessions().take_report(run, seq).await? {
+            Taken::Next => {}
+            Taken::Again => {
+                debug!(run = %run.id, seq, "an environment reported something again");
+                return Ok(());
+            }
+            Taken::Skipped => return Err(ReportRefused::SkippedSequence(seq)),
+        }
     }
 
+    match report {
+        Report::Connected { version } => {
+            tx.sessions().record_connected(run, &version).await?;
+            info!(run = %run.id, version, "an environment reported itself connected");
+        }
+        Report::Heartbeat => {
+            tx.sessions()
+                .hold_lease(run, Timestamp::now() + LEASE)
+                .await?;
+            debug!(run = %run.id, "an environment reported itself alive");
+        }
+        Report::Started => {
+            if tx.sessions().record_started(run).await? {
+                let session = tx.sessions().get(run.session).await?;
+                tx.log()
+                    .append(&session, Entry::RunStarted { run: run.id })
+                    .await?;
+            }
+            info!(run = %run.id, "an environment reported its run started");
+        }
+        Report::Model { model, offered } => {
+            let session = tx.sessions().get(run.session).await?;
+            tx.sessions().record_model(run, &model).await?;
+            tx.agents()
+                .record_models_advertised(session.organization.id, &session.agent.runtime, &offered)
+                .await?;
+            info!(run = %run.id, model, "an environment reported the model its agent is on");
+        }
+        Report::Said { message } => {
+            let session = tx.sessions().get(run.session).await?;
+            tx.log()
+                .append(
+                    &session,
+                    Entry::Said {
+                        participant: session.agent.name.clone(),
+                        message,
+                    },
+                )
+                .await?;
+            info!(run = %run.id, "an environment reported what its agent said");
+        }
+        Report::Used { usage } => {
+            info!(run = %run.id, %usage, "an environment reported what its agent used");
+            tx.sessions().record_usage(run, &usage).await?;
+        }
+        Report::Finished { exit } => {
+            let stands = ending(&mut tx, run, exit).await?;
+            info!(run = %run.id, %stands, "an environment reported its run finished");
+        }
+    }
+    tx.commit().await?;
+
     Ok(())
-}
-
-/// An Environment reports what its agent said; who said it is the Session's to know.
-pub async fn said(tx: &mut Tx<'_>, run: &Run, message: &str) -> Result<()> {
-    let session = tx.sessions().get(run.session).await?;
-    tx.log()
-        .append(
-            &session,
-            Entry::Said {
-                participant: session.agent.name.clone(),
-                message: message.to_owned(),
-            },
-        )
-        .await?;
-
-    Ok(())
-}
-
-/// On the Run, so what executed is on the record whether the Agent named it or the runtime
-/// chose it; the models offered beside it are what a later declaration is refused against.
-pub async fn on_the_model(
-    tx: &mut Tx<'_>,
-    run: &Run,
-    model: &str,
-    offered: &[String],
-) -> Result<()> {
-    let session = tx.sessions().get(run.session).await?;
-    tx.sessions().record_model(run, model).await?;
-    tx.agents()
-        .record_models_advertised(session.organization.id, &session.agent.runtime, offered)
-        .await
-}
-
-/// On the Run, and in no Transcript: what an agent spent is not a Session's shared state.
-pub async fn used(tx: &mut Tx<'_>, run: &Run, usage: &Usage) -> Result<()> {
-    tx.sessions().record_usage(run, usage).await
 }
 
 pub async fn provisioned(store: &Store, run: &Run, environment: &str) -> Result<()> {
@@ -264,3 +360,6 @@ fn pending_entry(pending: Vec<PendingMessage>) -> Entry {
             .collect(),
     }
 }
+
+#[cfg(test)]
+mod tests;
