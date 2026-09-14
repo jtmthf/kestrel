@@ -301,16 +301,25 @@ kestrel event list --organization acme
 01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77  2026-09-07T14:01:58Z  jtmthf/kestrel  labeled  ready-for-agent  #44  0.1/21: The GitHub Trigger opens a Session from an Event
 ```
 
-Now the rule itself:
+Now the rule itself. What a trigger matches is a filter over the event's CloudEvents attributes —
+`exact`, `prefix` and `suffix` over `id`, `source`, `specversion`, `type`, `subject` and `time`,
+combined with `all`, `any` and `not` — and kestrel extends it with paths into the event's `data`:
 
 ```sh
 kestrel trigger declare ready \
   --organization acme \
-  --repository jtmthf/kestrel \
-  --label ready-for-agent \
+  --filter '{"all": [
+    {"exact": {"source": "https://github.com/jtmthf/kestrel"}},
+    {"exact": {"type": "com.github.issues.labeled"}},
+    {"exact": {"data.label.name": "ready-for-agent"}}
+  ]}' \
   --workspace kestrel \
   --agent builder
 ```
+
+A trigger names the repository by its `source`, never the integration that saw the event, so it
+keeps matching whether kestrel learned of the event by polling or by webhook. Comparisons are
+case-sensitive, and a path into `data` that leads nowhere matches nothing.
 
 Label an issue on that repository `ready-for-agent`, and within a poll interval there is a session
 open with a run queued behind it, which nobody asked for:
@@ -345,8 +354,26 @@ just applied; only the data comes from the event. Anyone who can label an issue 
 repository could otherwise pick which agent's credentials the run gets
 ([ADR-0013](docs/adr/0013-an-event-supplies-data-never-authority.md)).
 
-`kestrel trigger list --organization acme` shows what each one matches. Disabling stops one firing
-without forgetting what it was:
+`kestrel trigger list --organization acme` shows what each one matches, the way you would say it:
+
+```
+01a07c30-9b2e-7f41-a8c3-5d0e1f2a3b4c  ready  enabled  kestrel  builder  source = "https://github.com/jtmthf/kestrel" and type = "com.github.issues.labeled" and data.label.name = "ready-for-agent"
+```
+
+Before trusting a filter with work, ask it about an event kestrel already recorded. A test starts
+nothing, and it answers for any event in the organization — including one recorded before the
+trigger was declared, which the trigger itself will never fire for:
+
+```sh
+kestrel trigger test ready --organization acme --event 01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
+```
+
+```
+matches
+```
+
+An event several triggers match fires every one of them; no trigger is first, and matching one
+does not stop the next. Disabling stops one firing without forgetting what it was:
 
 ```sh
 kestrel trigger disable ready --organization acme
@@ -407,8 +434,7 @@ Pass `--as-participant NAME` to record a name other than `operator` in the trans
 Three things you will meet following this document.
 
 **GitHub is the only external system that starts work.** No Slack message, generic webhook or
-schedule does, a trigger matches a repository and a label and nothing else, and nothing decides
-which of several queued runs goes first.
+schedule does, and nothing decides which of several queued runs goes first.
 
 **A failed run is not retried.** kestrel retries dispatch and never work: a run that started and
 failed stays failed.

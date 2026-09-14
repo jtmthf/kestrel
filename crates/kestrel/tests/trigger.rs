@@ -8,10 +8,10 @@ mod support;
 use std::time::Duration;
 
 use jiff::SignedDuration;
-use kestrel::domain::{Direction, RunState, Session, TriggerState};
+use kestrel::domain::{Direction, Event, RunState, Session, TriggerState};
 use kestrel::log::Entry;
-use support::Harness;
 use support::github_stub::{self, GithubStub};
+use support::{Harness, labelled_on};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 const REPOSITORY: &str = "jtmthf/kestrel";
@@ -26,8 +26,8 @@ fn eagerly() -> SignedDuration {
 
 /// An organization with somewhere for work to happen and someone to do it. The Trigger is the
 /// one thing each test declares for itself.
-async fn an_organization(harness: &Harness) {
-    let organization = harness.declare_organization("acme").await;
+async fn an_organization(harness: &Harness, name: &str) {
+    let organization = harness.declare_organization(name).await;
     harness
         .declare_workspace(
             &organization,
@@ -58,21 +58,44 @@ async fn watching(harness: &Harness, stub: &GithubStub) {
 
 async fn ready_for_agent(harness: &Harness) {
     harness
-        .declare_trigger("acme", "ready", (REPOSITORY, READY), "kestrel", "builder")
+        .declare_trigger(
+            "acme",
+            "ready",
+            &labelled_on(REPOSITORY, READY),
+            "kestrel",
+            "builder",
+        )
         .await;
 }
 
-async fn opened(harness: &Harness) -> Session {
+async fn opened(harness: &Harness, count: usize) -> Vec<Session> {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
         let sessions = harness.sessions("acme").await;
-        if let Some(session) = sessions.into_iter().next() {
-            return session;
+        if sessions.len() >= count {
+            return sessions;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "no session was ever opened"
+            "{count} sessions were never opened, only {}",
+            sessions.len()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn recorded(harness: &Harness, count: usize) -> Vec<Event> {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+
+    loop {
+        let events = harness.events("acme").await;
+        if events.len() >= count {
+            return events;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the repository's events were never recorded"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -81,15 +104,7 @@ async fn opened(harness: &Harness) -> Session {
 /// Nothing opening is only observable by waiting for the sweeps that would have opened it, so
 /// this waits for the Event to be recorded and then for several sweeps to pass over it.
 async fn nothing_opens(harness: &Harness) {
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-
-    while harness.events("acme").await.is_empty() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the event was never recorded, so nothing was ever matched against"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    recorded(harness, 1).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     assert!(
@@ -103,11 +118,11 @@ async fn labelling_an_issue_opens_a_session_and_enqueues_a_run() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
     ready_for_agent(&harness).await;
     watching(&harness, &stub).await;
 
-    let session = opened(&harness).await;
+    let session = opened(&harness, 1).await.remove(0);
 
     assert_eq!(session.workspace.name, "kestrel");
     assert_eq!(session.agent.name, "builder");
@@ -124,11 +139,11 @@ async fn the_event_is_the_sessions_first_transcript_entry() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
     ready_for_agent(&harness).await;
     watching(&harness, &stub).await;
 
-    let session = opened(&harness).await;
+    let session = opened(&harness, 1).await.remove(0);
     let transcript = harness.transcript(session.id).await;
 
     let Entry::TriggerFired {
@@ -160,11 +175,11 @@ async fn the_session_records_the_event_that_started_it() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
     ready_for_agent(&harness).await;
     watching(&harness, &stub).await;
 
-    let session = opened(&harness).await;
+    let session = opened(&harness, 1).await.remove(0);
     let events = harness.events("acme").await;
 
     assert_eq!(session.started_by, Some(events[0].record_id));
@@ -181,11 +196,11 @@ async fn relabelling_the_same_issue_twice_opens_exactly_one_session() {
     stub.script(relabelled.clone());
     stub.script(relabelled);
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
     ready_for_agent(&harness).await;
     watching(&harness, &stub).await;
 
-    opened(&harness).await;
+    opened(&harness, 1).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let sessions = harness.sessions("acme").await;
@@ -200,6 +215,41 @@ async fn relabelling_the_same_issue_twice_opens_exactly_one_session() {
 }
 
 #[tokio::test]
+async fn an_event_matching_several_triggers_fires_every_one_of_them() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    ready_for_agent(&harness).await;
+    harness
+        .declare_trigger(
+            "acme",
+            "anything-labelled",
+            r#"{"exact": {"type": "com.github.issues.labeled"}}"#,
+            "kestrel",
+            "builder",
+        )
+        .await;
+    watching(&harness, &stub).await;
+
+    let sessions = opened(&harness, 2).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let mut fired = Vec::new();
+    for session in harness.sessions("acme").await {
+        if let Entry::TriggerFired { trigger, .. } = &harness.transcript(session.id).await[0].entry
+        {
+            fired.push(trigger.clone());
+        }
+    }
+    fired.sort();
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(fired, ["anything-labelled", "ready"]);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn an_event_matching_no_trigger_opens_nothing() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(
@@ -208,7 +258,7 @@ async fn an_event_matching_no_trigger_opens_nothing() {
         "needs-triage",
     )]));
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
     ready_for_agent(&harness).await;
     watching(&harness, &stub).await;
 
@@ -224,7 +274,7 @@ async fn taking_the_label_back_off_fires_nothing() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::unlabelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
     ready_for_agent(&harness).await;
     watching(&harness, &stub).await;
 
@@ -238,7 +288,7 @@ async fn a_disabled_trigger_fires_for_nothing() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
     ready_for_agent(&harness).await;
     harness.disable_trigger("acme", "ready").await;
     watching(&harness, &stub).await;
@@ -254,15 +304,17 @@ async fn a_disabled_trigger_fires_for_nothing() {
 async fn a_trigger_is_named_listed_and_disabled() {
     let stub = GithubStub::start();
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
     ready_for_agent(&harness).await;
     watching(&harness, &stub).await;
 
     let listed = harness.triggers("acme").await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "ready");
-    assert_eq!(listed[0].repository, REPOSITORY);
-    assert_eq!(listed[0].label, READY);
+    assert_eq!(
+        listed[0].filter.to_string(),
+        r#"source = "https://github.com/jtmthf/kestrel" and type = "com.github.issues.labeled" and data.label.name = "ready-for-agent""#
+    );
     assert_eq!(listed[0].workspace.name, "kestrel");
     assert_eq!(listed[0].agent.name, "builder");
     assert_eq!(listed[0].state, TriggerState::Enabled);
@@ -295,17 +347,10 @@ async fn a_trigger_never_fires_for_events_recorded_before_it_was_declared() {
         github_stub::labelled(7, 43, READY),
     ]));
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
     watching(&harness, &stub).await;
 
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-    while harness.events("acme").await.len() < 3 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the repository's history was never recorded"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    recorded(&harness, 3).await;
     ready_for_agent(&harness).await;
 
     nothing_opens(&harness).await;
@@ -314,16 +359,16 @@ async fn a_trigger_never_fires_for_events_recorded_before_it_was_declared() {
 }
 
 #[tokio::test]
-async fn a_trigger_fires_only_for_the_repository_it_names() {
+async fn a_trigger_fires_only_for_the_source_it_names() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
     harness
         .declare_trigger(
             "acme",
             "elsewhere",
-            ("globex/other", READY),
+            &labelled_on("globex/other", READY),
             "kestrel",
             "builder",
         )
@@ -335,18 +380,112 @@ async fn a_trigger_fires_only_for_the_repository_it_names() {
     harness.teardown().await;
 }
 
+/// A dry run asks only whether the filter matches, so it answers for an Event recorded before
+/// the Trigger was declared, which is the one kind a Trigger never fires for.
 #[tokio::test]
-async fn a_trigger_names_a_repository_as_owner_and_name() {
+async fn trigger_test_says_whether_a_recorded_event_matches() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    an_organization(&harness).await;
+    an_organization(&harness, "acme").await;
+    watching(&harness, &stub).await;
+    let event = recorded(&harness, 1).await.remove(0).record_id;
+
+    for (at, (filter, matches)) in [
+        (r#"{"exact": {"type": "com.github.issues.labeled"}}"#, true),
+        (
+            r#"{"exact": {"type": "com.github.issues.unlabeled"}}"#,
+            false,
+        ),
+        (r#"{"exact": {"type": "com.github.issues"}}"#, false),
+        (
+            r#"{"prefix": {"source": "https://github.com/jtmthf/"}}"#,
+            true,
+        ),
+        (
+            r#"{"prefix": {"source": "https://github.com/globex/"}}"#,
+            false,
+        ),
+        (r#"{"suffix": {"subject": "43"}}"#, true),
+        (r#"{"suffix": {"subject": "44"}}"#, false),
+        (r#"{"exact": {"data.label.name": "ready-for-agent"}}"#, true),
+        (r#"{"prefix": {"data.label.name": "ready-"}}"#, true),
+        (r#"{"prefix": {"data.label.name": "READY-"}}"#, false),
+        (r#"{"prefix": {"data.label.name": "ready_"}}"#, false),
+        (r#"{"suffix": {"data.label.name": "%agent"}}"#, false),
+        (r#"{"exact": {"data.issue.number": "43"}}"#, true),
+        (r#"{"exact": {"data.actor": "jtmthf"}}"#, false),
+        (r#"{"exact": {"data.milestone.title": "v1"}}"#, false),
+        (
+            r#"{"not": {"exact": {"data.milestone.title": "v1"}}}"#,
+            true,
+        ),
+        (
+            r#"{"not": {"exact": {"type": "com.github.issues.labeled"}}}"#,
+            false,
+        ),
+        (
+            r#"{"all": [
+                {"exact": {"type": "com.github.issues.labeled"}},
+                {"exact": {"data.label.name": "needs-triage"}}
+            ]}"#,
+            false,
+        ),
+        (
+            r#"{"any": [
+                {"exact": {"data.label.name": "needs-triage"}},
+                {"exact": {"data.label.name": "ready-for-agent"}}
+            ]}"#,
+            true,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("case-{at}");
+        harness
+            .declare_trigger("acme", &name, filter, "kestrel", "builder")
+            .await;
+
+        assert_eq!(
+            harness.test_trigger("acme", &name, event).await,
+            matches,
+            "{filter} should {}match the labelled event",
+            if matches { "" } else { "not " }
+        );
+    }
+
+    harness.teardown().await;
+}
+
+/// An Event belongs to one Organization, and another Organization's Trigger cannot so much as
+/// ask whether it would have matched.
+#[tokio::test]
+async fn a_trigger_is_tested_only_against_its_own_organizations_events() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    an_organization(&harness, "globex").await;
+    harness
+        .declare_trigger(
+            "globex",
+            "ready",
+            &labelled_on(REPOSITORY, READY),
+            "kestrel",
+            "builder",
+        )
+        .await;
+    watching(&harness, &stub).await;
+    let event = recorded(&harness, 1).await.remove(0).record_id;
 
     let refusal = harness
-        .try_declare_trigger("acme", "ready", ("kestrel", READY), "kestrel", "builder")
+        .try_test_trigger("globex", "ready", event)
         .await
-        .expect_err("a repository that is not owner/name should be refused");
+        .expect_err("another organization's event should be refused");
 
     assert!(
-        refusal.to_string().contains("owner/name"),
+        refusal.to_string().contains("globex"),
         "unhelpful refusal: {refusal}"
     );
 

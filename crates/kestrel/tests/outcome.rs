@@ -42,7 +42,13 @@ async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
     harness
-        .declare_trigger("acme", "ready", (REPOSITORY, READY), "kestrel", "builder")
+        .declare_trigger(
+            "acme",
+            "ready",
+            &support::labelled_on(REPOSITORY, READY),
+            "kestrel",
+            "builder",
+        )
         .await;
     harness
         .register_integration(
