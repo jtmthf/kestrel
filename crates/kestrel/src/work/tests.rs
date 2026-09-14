@@ -1,0 +1,323 @@
+use tempfile::TempDir;
+
+use super::*;
+use crate::agent;
+use crate::domain::RunState;
+use crate::log::Window;
+use crate::session;
+
+struct Fixture {
+    store: Store,
+    run: Run,
+    data_dir: TempDir,
+}
+
+impl Fixture {
+    async fn new() -> Self {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).await.unwrap();
+        let mut tx = store.begin().await.unwrap();
+        let organization = tx.organizations().declare("acme").await.unwrap();
+        tx.workspaces()
+            .declare(&organization, "kestrel", &[], "main")
+            .await
+            .unwrap();
+        tx.agents()
+            .declare(&organization, "builder", "opencode", None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let session = session::open(&store, "acme", "kestrel", "builder", None)
+            .await
+            .unwrap();
+        enqueue(&store, session.id).await.unwrap();
+        let run = claim(&store).await.unwrap().unwrap().run;
+
+        Self {
+            store,
+            run,
+            data_dir,
+        }
+    }
+
+    async fn report(&self, seq: Option<i64>, reported: Report) -> Result<(), ReportRefused> {
+        report(
+            &self.store,
+            &self.run,
+            Reported {
+                seq,
+                report: reported,
+            },
+        )
+        .await
+    }
+
+    async fn entries(&self) -> Vec<Entry> {
+        session::transcript(&self.store, self.run.session, None, Window::DEFAULT)
+            .await
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| entry.entry)
+            .collect()
+    }
+}
+
+fn usage() -> Usage {
+    Usage {
+        context_used: 1200,
+        context_size: 200_000,
+        cost: None,
+    }
+}
+
+#[tokio::test]
+async fn reports_record_the_run_and_its_transcript_together() {
+    let fixture = Fixture::new().await;
+    fixture.report(Some(1), Report::Started).await.unwrap();
+    fixture
+        .report(
+            Some(2),
+            Report::Model {
+                model: "scripted-mini".to_owned(),
+                offered: vec!["scripted-mini".to_owned(), "scripted-max".to_owned()],
+            },
+        )
+        .await
+        .unwrap();
+    fixture
+        .report(
+            Some(3),
+            Report::Said {
+                message: "done".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    fixture
+        .report(Some(4), Report::Used { usage: usage() })
+        .await
+        .unwrap();
+    fixture
+        .report(
+            Some(5),
+            Report::Finished {
+                exit: Exit::Succeeded,
+            },
+        )
+        .await
+        .unwrap();
+
+    let recorded = run(&fixture.store, fixture.run.id).await.unwrap();
+    assert_eq!(recorded.state, RunState::Ended);
+    assert_eq!(recorded.exit, Some(Exit::Succeeded));
+    assert!(recorded.started_at.is_some());
+    assert!(recorded.ended_at.is_some());
+    assert_eq!(recorded.model.as_deref(), Some("scripted-mini"));
+    assert_eq!(recorded.usage, Some(usage()));
+    assert_eq!(
+        fixture.entries().await,
+        vec![
+            Entry::ParticipantJoined {
+                participant: "builder".to_owned()
+            },
+            Entry::RunStarted {
+                run: fixture.run.id
+            },
+            Entry::Said {
+                participant: "builder".to_owned(),
+                message: "done".to_owned()
+            },
+            Entry::RunEnded {
+                run: fixture.run.id,
+                exit: Exit::Succeeded
+            },
+        ]
+    );
+    assert!(
+        agent::set_model(&fixture.store, "acme", "builder", Some("scripted-max"))
+            .await
+            .is_ok()
+    );
+    assert!(
+        agent::set_model(&fixture.store, "acme", "builder", Some("not-offered"))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn concurrent_reports_and_a_replay_after_reopening_the_store_append_once() {
+    let mut fixture = Fixture::new().await;
+    let said = Report::Said {
+        message: "said once".to_owned(),
+    };
+    let (first, second) = tokio::join!(
+        fixture.report(Some(1), said.clone()),
+        fixture.report(Some(1), said.clone()),
+    );
+    first.unwrap();
+    second.unwrap();
+    fixture.store = Store::open(fixture.data_dir.path()).await.unwrap();
+    fixture.report(Some(1), said).await.unwrap();
+    fixture
+        .report(
+            Some(2),
+            Report::Said {
+                message: "next".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        fixture.entries().await,
+        vec![
+            Entry::ParticipantJoined {
+                participant: "builder".to_owned()
+            },
+            Entry::Said {
+                participant: "builder".to_owned(),
+                message: "said once".to_owned()
+            },
+            Entry::Said {
+                participant: "builder".to_owned(),
+                message: "next".to_owned()
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn numbered_reports_refuse_missing_and_invalid_numbers_without_effects() {
+    let fixture = Fixture::new().await;
+    let before = fixture.entries().await;
+    for reported in [
+        Report::Started,
+        Report::Model {
+            model: "unexpected".to_owned(),
+            offered: vec!["unexpected".to_owned()],
+        },
+        Report::Said {
+            message: "refused".to_owned(),
+        },
+        Report::Used { usage: usage() },
+        Report::Finished {
+            exit: Exit::Succeeded,
+        },
+    ] {
+        assert!(matches!(
+            fixture.report(None, reported.clone()).await,
+            Err(ReportRefused::MissingSequence)
+        ));
+        for seq in [-1, 0, 2] {
+            assert!(
+                matches!(fixture.report(Some(seq), reported.clone()).await, Err(ReportRefused::SkippedSequence(number)) if number == seq)
+            );
+        }
+    }
+
+    let recorded = run(&fixture.store, fixture.run.id).await.unwrap();
+    assert_eq!(recorded.state, RunState::Active);
+    assert!(recorded.started_at.is_none());
+    assert!(recorded.model.is_none());
+    assert!(recorded.usage.is_none());
+    assert_eq!(fixture.entries().await, before);
+    fixture.report(Some(1), Report::Started).await.unwrap();
+    assert!(
+        run(&fixture.store, fixture.run.id)
+            .await
+            .unwrap()
+            .started_at
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn connection_and_heartbeat_reports_ignore_numbers_and_do_not_consume_them() {
+    let fixture = Fixture::new().await;
+    for seq in [None, Some(99)] {
+        let mut tx = fixture.store.begin().await.unwrap();
+        tx.sessions()
+            .hold_lease(
+                &fixture.run,
+                Timestamp::now() - SignedDuration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        fixture
+            .report(
+                seq,
+                Report::Connected {
+                    version: "test-version".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        let before = Timestamp::now();
+        fixture.report(seq, Report::Heartbeat).await.unwrap();
+        let recorded = run(&fixture.store, fixture.run.id).await.unwrap();
+        assert_eq!(recorded.connected.unwrap().version, "test-version");
+        assert!(recorded.lease_expires_at.unwrap() > before);
+    }
+    assert_eq!(fixture.entries().await.len(), 1);
+    fixture.report(Some(1), Report::Started).await.unwrap();
+    assert_eq!(fixture.entries().await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_failed_append_rolls_back_the_run_change_and_report_acceptance() {
+    let fixture = Fixture::new().await;
+    complete(&fixture.store, &fixture.run).await.unwrap();
+    session::seal(&fixture.store, fixture.run.session)
+        .await
+        .unwrap();
+    let before = fixture.entries().await;
+
+    let refused = fixture.report(Some(1), Report::Started).await.unwrap_err();
+    assert!(matches!(refused, ReportRefused::Unavailable(_)));
+    assert!(refused.to_string().contains("sealed"));
+    assert!(
+        run(&fixture.store, fixture.run.id)
+            .await
+            .unwrap()
+            .started_at
+            .is_none()
+    );
+    assert_eq!(fixture.entries().await, before);
+
+    fixture
+        .report(Some(1), Report::Used { usage: usage() })
+        .await
+        .unwrap();
+    assert_eq!(
+        run(&fixture.store, fixture.run.id).await.unwrap().usage,
+        Some(usage())
+    );
+}
+
+#[tokio::test]
+async fn a_finished_report_keeps_the_exit_that_already_stands() {
+    let fixture = Fixture::new().await;
+    let failed = fail(&fixture.store, &fixture.run, "lease expired")
+        .await
+        .unwrap();
+    let before = fixture.entries().await;
+
+    fixture
+        .report(
+            Some(1),
+            Report::Finished {
+                exit: Exit::Succeeded,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        run(&fixture.store, fixture.run.id).await.unwrap().exit,
+        Some(failed)
+    );
+    assert_eq!(fixture.entries().await, before);
+}

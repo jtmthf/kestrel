@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
-use kestrel::link::{Report, Reported};
+use kestrel::work::{Report, Reported};
 use support::Harness;
 use support::environment::Environment;
 use support::link_client::Link;
