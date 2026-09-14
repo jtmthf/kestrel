@@ -1,18 +1,18 @@
 use anyhow::{Context as _, Result};
 use jiff::Timestamp;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row, SqliteConnection};
+use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 use crate::domain::{
     Agent, Event, Organization, Session, Trigger, TriggerId, TriggerState, Workspace,
 };
+use crate::filter::{Attribute, Filter};
 use crate::store::{agent, integration, organization, workspace};
 
 macro_rules! triggers_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, organization_id, name, repository, label, workspace_id, agent_id, state,
-                    declared_at
+            "SELECT id, organization_id, name, filter, workspace_id, agent_id, state, declared_at
              FROM trigger
              WHERE ",
             $tail
@@ -33,17 +33,15 @@ impl<'a> Triggers<'a> {
         &mut self,
         organization: &Organization,
         name: &str,
-        matching: (&str, &str),
+        filter: &Filter,
         workspace: &Workspace,
         agent: &Agent,
     ) -> Result<Trigger> {
-        let (repository, label) = matching;
         let trigger = Trigger {
             id: TriggerId::generate(),
             organization: organization.clone(),
             name: name.to_owned(),
-            repository: repository.to_owned(),
-            label: label.to_owned(),
+            filter: filter.clone(),
             workspace: workspace.clone(),
             agent: agent.clone(),
             state: TriggerState::Enabled,
@@ -52,15 +50,13 @@ impl<'a> Triggers<'a> {
 
         sqlx::query(
             "INSERT INTO trigger
-                 (id, organization_id, name, repository, label, workspace_id, agent_id, state,
-                  declared_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (id, organization_id, name, filter, workspace_id, agent_id, state, declared_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
         .bind(organization.id.to_string())
         .bind(&trigger.name)
-        .bind(&trigger.repository)
-        .bind(&trigger.label)
+        .bind(trigger.filter.to_json().to_string())
         .bind(workspace.id.to_string())
         .bind(agent.id.to_string())
         .bind(trigger.state.as_str())
@@ -79,12 +75,7 @@ impl<'a> Triggers<'a> {
             .await
             .context("reading an organization's triggers")?;
 
-        let mut triggers = Vec::with_capacity(rows.len());
-        for row in &rows {
-            triggers.push(trigger(&mut *self.connection, row).await?);
-        }
-
-        Ok(triggers)
+        self.triggers(&rows).await
     }
 
     pub async fn named(&mut self, organization: &Organization, name: &str) -> Result<Trigger> {
@@ -117,52 +108,84 @@ impl<'a> Triggers<'a> {
         })
     }
 
+    pub async fn matches(&mut self, trigger: &Trigger, event: &Event) -> Result<bool> {
+        let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+        predicate(&mut query, &trigger.filter);
+        query
+            .push(" AS matched FROM event WHERE record_id = ")
+            .push_bind(event.record_id.to_string());
+
+        let row = query
+            .build()
+            .fetch_one(&mut *self.connection)
+            .await
+            .with_context(|| {
+                format!(
+                    "testing the trigger {} against the event {}",
+                    trigger.name, event.record_id
+                )
+            })?;
+
+        Ok(row.get("matched"))
+    }
+
     /// A Trigger fires at most once per Event, and the firing already recorded is what says
     /// so. An Event recorded before the Trigger was declared is never matched at all:
     /// declaring a Trigger is not how a repository's existing history gets worked.
-    pub async fn unfired_matches(
-        &mut self,
-        r#type: &str,
-        most: usize,
-    ) -> Result<Vec<(Trigger, Event)>> {
-        let rows = sqlx::query(
-            "SELECT trigger.id AS trigger_id, event.record_id AS event_record_id
-             FROM trigger
-             JOIN event
-               ON event.organization_id = trigger.organization_id
-              AND event.source = 'https://github.com/' || trigger.repository
-              AND event.type = ?
-              AND json_extract(event.data, '$.label.name') = trigger.label
-             WHERE trigger.state = ?
-               AND event.recorded_at >= trigger.declared_at
-               AND NOT EXISTS (
-                   SELECT 1 FROM firing
-                    WHERE firing.trigger_id = trigger.id
-                      AND firing.event_record_id = event.record_id
-               )
-             ORDER BY event.time, event.record_id
-             LIMIT ?",
-        )
-        .bind(r#type)
-        .bind(TriggerState::Enabled.as_str())
-        .bind(i64::try_from(most)?)
-        .fetch_all(&mut *self.connection)
-        .await
-        .context("reading which events a trigger has yet to fire for")?;
+    pub async fn unfired_matches(&mut self, most: usize) -> Result<Vec<(Trigger, Event)>> {
+        let rows = sqlx::query(triggers_where!("state = ? ORDER BY declared_at, id"))
+            .bind(TriggerState::Enabled.as_str())
+            .fetch_all(&mut *self.connection)
+            .await
+            .context("reading the triggers that fire")?;
 
-        let mut matched = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let trigger = with_id(
-                &mut *self.connection,
-                row.get::<String, _>("trigger_id").parse()?,
-            )
-            .await?;
-            let event = integration::event_with_id(
-                &mut *self.connection,
-                row.get::<String, _>("event_record_id").parse()?,
-            )
-            .await?;
-            matched.push((trigger, event));
+        let mut matched = Vec::new();
+        for trigger in self.triggers(&rows).await? {
+            let remaining = most - matched.len();
+            if remaining == 0 {
+                break;
+            }
+
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "SELECT record_id FROM event
+                 WHERE organization_id = ",
+            );
+            query
+                .push_bind(trigger.organization.id.to_string())
+                .push(" AND recorded_at >= ")
+                .push_bind(trigger.declared_at.to_string())
+                .push(
+                    " AND NOT EXISTS (
+                         SELECT 1 FROM firing
+                          WHERE firing.event_record_id = event.record_id
+                            AND firing.trigger_id = ",
+                )
+                .push_bind(trigger.id.to_string())
+                .push(") AND ");
+            predicate(&mut query, &trigger.filter);
+            query
+                .push(" ORDER BY time, record_id LIMIT ")
+                .push_bind(i64::try_from(remaining)?);
+
+            let events = query
+                .build()
+                .fetch_all(&mut *self.connection)
+                .await
+                .with_context(|| {
+                    format!(
+                        "reading which events the trigger {} has yet to fire for",
+                        trigger.name
+                    )
+                })?;
+
+            for row in &events {
+                let event = integration::event_with_id(
+                    &mut *self.connection,
+                    row.get::<String, _>("record_id").parse()?,
+                )
+                .await?;
+                matched.push((trigger.clone(), event));
+            }
         }
 
         Ok(matched)
@@ -195,16 +218,97 @@ impl<'a> Triggers<'a> {
 
         Ok(())
     }
+
+    async fn triggers(&mut self, rows: &[SqliteRow]) -> Result<Vec<Trigger>> {
+        let mut triggers = Vec::with_capacity(rows.len());
+        for row in rows {
+            triggers.push(trigger(&mut *self.connection, row).await?);
+        }
+
+        Ok(triggers)
+    }
 }
 
-async fn with_id(connection: &mut SqliteConnection, id: TriggerId) -> Result<Trigger> {
-    let row = sqlx::query(triggers_where!("id = ?"))
-        .bind(id.to_string())
-        .fetch_optional(&mut *connection)
-        .await?
-        .with_context(|| format!("no trigger {id}"))?;
+/// Every comparison is coalesced to false, because an attribute an Event lacks is NULL and
+/// `NOT NULL` would leave `not` matching nothing rather than everything.
+fn predicate(query: &mut QueryBuilder<Sqlite>, filter: &Filter) {
+    match filter {
+        Filter::Exact(attribute, value) => {
+            query.push("COALESCE(");
+            operand(query, attribute);
+            query.push(" = ").push_bind(value.clone()).push(", 0)");
+        }
+        // LIKE would fold ASCII case and read `%` and `_` in the value as wildcards.
+        Filter::Prefix(attribute, value) => {
+            query.push("COALESCE(substr(");
+            operand(query, attribute);
+            query
+                .push(", 1, length(")
+                .push_bind(value.clone())
+                .push(")) = ")
+                .push_bind(value.clone())
+                .push(", 0)");
+        }
+        Filter::Suffix(attribute, value) => {
+            query.push("COALESCE(substr(");
+            operand(query, attribute);
+            query
+                .push(", -length(")
+                .push_bind(value.clone())
+                .push(")) = ")
+                .push_bind(value.clone())
+                .push(", 0)");
+        }
+        Filter::All(filters) => joined(query, filters, " AND "),
+        Filter::Any(filters) => joined(query, filters, " OR "),
+        Filter::Not(filter) => {
+            query.push("NOT (");
+            predicate(query, filter);
+            query.push(")");
+        }
+    }
+}
 
-    trigger(connection, &row).await
+fn joined(query: &mut QueryBuilder<Sqlite>, filters: &[Filter], by: &str) {
+    query.push("(");
+    for (at, filter) in filters.iter().enumerate() {
+        if at > 0 {
+            query.push(by);
+        }
+        predicate(query, filter);
+    }
+    query.push(")");
+}
+
+/// A string in `data` compares as itself, and an integer or a boolean as the text it is
+/// written as; anything else, and a path that leads nowhere, compares as absent.
+fn operand(query: &mut QueryBuilder<Sqlite>, attribute: &Attribute) {
+    let column = match attribute {
+        Attribute::Id => "event.id",
+        Attribute::Source => "event.source",
+        Attribute::Specversion => "event.specversion",
+        Attribute::Type => "event.type",
+        Attribute::Subject => "event.subject",
+        Attribute::Time => "event.time",
+        Attribute::Data(path) => {
+            let path = format!(
+                "${}",
+                path.iter()
+                    .map(|key| format!(".\"{key}\""))
+                    .collect::<String>()
+            );
+            query
+                .push("CASE json_type(event.data, ")
+                .push_bind(path.clone())
+                .push(") WHEN 'text' THEN json_extract(event.data, ")
+                .push_bind(path.clone())
+                .push(") WHEN 'integer' THEN CAST(json_extract(event.data, ")
+                .push_bind(path)
+                .push(") AS TEXT) WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' END");
+            return;
+        }
+    };
+    query.push(column);
 }
 
 async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<Trigger> {
@@ -227,8 +331,7 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
         id: row.get::<String, _>("id").parse()?,
         organization,
         name: row.get("name"),
-        repository: row.get("repository"),
-        label: row.get("label"),
+        filter: row.get::<String, _>("filter").parse()?,
         workspace,
         agent,
         state: row.get::<String, _>("state").parse()?,

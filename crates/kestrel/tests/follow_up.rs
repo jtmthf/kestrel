@@ -48,7 +48,7 @@ async fn watching(harness: &Harness, stub: &GithubStub) {
         .declare_trigger(
             "acme",
             "ready",
-            (REPOSITORY, "ready-for-agent"),
+            &support::labelled_on(REPOSITORY, "ready-for-agent"),
             "kestrel",
             "builder",
         )

@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 
 use crate::domain::{Event, EventRecordId, RunId, SessionId, Trigger, TriggerState};
 use crate::fanout::{self, Change};
-use crate::integration::github;
+use crate::filter::Filter;
 use crate::log::Entry;
 use crate::store::Store;
 
@@ -16,8 +16,7 @@ const AT_A_TIME: usize = 32;
 pub struct Declaration<'a> {
     pub organization: &'a str,
     pub name: &'a str,
-    pub repository: &'a str,
-    pub label: &'a str,
+    pub filter: &'a Filter,
     pub workspace: &'a str,
     pub agent: &'a str,
 }
@@ -30,11 +29,6 @@ pub struct Fired {
 }
 
 pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trigger> {
-    if declaration.label.is_empty() {
-        bail!("a trigger matches a label: name the one it fires on");
-    }
-    let repository = github::repository(declaration.repository)?;
-
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(declaration.organization).await?;
     let workspace = tx
@@ -47,7 +41,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
         .declare(
             &organization,
             declaration.name,
-            (&repository, declaration.label),
+            declaration.filter,
             &workspace,
             &agent,
         )
@@ -71,6 +65,29 @@ pub async fn show(store: &Store, organization: &str, name: &str) -> Result<Trigg
     tx.triggers().named(&organization, name).await
 }
 
+/// Whether the filter matches, and nothing else: an Event recorded before the Trigger was
+/// declared, or one it already fired for, is still worth asking about.
+pub async fn test(
+    store: &Store,
+    organization: &str,
+    name: &str,
+    event: EventRecordId,
+) -> Result<bool> {
+    let mut tx = store.begin().await?;
+    let organization = tx.organizations().named(organization).await?;
+    let trigger = tx.triggers().named(&organization, name).await?;
+    let event = tx.integrations().event(event).await?;
+    if event.organization != organization.id {
+        bail!(
+            "no event {} in the organization {}",
+            event.record_id,
+            organization.name
+        );
+    }
+
+    tx.triggers().matches(&trigger, &event).await
+}
+
 pub async fn disable(store: &Store, organization: &str, name: &str) -> Result<Trigger> {
     set(store, organization, name, TriggerState::Disabled).await
 }
@@ -83,9 +100,7 @@ pub async fn enable(store: &Store, organization: &str, name: &str) -> Result<Tri
 pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
     let matched = {
         let mut tx = store.begin().await?;
-        tx.triggers()
-            .unfired_matches(github::LABELLED, AT_A_TIME)
-            .await?
+        tx.triggers().unfired_matches(AT_A_TIME).await?
     };
 
     let mut fired = Vec::with_capacity(matched.len());

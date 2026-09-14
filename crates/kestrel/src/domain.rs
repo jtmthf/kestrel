@@ -6,6 +6,7 @@ use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::filter::Filter;
 use crate::integration::credential::Token;
 
 macro_rules! identifiers {
@@ -242,8 +243,7 @@ pub struct Trigger {
     pub id: TriggerId,
     pub organization: Organization,
     pub name: String,
-    pub repository: String,
-    pub label: String,
+    pub filter: Filter,
     pub workspace: Workspace,
     pub agent: Agent,
     pub state: TriggerState,

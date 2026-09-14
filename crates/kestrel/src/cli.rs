@@ -9,6 +9,7 @@ use jiff::SignedDuration;
 
 use crate::compute::{Docker, Driver, LocalExec};
 use crate::domain::{Direction, EventRecordId, SessionId};
+use crate::filter::Filter;
 use crate::integration::github;
 use crate::log::Cursor;
 use crate::role::work::Dispatch;
@@ -200,18 +201,27 @@ pub enum TriggerCommand {
         /// The Organization it belongs to
         #[arg(long)]
         organization: String,
-        /// The repository whose Events it matches, as owner/name
-        #[arg(long, value_name = "OWNER/NAME")]
-        repository: String,
-        /// The label an issue is labelled with for it to fire
-        #[arg(long)]
-        label: String,
+        /// The Events it matches: a CloudEvents filter of exact, prefix, suffix, all, any and
+        /// not over id, source, specversion, type, subject and time, which kestrel extends to
+        /// reach into data.<path>
+        #[arg(long, value_name = "JSON")]
+        filter: Filter,
         /// The Workspace a firing's work happens against
         #[arg(long)]
         workspace: String,
         /// The Agent a firing starts work with
         #[arg(long)]
         agent: String,
+    },
+    /// Say whether a Trigger matches an Event already recorded, starting no work
+    Test {
+        /// The name it is referred to by
+        name: String,
+        #[arg(long)]
+        organization: String,
+        /// The Event's record, as `event list` prints it
+        #[arg(long, value_name = "RECORD")]
+        event: EventRecordId,
     },
     /// List every Trigger in an Organization, and what each matches
     List {

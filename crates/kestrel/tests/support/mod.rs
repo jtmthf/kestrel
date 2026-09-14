@@ -30,8 +30,8 @@ use jiff::{SignedDuration, Timestamp};
 use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
-    Agent, Direction, Event, Integration, IntegrationKind, Organization, Run, RunId, Session,
-    SessionId, Trigger, Workspace,
+    Agent, Direction, Event, EventRecordId, Integration, IntegrationKind, Organization, Run, RunId,
+    Session, SessionId, Trigger, Workspace,
 };
 use kestrel::integration::{self, Registration};
 use kestrel::link::credential::Secret;
@@ -54,6 +54,15 @@ pub const TOKEN: &str = "ghp_kestrel_should_never_say_this_out_loud";
 /// scripted agent's `Confides` script says it can see this one.
 pub const PROVIDER_KEY: &str = "SCRIPTED_API_KEY";
 pub const A_PROVIDER_KEY: &str = "a-provider-key";
+
+pub fn labelled_on(repository: &str, label: &str) -> String {
+    serde_json::json!({"all": [
+        {"exact": {"source": format!("https://github.com/{repository}")}},
+        {"exact": {"type": "com.github.issues.labeled"}},
+        {"exact": {"data.label.name": label}},
+    ]})
+    .to_string()
+}
 
 pub struct Harness {
     data_dir: TempDir,
@@ -338,36 +347,37 @@ impl Harness {
         &self,
         organization: &str,
         name: &str,
-        matching: (&str, &str),
+        filter: &str,
         workspace: &str,
         agent: &str,
     ) -> Trigger {
-        self.try_declare_trigger(organization, name, matching, workspace, agent)
-            .await
-            .expect("the trigger should declare")
-    }
-
-    pub async fn try_declare_trigger(
-        &self,
-        organization: &str,
-        name: &str,
-        matching: (&str, &str),
-        workspace: &str,
-        agent: &str,
-    ) -> anyhow::Result<Trigger> {
-        let (repository, label) = matching;
         trigger::declare(
             &self.store,
             Declaration {
                 organization,
                 name,
-                repository,
-                label,
+                filter: &filter.parse().expect("the filter should parse"),
                 workspace,
                 agent,
             },
         )
         .await
+        .expect("the trigger should declare")
+    }
+
+    pub async fn test_trigger(&self, organization: &str, name: &str, event: EventRecordId) -> bool {
+        self.try_test_trigger(organization, name, event)
+            .await
+            .expect("the trigger should test")
+    }
+
+    pub async fn try_test_trigger(
+        &self,
+        organization: &str,
+        name: &str,
+        event: EventRecordId,
+    ) -> anyhow::Result<bool> {
+        trigger::test(&self.store, organization, name, event).await
     }
 
     pub async fn triggers(&self, organization: &str) -> Vec<Trigger> {

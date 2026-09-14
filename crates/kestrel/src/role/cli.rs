@@ -252,8 +252,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
         CliCommand::Trigger(TriggerCommand::Declare {
             name,
             organization,
-            repository,
-            label,
+            filter,
             workspace,
             agent,
         }) => {
@@ -262,8 +261,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 Declaration {
                     organization,
                     name,
-                    repository,
-                    label,
+                    filter,
                     workspace,
                     agent,
                 },
@@ -274,15 +272,25 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
         CliCommand::Trigger(TriggerCommand::List { organization }) => {
             for trigger in trigger::triggers(&store, organization).await? {
                 println!(
-                    "{}  {}  {}  {}  {}  {}  {}",
+                    "{}  {}  {}  {}  {}  {}",
                     trigger.id,
                     trigger.name,
                     trigger.state,
-                    trigger.repository,
-                    trigger.label,
                     trigger.workspace.name,
-                    trigger.agent.name
+                    trigger.agent.name,
+                    trigger.filter
                 );
+            }
+        }
+        CliCommand::Trigger(TriggerCommand::Test {
+            name,
+            organization,
+            event,
+        }) => {
+            if trigger::test(&store, organization, name, *event).await? {
+                println!("matches");
+            } else {
+                println!("does not match");
             }
         }
         CliCommand::Trigger(TriggerCommand::Show { name, organization }) => {
@@ -291,10 +299,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!("organization  {}", trigger.organization.name);
             println!("name          {}", trigger.name);
             println!("state         {}", trigger.state);
-            println!(
-                "matches       {} labelled {}",
-                trigger.repository, trigger.label
-            );
+            println!("matches       {}", trigger.filter);
             println!("workspace     {}", trigger.workspace.name);
             println!("agent         {}", trigger.agent.name);
             println!("declared      {}", trigger.declared_at);
