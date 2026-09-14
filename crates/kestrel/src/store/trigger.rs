@@ -4,7 +4,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 use crate::domain::{
-    Agent, Event, Organization, Session, Trigger, TriggerId, TriggerState, Workspace,
+    Agent, Event, Organization, Session, Templates, Trigger, TriggerId, TriggerState, Workspace,
 };
 use crate::filter::{Attribute, Filter};
 use crate::store::{agent, integration, organization, workspace};
@@ -12,7 +12,8 @@ use crate::store::{agent, integration, organization, workspace};
 macro_rules! triggers_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, organization_id, name, filter, workspace_id, agent_id, state, declared_at
+            "SELECT id, organization_id, name, filter, brief, branch, correlation, workspace_id,
+                    agent_id, state, declared_at
              FROM trigger
              WHERE ",
             $tail
@@ -34,6 +35,7 @@ impl<'a> Triggers<'a> {
         organization: &Organization,
         name: &str,
         filter: &Filter,
+        templates: &Templates,
         workspace: &Workspace,
         agent: &Agent,
     ) -> Result<Trigger> {
@@ -42,6 +44,7 @@ impl<'a> Triggers<'a> {
             organization: organization.clone(),
             name: name.to_owned(),
             filter: filter.clone(),
+            templates: templates.clone(),
             workspace: workspace.clone(),
             agent: agent.clone(),
             state: TriggerState::Enabled,
@@ -50,13 +53,17 @@ impl<'a> Triggers<'a> {
 
         sqlx::query(
             "INSERT INTO trigger
-                 (id, organization_id, name, filter, workspace_id, agent_id, state, declared_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 (id, organization_id, name, filter, brief, branch, correlation, workspace_id,
+                  agent_id, state, declared_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
         .bind(organization.id.to_string())
         .bind(&trigger.name)
         .bind(trigger.filter.to_json().to_string())
+        .bind(templates.brief.to_string())
+        .bind(templates.branch.as_ref().map(ToString::to_string))
+        .bind(templates.correlation.as_ref().map(ToString::to_string))
         .bind(workspace.id.to_string())
         .bind(agent.id.to_string())
         .bind(trigger.state.as_str())
@@ -332,6 +339,17 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
         organization,
         name: row.get("name"),
         filter: row.get::<String, _>("filter").parse()?,
+        templates: Templates {
+            brief: row.get::<String, _>("brief").parse()?,
+            branch: row
+                .get::<Option<String>, _>("branch")
+                .map(|branch| branch.parse())
+                .transpose()?,
+            correlation: row
+                .get::<Option<String>, _>("correlation")
+                .map(|correlation| correlation.parse())
+                .transpose()?,
+        },
         workspace,
         agent,
         state: row.get::<String, _>("state").parse()?,

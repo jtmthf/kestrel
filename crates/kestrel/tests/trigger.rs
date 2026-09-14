@@ -10,8 +10,9 @@ use std::time::Duration;
 use jiff::SignedDuration;
 use kestrel::domain::{Direction, Event, RunState, Session, TriggerState};
 use kestrel::log::Entry;
+use kestrel::trigger::Rendered;
 use support::github_stub::{self, GithubStub};
-use support::{Harness, labelled_on};
+use support::{Harness, labelled_on, templates};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 const REPOSITORY: &str = "jtmthf/kestrel";
@@ -448,7 +449,7 @@ async fn trigger_test_says_whether_a_recorded_event_matches() {
             .await;
 
         assert_eq!(
-            harness.test_trigger("acme", &name, event).await,
+            harness.test_trigger("acme", &name, event).await.matches,
             matches,
             "{filter} should {}match the labelled event",
             if matches { "" } else { "not " }
@@ -487,6 +488,116 @@ async fn a_trigger_is_tested_only_against_its_own_organizations_events() {
     assert!(
         refusal.to_string().contains("globex"),
         "unhelpful refusal: {refusal}"
+    );
+
+    harness.teardown().await;
+}
+
+/// What a firing would hand its Session is visible before anything runs.
+#[tokio::test]
+async fn trigger_test_renders_the_brief_and_resolves_the_branch() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    watching(&harness, &stub).await;
+    let event = recorded(&harness, 1).await.remove(0).record_id;
+    harness
+        .declare_trigger_rendering(
+            "acme",
+            "ready",
+            &labelled_on(REPOSITORY, READY),
+            "kestrel",
+            "builder",
+            &templates(
+                "Work {{ event.data.issue.html_url }}: {{ event.data.issue.title }}",
+                Some("kestrel/issue-{{ event.data.issue.number }}"),
+                Some("{{ event.source }}{{ event.subject }}"),
+            ),
+        )
+        .await;
+
+    let tested = harness.test_trigger("acme", "ready", event).await;
+
+    assert!(tested.matches);
+    assert_eq!(
+        tested.rendered.expect("the trigger should render"),
+        Rendered {
+            brief: "Work https://github.com/jtmthf/kestrel/issues/43: an issue numbered 43"
+                .to_owned(),
+            branch: "kestrel/issue-43".to_owned(),
+            correlation: Some("https://github.com/jtmthf/kestrel#43".to_owned()),
+        }
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_trigger_that_renders_no_branch_resolves_the_workspaces() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    watching(&harness, &stub).await;
+    let event = recorded(&harness, 1).await.remove(0).record_id;
+    ready_for_agent(&harness).await;
+
+    let rendered = harness
+        .test_trigger("acme", "ready", event)
+        .await
+        .rendered
+        .expect("the trigger should render");
+
+    assert_eq!(rendered.branch, "main");
+    assert_eq!(rendered.correlation, None);
+
+    harness.teardown().await;
+}
+
+/// A labelled issue has no pull request, and a brief that assumes one is a failure rather
+/// than a run that starts on nothing.
+#[tokio::test]
+async fn a_brief_that_cannot_render_fails_naming_the_trigger_and_the_event() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    watching(&harness, &stub).await;
+    let event = recorded(&harness, 1).await.remove(0).record_id;
+    harness
+        .declare_trigger_rendering(
+            "acme",
+            "review",
+            &labelled_on(REPOSITORY, READY),
+            "kestrel",
+            "builder",
+            &templates(
+                "Review the pull request on {{ event.data.pull_request.head.ref }}",
+                None,
+                None,
+            ),
+        )
+        .await;
+
+    let tested = harness.test_trigger("acme", "review", event).await;
+    let failure = format!(
+        "{:#}",
+        tested
+            .rendered
+            .expect_err("a brief over a missing field should not render")
+    );
+
+    assert!(tested.matches);
+    assert!(
+        failure.contains(&format!(
+            "the trigger review cannot render its brief for the event {event}"
+        )),
+        "the failure does not name both: {failure}"
+    );
+    assert!(
+        failure.contains("undefined value"),
+        "the failure does not say why: {failure}"
     );
 
     harness.teardown().await;

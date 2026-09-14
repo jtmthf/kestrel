@@ -313,6 +313,8 @@ kestrel trigger declare ready \
     {"exact": {"type": "com.github.issues.labeled"}},
     {"exact": {"data.label.name": "ready-for-agent"}}
   ]}' \
+  --brief 'Work {{ event.data.issue.html_url }}: {{ event.data.issue.title }}' \
+  --branch 'kestrel/issue-{{ event.data.issue.number }}' \
   --workspace kestrel \
   --agent builder
 ```
@@ -320,6 +322,15 @@ kestrel trigger declare ready \
 A trigger names the repository by its `source`, never the integration that saw the event, so it
 keeps matching whether kestrel learned of the event by polling or by webhook. Comparisons are
 case-sensitive, and a path into `data` that leads nowhere matches nothing.
+
+The brief, the branch and the optional `--correlation` are
+[minijinja](https://docs.rs/minijinja) templates over `event`, rendered from the event and never
+choosing anything the declaration names. Leave `--branch` out and the branch is the workspace's.
+Rendering is strict: a field the event does not have is an error, not an empty string, so a brief
+that says `on {{ event.data.pull_request.head.ref }}` over a labelled issue fails rather than
+rendering `on `. Ask first with `{% if event.data.pull_request is defined %}`. A template runs
+inside the control plane, so how much work it does, how deep it recurses and how much it writes
+are all bounded.
 
 Label an issue on that repository `ready-for-agent`, and within a poll interval there is a session
 open with a run queued behind it, which nobody asked for:
@@ -360,9 +371,11 @@ repository could otherwise pick which agent's credentials the run gets
 01a07c30-9b2e-7f41-a8c3-5d0e1f2a3b4c  ready  enabled  kestrel  builder  source = "https://github.com/jtmthf/kestrel" and type = "com.github.issues.labeled" and data.label.name = "ready-for-agent"
 ```
 
-Before trusting a filter with work, ask it about an event kestrel already recorded. A test starts
+Before trusting a trigger with work, ask it about an event kestrel already recorded. A test starts
 nothing, and it answers for any event in the organization — including one recorded before the
-trigger was declared, which the trigger itself will never fire for:
+trigger was declared, which the trigger itself will never fire for. It says whether the filter
+matches, then prints the branch, the correlation and the brief exactly as that event renders
+them:
 
 ```sh
 kestrel trigger test ready --organization acme --event 01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
@@ -370,7 +383,15 @@ kestrel trigger test ready --organization acme --event 01a07c31-4d0c-7b91-88f1-2
 
 ```
 matches
+branch        kestrel/issue-44
+correlation   -
+
+Work https://github.com/jtmthf/kestrel/issues/44: 0.1/21: The GitHub Trigger opens a Session from an Event
 ```
+
+It renders even when the filter does not match, so a brief can be written against the event it is
+for before the filter is right. A template that cannot render fails the test, naming the trigger,
+the event, the line of the template that failed, and the variables it had to work with.
 
 An event several triggers match fires every one of them; no trigger is first, and matching one
 does not stop the next. Disabling stops one firing without forgetting what it was:
