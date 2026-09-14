@@ -26,7 +26,7 @@ services:
     restart: unless-stopped
 
   kestrel:
-    image: kestrel
+    image: ${KESTREL_CONTROL_IMAGE:-kestrel}
     build:
       context: .
       dockerfile: images/kestrel/Dockerfile
@@ -37,7 +37,8 @@ services:
         condition: service_completed_successfully
     environment:
       DOCKER_HOST: tcp://socket-proxy:2375
-      KESTREL_NETWORK: kestrel-link
+      KESTREL_NETWORK: ${KESTREL_LINK_NETWORK:-kestrel-link}
+      KESTREL_IMAGE: ${KESTREL_ENV_IMAGE:-kestrel-env}
       KESTREL_LINK: http://kestrel:7717
       RUST_LOG: info
     volumes:
@@ -54,7 +55,7 @@ services:
   # Built here and started by nothing: an Environment is a container the control plane
   # provisions for one Run, never a service beside it.
   kestrel-env:
-    image: kestrel-env
+    image: ${KESTREL_ENV_IMAGE:-kestrel-env}
     build:
       context: .
       dockerfile: images/kestrel-env/Dockerfile
@@ -69,8 +70,8 @@ networks:
   # Where an Environment dials the link. Named rather than left to the project prefix,
   # because the control plane hands the name to the daemon when it provisions one.
   link:
-    name: kestrel-link
+    name: ${KESTREL_LINK_NETWORK:-kestrel-link}
 
 volumes:
   kestrel:
-    name: kestrel
+    name: ${KESTREL_VOLUME:-kestrel}

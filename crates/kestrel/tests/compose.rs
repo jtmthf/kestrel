@@ -3,9 +3,15 @@
 //!
 //! Every test here builds images and brings a stack up on the host daemon, which a `cargo
 //! test` has no business doing on its own, so they are ignored by default and CI runs them
-//! with `--ignored`. They share one project name and one volume, so they run one at a time.
+//! with `--ignored`. A checkout's stack owns a namespace derived from its repository path, so
+//! checkouts on one daemon never tear down one another's stack, and a host-visible lock keeps
+//! one checkout's suites from running over each other.
 
 mod support;
+
+use std::path::Path;
+
+use serde_json::Value;
 
 use support::compose::{self, CONTROL_PLANE, FILTER, Stack};
 use support::docker;
@@ -31,6 +37,8 @@ fn one_command_brings_up_a_working_kestrel() {
     );
 }
 
+/// The compose file must be the stable operator-facing stack with nothing set: one project,
+/// one volume, one link network and two images, under the names an operator already knows.
 #[test]
 #[ignore = "renders the compose file with docker"]
 fn the_operator_supplies_nothing() {
@@ -46,11 +54,80 @@ fn the_operator_supplies_nothing() {
         "the compose file wants a value an operator has to supply:\n{}",
         rendered.err
     );
+
+    let model = model(rendered);
+    assert_eq!(model["name"], "kestrel");
+    assert_eq!(model["volumes"]["kestrel"]["name"], "kestrel");
+    assert_eq!(model["networks"]["link"]["name"], "kestrel-link");
+    assert_eq!(model["services"]["kestrel"]["image"], "kestrel");
+    assert_eq!(model["services"]["kestrel-env"]["image"], "kestrel-env");
+    assert_eq!(
+        model["services"]["kestrel"]["environment"]["KESTREL_NETWORK"],
+        "kestrel-link"
+    );
+    assert_eq!(
+        model["services"]["kestrel"]["environment"]["KESTREL_IMAGE"],
+        "kestrel-env"
+    );
+}
+
+/// Rendered the way this checkout's suite runs it, every resource the control plane addresses
+/// — the project, the volume it keeps its database on, the link network it hands the daemon,
+/// and the image a Run executes in — is one of this checkout's.
+#[test]
+#[ignore = "renders the compose file with docker"]
+fn a_checkout_namespaces_every_resource_its_stack_runs() {
+    let namespace = compose::namespace_for(&docker::repository());
+    let rendered = compose::rendered_with_the_checkout_namespace();
+
+    assert_eq!(
+        rendered.code, 0,
+        "the compose file does not render for this checkout:\n{}",
+        rendered.err
+    );
+
+    let model = model(rendered);
+    assert_eq!(model["name"], namespace.project);
+    assert_eq!(model["volumes"]["kestrel"]["name"], namespace.volume);
+    assert_eq!(model["networks"]["link"]["name"], namespace.link);
+    assert_eq!(
+        model["services"]["kestrel"]["image"],
+        namespace.control_plane
+    );
+    assert_eq!(
+        model["services"]["kestrel-env"]["image"],
+        namespace.environment
+    );
+    assert_eq!(
+        model["services"]["kestrel"]["environment"]["KESTREL_NETWORK"],
+        namespace.link
+    );
+    assert_eq!(
+        model["services"]["kestrel"]["environment"]["KESTREL_IMAGE"],
+        namespace.environment
+    );
+}
+
+/// The namespace is derived, not random: one checkout gets the same names again, and a second
+/// checkout on the same machine gets names that share none of its resources.
+#[test]
+fn the_suite_namespace_is_stable_for_one_checkout_and_distinct_for_another() {
+    let a_checkout = compose::namespace_for(Path::new("/work/kestrel"));
+    let the_same_checkout = compose::namespace_for(Path::new("/work/kestrel"));
+    let another_checkout = compose::namespace_for(Path::new("/work/kestrel-elsewhere"));
+
+    assert_eq!(the_same_checkout.project, a_checkout.project);
+    assert_ne!(a_checkout.project, another_checkout.project);
+    assert_ne!(a_checkout.volume, another_checkout.volume);
+    assert_ne!(a_checkout.link, another_checkout.link);
+    assert_ne!(a_checkout.control_plane, another_checkout.control_plane);
+    assert_ne!(a_checkout.environment, another_checkout.environment);
 }
 
 #[test]
 #[ignore = "builds the images the compose file names"]
 fn the_stack_is_the_control_plane_the_filter_and_the_image_a_run_executes_in() {
+    let namespace = compose::namespace_for(&docker::repository());
     let mut images = compose::built()
         .iter()
         .map(String::as_str)
@@ -60,8 +137,8 @@ fn the_stack_is_the_control_plane_the_filter_and_the_image_a_run_executes_in() {
     let [control_plane, environment, filter] = images[..] else {
         panic!("the compose file ships {images:?}, and it ships three images");
     };
-    assert_eq!(control_plane, "kestrel");
-    assert_eq!(environment, "kestrel-env");
+    assert_eq!(control_plane, namespace.control_plane);
+    assert_eq!(environment, namespace.environment);
     assert!(
         filter.contains("socket-proxy") && filter.contains("@sha256:"),
         "the filter is not a socket proxy pinned by digest: {filter}"
@@ -145,11 +222,14 @@ fn an_operation_outside_the_filter_is_refused_and_the_refusal_says_what_it_was()
 }
 
 /// Every request the driver makes goes through the filter, so a Run that reaches an
-/// Environment and leaves none behind is the whole list exercised.
+/// Environment and leaves none behind is the whole list exercised. The Environment is
+/// provisioned from this checkout's own image onto this checkout's own link network, so it
+/// can neither find another checkout's control plane nor be found by it.
 #[tokio::test]
 #[ignore = "builds images and brings a stack up"]
 async fn a_run_provisions_and_destroys_an_environment_through_the_filter() {
     let stack = Stack::up();
+    let namespace = compose::namespace_for(&docker::repository());
     let session = a_session(&stack);
     let run = stack.ran(&["run", "enqueue", "--session", &session]);
 
@@ -158,6 +238,13 @@ async fn a_run_provisions_and_destroys_an_environment_through_the_filter() {
     });
     let container = Container::named(&environment);
     assert_eq!(environment, format!("docker/kestrel-{run}"));
+    assert!(
+        container.networks().contains(&namespace.link),
+        "the environment is on {}, not the checkout's link network {}",
+        container.networks(),
+        namespace.link
+    );
+    assert_eq!(container.image(), namespace.environment);
 
     // The link an Environment dials is a container beside it rather than the host's gateway,
     // so reaching it at all is the network the control plane put it on.
@@ -239,6 +326,11 @@ fn the_commands_usage_documents_are_the_commands_that_work() {
             .contains("state         sealed"),
         "USAGE.md says sealing is visible on the Session, and it was not"
     );
+}
+
+fn model(rendered: support::docker::Ran) -> Value {
+    serde_json::from_str(&rendered.out)
+        .unwrap_or_else(|error| panic!("docker compose config did not render JSON:\n{error}"))
 }
 
 fn a_session(stack: &Stack) -> String {

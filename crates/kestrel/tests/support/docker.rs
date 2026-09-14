@@ -12,8 +12,17 @@ pub struct Ran {
 }
 
 pub fn ran(arguments: &[&str]) -> Ran {
-    let ran = Command::new("docker")
-        .current_dir(repository())
+    ran_against(&[], arguments)
+}
+
+/// `ran` with the given variables in the docker process's environment rather than the test
+/// process's own, which is how the compose suite names the resources a checkout owns.
+pub fn ran_against(variables: &[(&str, &str)], arguments: &[&str]) -> Ran {
+    let mut command = docker();
+    for (key, value) in variables {
+        command.env(key, value);
+    }
+    let ran = command
         .args(arguments)
         .output()
         .expect("docker should be reachable");
@@ -23,6 +32,12 @@ pub fn ran(arguments: &[&str]) -> Ran {
         out: String::from_utf8_lossy(&ran.stdout).trim().to_owned(),
         err: String::from_utf8_lossy(&ran.stderr).trim().to_owned(),
     }
+}
+
+fn docker() -> Command {
+    let mut command = Command::new("docker");
+    command.current_dir(repository());
+    command
 }
 
 pub fn completed(arguments: &[&str], doing: &str) -> String {
