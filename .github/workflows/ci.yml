@@ -112,7 +112,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # One project name, one volume and one host daemon, so the stack comes up once at a time.
+      # A checkout's compose suite is scoped to a namespace derived from its path, so the
+      # stack comes up once at a time per checkout rather than once per machine.
       - name: Test the compose path
         run: cargo test --locked --package kestrel --test compose -- --ignored --test-threads 1
 

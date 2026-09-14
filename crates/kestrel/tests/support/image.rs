@@ -108,6 +108,25 @@ impl Container {
         format!("{}\n{}", said.out, said.err)
     }
 
+    pub fn networks(&self) -> String {
+        docker::completed(
+            &[
+                "inspect",
+                "--format",
+                "{{range $network, $conf := .NetworkSettings.Networks}}{{$network}} {{end}}",
+                &self.0,
+            ],
+            "inspecting the environment's networks",
+        )
+    }
+
+    pub fn image(&self) -> String {
+        docker::completed(
+            &["inspect", "--format", "{{.Config.Image}}", &self.0],
+            "inspecting the environment's image",
+        )
+    }
+
     pub fn kill(&self) {
         docker::completed(
             &["kill", "--signal", "KILL", &self.0],

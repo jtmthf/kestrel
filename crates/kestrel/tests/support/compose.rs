@@ -1,20 +1,103 @@
 //! The shipped compose stack as a test drives it: built and brought up the way the README
-//! says to, driven through the CLI role inside it, and torn down with its volume.
+//! says to, driven through the CLI role inside it, and torn down with its volume. Every
+//! resource the suite touches is scoped to a namespace derived from this checkout, so two
+//! checkouts on one daemon never address the same project, volume, network or image.
 
+use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
+use std::path::Path;
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::docker::{Ran, repository};
+use sha2::{Digest, Sha256};
+
+use super::docker::{Ran, ran_against, repository};
 
 pub const CONTROL_PLANE: &str = "kestrel";
 pub const FILTER: &str = "socket-proxy";
-const ENVIRONMENT: &str = "kestrel-env";
-const LINK: &str = "kestrel-link";
 const PATIENCE: Duration = Duration::from_secs(60);
 
-/// One project name, one host daemon, one volume: two stacks at once would fight over all
-/// three.
+/// Everything one checkout names its stack with, so no two checkouts on one daemon address
+/// the same resource, and the control plane is told the names that are its own.
+pub struct Namespace {
+    pub project: String,
+    pub volume: String,
+    pub link: String,
+    pub control_plane: String,
+    pub environment: String,
+}
+
+impl Namespace {
+    /// What a `docker compose` invocation must inherit for every resource it touches to be
+    /// this checkout's.
+    pub fn environment(&self) -> [(&str, &str); 5] {
+        [
+            ("COMPOSE_PROJECT_NAME", &self.project),
+            ("KESTREL_VOLUME", &self.volume),
+            ("KESTREL_LINK_NETWORK", &self.link),
+            ("KESTREL_CONTROL_IMAGE", &self.control_plane),
+            ("KESTREL_ENV_IMAGE", &self.environment),
+        ]
+    }
+}
+
+/// The namespace this checkout's suite runs under: one per canonical repository path, so a
+/// second process in the same checkout derives the same names and a second checkout never
+/// collides with it.
+fn namespace() -> &'static Namespace {
+    static NAMESPACE: OnceLock<Namespace> = OnceLock::new();
+    NAMESPACE.get_or_init(|| namespace_for(&repository()))
+}
+
+/// The namespace one checkout's suite runs under, from the checkout's canonical path: the
+/// same path derives the same names, and a different path derives none of the same ones.
+pub fn namespace_for(checkout: &Path) -> Namespace {
+    let canonical = std::fs::canonicalize(checkout).unwrap_or_else(|_| checkout.to_path_buf());
+    let mut hashed = Sha256::new();
+    hashed.update(canonical.to_string_lossy().as_bytes());
+    let digest = &kestrel::hex::encode(&hashed.finalize())[..16];
+
+    Namespace {
+        project: format!("kestrel-{digest}"),
+        volume: format!("kestrel-{digest}"),
+        link: format!("kestrel-{digest}-link"),
+        control_plane: format!("kestrel-{digest}"),
+        environment: format!("kestrel-{digest}-env"),
+    }
+}
+
+/// The kernel holds this for the life of the process, so two suites from this same checkout
+/// wait rather than mutate its stack at once, and one checkout's suite never sees another's
+/// process-local lock. Another checkout derives another file name, so its suite waits for
+/// nothing.
+fn host_lock() -> &'static File {
+    static HELD: OnceLock<File> = OnceLock::new();
+    HELD.get_or_init(|| {
+        let path = std::env::temp_dir().join(format!("{}.compose.lock", namespace().project));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap_or_else(|error| panic!("{} could not open: {error}", path.display()));
+
+        #[allow(unsafe_code)]
+        let held = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        assert_eq!(
+            held,
+            0,
+            "{} would not hold an exclusive lock",
+            path.display()
+        );
+
+        file
+    })
+}
+
+/// Two suites from one checkout at once would fight over its names, and a mutex is visible to
+/// one binary only: the host-visible lock spans binaries, this one spans the tests in one.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 pub struct Stack {
@@ -87,10 +170,10 @@ impl Stack {
             "run",
             "--rm",
             "--network",
-            LINK,
+            &namespace().link,
             "--entrypoint",
             program,
-            ENVIRONMENT,
+            &namespace().environment,
         ];
         run.extend_from_slice(arguments);
 
@@ -126,6 +209,7 @@ pub fn built() -> &'static [String] {
     static BUILT: OnceLock<Vec<String>> = OnceLock::new();
 
     BUILT.get_or_init(|| {
+        host_lock();
         completed(&["build"], "building the images the compose file names");
 
         completed(&["config", "--images"], "listing the images")
@@ -135,9 +219,7 @@ pub fn built() -> &'static [String] {
     })
 }
 
-/// The compose file rendered with nothing in the environment but a path to docker and the
-/// context it reads: what an operator has to supply shows up here as a warning.
-pub fn rendered_against_an_empty_environment() -> Ran {
+fn rendered(variables: &[(&str, &str)]) -> Ran {
     let mut rendering = Command::new("docker");
     rendering.current_dir(repository()).env_clear();
     for kept in ["PATH", "HOME"] {
@@ -145,17 +227,31 @@ pub fn rendered_against_an_empty_environment() -> Ran {
             rendering.env(kept, value);
         }
     }
-
-    let rendered = rendering
-        .args(["compose", "config"])
+    for (key, value) in variables {
+        rendering.env(key, value);
+    }
+    let output = rendering
+        .args(["compose", "config", "--format", "json"])
         .output()
         .expect("docker should be reachable");
 
     Ran {
-        code: rendered.status.code().unwrap_or(-1),
-        out: String::from_utf8_lossy(&rendered.stdout).trim().to_owned(),
-        err: String::from_utf8_lossy(&rendered.stderr).trim().to_owned(),
+        code: output.status.code().unwrap_or(-1),
+        out: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        err: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
     }
+}
+
+/// The compose file rendered with nothing in the environment but a path to docker and the
+/// context it reads: what an operator has to supply shows up here as a warning.
+pub fn rendered_against_an_empty_environment() -> Ran {
+    rendered(&[])
+}
+
+/// The compose file rendered the way this checkout's suite runs it: every resource the
+/// control plane addresses points into this checkout's namespace.
+pub fn rendered_with_the_checkout_namespace() -> Ran {
+    rendered(&namespace().environment())
 }
 
 pub fn until<T>(what: &str, ready: impl Fn() -> Option<T>) -> T {
@@ -181,5 +277,5 @@ fn ran(arguments: &[&str]) -> Ran {
     let mut compose = vec!["compose"];
     compose.extend_from_slice(arguments);
 
-    super::docker::ran(&compose)
+    ran_against(&namespace().environment(), &compose)
 }
