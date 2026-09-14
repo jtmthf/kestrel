@@ -15,11 +15,8 @@ pub enum Entry {
     ParticipantJoined {
         participant: String,
     },
-    /// Carries what the Event said rather than pointing at it: events expire and transcript
-    /// entries never do.
     TriggerFired {
         trigger: String,
-        repository: String,
         occurrence: Occurrence,
     },
     RunStarted {
@@ -46,17 +43,14 @@ impl fmt::Display for Entry {
             }
             Entry::TriggerFired {
                 trigger,
-                repository,
                 occurrence,
             } => write!(
                 f,
-                "trigger fired  {trigger}  {} {} {} on {repository}#{}  {}  {}",
-                occurrence.actor,
-                occurrence.kind,
-                occurrence.label.as_deref().unwrap_or("-"),
-                occurrence.subject,
-                occurrence.title,
-                occurrence.url
+                "trigger fired  {trigger}  {} at {}{}  {}",
+                occurrence.r#type,
+                occurrence.source,
+                occurrence.subject.as_deref().unwrap_or_default(),
+                occurrence.time
             ),
             Entry::RunStarted { run } => write!(f, "run started  {run}"),
             Entry::Said {

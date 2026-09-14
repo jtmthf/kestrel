@@ -6,7 +6,7 @@ CREATE TABLE outcome (
     run_id TEXT PRIMARY KEY REFERENCES run (id),
     organization_id TEXT NOT NULL REFERENCES organization (id),
     integration_id TEXT NOT NULL REFERENCES integration (id),
-    event_id TEXT NOT NULL REFERENCES event (id),
+    event_record_id TEXT NOT NULL REFERENCES event (record_id),
     subject INTEGER NOT NULL,
     body TEXT NOT NULL,
     attempted_at TEXT,

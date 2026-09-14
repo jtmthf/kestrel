@@ -3,7 +3,7 @@
 
 use anyhow::{Result, bail};
 
-use crate::domain::{Event, EventId, RunId, SessionId, Trigger, TriggerState};
+use crate::domain::{Event, EventRecordId, RunId, SessionId, Trigger, TriggerState};
 use crate::fanout::{self, Change};
 use crate::integration::github;
 use crate::log::Entry;
@@ -24,7 +24,7 @@ pub struct Declaration<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Fired {
-    pub event: EventId,
+    pub event: EventRecordId,
     pub session: SessionId,
     pub run: RunId,
 }
@@ -115,7 +115,6 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
             &session,
             Entry::TriggerFired {
                 trigger: trigger.name.clone(),
-                repository: event.repository.clone(),
                 occurrence: event.occurrence.clone(),
             },
         )
@@ -137,7 +136,7 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
     fanout::publish(Change::SessionOpened(&session));
 
     Ok(Fired {
-        event: event.id,
+        event: event.record_id,
         session: session.id,
         run: run.id,
     })

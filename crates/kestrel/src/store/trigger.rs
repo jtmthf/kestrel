@@ -122,27 +122,28 @@ impl<'a> Triggers<'a> {
     /// declaring a Trigger is not how a repository's existing history gets worked.
     pub async fn unfired_matches(
         &mut self,
-        kind: &str,
+        r#type: &str,
         most: usize,
     ) -> Result<Vec<(Trigger, Event)>> {
         let rows = sqlx::query(
-            "SELECT trigger.id AS trigger_id, event.id AS event_id
+            "SELECT trigger.id AS trigger_id, event.record_id AS event_record_id
              FROM trigger
              JOIN event
                ON event.organization_id = trigger.organization_id
-              AND event.repository = trigger.repository
-              AND event.kind = ?
-              AND event.label = trigger.label
+              AND event.source = 'https://github.com/' || trigger.repository
+              AND event.type = ?
+              AND json_extract(event.data, '$.label.name') = trigger.label
              WHERE trigger.state = ?
                AND event.recorded_at >= trigger.declared_at
                AND NOT EXISTS (
                    SELECT 1 FROM firing
-                   WHERE firing.trigger_id = trigger.id AND firing.event_id = event.id
+                    WHERE firing.trigger_id = trigger.id
+                      AND firing.event_record_id = event.record_id
                )
-             ORDER BY event.occurred_at, event.id
+             ORDER BY event.time, event.record_id
              LIMIT ?",
         )
-        .bind(kind)
+        .bind(r#type)
         .bind(TriggerState::Enabled.as_str())
         .bind(i64::try_from(most)?)
         .fetch_all(&mut *self.connection)
@@ -158,7 +159,7 @@ impl<'a> Triggers<'a> {
             .await?;
             let event = integration::event_with_id(
                 &mut *self.connection,
-                row.get::<String, _>("event_id").parse()?,
+                row.get::<String, _>("event_record_id").parse()?,
             )
             .await?;
             matched.push((trigger, event));
@@ -175,11 +176,11 @@ impl<'a> Triggers<'a> {
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO firing
-                 (trigger_id, event_id, organization_id, session_id, fired_at)
+                 (trigger_id, event_record_id, organization_id, session_id, fired_at)
              VALUES (?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
-        .bind(event.id.to_string())
+        .bind(event.record_id.to_string())
         .bind(trigger.organization.id.to_string())
         .bind(session.id.to_string())
         .bind(Timestamp::now().to_string())
@@ -188,7 +189,7 @@ impl<'a> Triggers<'a> {
         .with_context(|| {
             format!(
                 "recording that the trigger {} fired for the event {}",
-                trigger.name, event.id
+                trigger.name, event.record_id
             )
         })?;
 

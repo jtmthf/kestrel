@@ -6,10 +6,11 @@ use anyhow::{Result, bail};
 use jiff::{SignedDuration, Timestamp};
 use tracing::warn;
 
-use crate::domain::{Direction, Event, Integration, IntegrationKind};
+use crate::domain::{Direction, Event, EventRecordId, Integration, IntegrationKind};
 use crate::integration::credential::Token;
 use crate::integration::github::{Github, Refused};
 use crate::store::Store;
+use crate::store::integration::Recorded;
 
 pub struct Registration<'a> {
     pub organization: &'a str,
@@ -65,11 +66,29 @@ pub async fn integrations(store: &Store, organization: &str) -> Result<Vec<Integ
     tx.integrations().all(&organization).await
 }
 
+pub async fn acknowledge_event_refusal(
+    store: &Store,
+    organization: &str,
+    name: &str,
+) -> Result<()> {
+    let mut tx = store.begin().await?;
+    let organization = tx.organizations().named(organization).await?;
+    let integration = tx.integrations().named(&organization, name).await?;
+    tx.integrations()
+        .acknowledge_event_refusal(&integration)
+        .await?;
+    tx.commit().await
+}
+
 pub async fn events(store: &Store, organization: &str, limit: usize) -> Result<Vec<Event>> {
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
 
     tx.integrations().events(&organization, limit).await
+}
+
+pub async fn event(store: &Store, id: EventRecordId) -> Result<Event> {
+    store.begin().await?.integrations().event(id).await
 }
 
 /// One poll of one Integration. Every Event the poll saw and what it was polled through are
@@ -84,12 +103,20 @@ pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> 
 
     if let Ok(seen) = &seen {
         for occurrence in &seen.occurrences {
-            if tx
+            match tx
                 .integrations()
                 .record_event(integration, occurrence)
                 .await?
             {
-                recorded += 1;
+                Recorded::Recorded => recorded += 1,
+                Recorded::Already => {}
+                Recorded::Refused { because } => {
+                    warn!(
+                        integration = integration.name,
+                        %because,
+                        "an event was refused at ingest rather than stored"
+                    );
+                }
             }
         }
     } else if let Err(refused) = &seen {
@@ -101,12 +128,20 @@ pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> 
     }
     if let Ok(comments) = &comments {
         for occurrence in &comments.occurrences {
-            if tx
+            match tx
                 .integrations()
                 .record_event(integration, occurrence)
                 .await?
             {
-                recorded += 1;
+                Recorded::Recorded => recorded += 1,
+                Recorded::Already => {}
+                Recorded::Refused { because } => {
+                    warn!(
+                        integration = integration.name,
+                        %because,
+                        "an event was refused at ingest rather than stored"
+                    );
+                }
             }
         }
         tx.integrations()
@@ -173,6 +208,7 @@ mod tests {
             poll_due_at: Some(Timestamp::now()),
             polled_through: None,
             comments_polled_through: None,
+            last_event_refusal: None,
         }
     }
 

@@ -4,17 +4,29 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
 use crate::domain::{
-    Direction, Event, EventId, Integration, IntegrationId, IntegrationKind, Occurrence,
-    Organization, Outcome, Run, Session,
+    Direction, Event, EventRecordId, EventRefusal, Integration, IntegrationId, IntegrationKind,
+    Occurrence, Organization, Outcome, Run, Session,
 };
 use crate::integration::credential::Token;
 use crate::store::{due, session, timestamp};
+
+/// The largest payload an Event may carry. An event stream is systems kestrel does not
+/// control, so one that overflows the store is refused rather than grown to fit.
+const MAX_EVENT_BYTES: usize = 1024 * 1024;
+
+pub enum Recorded {
+    Recorded,
+    Already,
+    Refused { because: String },
+}
 
 macro_rules! integrations_where {
     ($tail:literal) => {
         concat!(
             "SELECT id, organization_id, name, kind, repository, api, credential, inbound,
-                    outbound, interval_ms, poll_due_at, polled_through, comments_polled_through
+                    outbound, interval_ms, poll_due_at, polled_through, comments_polled_through,
+                    last_event_refusal_source, last_event_refusal_id, last_event_refusal_bytes,
+                    last_event_refusal_reason, last_event_refusal_at
              FROM integration
              WHERE ",
             $tail
@@ -62,6 +74,7 @@ impl<'a> Integrations<'a> {
             poll_due_at: inbound.then(Timestamp::now),
             polled_through: None,
             comments_polled_through: None,
+            last_event_refusal: None,
         };
 
         sqlx::query(
@@ -124,44 +137,115 @@ impl<'a> Integrations<'a> {
         integration(&row)
     }
 
-    /// `false` when the Event was recorded by an earlier poll whose window overlapped this
-    /// one: an Event is identified by what the external system calls it, and recorded once.
+    pub async fn named(&mut self, organization: &Organization, name: &str) -> Result<Integration> {
+        let row = sqlx::query(integrations_where!("organization_id = ? AND name = ?"))
+            .bind(organization.id.to_string())
+            .bind(name)
+            .fetch_optional(&mut *self.connection)
+            .await?
+            .with_context(|| {
+                format!(
+                    "no integration named {name} in the organization {}",
+                    organization.name
+                )
+            })?;
+
+        integration(&row)
+    }
+
     pub async fn record_event(
         &mut self,
         integration: &Integration,
         occurrence: &Occurrence,
-    ) -> Result<bool> {
+    ) -> Result<Recorded> {
+        if occurrence.specversion != "1.0" {
+            anyhow::bail!(
+                "the event {} uses unsupported CloudEvents specversion {}",
+                occurrence.id,
+                occurrence.specversion
+            );
+        }
+        let data = serde_json::to_string(&occurrence.data)
+            .with_context(|| format!("the event {} does not read as JSON", occurrence.id))?;
+        if data.len() > MAX_EVENT_BYTES {
+            let reason = format!(
+                "the payload is {} bytes, over the {} allowed",
+                data.len(),
+                MAX_EVENT_BYTES
+            );
+            sqlx::query(
+                "UPDATE integration
+                 SET last_event_refusal_source = ?, last_event_refusal_id = ?,
+                     last_event_refusal_bytes = ?, last_event_refusal_reason = ?,
+                     last_event_refusal_at = ?
+                 WHERE id = ?",
+            )
+            .bind(&occurrence.source)
+            .bind(&occurrence.id)
+            .bind(i64::try_from(data.len())?)
+            .bind(&reason)
+            .bind(Timestamp::now().to_string())
+            .bind(integration.id.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("recording why the event {} was refused", occurrence.id))?;
+
+            return Ok(Recorded::Refused { because: reason });
+        }
+
         let recorded = sqlx::query(
             "INSERT INTO event
-                 (id, organization_id, integration_id, external_id, repository, kind, actor,
-                  subject, title, url, label, message, occurred_at, recorded_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT (integration_id, external_id) DO NOTHING",
+                 (record_id, organization_id, integration_id, id, source, specversion, type,
+                  subject, time, data, recorded_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (organization_id, source, id) DO NOTHING",
         )
-        .bind(EventId::generate().to_string())
+        .bind(EventRecordId::generate().to_string())
         .bind(integration.organization.to_string())
         .bind(integration.id.to_string())
-        .bind(&occurrence.external_id)
-        .bind(&integration.repository)
-        .bind(&occurrence.kind)
-        .bind(&occurrence.actor)
-        .bind(occurrence.subject)
-        .bind(&occurrence.title)
-        .bind(&occurrence.url)
-        .bind(occurrence.label.as_deref())
-        .bind(occurrence.message.as_deref())
-        .bind(occurrence.occurred_at.to_string())
+        .bind(&occurrence.id)
+        .bind(&occurrence.source)
+        .bind(&occurrence.specversion)
+        .bind(&occurrence.r#type)
+        .bind(occurrence.subject.as_deref())
+        .bind(occurrence.time.to_string())
+        .bind(&data)
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.connection)
         .await
         .with_context(|| {
             format!(
                 "recording the event {} on {}",
-                occurrence.external_id, integration.repository
+                occurrence.id, occurrence.source
             )
         })?;
 
-        Ok(recorded.rows_affected() > 0)
+        Ok(if recorded.rows_affected() > 0 {
+            Recorded::Recorded
+        } else {
+            Recorded::Already
+        })
+    }
+
+    pub async fn acknowledge_event_refusal(&mut self, integration: &Integration) -> Result<()> {
+        sqlx::query(
+            "UPDATE integration
+             SET last_event_refusal_source = NULL, last_event_refusal_id = NULL,
+                 last_event_refusal_bytes = NULL, last_event_refusal_reason = NULL,
+                 last_event_refusal_at = NULL
+             WHERE id = ?",
+        )
+        .bind(integration.id.to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| {
+            format!(
+                "acknowledging the event refusal on integration {}",
+                integration.name
+            )
+        })?;
+
+        Ok(())
     }
 
     pub async fn polled(
@@ -207,11 +291,11 @@ impl<'a> Integrations<'a> {
         limit: usize,
     ) -> Result<Vec<Event>> {
         sqlx::query(
-            "SELECT id, organization_id, integration_id, external_id, repository, kind, actor,
-                    subject, title, url, label, message, occurred_at, recorded_at
+            "SELECT record_id, organization_id, integration_id, id, source, specversion, type,
+                    subject, time, data, recorded_at
              FROM event
              WHERE organization_id = ?
-             ORDER BY occurred_at DESC, external_id DESC
+             ORDER BY time DESC, id DESC
              LIMIT ?",
         )
         .bind(organization.id.to_string())
@@ -223,32 +307,32 @@ impl<'a> Integrations<'a> {
         .collect()
     }
 
-    pub async fn event(&mut self, id: EventId) -> Result<Event> {
+    pub async fn event(&mut self, id: EventRecordId) -> Result<Event> {
         event_with_id(self.connection, id).await
     }
 
-    pub async fn unfollowed(&mut self, kind: &str, limit: usize) -> Result<Vec<Event>> {
+    pub async fn unfollowed(&mut self, r#type: &str, limit: usize) -> Result<Vec<Event>> {
         sqlx::query(
-            "SELECT event.id, event.organization_id, event.integration_id, event.external_id,
-                    event.repository, event.kind, event.actor, event.subject, event.title,
-                    event.url, event.label, event.message, event.occurred_at, event.recorded_at
+            "SELECT event.record_id, event.organization_id, event.integration_id, event.id,
+                    event.source, event.specversion, event.type, event.subject, event.time,
+                    event.data, event.recorded_at
              FROM event
-             LEFT JOIN follow_up ON follow_up.event_id = event.id
-             WHERE event.kind = ? AND follow_up.event_id IS NULL
+             LEFT JOIN follow_up ON follow_up.event_record_id = event.record_id
+             WHERE event.type = ? AND follow_up.event_record_id IS NULL
                AND EXISTS (
                    SELECT 1
                    FROM session
-                   JOIN event AS origin ON origin.id = session.event_id
+                   JOIN event AS origin ON origin.record_id = session.event_record_id
                    WHERE session.organization_id = event.organization_id
                      AND origin.integration_id = event.integration_id
-                     AND origin.repository = event.repository
+                     AND origin.source = event.source
                      AND origin.subject = event.subject
-                     AND origin.occurred_at <= event.occurred_at
+                     AND origin.time <= event.time
                )
-             ORDER BY event.occurred_at, event.external_id
+             ORDER BY event.time, event.id
              LIMIT ?",
         )
-        .bind(kind)
+        .bind(r#type)
         .bind(i64::try_from(limit)?)
         .fetch_all(&mut *self.connection)
         .await?
@@ -261,20 +345,20 @@ impl<'a> Integrations<'a> {
         let found = sqlx::query(
             "SELECT session.id
              FROM session
-             JOIN event AS origin ON origin.id = session.event_id
+             JOIN event AS origin ON origin.record_id = session.event_record_id
              WHERE session.organization_id = ?
                AND origin.integration_id = ?
-               AND origin.repository = ?
+               AND origin.source = ?
                AND origin.subject = ?
-               AND origin.occurred_at <= ?
+               AND origin.time <= ?
              ORDER BY session.opened_at DESC, session.id DESC
              LIMIT 1",
         )
         .bind(event.organization.to_string())
         .bind(event.integration.to_string())
-        .bind(&event.repository)
-        .bind(event.occurrence.subject)
-        .bind(event.occurrence.occurred_at.to_string())
+        .bind(&event.occurrence.source)
+        .bind(event.occurrence.subject.as_deref())
+        .bind(event.occurrence.time.to_string())
         .fetch_optional(&mut *self.connection)
         .await?;
 
@@ -288,16 +372,16 @@ impl<'a> Integrations<'a> {
 
     pub async fn record_follow_up(&mut self, event: &Event, session: &Session) -> Result<()> {
         sqlx::query(
-            "INSERT INTO follow_up (event_id, organization_id, session_id, received_at)
+            "INSERT INTO follow_up (event_record_id, organization_id, session_id, received_at)
              VALUES (?, ?, ?, ?)",
         )
-        .bind(event.id.to_string())
+        .bind(event.record_id.to_string())
         .bind(event.organization.to_string())
         .bind(session.id.to_string())
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.connection)
         .await
-        .with_context(|| format!("recording the follow-up event {}", event.id))?;
+        .with_context(|| format!("recording the follow-up event {}", event.record_id))?;
 
         Ok(())
     }
@@ -311,9 +395,18 @@ impl<'a> Integrations<'a> {
         event: &Event,
         body: &str,
     ) -> Result<()> {
+        let subject = crate::integration::github::EventData::new(&event.occurrence)
+            .subject_issue()
+            .with_context(|| {
+                format!(
+                    "the event {} names no issue the outcome could reach",
+                    event.record_id
+                )
+            })?;
+
         sqlx::query(
             "INSERT INTO outcome
-                 (run_id, organization_id, integration_id, event_id, subject, body, due_at,
+                 (run_id, organization_id, integration_id, event_record_id, subject, body, due_at,
                   recorded_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (run_id) DO NOTHING",
@@ -321,8 +414,8 @@ impl<'a> Integrations<'a> {
         .bind(run.id.to_string())
         .bind(run.organization.to_string())
         .bind(integration.id.to_string())
-        .bind(event.id.to_string())
-        .bind(event.occurrence.subject)
+        .bind(event.record_id.to_string())
+        .bind(subject)
         .bind(body)
         .bind(due(Timestamp::now()))
         .bind(Timestamp::now().to_string())
@@ -335,7 +428,7 @@ impl<'a> Integrations<'a> {
 
     pub async fn outcomes_due(&mut self, at: Timestamp) -> Result<Vec<Outcome>> {
         sqlx::query(
-            "SELECT run_id, organization_id, integration_id, event_id, subject, body,
+            "SELECT run_id, organization_id, integration_id, event_record_id, subject, body,
                     attempted_at
              FROM outcome
              WHERE due_at <= ?
@@ -396,12 +489,15 @@ impl<'a> Integrations<'a> {
     }
 }
 
-pub(crate) async fn event_with_id(connection: &mut SqliteConnection, id: EventId) -> Result<Event> {
+pub(crate) async fn event_with_id(
+    connection: &mut SqliteConnection,
+    id: EventRecordId,
+) -> Result<Event> {
     let row = sqlx::query(
-        "SELECT id, organization_id, integration_id, external_id, repository, kind, actor,
-                subject, title, url, label, message, occurred_at, recorded_at
+        "SELECT record_id, organization_id, integration_id, id, source, specversion, type,
+                subject, time, data, recorded_at
          FROM event
-         WHERE id = ?",
+         WHERE record_id = ?",
     )
     .bind(id.to_string())
     .fetch_optional(&mut *connection)
@@ -433,25 +529,45 @@ fn integration(row: &SqliteRow) -> Result<Integration> {
         poll_due_at: timestamp(row, "poll_due_at")?,
         polled_through: row.get("polled_through"),
         comments_polled_through: row.get("comments_polled_through"),
+        last_event_refusal: event_refusal(row)?,
     })
+}
+
+fn event_refusal(row: &SqliteRow) -> Result<Option<EventRefusal>> {
+    let Some(source) = row.get::<Option<String>, _>("last_event_refusal_source") else {
+        return Ok(None);
+    };
+
+    Ok(Some(EventRefusal {
+        source,
+        id: row
+            .get::<Option<String>, _>("last_event_refusal_id")
+            .context("an event refusal has no producer id")?,
+        bytes: usize::try_from(
+            row.get::<Option<i64>, _>("last_event_refusal_bytes")
+                .context("an event refusal has no byte size")?,
+        )?,
+        reason: row
+            .get::<Option<String>, _>("last_event_refusal_reason")
+            .context("an event refusal has no reason")?,
+        observed_at: timestamp(row, "last_event_refusal_at")?
+            .context("an event refusal has no observation time")?,
+    }))
 }
 
 fn event(row: &SqliteRow) -> Result<Event> {
     Ok(Event {
-        id: row.get::<String, _>("id").parse()?,
+        record_id: row.get::<String, _>("record_id").parse()?,
         organization: row.get::<String, _>("organization_id").parse()?,
         integration: row.get::<String, _>("integration_id").parse()?,
-        repository: row.get("repository"),
         occurrence: Occurrence {
-            external_id: row.get("external_id"),
-            kind: row.get("kind"),
-            actor: row.get("actor"),
+            id: row.get("id"),
+            source: row.get("source"),
+            specversion: row.get("specversion"),
+            r#type: row.get("type"),
             subject: row.get("subject"),
-            title: row.get("title"),
-            url: row.get("url"),
-            label: row.get("label"),
-            message: row.get("message"),
-            occurred_at: row.get::<String, _>("occurred_at").parse()?,
+            time: row.get::<String, _>("time").parse()?,
+            data: serde_json::from_str(row.get("data"))?,
         },
         recorded_at: row.get::<String, _>("recorded_at").parse()?,
     })
@@ -462,7 +578,7 @@ fn outcome(row: &SqliteRow) -> Result<Outcome> {
         run: row.get::<String, _>("run_id").parse()?,
         organization: row.get::<String, _>("organization_id").parse()?,
         integration: row.get::<String, _>("integration_id").parse()?,
-        event: row.get::<String, _>("event_id").parse()?,
+        event: row.get::<String, _>("event_record_id").parse()?,
         subject: row.get("subject"),
         body: row.get("body"),
         attempted_at: timestamp(row, "attempted_at")?,

@@ -14,9 +14,9 @@ use crate::domain::{Integration, Occurrence};
 pub const API: &str = "https://api.github.com";
 
 /// GitHub reports a label coming off an issue as an `unlabeled` event carrying that same
-/// label, so a trigger matching on the label alone would fire on both.
-pub const LABELLED: &str = "labeled";
-pub const COMMENTED: &str = "commented";
+/// label, so a trigger matching on the type and label alone would fire on both.
+pub const LABELLED: &str = "com.github.issues.labeled";
+pub const COMMENTED: &str = "com.github.issue_comment.created";
 
 const VERSION: &str = "2022-11-28";
 const PER_PAGE: usize = 100;
@@ -76,18 +76,22 @@ impl Github {
         for page in 1..=PAGES {
             let reported = self.page(integration, &repository, page).await?;
             let short = reported.len() < PER_PAGE;
+            let ids = reported
+                .iter()
+                .map(event_id)
+                .collect::<Result<Vec<_>>>()
+                .map_err(Refused::Failed)?;
 
             // What was polled through says how far back to walk, and nothing about what to
             // hand back: an Event already recorded is recognised by its identity, so a window
             // that overlaps the last one costs a recognition rather than a duplicate.
             let reached = reported
                 .iter()
-                .any(|event| Some(event.id) <= integration.polled_through);
-            for event in reported {
-                through = through.max(Some(event.id));
-                if let Some(occurrence) = occurrence(event) {
-                    newest_first.push(occurrence);
-                }
+                .zip(&ids)
+                .any(|(_, id)| Some(*id) <= integration.polled_through);
+            for (event, id) in reported.into_iter().zip(ids) {
+                through = through.max(Some(id));
+                newest_first.push(occurrence(&event, integration).map_err(Refused::Failed)?);
             }
 
             if short || reached || integration.polled_through.is_none() {
@@ -128,20 +132,28 @@ impl Github {
                 .map_err(|error| {
                     Refused::Failed(anyhow!("the comments on {repository} could not be polled: {error}"))
                 })?;
-            let reported: Vec<IssueComment> =
+            let reported: Vec<serde_json::Value> =
                 answered(response, &format!("the comments on {repository}")).await?;
             let short = reported.len() < PER_PAGE;
-            let reached = reported
+            let ids = reported
                 .iter()
-                .any(|comment| Some(comment.id) <= integration.comments_polled_through);
+                .map(comment_id)
+                .collect::<Result<Vec<_>>>()
+                .map_err(Refused::Failed)?;
+            let reached = ids
+                .iter()
+                .any(|id| Some(*id) <= integration.comments_polled_through);
 
-            for comment in reported {
-                through = through.max(Some(comment.id));
-                if Some(comment.id) > integration.comments_polled_through
-                    && !comment.body.contains("<!-- kestrel run ")
-                    && let Some(occurrence) = comment.occurrence()
+            for (comment, id) in reported.into_iter().zip(ids) {
+                through = through.max(Some(id));
+                if Some(id) > integration.comments_polled_through
+                    && !comment
+                        .get("body")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|body| body.contains("<!-- kestrel run "))
                 {
-                    newest_first.push(occurrence);
+                    newest_first
+                        .push(comment_occurrence(&comment, integration).map_err(Refused::Failed)?);
                 }
             }
 
@@ -163,7 +175,7 @@ impl Github {
         integration: &Integration,
         repository: &str,
         page: usize,
-    ) -> Result<Vec<IssueEvent>, Refused> {
+    ) -> Result<Vec<serde_json::Value>, Refused> {
         let response = self
             .request(
                 reqwest::Method::GET,
@@ -298,20 +310,141 @@ fn number(header: Option<&HeaderValue>) -> Option<i64> {
     header?.to_str().ok()?.trim().parse().ok()
 }
 
-fn occurrence(event: IssueEvent) -> Option<Occurrence> {
-    let issue = event.issue?;
+fn event_id(event: &serde_json::Value) -> Result<i64> {
+    event
+        .get("id")
+        .and_then(serde_json::Value::as_i64)
+        .context("a GitHub issue event has no integer id")
+}
 
-    Some(Occurrence {
-        external_id: event.id.to_string(),
-        kind: event.event,
-        actor: event.actor.map(|actor| actor.login).unwrap_or_default(),
-        subject: issue.number,
-        title: issue.title,
-        url: issue.html_url,
-        label: event.label.map(|label| label.name),
-        message: None,
-        occurred_at: event.created_at.parse().ok()?,
+fn comment_id(comment: &serde_json::Value) -> Result<i64> {
+    comment
+        .get("id")
+        .and_then(serde_json::Value::as_i64)
+        .context("a GitHub issue comment has no integer id")
+}
+
+fn occurrence(event: &serde_json::Value, integration: &Integration) -> Result<Occurrence> {
+    let issue = event
+        .get("issue")
+        .context("a GitHub issue event names no issue")?;
+    let event_kind = event
+        .get("event")
+        .and_then(serde_json::Value::as_str)
+        .context("a GitHub issue event has no type")?;
+
+    Ok(Occurrence {
+        id: event_id(event)?.to_string(),
+        source: source(integration),
+        specversion: "1.0".to_owned(),
+        r#type: if event_kind == "labeled" {
+            LABELLED.to_owned()
+        } else {
+            format!("com.github.issues.{event_kind}")
+        },
+        subject: Some(format!(
+            "#{}",
+            issue
+                .get("number")
+                .and_then(serde_json::Value::as_i64)
+                .context("a GitHub issue event has no issue number")?
+        )),
+        time: event
+            .get("created_at")
+            .and_then(serde_json::Value::as_str)
+            .context("a GitHub issue event has no time")?
+            .parse()
+            .context("a GitHub issue event has an invalid time")?,
+        data: event.clone(),
     })
+}
+
+fn comment_occurrence(
+    comment: &serde_json::Value,
+    integration: &Integration,
+) -> Result<Occurrence> {
+    let issue = comment
+        .get("issue_url")
+        .and_then(serde_json::Value::as_str)
+        .context("a GitHub issue comment names no issue")?
+        .rsplit('/')
+        .next()
+        .context("a GitHub issue comment has an invalid issue URL")?
+        .parse::<i64>()
+        .context("a GitHub issue comment has an invalid issue number")?;
+
+    Ok(Occurrence {
+        id: format!("comment:{}", comment_id(comment)?),
+        source: source(integration),
+        specversion: "1.0".to_owned(),
+        r#type: COMMENTED.to_owned(),
+        subject: Some(format!("#{issue}")),
+        time: comment
+            .get("created_at")
+            .and_then(serde_json::Value::as_str)
+            .context("a GitHub issue comment has no time")?
+            .parse()
+            .context("a GitHub issue comment has an invalid time")?,
+        data: comment.clone(),
+    })
+}
+
+pub struct EventData<'a> {
+    occurrence: &'a Occurrence,
+}
+
+impl<'a> EventData<'a> {
+    pub fn new(occurrence: &'a Occurrence) -> Self {
+        Self { occurrence }
+    }
+
+    pub fn actor(&self) -> Option<&str> {
+        self.field(&["actor", "login"])
+            .or_else(|| self.field(&["user", "login"]))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn label(&self) -> Option<&str> {
+        self.field(&["label", "name"])
+            .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.field(&["issue", "title"])
+            .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn url(&self) -> Option<&str> {
+        self.field(&["html_url"])
+            .or_else(|| self.field(&["issue", "html_url"]))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    pub fn message(&self) -> Option<&str> {
+        self.field(&["body"]).and_then(serde_json::Value::as_str)
+    }
+
+    pub fn subject_issue(&self) -> Option<i64> {
+        self.occurrence
+            .subject
+            .as_deref()
+            .and_then(|subject| subject.strip_prefix('#'))
+            .and_then(|number| number.parse().ok())
+    }
+
+    fn field(&self, path: &[&str]) -> Option<&serde_json::Value> {
+        let mut at = &self.occurrence.data;
+        for part in path {
+            at = at.get(*part)?;
+        }
+        Some(at)
+    }
+}
+
+/// The external resource the event is about (ADR-0011): the repository, never the
+/// integration, so an event dedups identically however kestrel learned it.
+fn source(integration: &Integration) -> String {
+    format!("https://github.com/{}", integration.repository)
 }
 
 /// `owner/name`, checked here because it is pasted into a URL rather than sent as a parameter.
@@ -344,61 +477,6 @@ pub struct Comment {
 #[derive(Serialize)]
 struct Body<'a> {
     body: &'a str,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueEvent {
-    id: i64,
-    event: String,
-    created_at: String,
-    actor: Option<Actor>,
-    label: Option<Label>,
-    issue: Option<Issue>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Actor {
-    login: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Label {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Issue {
-    number: i64,
-    title: String,
-    html_url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueComment {
-    id: i64,
-    body: String,
-    created_at: String,
-    html_url: String,
-    issue_url: String,
-    user: Option<Actor>,
-}
-
-impl IssueComment {
-    fn occurrence(self) -> Option<Occurrence> {
-        let subject = self.issue_url.rsplit('/').next()?.parse().ok()?;
-
-        Some(Occurrence {
-            external_id: format!("comment:{}", self.id),
-            kind: COMMENTED.to_owned(),
-            actor: self.user.map(|user| user.login).unwrap_or_default(),
-            subject,
-            title: String::new(),
-            url: self.html_url,
-            label: None,
-            message: Some(self.body),
-            occurred_at: self.created_at.parse().ok()?,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -459,5 +537,34 @@ mod tests {
         assert!(repository("jtmthf/kestrel/issues").is_err());
         assert!(repository("../../secrets").is_err());
         assert!(repository("jtmthf/").is_err());
+    }
+
+    #[test]
+    fn an_issue_event_without_a_producer_id_is_refused() {
+        let event = serde_json::json!({
+            "event": "labeled",
+            "created_at": "2026-09-01T12:00:00Z",
+            "issue": { "number": 43 }
+        });
+        let integration = Integration {
+            id: crate::domain::IntegrationId::generate(),
+            organization: crate::domain::OrganizationId::generate(),
+            name: "github".to_owned(),
+            kind: crate::domain::IntegrationKind::Github,
+            repository: "jtmthf/kestrel".to_owned(),
+            api: API.to_owned(),
+            credential: crate::integration::credential::Token::held("nothing"),
+            carries: vec![crate::domain::Direction::Inbound],
+            interval: jiff::SignedDuration::from_secs(60),
+            poll_due_at: None,
+            polled_through: None,
+            comments_polled_through: None,
+            last_event_refusal: None,
+        };
+
+        let refusal = occurrence(&event, &integration)
+            .expect_err("an event without its producer id should be refused");
+
+        assert!(refusal.to_string().contains("integer id"));
     }
 }

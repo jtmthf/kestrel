@@ -322,6 +322,12 @@ impl Harness {
             .expect("the integrations should list")
     }
 
+    pub async fn acknowledge_event_refusal(&self, organization: &str, name: &str) {
+        integration::acknowledge_event_refusal(&self.store, organization, name)
+            .await
+            .expect("the event refusal should be acknowledged");
+    }
+
     pub async fn events(&self, organization: &str) -> Vec<Event> {
         integration::events(&self.store, organization, 100)
             .await

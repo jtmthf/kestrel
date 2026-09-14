@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::domain::{Event, EventId, RunId, SessionId, SessionState};
+use crate::domain::{Event, EventRecordId, RunId, SessionId, SessionState};
 use crate::fanout::{self, Change};
 use crate::integration::github;
 use crate::log::Entry;
@@ -9,7 +9,7 @@ use crate::store::Store;
 const AT_A_TIME: usize = 32;
 
 pub struct Received {
-    pub event: EventId,
+    pub event: EventRecordId,
     pub session: SessionId,
     pub run: Option<RunId>,
 }
@@ -69,11 +69,12 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
         opened = Some(session.clone());
     }
 
+    let data = github::EventData::new(&event.occurrence);
     let run = crate::session::post_in(
         &mut tx,
         &session,
-        &event.occurrence.actor,
-        event.occurrence.message.as_deref().unwrap_or_default(),
+        data.actor().unwrap_or_default(),
+        data.message().unwrap_or_default(),
     )
     .await?;
     tx.integrations().record_follow_up(event, &session).await?;
@@ -84,7 +85,7 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
     }
 
     Ok(Received {
-        event: event.id,
+        event: event.record_id,
         session: session.id,
         run: run.map(|run| run.id),
     })

@@ -8,7 +8,7 @@ use directories::ProjectDirs;
 use jiff::SignedDuration;
 
 use crate::compute::{Docker, Driver, LocalExec};
-use crate::domain::{Direction, SessionId};
+use crate::domain::{Direction, EventRecordId, SessionId};
 use crate::integration::github;
 use crate::log::Cursor;
 use crate::role::work::Dispatch;
@@ -251,6 +251,12 @@ pub enum IntegrationCommand {
         #[arg(long)]
         organization: String,
     },
+    /// Acknowledge the latest oversized Event refused by an Integration
+    AcknowledgeRefusal {
+        name: String,
+        #[arg(long)]
+        organization: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -278,8 +284,7 @@ pub enum RegisterCommand {
         /// How often the poll asks GitHub what has happened
         #[arg(long, value_name = "DURATION", default_value = "1m")]
         interval: SignedDuration,
-        /// The API it reaches GitHub at, for an installation that is not github.com
-        #[arg(long, env = "KESTREL_GITHUB_API", value_name = "URL", default_value = github::API)]
+        #[arg(long, env = "KESTREL_GITHUB_API", default_value = github::API, hide = true)]
         api: String,
     },
 }
@@ -293,6 +298,13 @@ pub enum EventCommand {
         /// How many to list at most
         #[arg(long, default_value_t = 50)]
         limit: usize,
+    },
+    /// Show one Event's whole envelope and payload
+    Show {
+        #[arg(long)]
+        record: EventRecordId,
+        #[arg(long)]
+        json: bool,
     },
 }
 

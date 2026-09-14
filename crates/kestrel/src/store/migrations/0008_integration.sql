@@ -11,29 +11,30 @@ CREATE TABLE integration (
     interval_ms INTEGER NOT NULL,
     poll_due_at TEXT,
     polled_through INTEGER,
+    last_event_refusal_source TEXT,
+    last_event_refusal_id TEXT,
+    last_event_refusal_bytes INTEGER,
+    last_event_refusal_reason TEXT,
+    last_event_refusal_at TEXT,
     registered_at TEXT NOT NULL,
     UNIQUE (organization_id, name)
 ) STRICT;
 
 CREATE INDEX integration_poll_due ON integration (poll_due_at) WHERE poll_due_at IS NOT NULL;
 
--- An Event is identified by what the external system calls it, and the same Event seen twice
--- in two overlapping poll windows is one row.
 CREATE TABLE event (
-    id TEXT PRIMARY KEY,
+    record_id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organization (id),
     integration_id TEXT NOT NULL REFERENCES integration (id),
-    external_id TEXT NOT NULL,
-    repository TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    actor TEXT NOT NULL,
-    subject INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    url TEXT NOT NULL,
-    label TEXT,
-    occurred_at TEXT NOT NULL,
+    id TEXT NOT NULL CHECK (id <> ''),
+    source TEXT NOT NULL CHECK (source <> ''),
+    specversion TEXT NOT NULL CHECK (specversion = '1.0'),
+    type TEXT NOT NULL CHECK (type <> ''),
+    subject TEXT,
+    time TEXT NOT NULL,
+    data TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
-    UNIQUE (integration_id, external_id)
+    UNIQUE (organization_id, source, id)
 ) STRICT;
 
-CREATE INDEX event_by_organization ON event (organization_id, occurred_at);
+CREATE INDEX event_by_organization ON event (organization_id, time);

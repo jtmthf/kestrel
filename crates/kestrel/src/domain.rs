@@ -42,7 +42,7 @@ identifiers!(
     SessionId,
     RunId,
     IntegrationId,
-    EventId,
+    EventRecordId,
     TriggerId,
 );
 
@@ -149,6 +149,7 @@ pub struct Integration {
     pub poll_due_at: Option<Timestamp>,
     pub polled_through: Option<i64>,
     pub comments_polled_through: Option<i64>,
+    pub last_event_refusal: Option<EventRefusal>,
 }
 
 impl Integration {
@@ -157,30 +158,34 @@ impl Integration {
     }
 }
 
-/// A thing the external system says happened, as it arrives and before kestrel has decided
-/// whether it has seen it before.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Occurrence {
-    pub external_id: String,
-    pub kind: String,
-    pub actor: String,
-    pub subject: i64,
-    pub title: String,
-    pub url: String,
-    pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    pub occurred_at: Timestamp,
+    pub id: String,
+    pub source: String,
+    pub specversion: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub subject: Option<String>,
+    pub time: Timestamp,
+    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
 pub struct Event {
-    pub id: EventId,
+    pub record_id: EventRecordId,
     pub organization: OrganizationId,
     pub integration: IntegrationId,
-    pub repository: String,
     pub occurrence: Occurrence,
     pub recorded_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventRefusal {
+    pub source: String,
+    pub id: String,
+    pub bytes: usize,
+    pub reason: String,
+    pub observed_at: Timestamp,
 }
 
 /// A Run's exit status on its way back to the surface that started the Session, composed when
@@ -190,7 +195,7 @@ pub struct Outcome {
     pub run: RunId,
     pub organization: OrganizationId,
     pub integration: IntegrationId,
-    pub event: EventId,
+    pub event: EventRecordId,
     pub subject: i64,
     pub body: String,
     /// Set before a request goes out and left set: a Run whose Session was told nothing yet
@@ -256,7 +261,7 @@ pub struct Session {
     pub last_active_at: Timestamp,
     pub sealed_at: Option<Timestamp>,
     pub continues: Option<SessionId>,
-    pub started_by: Option<EventId>,
+    pub started_by: Option<EventRecordId>,
 }
 
 impl Session {

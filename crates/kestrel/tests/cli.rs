@@ -1204,6 +1204,16 @@ fn the_cli_lists_what_a_poll_recorded_and_the_credential_appears_in_neither_it_n
         listed.contains("jtmthf/kestrel") && listed.contains("labeled") && listed.contains("#43"),
         "an event listing that does not say what happened where:\n{listed}"
     );
+    let record = listed
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("record="))
+        .expect("the listing should label the Event record identifier");
+    let shown: serde_json::Value =
+        serde_json::from_str(&kestrel.run(&["event", "show", "--record", record, "--json"]))
+            .expect("event show --json should print JSON");
+    assert_eq!(shown["record"], record);
+    assert_eq!(shown["event"]["id"], "7");
+    assert_eq!(shown["event"]["specversion"], "1.0");
     assert!(
         !listed.contains(support::TOKEN),
         "the listing spelled the credential out"

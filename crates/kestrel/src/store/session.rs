@@ -67,13 +67,13 @@ impl<'a> Sessions<'a> {
             last_active_at: opened_at,
             sealed_at: None,
             continues: continues.map(|sealed| sealed.id),
-            started_by: started_by.map(|event| event.id),
+            started_by: started_by.map(|event| event.record_id),
         };
 
         sqlx::query(
             "INSERT INTO session
                  (id, organization_id, workspace_id, agent_id, state, opened_at, last_active_at,
-                  continues, event_id)
+                  continues, event_record_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.to_string())
@@ -759,7 +759,7 @@ impl<'a> Sessions<'a> {
 pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Result<Session> {
     let row = sqlx::query(
         "SELECT organization_id, workspace_id, agent_id, state, opened_at, last_active_at,
-                sealed_at, continues, event_id
+                sealed_at, continues, event_record_id
          FROM session
          WHERE id = ?",
     )
@@ -797,7 +797,7 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
             .map(|sealed| sealed.parse())
             .transpose()?,
         started_by: row
-            .get::<Option<String>, _>("event_id")
+            .get::<Option<String>, _>("event_record_id")
             .map(|event| event.parse())
             .transpose()?,
     })
