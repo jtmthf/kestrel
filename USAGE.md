@@ -54,8 +54,8 @@ An **organization** is the outermost boundary. Every record kestrel keeps belong
 kestrel organization declare acme
 ```
 
-A **workspace** is what a session's work happens against — repositories and a branch. Repeat
-`--repository` to name more than one.
+A **workspace** is what a session's work happens against — repositories and the branch a session
+works on unless a trigger renders another. Repeat `--repository` to name more than one.
 
 ```sh
 kestrel workspace declare kestrel \
@@ -108,6 +108,7 @@ session       01a07846-49fa-7dc0-a44b-183a63794ee3
 organization  acme
 workspace     kestrel
 agent         builder
+branch        main
 state         open
 opened        2026-09-06T19:51:07.514310886Z
 last active   2026-09-06T19:51:07.514310886Z
@@ -343,13 +344,20 @@ kestrel session list --organization acme
 01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04  open  kestrel  builder  01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
 ```
 
-The last column is the event that started it. `kestrel session show` prints it beside the issue it
-came from, and the event is the session's first transcript entry:
+The last column is the event that started it. `kestrel session show` prints it beside the branch
+the trigger rendered, which the session works on for its whole life; a run cuts that branch from
+the workspace's when the repository does not have it yet. The rendered brief is the session's
+first transcript entry:
 
 ```
-1  2026-09-07T14:02:03.118Z  trigger fired  ready  jtmthf labeled ready-for-agent on jtmthf/kestrel#44  0.1/21: The GitHub Trigger opens a Session from an Event  https://github.com/jtmthf/kestrel/issues/44
+1  2026-09-07T14:02:03.118Z  brief  ready  Work https://github.com/jtmthf/kestrel/issues/44: 0.1/21: The GitHub Trigger opens a Session from an Event
 2  2026-09-07T14:02:03.118Z  participant joined  builder
 ```
+
+A brief, branch or correlation that cannot render fails the firing: nothing opens, the control
+plane logs why, and no later sweep tries that trigger on that event again. A correlation is held by
+the session it opened, and is unique among the organization's open sessions, so a firing that
+renders one an open session already holds opens nothing either.
 
 A trigger fires at most once per event, so the same label arriving in two overlapping poll windows
 opens one session and not two. Taking the label off and putting it back is a new event, and starts
@@ -435,12 +443,12 @@ writing to it.
 
 A new comment on the issue that opened a session posts that message to its transcript and enqueues
 another run in the same session. Each run gets a fresh environment. Before its agent starts, the
-supervisor pages the whole transcript into the runtime, so the new turn sees the originating event,
-earlier runs, and the follow-up message.
+supervisor pages the whole transcript into the runtime, so the new turn sees the brief, earlier
+runs, and the follow-up message.
 
 If a run is active when the comment arrives, the message waits durably and one further run is
 enqueued when the active one ends. If the session has been sealed, the comment opens a new session
-whose `continues` field names the sealed one.
+whose `continues` field names the sealed one, on the sealed session's branch.
 
 An operator can post the same kind of message directly:
 

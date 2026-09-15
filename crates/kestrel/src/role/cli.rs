@@ -151,6 +151,10 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!("organization  {}", session.organization.name);
             println!("workspace     {}", session.workspace.name);
             println!("agent         {}", session.agent.name);
+            println!("branch        {}", session.branch);
+            if let Some(correlation) = &session.correlation {
+                println!("correlation   {correlation}");
+            }
             println!("state         {}", session.state);
             println!("opened        {}", session.opened_at);
             println!("last active   {}", session.last_active_at);

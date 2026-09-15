@@ -7,7 +7,8 @@ use crate::domain::{Event, EventRecordId, RunId, SessionId, Templates, Trigger, 
 use crate::fanout::{self, Change};
 use crate::filter::Filter;
 use crate::log::Entry;
-use crate::store::Store;
+use crate::store::session::Opening;
+use crate::store::{Store, Tx};
 
 /// Each firing opens a Session and enqueues a Run, so a sweep takes a bounded bite rather
 /// than everything a Trigger declared over a busy repository matches at once.
@@ -22,11 +23,18 @@ pub struct Declaration<'a> {
     pub agent: &'a str,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Fired {
-    pub event: EventRecordId,
-    pub session: SessionId,
-    pub run: RunId,
+#[derive(Debug, Clone)]
+pub enum Fired {
+    Opened {
+        event: EventRecordId,
+        session: SessionId,
+        run: RunId,
+    },
+    Failed {
+        event: EventRecordId,
+        trigger: String,
+        because: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,26 +171,50 @@ pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
 }
 
 /// The Session, its first entry, the Run and the firing itself commit together, so a Trigger
-/// that fired has work to show for it and one that did not is found again by the next sweep.
+/// that fired has work to show for it and one interrupted before committing is found again by
+/// the next sweep. A firing that cannot open a Session is recorded as failed instead, because
+/// the next sweep would only fail it again.
 async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired> {
+    let rendered = render(trigger, event);
     let mut tx = store.begin().await?;
+
+    let rendered = match rendered {
+        Ok(rendered) => rendered,
+        Err(error) => return failed(tx, trigger, event, format!("{error:#}")).await,
+    };
+    if let Some(correlation) = &rendered.correlation
+        && let Some(holding) = tx
+            .sessions()
+            .holding_correlation(&trigger.organization, correlation)
+            .await?
+    {
+        let because = format!(
+            "the trigger {} renders the correlation {correlation} for the event {}, which the \
+             open session {holding} already holds",
+            trigger.name, event.record_id
+        );
+        return failed(tx, trigger, event, because).await;
+    }
+
     let session = tx
         .sessions()
-        .open(
-            &trigger.organization,
-            &trigger.workspace,
-            &trigger.agent,
-            None,
-            Some(event),
-        )
+        .open(Opening {
+            organization: &trigger.organization,
+            workspace: &trigger.workspace,
+            agent: &trigger.agent,
+            branch: &rendered.branch,
+            correlation: rendered.correlation.as_deref(),
+            continues: None,
+            started_by: Some(event),
+        })
         .await?;
 
     tx.log()
         .append(
             &session,
-            Entry::TriggerFired {
+            Entry::Brief {
                 trigger: trigger.name.clone(),
-                occurrence: event.occurrence.clone(),
+                brief: rendered.brief,
             },
         )
         .await?;
@@ -202,10 +234,28 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
     tx.commit().await?;
     fanout::publish(Change::SessionOpened(&session));
 
-    Ok(Fired {
+    Ok(Fired::Opened {
         event: event.record_id,
         session: session.id,
         run: run.id,
+    })
+}
+
+async fn failed(
+    mut tx: Tx<'_>,
+    trigger: &Trigger,
+    event: &Event,
+    because: String,
+) -> Result<Fired> {
+    tx.triggers()
+        .record_failed_firing(trigger, event, &because)
+        .await?;
+    tx.commit().await?;
+
+    Ok(Fired::Failed {
+        event: event.record_id,
+        trigger: trigger.name.clone(),
+        because,
     })
 }
 

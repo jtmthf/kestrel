@@ -41,6 +41,7 @@ use kestrel::provider::{self, Held};
 use kestrel::role::work::Dispatch;
 use kestrel::session;
 use kestrel::store::Store;
+use kestrel::store::session::Opening;
 use kestrel::trigger::{self, Declaration, Tested};
 use kestrel::work::{self, Claimed};
 use tempfile::TempDir;
@@ -463,6 +464,49 @@ impl Harness {
         self.try_open_session(organization, workspace, agent, None)
             .await
             .expect("the session should open")
+    }
+
+    /// Only a firing opens a Session on a branch other than its Workspace's, so this stands in
+    /// for one without an Event to fire on.
+    pub async fn open_session_on(
+        &self,
+        organization: &str,
+        workspace: &str,
+        agent: &str,
+        branch: &str,
+    ) -> Session {
+        let mut tx = self.store.begin().await.expect("a transaction");
+        let organization = tx
+            .organizations()
+            .named(organization)
+            .await
+            .expect("the organization should be declared");
+        let workspace = tx
+            .workspaces()
+            .named(&organization, workspace)
+            .await
+            .expect("the workspace should be declared");
+        let agent = tx
+            .agents()
+            .named(&organization, agent)
+            .await
+            .expect("the agent should be declared");
+        let session = tx
+            .sessions()
+            .open(Opening {
+                organization: &organization,
+                workspace: &workspace,
+                agent: &agent,
+                branch,
+                correlation: None,
+                continues: None,
+                started_by: None,
+            })
+            .await
+            .expect("the session should open");
+        tx.commit().await.expect("the session should commit");
+
+        session
     }
 
     pub async fn continue_session(

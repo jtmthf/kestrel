@@ -266,6 +266,8 @@ pub struct Session {
     pub organization: Organization,
     pub workspace: Workspace,
     pub agent: Agent,
+    pub branch: String,
+    pub correlation: Option<String>,
     pub state: SessionState,
     pub opened_at: Timestamp,
     pub last_active_at: Timestamp,

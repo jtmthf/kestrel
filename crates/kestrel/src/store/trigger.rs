@@ -204,15 +204,34 @@ impl<'a> Triggers<'a> {
         event: &Event,
         session: &Session,
     ) -> Result<()> {
+        self.record(trigger, event, Ok(session)).await
+    }
+
+    pub async fn record_failed_firing(
+        &mut self,
+        trigger: &Trigger,
+        event: &Event,
+        because: &str,
+    ) -> Result<()> {
+        self.record(trigger, event, Err(because)).await
+    }
+
+    async fn record(
+        &mut self,
+        trigger: &Trigger,
+        event: &Event,
+        opened: Result<&Session, &str>,
+    ) -> Result<()> {
         sqlx::query(
             "INSERT INTO firing
-                 (trigger_id, event_record_id, organization_id, session_id, fired_at)
-             VALUES (?, ?, ?, ?, ?)",
+                 (trigger_id, event_record_id, organization_id, session_id, failure, fired_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
         .bind(event.record_id.to_string())
         .bind(trigger.organization.id.to_string())
-        .bind(session.id.to_string())
+        .bind(opened.ok().map(|session| session.id.to_string()))
+        .bind(opened.err())
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.connection)
         .await

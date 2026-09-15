@@ -5,6 +5,7 @@ use crate::fanout::{self, Change};
 use crate::integration::github;
 use crate::log::Entry;
 use crate::store::Store;
+use crate::store::session::Opening;
 
 const AT_A_TIME: usize = 32;
 
@@ -48,15 +49,19 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
                     .expect("a triggered session has an event"),
             )
             .await?;
+        // A follow-up is more of the same issue's work, so unlike a `--continues` opened by hand
+        // it stays on the branch that work was pushed to.
         session = tx
             .sessions()
-            .open(
-                &session.organization,
-                &session.workspace,
-                &session.agent,
-                Some(&session),
-                Some(&origin),
-            )
+            .open(Opening {
+                organization: &session.organization,
+                workspace: &session.workspace,
+                agent: &session.agent,
+                branch: &session.branch,
+                correlation: None,
+                continues: Some(&session),
+                started_by: Some(&origin),
+            })
             .await?;
         tx.log()
             .append(

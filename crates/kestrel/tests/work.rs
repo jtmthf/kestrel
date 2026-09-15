@@ -255,6 +255,39 @@ async fn a_workspaces_repositories_and_its_branch_are_in_the_environment_before_
     harness.teardown().await;
 }
 
+/// The branch is cut after the clone, so what is inside waits for it rather than for the
+/// clone's last file.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_checks_out_its_sessions_branch_cut_from_the_workspaces_when_the_remote_has_none() {
+    let environment = Environment::executing(
+        "found=$(dirname \"$0\")/found\n\
+         for _ in $(seq 1 300); do\n\
+           [ \"$(git -C kestrel rev-parse --abbrev-ref HEAD 2>/dev/null)\" = kestrel/issue-43 ] && break\n\
+           sleep 0.1\n\
+         done\n\
+         git -C kestrel rev-parse --abbrev-ref HEAD > \"$found\" 2>&1\n\
+         cat kestrel/README.md >> \"$found\" 2>&1\n\
+         exit 3",
+    );
+    let harness = Harness::dispatching(environment.path()).await;
+    a_session(&harness).await;
+    let session = harness
+        .open_session_on("acme", "kestrel", "builder", "kestrel/issue-43")
+        .await;
+
+    let run = harness.enqueue_run(session.id).await;
+    ended(&harness, run.id).await;
+
+    assert_eq!(
+        environment.wrote("found"),
+        "kestrel/issue-43\na workspace's repository",
+        "the run did not work on its session's branch"
+    );
+
+    harness.teardown().await;
+}
+
 #[tokio::test]
 async fn a_workspace_that_cannot_be_checked_out_fails_the_run_rather_than_starting_it() {
     let harness = Harness::dispatching(supervisor::binary()).await;

@@ -6,7 +6,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqliteConnection};
 
-use crate::domain::{Exit, Occurrence, RunId, Session, SessionId, SessionState};
+use crate::domain::{Exit, RunId, Session, SessionId, SessionState};
 
 /// What changed a Session's shared state. Never what happened inside a Run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,9 +15,9 @@ pub enum Entry {
     ParticipantJoined {
         participant: String,
     },
-    TriggerFired {
+    Brief {
         trigger: String,
-        occurrence: Occurrence,
+        brief: String,
     },
     RunStarted {
         run: RunId,
@@ -41,17 +41,7 @@ impl fmt::Display for Entry {
             Entry::ParticipantJoined { participant } => {
                 write!(f, "participant joined  {participant}")
             }
-            Entry::TriggerFired {
-                trigger,
-                occurrence,
-            } => write!(
-                f,
-                "trigger fired  {trigger}  {} at {}{}  {}",
-                occurrence.r#type,
-                occurrence.source,
-                occurrence.subject.as_deref().unwrap_or_default(),
-                occurrence.time
-            ),
+            Entry::Brief { trigger, brief } => write!(f, "brief  {trigger}  {brief}"),
             Entry::RunStarted { run } => write!(f, "run started  {run}"),
             Entry::Said {
                 participant,
