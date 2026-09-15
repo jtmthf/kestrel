@@ -16,7 +16,7 @@ macro_rules! runs_where {
         concat!(
             "SELECT id, organization_id, session_id, state, exit, exit_because, environment,
                     enqueued_at, started_at, ended_at, lease_expires_at, connected_at,
-                    supervisor_version, model, context_used, context_size, cost_amount,
+                    supervisor_version, model, worked_model, context_used, context_size, cost_amount,
                     cost_currency
              FROM run
              WHERE ",
@@ -226,7 +226,7 @@ impl<'a> Sessions<'a> {
             .transpose()
     }
 
-    pub async fn enqueue_run(&mut self, session: &Session) -> Result<Run> {
+    pub async fn enqueue_run(&mut self, session: &Session, model: Option<&str>) -> Result<Run> {
         let run = Run {
             id: RunId::generate(),
             organization: session.organization.id,
@@ -234,7 +234,8 @@ impl<'a> Sessions<'a> {
             state: RunState::Queued,
             exit: None,
             environment: None,
-            model: None,
+            model: model.map(str::to_owned),
+            worked_model: None,
             enqueued_at: Timestamp::now(),
             started_at: None,
             ended_at: None,
@@ -244,13 +245,14 @@ impl<'a> Sessions<'a> {
         };
 
         sqlx::query(
-            "INSERT INTO run (id, organization_id, session_id, state, enqueued_at)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO run (id, organization_id, session_id, state, model, enqueued_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(run.id.to_string())
         .bind(run.organization.to_string())
         .bind(run.session.to_string())
         .bind(run.state.as_str())
+        .bind(&run.model)
         .bind(run.enqueued_at.to_string())
         .execute(&mut *self.connection)
         .await
@@ -484,8 +486,8 @@ impl<'a> Sessions<'a> {
         Ok(())
     }
 
-    pub async fn record_model(&mut self, run: &Run, model: &str) -> Result<()> {
-        sqlx::query("UPDATE run SET model = ? WHERE id = ?")
+    pub async fn record_worked_model(&mut self, run: &Run, model: &str) -> Result<()> {
+        sqlx::query("UPDATE run SET worked_model = ? WHERE id = ?")
             .bind(model)
             .bind(run.id.to_string())
             .execute(&mut *self.connection)
@@ -844,6 +846,7 @@ fn run(row: &SqliteRow) -> Result<Run> {
             .transpose()?,
         environment: row.get("environment"),
         model: row.get("model"),
+        worked_model: row.get("worked_model"),
         enqueued_at: row.get::<String, _>("enqueued_at").parse()?,
         started_at: timestamp(row, "started_at")?,
         ended_at: timestamp(row, "ended_at")?,

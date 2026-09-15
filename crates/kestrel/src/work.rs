@@ -98,7 +98,7 @@ impl From<anyhow::Error> for ReportRefused {
     }
 }
 
-pub async fn enqueue(store: &Store, session: SessionId) -> Result<Run> {
+pub async fn enqueue(store: &Store, session: SessionId, model: Option<&str>) -> Result<Run> {
     let mut tx = store.begin().await?;
     let session = tx.sessions().get(session).await?;
     session.accepts("run")?;
@@ -110,7 +110,7 @@ pub async fn enqueue(store: &Store, session: SessionId) -> Result<Run> {
         );
     }
 
-    let run = tx.sessions().enqueue_run(&session).await?;
+    let run = tx.sessions().enqueue_run(&session, model).await?;
     tx.commit().await?;
 
     Ok(run)
@@ -190,7 +190,7 @@ pub async fn report(
         }
         Report::Model { model, offered } => {
             let session = tx.sessions().get(run.session).await?;
-            tx.sessions().record_model(run, &model).await?;
+            tx.sessions().record_worked_model(run, &model).await?;
             tx.agents()
                 .record_models_advertised(session.organization.id, &session.agent.runtime, &offered)
                 .await?;
@@ -346,7 +346,7 @@ async fn continue_pending(tx: &mut Tx<'_>, session: SessionId) -> Result<Option<
 
     tx.log().append(&session, pending_entry(pending)).await?;
 
-    Ok(Some(tx.sessions().enqueue_run(&session).await?))
+    Ok(Some(tx.sessions().enqueue_run(&session, None).await?))
 }
 
 fn pending_entry(pending: Vec<PendingMessage>) -> Entry {

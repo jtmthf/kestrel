@@ -191,8 +191,8 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 eprintln!("cursor  {cursor}");
             }
         }
-        CliCommand::Run(RunCommand::Enqueue { session }) => {
-            let run = work::enqueue(&store, *session).await?;
+        CliCommand::Run(RunCommand::Enqueue { session, model }) => {
+            let run = work::enqueue(&store, *session, model.as_deref()).await?;
             println!("{}", run.id);
         }
         CliCommand::Integration(IntegrationCommand::Register(RegisterCommand::Github {
@@ -407,7 +407,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                     "{}  {}  {}  {}",
                     run.id,
                     run.environment.as_deref().unwrap_or("-"),
-                    run.model.as_deref().unwrap_or("-"),
+                    run.worked_model.as_deref().unwrap_or("-"),
                     run.exit
                         .map_or_else(|| run.state.to_string(), |exit| exit.to_string())
                 );

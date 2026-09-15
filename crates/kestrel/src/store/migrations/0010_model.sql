@@ -6,6 +6,7 @@ ALTER TABLE agent DROP COLUMN model;
 ALTER TABLE agent RENAME COLUMN names_model TO model;
 
 ALTER TABLE run ADD COLUMN model TEXT;
+ALTER TABLE run ADD COLUMN worked_model TEXT;
 
 CREATE TABLE runtime_model (
     organization_id TEXT NOT NULL REFERENCES organization (id),

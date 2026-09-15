@@ -187,7 +187,7 @@ pub(crate) async fn post_in(
 
     match holding {
         Some(_) => Ok(None),
-        None => Ok(Some(tx.sessions().enqueue_run(session).await?)),
+        None => Ok(Some(tx.sessions().enqueue_run(session, None).await?)),
     }
 }
 

@@ -339,6 +339,9 @@ pub enum RunCommand {
         /// The Session it executes on behalf of
         #[arg(long)]
         session: SessionId,
+        /// The model it works with, or none for its Agent's or Agent Runtime's default
+        #[arg(long)]
+        model: Option<String>,
     },
     /// List every Run in a Session, with the Environment it executed in
     List {
@@ -593,6 +596,29 @@ mod tests {
             parsed(&["organization", "list"]).selection(),
             Selection::Cli(&CliCommand::Organization(OrganizationCommand::List))
         );
+    }
+
+    #[test]
+    fn a_run_may_name_the_model_it_works_with() {
+        let Cli {
+            command: Some(Command::Cli(command)),
+            ..
+        } = parsed(&[
+            "run",
+            "enqueue",
+            "--session",
+            "01a0a2d8-baf8-7c02-99fa-7280f174c14a",
+            "--model",
+            "scripted-max",
+        ])
+        else {
+            panic!("the run command should parse");
+        };
+
+        assert!(matches!(
+            *command,
+            CliCommand::Run(RunCommand::Enqueue { model: Some(model), .. }) if model == "scripted-max"
+        ));
     }
 
     #[test]

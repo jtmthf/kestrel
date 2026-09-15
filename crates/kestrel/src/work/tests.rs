@@ -30,7 +30,7 @@ impl Fixture {
         let session = session::open(&store, "acme", "kestrel", "builder", None)
             .await
             .unwrap();
-        enqueue(&store, session.id).await.unwrap();
+        enqueue(&store, session.id, None).await.unwrap();
         let run = claim(&store).await.unwrap().unwrap().run;
 
         Self {
@@ -113,7 +113,7 @@ async fn reports_record_the_run_and_its_transcript_together() {
     assert_eq!(recorded.exit, Some(Exit::Succeeded));
     assert!(recorded.started_at.is_some());
     assert!(recorded.ended_at.is_some());
-    assert_eq!(recorded.model.as_deref(), Some("scripted-mini"));
+    assert_eq!(recorded.worked_model.as_deref(), Some("scripted-mini"));
     assert_eq!(recorded.usage, Some(usage()));
     assert_eq!(
         fixture.entries().await,
@@ -220,7 +220,7 @@ async fn numbered_reports_refuse_missing_and_invalid_numbers_without_effects() {
     let recorded = run(&fixture.store, fixture.run.id).await.unwrap();
     assert_eq!(recorded.state, RunState::Active);
     assert!(recorded.started_at.is_none());
-    assert!(recorded.model.is_none());
+    assert!(recorded.worked_model.is_none());
     assert!(recorded.usage.is_none());
     assert_eq!(fixture.entries().await, before);
     fixture.report(Some(1), Report::Started).await.unwrap();

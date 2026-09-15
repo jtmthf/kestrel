@@ -654,7 +654,21 @@ impl Harness {
     }
 
     pub async fn try_enqueue_run(&self, session: SessionId) -> anyhow::Result<Run> {
-        work::enqueue(&self.store, session).await
+        work::enqueue(&self.store, session, None).await
+    }
+
+    pub async fn enqueue_run_naming(&self, session: SessionId, model: Option<&str>) -> Run {
+        self.try_enqueue_run_naming(session, model)
+            .await
+            .expect("the run should enqueue")
+    }
+
+    pub async fn try_enqueue_run_naming(
+        &self,
+        session: SessionId,
+        model: Option<&str>,
+    ) -> anyhow::Result<Run> {
+        work::enqueue(&self.store, session, model).await
     }
 
     /// Claims what it enqueued, standing in for the work role a `boot`ed harness leaves idle.

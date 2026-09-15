@@ -30,7 +30,7 @@ pub struct Runtime {
     pub command: String,
     /// The ACP authentication method to log the agent in with, for an agent that requires one.
     pub auth: Option<String>,
-    /// The model the Run's Agent named, if it named one.
+    /// The model the Run named, if it named one.
     pub model: Option<String>,
 }
 
@@ -42,14 +42,14 @@ pub struct Worked {
     pub exit: Exit,
 }
 
-/// Which model the agent works the turn on — the one its Agent named, or the one the runtime
+/// Which model the agent works the turn on — the one its Run named, or the one the runtime
 /// defaults to when it named none — and every model the runtime offered to be set to.
 pub struct On {
     pub model: String,
     pub offered: Vec<String>,
 }
 
-/// What to ask the agent to set, and what it is on once it has. Nothing is set for an Agent
+/// What to ask the agent to set, and what it is on once it has. Nothing is set for a Run
 /// that named no model: the agent is already on the default it advertised.
 struct Selects {
     id: Option<SessionConfigId>,
@@ -269,8 +269,8 @@ fn offered(methods: &[AuthMethod]) -> String {
 }
 
 /// Config options are optional and every agent ships a default (ADR-0007), so an agent may
-/// offer no model to select. One whose Agent named a model then fails rather than quietly
-/// running on something else; one whose Agent named none runs on a model nobody can name.
+/// offer no model to select. One whose Run named a model then fails rather than quietly
+/// running on something else; one whose Run named none runs on a model nobody can name.
 fn selects_the_model(
     offered: &[SessionConfigOption],
     named: Option<&str>,
@@ -286,7 +286,7 @@ fn selects_the_model(
     let Some((id, select)) = selectable else {
         return match named {
             Some(model) => Err(Error::internal_error().data(format!(
-                "this agent lets no client select a model, and this run's agent named {model}"
+                "this agent lets no client select a model, and this run named {model}"
             ))),
             None => Ok(None),
         };
@@ -306,7 +306,7 @@ fn selects_the_model(
     };
     if !offered.iter().any(|value| value == model) {
         return Err(Error::internal_error().data(format!(
-            "this agent does not offer the model {model}, which this run's agent named"
+            "this agent does not offer the model {model}, which this run named"
         )));
     }
 

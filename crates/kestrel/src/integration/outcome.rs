@@ -194,6 +194,7 @@ mod tests {
             exit: None,
             environment: None,
             model: None,
+            worked_model: None,
             enqueued_at: Timestamp::now(),
             started_at: None,
             ended_at: None,

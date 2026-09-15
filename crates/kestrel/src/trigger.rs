@@ -227,7 +227,7 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
         )
         .await?;
 
-    let run = tx.sessions().enqueue_run(&session).await?;
+    let run = tx.sessions().enqueue_run(&session, None).await?;
     tx.triggers()
         .record_firing(trigger, event, &session)
         .await?;

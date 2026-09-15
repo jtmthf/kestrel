@@ -294,8 +294,10 @@ pub struct Run {
     pub state: RunState,
     pub exit: Option<Exit>,
     pub environment: Option<String>,
-    /// What the Agent Runtime was on, once it has said; never what the Agent named.
+    /// What this Run names, or none for its Agent's or Agent Runtime's default.
     pub model: Option<String>,
+    /// What the Agent Runtime reported it worked on.
+    pub worked_model: Option<String>,
     pub enqueued_at: Timestamp,
     pub started_at: Option<Timestamp>,
     pub ended_at: Option<Timestamp>,
