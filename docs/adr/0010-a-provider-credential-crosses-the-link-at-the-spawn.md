@@ -35,6 +35,11 @@ argument, where a shell history and `ps` would both have it. kestrel holds no ta
 no opinion about which of them an Agent Runtime speaks to: the operator names the variable, and the
 runtime finds it where it always looks.
 
+**A Run's model names no credential.** kestrel cannot infer a provider from a model name, and a
+model may be available through more than one provider. A Run may name any model; at the spawn it
+receives every Provider Credential its Organization holds, and its runtime decides whether that is
+enough to reach the named model.
+
 **A Run with no way to reach a model fails before an Environment.** An Organization holding no
 credential, driving a runtime kestrel was configured with no ACP login for, cannot work: the Run
 ends failed at dispatch, naming the organization, rather than provisioning an Environment to

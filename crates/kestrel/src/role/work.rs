@@ -145,7 +145,10 @@ async fn execute(
             ),
             (
                 "KESTREL_AGENT_MODEL",
-                session.agent.model.as_deref().unwrap_or_default(),
+                run.model
+                    .as_deref()
+                    .or(session.agent.model.as_deref())
+                    .unwrap_or_default(),
             ),
         ],
     ) {

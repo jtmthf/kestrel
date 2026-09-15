@@ -274,10 +274,10 @@ async fn an_agent_that_will_not_work_until_it_is_logged_in_fails_the_run_rather_
 }
 
 /// A model reaches the agent through `session/set_config_option` rather than through what the
-/// Environment was built with, so changing an Agent's model is configuration (ADR-0007). What
-/// the agent was set to is on the Run, where nothing inside the Environment has to be believed.
+/// Environment was built with. What the agent was set to is on the Run, where nothing inside the
+/// Environment has to be believed.
 #[tokio::test]
-async fn the_model_a_runs_agent_named_is_the_one_the_agent_is_set_to() {
+async fn the_supervisor_sets_the_model_it_was_given() {
     let harness = Harness::boot().await;
     let session = a_session(&harness).await;
     let (run, credential) = harness.dispatch_run(session.id).await;
@@ -295,51 +295,76 @@ async fn the_model_a_runs_agent_named_is_the_one_the_agent_is_set_to() {
 
     let ended = ended(&harness, run.id).await;
     assert_eq!(ended.exit, Some(Exit::Succeeded));
-    assert_eq!(ended.model.as_deref(), Some(OTHER_MODEL));
+    assert_eq!(ended.worked_model.as_deref(), Some(OTHER_MODEL));
 
     assert!(supervisor.finishes().await.success());
     harness.teardown().await;
 }
 
-/// The runtime's default is the honest answer for an Agent that named no model, and a Run that
+#[tokio::test]
+async fn a_run_without_a_model_uses_its_agents_model() {
+    let (harness, _, run) = worked_naming(Script::Speaks, Some(OTHER_MODEL)).await;
+
+    assert!(run.model.is_none());
+    assert_eq!(run.worked_model.as_deref(), Some(OTHER_MODEL));
+
+    harness.teardown().await;
+}
+
+/// The runtime's default is the honest answer for a Run that names no model, and a Run that
 /// could not say which model that was would leave an audit record that says nothing (ADR-0007).
 #[tokio::test]
-async fn an_agent_that_names_no_model_runs_on_the_runtimes_default_and_the_run_records_which() {
+async fn a_run_and_its_agent_that_name_no_model_use_the_runtimes_default() {
     let (harness, _, run) = worked_naming(Script::Speaks, None).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded));
-    assert_eq!(run.model.as_deref(), Some(DEFAULT_MODEL));
+    assert_eq!(run.worked_model.as_deref(), Some(DEFAULT_MODEL));
 
     harness.teardown().await;
 }
 
 #[tokio::test]
-async fn two_agents_with_different_models_produce_runs_on_different_models() {
+async fn a_run_that_names_no_model_skips_selection_when_its_runtime_offers_none() {
+    let (harness, _, run) = worked_naming(Script::Decides, None).await;
+
+    assert_eq!(run.exit, Some(Exit::Succeeded));
+    assert!(run.worked_model.is_none());
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn two_runs_in_one_session_can_drive_different_models() {
     let harness = Harness::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Speaks),
     )
     .await;
     let session = a_session_naming(&harness, Some(OTHER_MODEL)).await;
-    harness
-        .declare_agent(
-            &session.organization,
-            "reviewer",
-            RUNTIME,
-            Some(DEFAULT_MODEL),
-        )
-        .await;
-    let reviewing = harness
-        .open_session("acme", repository::NAME, "reviewer")
-        .await;
 
-    let built = harness.enqueue_run(session.id).await;
+    let built = harness
+        .enqueue_run_naming(session.id, Some(OTHER_MODEL))
+        .await;
     let built = ended(&harness, built.id).await;
-    let reviewed = harness.enqueue_run(reviewing.id).await;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let reviewed = loop {
+        match harness
+            .try_enqueue_run_naming(session.id, Some(DEFAULT_MODEL))
+            .await
+        {
+            Ok(run) => break run,
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => panic!("the session never took its next run: {error}"),
+        }
+    };
     let reviewed = ended(&harness, reviewed.id).await;
 
     assert_eq!(built.model.as_deref(), Some(OTHER_MODEL));
     assert_eq!(reviewed.model.as_deref(), Some(DEFAULT_MODEL));
+    assert_eq!(built.worked_model.as_deref(), Some(OTHER_MODEL));
+    assert_eq!(reviewed.worked_model.as_deref(), Some(DEFAULT_MODEL));
 
     harness.teardown().await;
 }
@@ -367,7 +392,7 @@ async fn changing_an_agents_model_leaves_a_run_already_in_flight_on_the_one_it_s
     );
 
     assert_eq!(
-        ended(&harness, run.id).await.model.as_deref(),
+        ended(&harness, run.id).await.worked_model.as_deref(),
         Some(OTHER_MODEL)
     );
 
@@ -375,21 +400,32 @@ async fn changing_an_agents_model_leaves_a_run_already_in_flight_on_the_one_it_s
 }
 
 /// Config options are optional and every agent ships a default, so a runtime may let no client
-/// choose a model at all. Running one on something other than what its Agent named would leave
+/// choose a model at all. Running one on something other than what its Run named would leave
 /// an audit record that lies, which is the worst of the three available outcomes (ADR-0007).
 #[tokio::test]
-async fn an_agent_that_lets_no_client_choose_a_model_fails_a_run_whose_agent_named_one() {
-    let (harness, _, run) = worked(Script::Decides).await;
+async fn an_agent_that_lets_no_client_choose_a_model_fails_a_run_that_named_one() {
+    let harness = Harness::dispatching_to(
+        supervisor::binary(),
+        &scripted_agent::playing(Script::Decides),
+    )
+    .await;
+    let session = a_session_naming(&harness, None).await;
+    let run = harness
+        .enqueue_run_naming(session.id, Some(OTHER_MODEL))
+        .await;
+    let run = ended(&harness, run.id).await;
+
+    assert_eq!(run.model.as_deref(), Some(OTHER_MODEL));
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
-            "the run ended {:?}, and its agent offers no model to select",
+            "the run ended {:?}, and its runtime offers no model to select",
             run.exit
         );
     };
     assert!(
-        because.contains(OTHER_MODEL),
-        "the run failed without naming the model it could not have: {because}"
+        because.contains("this run named") && because.contains(OTHER_MODEL),
+        "the run failed without explaining why its named model could not be selected: {because}"
     );
 
     harness.teardown().await;
@@ -401,7 +437,7 @@ async fn a_model_the_agent_does_not_offer_fails_the_run_rather_than_falling_back
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
-            "the run ended {:?}, and its agent named a model the runtime does not offer",
+            "the run ended {:?}, and its run named a model the runtime does not offer",
             run.exit
         );
     };
