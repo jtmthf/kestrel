@@ -13,6 +13,7 @@ use crate::filter::Filter;
 use crate::integration::github;
 use crate::log::Cursor;
 use crate::role::work::Dispatch;
+use crate::template::Template;
 
 const SUPERVISOR: &str = "kestrel-supervisor";
 const IMAGE: &str = "kestrel-env:latest";
@@ -158,7 +159,7 @@ pub enum Command {
     /// Claim queued Runs and execute them
     Work,
     #[command(flatten)]
-    Cli(CliCommand),
+    Cli(Box<CliCommand>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -206,6 +207,18 @@ pub enum TriggerCommand {
         /// reach into data.<path>
         #[arg(long, value_name = "JSON")]
         filter: Filter,
+        /// The Brief a firing hands its Session: a minijinja template over `event`, in which
+        /// anything undefined is an error rather than nothing
+        #[arg(long, value_name = "TEMPLATE")]
+        brief: Template,
+        /// The branch a firing's work happens on, rendered from `event`; the Workspace's
+        /// branch when not given
+        #[arg(long, value_name = "TEMPLATE")]
+        branch: Option<Template>,
+        /// The key that decides whether a Session for this work already exists, rendered
+        /// from `event`
+        #[arg(long, value_name = "TEMPLATE")]
+        correlation: Option<Template>,
         /// The Workspace a firing's work happens against
         #[arg(long)]
         workspace: String,
@@ -213,7 +226,8 @@ pub enum TriggerCommand {
         #[arg(long)]
         agent: String,
     },
-    /// Say whether a Trigger matches an Event already recorded, starting no work
+    /// Say whether a Trigger matches an Event already recorded, and what a firing for it
+    /// would render, starting no work
     Test {
         /// The name it is referred to by
         name: String,

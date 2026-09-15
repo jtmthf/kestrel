@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::filter::Filter;
 use crate::integration::credential::Token;
+use crate::template::Template;
 
 macro_rules! identifiers {
     ($($name:ident),+ $(,)?) => {$(
@@ -244,10 +245,19 @@ pub struct Trigger {
     pub organization: Organization,
     pub name: String,
     pub filter: Filter,
+    pub templates: Templates,
     pub workspace: Workspace,
     pub agent: Agent,
     pub state: TriggerState,
     pub declared_at: Timestamp,
+}
+
+/// What a firing renders from the Event: never the Agent or the Workspace (ADR-0013).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Templates {
+    pub brief: Template,
+    pub branch: Option<Template>,
+    pub correlation: Option<Template>,
 }
 
 #[derive(Debug, Clone)]

@@ -1,9 +1,9 @@
 //! An Event supplies data and never authority (ADR-0013): the Agent and the Workspace a
 //! firing starts work with are named in the declaration a human applied, never in the Event.
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 
-use crate::domain::{Event, EventRecordId, RunId, SessionId, Trigger, TriggerState};
+use crate::domain::{Event, EventRecordId, RunId, SessionId, Templates, Trigger, TriggerState};
 use crate::fanout::{self, Change};
 use crate::filter::Filter;
 use crate::log::Entry;
@@ -17,6 +17,7 @@ pub struct Declaration<'a> {
     pub organization: &'a str,
     pub name: &'a str,
     pub filter: &'a Filter,
+    pub templates: &'a Templates,
     pub workspace: &'a str,
     pub agent: &'a str,
 }
@@ -26,6 +27,19 @@ pub struct Fired {
     pub event: EventRecordId,
     pub session: SessionId,
     pub run: RunId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rendered {
+    pub brief: String,
+    pub branch: String,
+    pub correlation: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct Tested {
+    pub matches: bool,
+    pub rendered: Result<Rendered>,
 }
 
 pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trigger> {
@@ -42,6 +56,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
             &organization,
             declaration.name,
             declaration.filter,
+            declaration.templates,
             &workspace,
             &agent,
         )
@@ -65,14 +80,15 @@ pub async fn show(store: &Store, organization: &str, name: &str) -> Result<Trigg
     tx.triggers().named(&organization, name).await
 }
 
-/// Whether the filter matches, and nothing else: an Event recorded before the Trigger was
-/// declared, or one it already fired for, is still worth asking about.
+/// Starts nothing, so an Event recorded before the Trigger was declared, or one it already
+/// fired for, is still worth asking about; it renders even when the filter does not match, so
+/// a brief can be written against an Event before the filter is right.
 pub async fn test(
     store: &Store,
     organization: &str,
     name: &str,
     event: EventRecordId,
-) -> Result<bool> {
+) -> Result<Tested> {
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
     let trigger = tx.triggers().named(&organization, name).await?;
@@ -85,7 +101,43 @@ pub async fn test(
         );
     }
 
-    tx.triggers().matches(&trigger, &event).await
+    Ok(Tested {
+        matches: tx.triggers().matches(&trigger, &event).await?,
+        rendered: render(&trigger, &event),
+    })
+}
+
+pub fn render(trigger: &Trigger, event: &Event) -> Result<Rendered> {
+    let unrenderable = |field: &str| {
+        format!(
+            "the trigger {} cannot render its {field} for the event {}",
+            trigger.name, event.record_id
+        )
+    };
+    let templates = &trigger.templates;
+    let occurrence = &event.occurrence;
+
+    Ok(Rendered {
+        brief: templates
+            .brief
+            .render(occurrence)
+            .with_context(|| unrenderable("brief"))?,
+        branch: match &templates.branch {
+            Some(branch) => branch
+                .render_line(occurrence)
+                .with_context(|| unrenderable("branch"))?,
+            None => trigger.workspace.branch.clone(),
+        },
+        correlation: templates
+            .correlation
+            .as_ref()
+            .map(|correlation| {
+                correlation
+                    .render_line(occurrence)
+                    .with_context(|| unrenderable("correlation"))
+            })
+            .transpose()?,
+    })
 }
 
 pub async fn disable(store: &Store, organization: &str, name: &str) -> Result<Trigger> {

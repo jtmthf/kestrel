@@ -31,7 +31,7 @@ use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
     Agent, Direction, Event, EventRecordId, Integration, IntegrationKind, Organization, Run, RunId,
-    Session, SessionId, Trigger, Workspace,
+    Session, SessionId, Templates, Trigger, Workspace,
 };
 use kestrel::integration::{self, Registration};
 use kestrel::link::credential::Secret;
@@ -41,7 +41,7 @@ use kestrel::provider::{self, Held};
 use kestrel::role::work::Dispatch;
 use kestrel::session;
 use kestrel::store::Store;
-use kestrel::trigger::{self, Declaration};
+use kestrel::trigger::{self, Declaration, Tested};
 use kestrel::work::{self, Claimed};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
@@ -62,6 +62,18 @@ pub fn labelled_on(repository: &str, label: &str) -> String {
         {"exact": {"data.label.name": label}},
     ]})
     .to_string()
+}
+
+pub const BRIEF: &str = "Work on {{ event.data.issue.title }}";
+
+pub fn templates(brief: &str, branch: Option<&str>, correlation: Option<&str>) -> Templates {
+    let parsed = |template: &str| template.parse().expect("the template should parse");
+
+    Templates {
+        brief: parsed(brief),
+        branch: branch.map(parsed),
+        correlation: correlation.map(parsed),
+    }
 }
 
 pub struct Harness {
@@ -351,12 +363,33 @@ impl Harness {
         workspace: &str,
         agent: &str,
     ) -> Trigger {
+        self.declare_trigger_rendering(
+            organization,
+            name,
+            filter,
+            workspace,
+            agent,
+            &templates(BRIEF, None, None),
+        )
+        .await
+    }
+
+    pub async fn declare_trigger_rendering(
+        &self,
+        organization: &str,
+        name: &str,
+        filter: &str,
+        workspace: &str,
+        agent: &str,
+        templates: &Templates,
+    ) -> Trigger {
         trigger::declare(
             &self.store,
             Declaration {
                 organization,
                 name,
                 filter: &filter.parse().expect("the filter should parse"),
+                templates,
                 workspace,
                 agent,
             },
@@ -365,7 +398,12 @@ impl Harness {
         .expect("the trigger should declare")
     }
 
-    pub async fn test_trigger(&self, organization: &str, name: &str, event: EventRecordId) -> bool {
+    pub async fn test_trigger(
+        &self,
+        organization: &str,
+        name: &str,
+        event: EventRecordId,
+    ) -> Tested {
         self.try_test_trigger(organization, name, event)
             .await
             .expect("the trigger should test")
@@ -376,7 +414,7 @@ impl Harness {
         organization: &str,
         name: &str,
         event: EventRecordId,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Tested> {
         trigger::test(&self.store, organization, name, event).await
     }
 

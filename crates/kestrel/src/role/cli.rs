@@ -8,7 +8,7 @@ use crate::cli::{
     OrganizationCommand, RegisterCommand, RunCommand, SessionCommand, TriggerCommand,
     WorkspaceCommand,
 };
-use crate::domain::{Direction, IntegrationKind};
+use crate::domain::{Direction, IntegrationKind, Templates};
 use crate::integration::{self, Registration};
 use crate::log::Window;
 use crate::provider;
@@ -253,6 +253,9 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             name,
             organization,
             filter,
+            brief,
+            branch,
+            correlation,
             workspace,
             agent,
         }) => {
@@ -262,6 +265,11 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                     organization,
                     name,
                     filter,
+                    templates: &Templates {
+                        brief: brief.clone(),
+                        branch: branch.clone(),
+                        correlation: correlation.clone(),
+                    },
                     workspace,
                     agent,
                 },
@@ -287,14 +295,25 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             organization,
             event,
         }) => {
-            if trigger::test(&store, organization, name, *event).await? {
+            let tested = trigger::test(&store, organization, name, *event).await?;
+            if tested.matches {
                 println!("matches");
             } else {
                 println!("does not match");
             }
+
+            let rendered = tested.rendered?;
+            println!("branch        {}", rendered.branch);
+            println!(
+                "correlation   {}",
+                rendered.correlation.as_deref().unwrap_or("-")
+            );
+            println!();
+            println!("{}", rendered.brief);
         }
         CliCommand::Trigger(TriggerCommand::Show { name, organization }) => {
             let trigger = trigger::show(&store, organization, name).await?;
+            let templates = &trigger.templates;
             println!("trigger       {}", trigger.id);
             println!("organization  {}", trigger.organization.name);
             println!("name          {}", trigger.name);
@@ -302,7 +321,23 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!("matches       {}", trigger.filter);
             println!("workspace     {}", trigger.workspace.name);
             println!("agent         {}", trigger.agent.name);
+            match &templates.branch {
+                Some(branch) => println!("branch        {branch}"),
+                None => println!(
+                    "branch        {} (the workspace's)",
+                    trigger.workspace.branch
+                ),
+            }
+            println!(
+                "correlation   {}",
+                templates
+                    .correlation
+                    .as_ref()
+                    .map_or_else(|| "-".to_owned(), ToString::to_string)
+            );
             println!("declared      {}", trigger.declared_at);
+            println!();
+            println!("{}", templates.brief);
         }
         CliCommand::Trigger(TriggerCommand::Disable { name, organization }) => {
             let trigger = trigger::disable(&store, organization, name).await?;
