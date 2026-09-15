@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::cli::Role;
 use crate::compute::{Driver, Environment, Exited};
-use crate::domain::{Exit, Run, Session, Workspace};
+use crate::domain::{Exit, Run, Session};
 use crate::link::{self, Instruction};
 use crate::provider;
 use crate::session;
@@ -162,10 +162,10 @@ async fn execute(
     };
     work::environment_present(store, &run, environment.name()).await?;
 
-    let exit = match check_out(&session.workspace, &mut environment).await {
+    let exit = match check_out(&session, &mut environment).await {
         Ok(()) => start(store, &run, environment, shutdown).await?,
         Err(error) => {
-            let exit = work::fail(store, &run, &error.to_string()).await?;
+            let exit = work::fail(store, &run, &format!("{error:#}")).await?;
             if destroy(&run, environment) {
                 work::environment_gone(store, &run).await?;
             }
@@ -260,20 +260,61 @@ fn destroy(run: &Run, environment: Environment) -> bool {
     }
 }
 
-/// Before the Run is told to start, so nothing an agent reaches for is still arriving.
-async fn check_out(workspace: &Workspace, environment: &mut Environment) -> Result<()> {
-    for repository in &workspace.repositories {
-        let cloning = environment
-            .exec(&["git", "clone", "--branch", &workspace.branch, repository])
-            .with_context(|| format!("{repository} could not be cloned into the environment"))?;
-        let cloned = tokio::task::spawn_blocking(move || cloning.finish()).await??;
+/// Before the Run is told to start, so nothing an agent reaches for is still arriving. A branch
+/// the remote does not have yet is cut from the Workspace's.
+async fn check_out(session: &Session, environment: &mut Environment) -> Result<()> {
+    let base = session.workspace.branch.as_str();
+    let branch = session.branch.as_str();
 
-        if !cloned.exited.success() {
-            bail!(
-                "{repository} could not be cloned into the environment: {}",
-                cloned.err
-            );
+    for repository in &session.workspace.repositories {
+        let uncloned = || {
+            format!("{repository} could not be cloned into the environment on the branch {branch}")
+        };
+        let directory = cloned_into(repository);
+
+        exec(
+            environment,
+            &["git", "clone", "--branch", base, repository, directory],
+        )
+        .await
+        .with_context(uncloned)?;
+        if branch != base
+            && exec(
+                environment,
+                &["git", "-C", directory, "checkout", branch, "--"],
+            )
+            .await
+            .is_err()
+        {
+            exec(
+                environment,
+                &["git", "-C", directory, "checkout", "-b", branch],
+            )
+            .await
+            .with_context(uncloned)?;
         }
+    }
+
+    Ok(())
+}
+
+/// The directory `git clone` would choose for itself, named so the checkout after it can find it.
+fn cloned_into(repository: &str) -> &str {
+    let name = repository
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(repository);
+
+    name.strip_suffix(".git").unwrap_or(name)
+}
+
+async fn exec(environment: &mut Environment, command: &[&str]) -> Result<()> {
+    let streaming = environment.exec(command)?;
+    let finished = tokio::task::spawn_blocking(move || streaming.finish()).await??;
+
+    if !finished.exited.success() {
+        bail!("{}", finished.err.trim());
     }
 
     Ok(())

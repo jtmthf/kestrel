@@ -132,12 +132,20 @@ async fn firing(store: &Store, shutdown: &CancellationToken) -> Result<()> {
         match trigger::fire(store).await {
             Ok(fired) => {
                 for firing in fired {
-                    info!(
-                        event = %firing.event,
-                        session = %firing.session,
-                        run = %firing.run,
-                        "a trigger fired"
-                    );
+                    match firing {
+                        trigger::Fired::Opened {
+                            event,
+                            session,
+                            run,
+                        } => info!(%event, %session, %run, "a trigger fired"),
+                        trigger::Fired::Failed {
+                            event,
+                            trigger,
+                            because,
+                        } => {
+                            warn!(%event, %trigger, %because, "a trigger fired and opened nothing")
+                        }
+                    }
                 }
             }
             Err(error) => warn!(%error, "a firing found nothing it could do"),

@@ -1,7 +1,7 @@
-//! The rule that turns an Event into work (0.1/21). Labelling an issue opens a Session with
-//! the Event as its first Transcript entry and a Run queued behind it, with nobody in the
-//! loop; a Trigger fires at most once per Event, never for an Event recorded before it was
-//! declared, and one that is disabled fires for nothing.
+//! The rule that turns an Event into work. Labelling an issue opens a Session on the branch
+//! the Trigger renders, with the rendered Brief as its first Transcript entry and a Run queued
+//! behind it, with nobody in the loop; a Trigger fires at most once per Event, never for an
+//! Event recorded before it was declared, and one that is disabled fires for nothing.
 
 mod support;
 
@@ -135,8 +135,104 @@ async fn labelling_an_issue_opens_a_session_and_enqueues_a_run() {
     harness.teardown().await;
 }
 
+async fn ready_rendering(
+    harness: &Harness,
+    name: &str,
+    brief: &str,
+    branch: Option<&str>,
+    correlation: Option<&str>,
+) {
+    harness
+        .declare_trigger_rendering(
+            "acme",
+            name,
+            &labelled_on(REPOSITORY, READY),
+            "kestrel",
+            "builder",
+            &templates(brief, branch, correlation),
+        )
+        .await;
+}
+
+async fn first_entry(harness: &Harness, session: &Session) -> Entry {
+    harness
+        .transcript(session.id)
+        .await
+        .into_iter()
+        .next()
+        .expect("a triggered session has a transcript")
+        .entry
+}
+
 #[tokio::test]
-async fn the_event_is_the_sessions_first_transcript_entry() {
+async fn the_rendered_brief_is_the_sessions_first_transcript_entry() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    ready_rendering(
+        &harness,
+        "ready",
+        "Work {{ event.data.issue.html_url }}: {{ event.data.issue.title }}",
+        None,
+        None,
+    )
+    .await;
+    watching(&harness, &stub).await;
+
+    let session = opened(&harness, 1).await.remove(0);
+    let transcript = harness.transcript(session.id).await;
+
+    assert_eq!(
+        transcript
+            .iter()
+            .map(|entry| entry.entry.clone())
+            .collect::<Vec<_>>(),
+        [
+            Entry::Brief {
+                trigger: "ready".to_owned(),
+                brief: "Work https://github.com/jtmthf/kestrel/issues/43: an issue numbered 43"
+                    .to_owned(),
+            },
+            Entry::ParticipantJoined {
+                participant: "builder".to_owned(),
+            },
+        ]
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_session_opens_on_the_branch_and_correlation_its_trigger_renders() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    ready_rendering(
+        &harness,
+        "ready",
+        support::BRIEF,
+        Some("kestrel/issue-{{ event.data.issue.number }}"),
+        Some("{{ event.source }}{{ event.subject }}"),
+    )
+    .await;
+    watching(&harness, &stub).await;
+
+    let session = opened(&harness, 1).await.remove(0);
+    let shown = harness.show_session(session.id).await;
+
+    assert_eq!(shown.branch, "kestrel/issue-43");
+    assert_eq!(
+        shown.correlation.as_deref(),
+        Some("https://github.com/jtmthf/kestrel#43")
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_session_whose_trigger_renders_no_branch_opens_on_the_workspaces() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
@@ -145,28 +241,73 @@ async fn the_event_is_the_sessions_first_transcript_entry() {
     watching(&harness, &stub).await;
 
     let session = opened(&harness, 1).await.remove(0);
-    let transcript = harness.transcript(session.id).await;
+    let shown = harness.show_session(session.id).await;
 
-    let Entry::TriggerFired {
-        trigger,
-        occurrence,
-    } = &transcript
-        .first()
-        .expect("a triggered session has a transcript")
-        .entry
-    else {
-        panic!("the first entry is {}", transcript[0].entry);
+    assert_eq!(shown.branch, "main");
+    assert_eq!(shown.correlation, None);
+
+    harness.teardown().await;
+}
+
+/// A failed firing is recorded rather than retried, so it neither opens a Session on a later
+/// sweep nor holds up another Trigger matching the same Event.
+#[tokio::test]
+async fn a_brief_that_cannot_render_fails_the_firing_and_starts_nothing() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    ready_rendering(
+        &harness,
+        "review",
+        "Review the pull request on {{ event.data.pull_request.head.ref }}",
+        None,
+        None,
+    )
+    .await;
+    ready_for_agent(&harness).await;
+    watching(&harness, &stub).await;
+
+    opened(&harness, 1).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let sessions = harness.sessions("acme").await;
+    assert_eq!(
+        sessions.len(),
+        1,
+        "only the trigger that renders opens work"
+    );
+    let Entry::Brief { trigger, .. } = first_entry(&harness, &sessions[0]).await else {
+        panic!("a triggered session opens on its brief");
     };
     assert_eq!(trigger, "ready");
+
+    harness.teardown().await;
+}
+
+/// Until a firing can feed the Session its correlation names, one that would open a second
+/// Session for the same work opens none.
+#[tokio::test]
+async fn a_correlation_an_open_session_holds_opens_no_second_session() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let correlation = Some("{{ event.source }}{{ event.subject }}");
+    ready_rendering(&harness, "ready", support::BRIEF, None, correlation).await;
+    ready_rendering(&harness, "also-ready", support::BRIEF, None, correlation).await;
+    watching(&harness, &stub).await;
+
+    opened(&harness, 1).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let sessions = harness.sessions("acme").await;
     assert_eq!(
-        occurrence.source,
-        format!("https://github.com/{REPOSITORY}")
+        sessions.len(),
+        1,
+        "one correlation opened {} sessions",
+        sessions.len()
     );
-    let data = kestrel::integration::github::EventData::new(occurrence);
-    assert_eq!(data.subject_issue(), Some(43));
-    assert_eq!(data.label(), Some(READY));
-    assert_eq!(data.actor(), Some("jtmthf"));
-    assert_eq!(data.title(), Some("an issue numbered 43"));
 
     harness.teardown().await;
 }
@@ -238,9 +379,8 @@ async fn an_event_matching_several_triggers_fires_every_one_of_them() {
 
     let mut fired = Vec::new();
     for session in harness.sessions("acme").await {
-        if let Entry::TriggerFired { trigger, .. } = &harness.transcript(session.id).await[0].entry
-        {
-            fired.push(trigger.clone());
+        if let Entry::Brief { trigger, .. } = first_entry(&harness, &session).await {
+            fired.push(trigger);
         }
     }
     fired.sort();

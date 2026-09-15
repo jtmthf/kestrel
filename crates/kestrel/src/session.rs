@@ -4,6 +4,7 @@ use jiff::{SignedDuration, Timestamp};
 use crate::domain::{Event, Organization, Run, RunId, RunState, Session, SessionId, SessionState};
 use crate::fanout::{self, Change};
 use crate::log::{Cursor, Entry, Page, Unreadable, Window};
+use crate::store::session::Opening;
 use crate::store::{Store, Tx};
 
 /// Generous, because kestrel has no signal that a human is watching a Session: duration is
@@ -29,7 +30,15 @@ pub async fn open(
 
     let session = tx
         .sessions()
-        .open(&organization, &workspace, &agent, continues.as_ref(), None)
+        .open(Opening {
+            organization: &organization,
+            workspace: &workspace,
+            agent: &agent,
+            branch: &workspace.branch,
+            correlation: None,
+            continues: continues.as_ref(),
+            started_by: None,
+        })
         .await?;
     tx.log()
         .append(

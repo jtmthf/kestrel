@@ -174,6 +174,8 @@ mod tests {
                 model: None,
             },
             organization,
+            branch: "main".to_owned(),
+            correlation: None,
             state: SessionState::Open,
             opened_at: Timestamp::now(),
             last_active_at: Timestamp::now(),

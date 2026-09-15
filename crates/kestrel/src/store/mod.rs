@@ -171,7 +171,15 @@ mod tests {
         let mut tx = store.begin().await.unwrap();
         let session = tx
             .sessions()
-            .open(&organization, &workspace, &agent, None, None)
+            .open(session::Opening {
+                organization: &organization,
+                workspace: &workspace,
+                agent: &agent,
+                branch: &workspace.branch,
+                correlation: None,
+                continues: None,
+                started_by: None,
+            })
             .await
             .unwrap();
         tx.log()

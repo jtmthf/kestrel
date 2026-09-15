@@ -39,6 +39,16 @@ pub struct PendingMessage {
     pub body: String,
 }
 
+pub struct Opening<'a> {
+    pub organization: &'a Organization,
+    pub workspace: &'a Workspace,
+    pub agent: &'a Agent,
+    pub branch: &'a str,
+    pub correlation: Option<&'a str>,
+    pub continues: Option<&'a Session>,
+    pub started_by: Option<&'a Event>,
+}
+
 pub struct Sessions<'a> {
     connection: &'a mut SqliteConnection,
 }
@@ -48,38 +58,35 @@ impl<'a> Sessions<'a> {
         Self { connection }
     }
 
-    pub async fn open(
-        &mut self,
-        organization: &Organization,
-        workspace: &Workspace,
-        agent: &Agent,
-        continues: Option<&Session>,
-        started_by: Option<&Event>,
-    ) -> Result<Session> {
+    pub async fn open(&mut self, opening: Opening<'_>) -> Result<Session> {
         let opened_at = Timestamp::now();
         let session = Session {
             id: SessionId::generate(),
-            organization: organization.clone(),
-            workspace: workspace.clone(),
-            agent: agent.clone(),
+            organization: opening.organization.clone(),
+            workspace: opening.workspace.clone(),
+            agent: opening.agent.clone(),
+            branch: opening.branch.to_owned(),
+            correlation: opening.correlation.map(ToOwned::to_owned),
             state: SessionState::Open,
             opened_at,
             last_active_at: opened_at,
             sealed_at: None,
-            continues: continues.map(|sealed| sealed.id),
-            started_by: started_by.map(|event| event.record_id),
+            continues: opening.continues.map(|sealed| sealed.id),
+            started_by: opening.started_by.map(|event| event.record_id),
         };
 
         sqlx::query(
             "INSERT INTO session
-                 (id, organization_id, workspace_id, agent_id, state, opened_at, last_active_at,
-                  continues, event_record_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (id, organization_id, workspace_id, agent_id, branch, correlation, state,
+                  opened_at, last_active_at, continues, event_record_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.to_string())
-        .bind(organization.id.to_string())
-        .bind(workspace.id.to_string())
-        .bind(agent.id.to_string())
+        .bind(session.organization.id.to_string())
+        .bind(session.workspace.id.to_string())
+        .bind(session.agent.id.to_string())
+        .bind(&session.branch)
+        .bind(&session.correlation)
         .bind(session.state.as_str())
         .bind(session.opened_at.to_string())
         .bind(due(session.last_active_at))
@@ -90,6 +97,24 @@ impl<'a> Sessions<'a> {
         .context("opening a session")?;
 
         Ok(session)
+    }
+
+    pub async fn holding_correlation(
+        &mut self,
+        organization: &Organization,
+        correlation: &str,
+    ) -> Result<Option<SessionId>> {
+        sqlx::query(
+            "SELECT id FROM session WHERE organization_id = ? AND state = ? AND correlation = ?",
+        )
+        .bind(organization.id.to_string())
+        .bind(SessionState::Open.as_str())
+        .bind(correlation)
+        .fetch_optional(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading which open session holds the correlation {correlation}"))?
+        .map(|row| Ok(row.get::<String, _>("id").parse()?))
+        .transpose()
     }
 
     pub async fn seal(&mut self, session: &Session) -> Result<Timestamp> {
@@ -758,8 +783,8 @@ impl<'a> Sessions<'a> {
 
 pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Result<Session> {
     let row = sqlx::query(
-        "SELECT organization_id, workspace_id, agent_id, state, opened_at, last_active_at,
-                sealed_at, continues, event_record_id
+        "SELECT organization_id, workspace_id, agent_id, branch, correlation, state, opened_at,
+                last_active_at, sealed_at, continues, event_record_id
          FROM session
          WHERE id = ?",
     )
@@ -788,6 +813,8 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
         organization,
         workspace,
         agent,
+        branch: row.get("branch"),
+        correlation: row.get("correlation"),
         state: row.get::<String, _>("state").parse()?,
         opened_at: row.get::<String, _>("opened_at").parse()?,
         last_active_at: row.get::<String, _>("last_active_at").parse()?,
