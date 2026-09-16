@@ -28,13 +28,12 @@ later — it is what a session *is*. An in-memory first rung would not be a stub
 be a different program. That is why there is no "point of no return" marked further up the ladder:
 the point of no return is rung one.
 
-**Depth first, breadth once.** Four of the five trigger sources arrive together at `0.6`, near the
-top, because the generic webhook is the core and the named integrations are adapters over it —
-breadth is repetition of a solved problem, while depth keeps changing the shape of the durable
-record. Building five adapters against a session model that then moves underneath all five is the
-coupling this order exists to avoid. The cost is real and taken deliberately: kestrel is GitHub-only
-for most of the ladder, which is worse to use than the alternative, and affordable only because the
-person using it for that stretch is the person building it.
+**Depth first, breadth once.** The generic CloudEvents endpoint accepts trigger events from any
+producer at `0.1`, so breadth arrives on the inbound path from the first rung. The named surfaces
+still wait until `0.6`: each needs its adapter and its outbound half, and all five must
+round-trip. That is repetition rather than invention, delayed until the durable session model has
+stopped moving underneath it. The order avoids coupling five adapters to the changing work model;
+it does not ask a team to wait for an adapter before kestrel can receive its events.
 
 **`Organization` is in every durable record from the first migration**, while multi-tenancy is a
 `0.7` capability. The boundary is ruinous to introduce late and cheap to carry early, so it is added
@@ -51,21 +50,23 @@ every read.
 
 |     | Rung                                   | The class of kestrel's own work                              | v1 capabilities                                                                            |
 | --- | -------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| 0.1 | **kestrel opens its own PRs**          | issues labelled `ready-for-agent` are worked by kestrel, not by you in a terminal | trigger ingestion (GitHub only), isolated execution, model choice, persistent sessions, storage (SQLite) |
+| 0.1 | **kestrel opens its own PRs**          | issues labelled `ready-for-agent` are worked by kestrel, not by you in a terminal | trigger ingestion (GitHub and generic CloudEvents), isolated execution, model choice, persistent sessions, storage (SQLite) |
 | 0.2 | **kestrel works the backlog**          | many issues at once; you stop being the queue                 | scheduling                                                                                   |
 | 0.3 | **kestrel's work is joinable mid-flight** | you pick up a running session instead of reading a finished one | multiplayer                                                                                |
 | 0.4 | **kestrel asks before it acts**        | kestrel does work you would not have let it do unsupervised   | governance                                                                                   |
 | 0.5 | **kestrel runs multi-step work**       | classes of work that are a sequence, not a single run         | workflows                                                                                    |
-| 0.6 | **kestrel meets the team where it works** | the surfaces you actually use, all round-tripping           | trigger ingestion (five sources)                                                             |
+| 0.6 | **kestrel meets the team where it works** | the surfaces you actually use, all round-tripping           | five named surfaces, with adapters and outcomes                                               |
 | 0.7 | **kestrel runs where you run**         | kestrel develops itself on infrastructure that is not your laptop | pluggable storage, the rule of two, the eight targets                                    |
 | —   | **v1**                                 | the lock                                                      | —                                                                                            |
 
 ### 0.1 — kestrel opens its own PRs
 
-A trigger matches an event, a session opens, a run is scheduled on an Instance, and a pull request
-lands on this repository. The class of work is issues labelled `ready-for-agent`: they are worked by
-kestrel rather than by a person in a terminal, and the rung closes when that is how they are worked
-by default.
+An inbound CloudEvent reaches the generic endpoint, a trigger matches it, a session opens, a run is
+scheduled on an Instance, and a pull request lands on this repository. The class of work is issues
+labelled `ready-for-agent`: they are worked by kestrel rather than by a person in a terminal, and the
+rung closes when that is how they are worked by default. GitHub is the dogfood case, not the
+ingestion boundary: anything that can POST a CloudEvent can start work here with no adapter or
+integration.
 
 **This is the biggest rung on the ladder, and it is irreducible.** A single triggered pull request
 needs the trigger path, the scheduler, the compute contract, the agent-runtime boundary, durable
@@ -194,10 +195,10 @@ capabilities; the ladder cannot.
 
 ### 0.6 — kestrel meets the team where it works
 
-Slack, Linear, GitHub, generic webhook, and schedule, all round-tripping, so the surface that started
-a session receives the result there. This is the rung that pays off the depth-first order, and it is
-deliberately repetition rather than invention: the session model it is building against stopped
-moving several rungs ago.
+Slack, Linear, GitHub, generic webhook, and schedule all round-trip, so the surface that started a
+session receives the result there. Inbound CloudEvents have worked since `0.1`; this rung adds the
+named surfaces' adapters and outbound half. It is deliberately repetition rather than invention:
+the session model it is building against stopped moving several rungs ago.
 
 ### 0.7 — kestrel runs where you run
 
