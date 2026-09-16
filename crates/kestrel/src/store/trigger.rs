@@ -4,7 +4,8 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 use crate::domain::{
-    Agent, Event, Organization, Session, Templates, Trigger, TriggerId, TriggerState, Workspace,
+    Agent, DisableReason, Event, FiringBudget, Organization, Session, Templates, Trigger,
+    TriggerId, TriggerState, Workspace,
 };
 use crate::filter::{Attribute, Filter};
 use crate::store::{agent, integration, organization, workspace};
@@ -48,6 +49,8 @@ impl<'a> Triggers<'a> {
             workspace: workspace.clone(),
             agent: agent.clone(),
             state: TriggerState::Enabled,
+            disabled_because: None,
+            firing_budget: FiringBudget::default(),
             declared_at: Timestamp::now(),
         };
 
@@ -109,10 +112,49 @@ impl<'a> Triggers<'a> {
             .await
             .with_context(|| format!("changing whether the trigger {} fires", trigger.name))?;
 
-        Ok(Trigger {
+        let changed = Trigger {
             state,
             ..trigger.clone()
+        };
+        Ok(Trigger {
+            disabled_because: disabled_because(&changed, changed.state.clone()),
+            ..changed
         })
+    }
+
+    pub async fn disabled_because(&mut self, trigger: &Trigger) -> Result<Option<String>> {
+        let state = sqlx::query("SELECT state FROM trigger WHERE id = ?")
+            .bind(trigger.id.to_string())
+            .fetch_one(&mut *self.connection)
+            .await
+            .with_context(|| format!("reading whether trigger {} fires", trigger.name))?
+            .get::<String, _>("state")
+            .parse::<TriggerState>()?;
+
+        Ok(disabled_because(trigger, state))
+    }
+
+    pub async fn firing_budget_is_exhausted(
+        &mut self,
+        trigger: &Trigger,
+        at: Timestamp,
+    ) -> Result<bool> {
+        let start = at
+            .checked_sub(trigger.firing_budget.window)
+            .context("placing the start of a trigger's firing budget window")?;
+        let firings: i64 = sqlx::query(
+            "SELECT COUNT(*) AS firings
+             FROM firing
+             WHERE trigger_id = ? AND fired_at >= ?",
+        )
+        .bind(trigger.id.to_string())
+        .bind(start.to_string())
+        .fetch_one(&mut *self.connection)
+        .await
+        .with_context(|| format!("counting recent firings of trigger {}", trigger.name))?
+        .get("firings");
+
+        Ok(firings >= i64::try_from(trigger.firing_budget.limit.get())?)
     }
 
     pub async fn matches(&mut self, trigger: &Trigger, event: &Event) -> Result<bool> {
@@ -353,7 +395,9 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
     )
     .await?;
 
-    Ok(Trigger {
+    let state: TriggerState = row.get::<String, _>("state").parse()?;
+
+    let trigger = Trigger {
         id: row.get::<String, _>("id").parse()?,
         organization,
         name: row.get("name"),
@@ -371,7 +415,26 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
         },
         workspace,
         agent,
-        state: row.get::<String, _>("state").parse()?,
+        state: state.clone(),
+        disabled_because: None,
+        firing_budget: FiringBudget::default(),
         declared_at: row.get::<String, _>("declared_at").parse()?,
+    };
+
+    Ok(Trigger {
+        disabled_because: disabled_because(&trigger, state),
+        ..trigger
     })
+}
+
+fn disabled_because(trigger: &Trigger, state: TriggerState) -> Option<String> {
+    match state {
+        TriggerState::Enabled => None,
+        TriggerState::Disabled(DisableReason::Operator) => {
+            Some("disabled by an operator".to_owned())
+        }
+        TriggerState::Disabled(DisableReason::FiringBudget) => {
+            Some(trigger.firing_budget_exhausted_because())
+        }
+    }
 }

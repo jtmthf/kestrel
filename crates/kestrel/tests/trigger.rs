@@ -439,6 +439,54 @@ async fn a_disabled_trigger_fires_for_nothing() {
     harness.teardown().await;
 }
 
+#[tokio::test]
+async fn a_trigger_that_exceeds_its_firing_budget_disables_without_stopping_another() {
+    let stub = GithubStub::start();
+    let events = (7..18)
+        .map(|id| github_stub::labelled(id, id + 36, READY))
+        .collect::<Vec<_>>();
+    stub.script(github_stub::page(&events));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    ready_for_agent(&harness).await;
+    harness
+        .declare_trigger(
+            "acme",
+            "other",
+            &labelled_on(REPOSITORY, "needs-triage"),
+            "kestrel",
+            "builder",
+        )
+        .await;
+    watching(&harness, &stub).await;
+
+    opened(&harness, 10).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    assert_eq!(harness.sessions("acme").await.len(), 10);
+    let disabled = harness.show_trigger("acme", "ready").await;
+    assert!(matches!(disabled.state, TriggerState::Disabled(_)));
+    assert!(
+        disabled
+            .disabled_because
+            .as_deref()
+            .is_some_and(|because| because.contains("exhausted its budget"))
+    );
+    assert_eq!(
+        harness.show_trigger("acme", "other").await.state,
+        TriggerState::Enabled
+    );
+
+    harness.enable_trigger("acme", "ready").await;
+    let manually_disabled = harness.disable_trigger("acme", "ready").await;
+    assert_eq!(
+        manually_disabled.disabled_because.as_deref(),
+        Some("disabled by an operator")
+    );
+
+    harness.teardown().await;
+}
+
 /// Disabling stops a Trigger firing without forgetting it, so what it was declared to match
 /// is still there to be enabled again.
 #[tokio::test]
@@ -460,14 +508,14 @@ async fn a_trigger_is_named_listed_and_disabled() {
     assert_eq!(listed[0].agent.name, "builder");
     assert_eq!(listed[0].state, TriggerState::Enabled);
 
-    assert_eq!(
+    assert!(matches!(
         harness.disable_trigger("acme", "ready").await.state,
-        TriggerState::Disabled
-    );
-    assert_eq!(
+        TriggerState::Disabled(_)
+    ));
+    assert!(matches!(
         harness.show_trigger("acme", "ready").await.state,
-        TriggerState::Disabled
-    );
+        TriggerState::Disabled(_)
+    ));
     assert_eq!(
         harness.enable_trigger("acme", "ready").await.state,
         TriggerState::Enabled

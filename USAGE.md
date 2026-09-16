@@ -414,6 +414,10 @@ disabled
 
 `kestrel trigger enable ready --organization acme` puts it back.
 
+Each Trigger has a budget of ten firings per hour. The firing that would exceed it is recorded
+without opening a Session, and disables only that Trigger. `kestrel trigger show` names the reason;
+an operator must explicitly enable it again.
+
 ## The answer comes back to the issue
 
 An integration carries kestrel's requests outbound as well as events inbound, and the one you
