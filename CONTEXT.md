@@ -16,10 +16,15 @@ and the audit record. A self-hosted install typically has exactly one.
 _Avoid_: tenant, account, team, org
 
 **Provider Credential**:
-What an agent runtime reaches a model provider with, named by the environment variable the runtime
-reads it from. Held by the organization, never by an agent; encrypted at rest, and reaching an
-instance only for the run that spawns an agent with it.
+An organization-owned model-provider secret named by the environment variable the runtime reads
+it from. Held by the organization, never by an agent; encrypted at rest, and reaching an instance
+only for the run that spawns an agent with it.
 _Avoid_: api key, token, provider key
+
+**Subscription Profile**:
+A person's reusable subscription access to an agent runtime, whether an OAuth sign-in or a
+subscription-issued key. Owned by that person and used by runs they authorize, not by an organization.
+_Avoid_: provider credential, shared login
 
 ### Work
 
@@ -32,10 +37,20 @@ _Avoid_: thread, conversation, mission
 
 **Run**:
 One execution of an agent runtime on one instance, on behalf of a session. Has a start, an end, and
-an exit status. Work that is queued but not yet started is a run in a queued state. The
-model driving the runtime's main loop belongs to the run, not to the session; what that loop reaches
-for beneath itself is the runtime's business.
+an exit status, and may contain multiple prompt turns in one ACP conversation. Work that is queued
+but not yet started is a run in a queued state. The model driving the runtime's main loop belongs
+to the run, not to the session; what that loop reaches for beneath itself is the runtime's business.
 _Avoid_: job, task, execution, invocation
+
+**Turn**:
+One prompt and response within a run's continuing agent conversation. Its response can be reported
+to the work source when the turn finishes, without ending the run.
+_Avoid_: run, session
+
+**Unpublished Work**:
+Checkout changes or commits that exist only on an instance and cannot be recovered from a remote
+repository. Its presence says nothing about whether a run succeeded or the requested work is good.
+_Avoid_: incomplete issue, failed run
 
 **Approval**:
 A pending decision that blocks a run until a human resolves it. Always carries a deadline and is
@@ -89,8 +104,8 @@ feeds an open one it correlates to.
 _Avoid_: match, activation, invocation, execution
 
 **Brief**:
-The rendered text a firing hands to a session, and the session's first transcript entry. A human
-writes it as a template over the event; kestrel assembles nothing.
+The instruction a session starts with, and its first transcript entry. A trigger renders it from a
+human-authored template over an event; an operator may supply it directly.
 _Avoid_: prompt, task, instruction, request
 
 **Correlation**:
@@ -104,10 +119,14 @@ requests outbound; an integration may do either direction or both, and declares 
 Linear, GitHub and a plain webhook are all integrations.
 _Avoid_: connector, provider, app, plugin
 
+**Delegation**:
+An external work item deliberately handed to kestrel. The source may express it as an assignment,
+an agent delegate, or another explicit handoff.
+_Avoid_: assignment, claim
+
 **Outcome**:
-What kestrel says back where the work came from: one run's exit status and what its agent said last,
-carried outbound by the integration the event arrived through. Composed when the run ends and said
-once, however many attempts that takes; a session no event started has none.
+The final record of one run's exit status and what its agent said last, distinct from each turn's
+response. Composed when the run ends; an event-started session may carry it back through its integration.
 _Avoid_: result, notification, callback, reply
 
 **Workflow**:
@@ -238,16 +257,17 @@ words from drifting.
   capability: an adapter that ignores it is expensive, never degraded.
 - A run's branch is **declared** by kestrel, never invented by an agent. kestrel runs no git
   command; it learns what happened from what a supervisor reports and what an integration delivers.
-- A run's outcome reaches the surface that started its session **once**, however many attempts that
-  takes, and saying it changes **nothing** about the run's exit status. A run's exit status says how
-  the **turn** went, and never whether the work was any good.
+- Each completed turn can report its response to the work source. A run's final **Outcome** is
+  recorded once and said outward when it adds information beyond those responses; saying it changes
+  **nothing** about the run's exit status. Exit status says how the execution went, never whether
+  the work was any good.
 - A **run** is the only thing kestrel executes outside a control plane. Everything else — the
   store, the link, dispatch — happens inside one. A client runs outside and executes nothing: it
   asks, and the control plane decides.
-- At most **one** run is active in a session at a time. Concurrency is across sessions, **never**
-  within one.
-- A run blocked on an approval still occupies that **one** active-run slot. Nothing else holds that
-  slot: a run never waits on work it has enqueued.
+- At most **one** run is unfinished in a session at a time. Concurrency is across sessions,
+  **never** within one.
+- A run blocked on an approval still occupies an **active-work** slot. A run waiting between prompt
+  turns does not. Neither waits on work it has enqueued.
 - A session belongs to at most **one** campaign, and nothing outside a workflow's roster may be
   enqueued. Naming a non-member is rejected when the work is **enqueued**, never when it is
   dispatched.
@@ -255,6 +275,8 @@ words from drifting.
   runs and ends; it never grows.
 - A queued run is dispatched **at most once**. A lease that expires marks its run failed and never
   re-dispatches it.
+- A run may wait between prompt turns with its ACP conversation and instance intact. Waiting holds
+  no active-work slot; the next prompt continues that same run. A turn ending does not end a run.
 - kestrel retries **dispatch**, never **work**. A run that started and failed is retried only by a
   workflow enqueueing a new one.
 - A session records the run that enqueued it, if any. Enqueueing grants that run **no** rights over
@@ -280,8 +302,9 @@ words from drifting.
   sealed one.
 - Every decision kestrel makes **unattended** records the inputs it was decided from and its
   verdict, whether or not a policy was consulted.
-- A session idle for a **day** seals itself. Sealing unattended is the same operation as sealing by
-  hand; a session with a run holding its slot never seals, however old it is.
+- A session idle for a **day** seals itself only when it has no **Unpublished Work**. A session with
+  unpublished work needs attention and keeps its instance; a run holding its slot also prevents
+  sealing, however old the session is.
 - kestrel **never** expires a **shared-state** transcript entry. Narration and detail have a
   retention window; an entry of any other kind leaves a transcript only by **deliberate deletion**.
 - A deletion inside a transcript is **itself recorded** in that transcript, so what a reader sees is
