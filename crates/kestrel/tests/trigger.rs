@@ -12,6 +12,7 @@ use support::{Harness, labelled_on, templates};
 const PATIENCE: Duration = Duration::from_secs(30);
 const REPOSITORY: &str = "jtmthf/kestrel";
 const READY: &str = "ready-for-agent";
+const EVENTS: &str = "/issues/events?";
 const BOTH: &[Direction] = &[Direction::Inbound, Direction::Outbound];
 
 /// Sooner than the wheel's own sweep, so what paces these tests is the sweep rather than a
@@ -412,7 +413,13 @@ async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
     harness.complete_run(&active).await;
     harness.seal_session(sealed.id).await;
 
-    stub.script(github_stub::page(&[github_stub::labelled(8, 43, READY)]));
+    // Scripted for the events endpoint alone: the comment the completed run posts would
+    // otherwise take this response off the shared queue.
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[github_stub::labelled(8, 43, READY)]),
+    );
     let sessions = opened(&harness, 2).await;
     let continuation = sessions
         .into_iter()
