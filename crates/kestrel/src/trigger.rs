@@ -198,10 +198,8 @@ pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
     Ok(fired)
 }
 
-/// The Session, its first entry, the Run and the firing itself commit together, so a Trigger
-/// that fired has work to show for it and one interrupted before committing is found again by
-/// the next sweep. A firing that cannot open a Session is recorded as failed instead, because
-/// the next sweep would only fail it again.
+/// An opening firing atomically commits its Session, first entry, Run and record, so a retry
+/// never opens its work twice.
 async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired> {
     let rendered = render(trigger, event);
     let mut tx = store.begin().await?;

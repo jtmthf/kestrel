@@ -15,9 +15,7 @@ CREATE TABLE trigger (
     UNIQUE (organization_id, name)
 ) STRICT;
 
--- One Trigger matching one Event, and the outcome of that firing. The key is the whole of why
--- relabelling an issue twice opens one Session, and why a firing that failed is not retried by
--- every sweep after it.
+-- The key makes one trigger-event pair fire at most once, including failures and ignored misses.
 CREATE TABLE firing (
     trigger_id TEXT NOT NULL REFERENCES trigger (id),
     event_record_id TEXT NOT NULL REFERENCES event (record_id),
