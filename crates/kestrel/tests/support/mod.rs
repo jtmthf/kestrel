@@ -399,6 +399,10 @@ impl Harness {
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a trigger is what it is declared with"
+    )]
     pub async fn declare_trigger_rendering_with_miss(
         &self,
         organization: &str,
@@ -422,6 +426,10 @@ impl Harness {
         .expect("the trigger should declare")
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a trigger is what it is declared with"
+    )]
     pub async fn try_declare_trigger_rendering_with_miss(
         &self,
         organization: &str,

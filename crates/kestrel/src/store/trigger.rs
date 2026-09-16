@@ -31,6 +31,10 @@ impl<'a> Triggers<'a> {
         Self { connection }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a trigger is what it is declared with"
+    )]
     pub async fn declare(
         &mut self,
         organization: &Organization,
