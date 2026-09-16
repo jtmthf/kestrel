@@ -337,6 +337,33 @@ fn a_workspace_cannot_be_declared_against_an_organization_that_was_never_declare
 }
 
 #[test]
+fn a_disabled_trigger_shows_its_reason_and_budget() {
+    let kestrel = declared();
+    kestrel.run(&[
+        "trigger",
+        "declare",
+        "ready",
+        "--organization",
+        "acme",
+        "--filter",
+        r#"{"exact": {"type": "com.github.issues.labeled"}}"#,
+        "--brief",
+        "Work on {{ event.data.issue.title }}",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+    kestrel.run(&["trigger", "disable", "ready", "--organization", "acme"]);
+
+    let trigger = kestrel.run(&["trigger", "show", "ready", "--organization", "acme"]);
+
+    assert!(trigger.contains("state         disabled"));
+    assert!(trigger.contains("disabled      disabled by an operator"));
+    assert!(trigger.contains("budget        10 firings"));
+}
+
+#[test]
 fn an_agent_names_the_runtime_and_model_it_participates_with() {
     let kestrel = Kestrel::new();
     kestrel.run(&["organization", "declare", "acme"]);

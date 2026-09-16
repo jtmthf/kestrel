@@ -324,6 +324,13 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!("organization  {}", trigger.organization.name);
             println!("name          {}", trigger.name);
             println!("state         {}", trigger.state);
+            if let Some(because) = &trigger.disabled_because {
+                println!("disabled      {because}");
+            }
+            println!(
+                "budget        {} firings in {}",
+                trigger.firing_budget.limit, trigger.firing_budget.window
+            );
             println!("matches       {}", trigger.filter);
             println!("workspace     {}", trigger.workspace.name);
             println!("agent         {}", trigger.agent.name);
