@@ -1,15 +1,10 @@
-//! The rule that turns an Event into work. Labelling an issue opens a Session on the branch
-//! the Trigger renders, with the rendered Brief as its first Transcript entry and a Run queued
-//! behind it, with nobody in the loop; a Trigger fires at most once per Event, never for an
-//! Event recorded before it was declared, and one that is disabled fires for nothing.
-
 mod support;
 
 use std::time::Duration;
 
 use jiff::SignedDuration;
-use kestrel::domain::{Direction, Event, RunState, Session, TriggerState};
-use kestrel::log::Entry;
+use kestrel::domain::{CorrelationMiss, Direction, Event, RunState, Session, TriggerState};
+use kestrel::log::{Entry, Message};
 use kestrel::trigger::Rendered;
 use support::github_stub::{self, GithubStub};
 use support::{Harness, labelled_on, templates};
@@ -17,6 +12,7 @@ use support::{Harness, labelled_on, templates};
 const PATIENCE: Duration = Duration::from_secs(30);
 const REPOSITORY: &str = "jtmthf/kestrel";
 const READY: &str = "ready-for-agent";
+const EVENTS: &str = "/issues/events?";
 const BOTH: &[Direction] = &[Direction::Inbound, Direction::Outbound];
 
 /// Sooner than the wheel's own sweep, so what paces these tests is the sweep rather than a
@@ -27,7 +23,7 @@ fn eagerly() -> SignedDuration {
 
 /// An organization with somewhere for work to happen and someone to do it. The Trigger is the
 /// one thing each test declares for itself.
-async fn an_organization(harness: &Harness, name: &str) {
+async fn an_organization(harness: &Harness, name: &str) -> kestrel::domain::Organization {
     let organization = harness.declare_organization(name).await;
     harness
         .declare_workspace(
@@ -40,6 +36,7 @@ async fn an_organization(harness: &Harness, name: &str) {
     harness
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
+    organization
 }
 
 /// The poll that records what happens on the repository, started after the Trigger the test
@@ -285,17 +282,27 @@ async fn a_brief_that_cannot_render_fails_the_firing_and_starts_nothing() {
     harness.teardown().await;
 }
 
-/// Until a firing can feed the Session its correlation names, one that would open a second
-/// Session for the same work opens none.
 #[tokio::test]
-async fn a_correlation_an_open_session_holds_opens_no_second_session() {
+async fn a_correlation_hit_feeds_the_open_session_without_changing_its_agent() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
+    let organization = an_organization(&harness, "acme").await;
     let correlation = Some("{{ event.source }}{{ event.subject }}");
     ready_rendering(&harness, "ready", support::BRIEF, None, correlation).await;
-    ready_rendering(&harness, "also-ready", support::BRIEF, None, correlation).await;
+    harness
+        .declare_agent(&organization, "reviewer", "opencode", None)
+        .await;
+    harness
+        .declare_trigger_rendering(
+            "acme",
+            "also-ready",
+            &labelled_on(REPOSITORY, READY),
+            "kestrel",
+            "reviewer",
+            &templates(support::BRIEF, None, correlation),
+        )
+        .await;
     watching(&harness, &stub).await;
 
     opened(&harness, 1).await;
@@ -307,6 +314,186 @@ async fn a_correlation_an_open_session_holds_opens_no_second_session() {
         1,
         "one correlation opened {} sessions",
         sessions.len()
+    );
+    assert_eq!(sessions[0].agent.name, "builder");
+    assert!(
+        harness
+            .transcript(sessions[0].id)
+            .await
+            .iter()
+            .any(|recorded| {
+                matches!(
+                    &recorded.entry,
+                    Entry::Said { participant, message }
+                        if participant == "also-ready" && message == "Work on an issue numbered 43"
+                )
+            })
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_correlation_miss_can_be_ignored() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    harness
+        .declare_trigger_rendering_with_miss(
+            "acme",
+            "ready",
+            &labelled_on(REPOSITORY, READY),
+            "kestrel",
+            "builder",
+            &templates(
+                support::BRIEF,
+                None,
+                Some("{{ event.source }}{{ event.subject }}"),
+            ),
+            Some(CorrelationMiss::Ignore),
+        )
+        .await;
+    watching(&harness, &stub).await;
+
+    nothing_opens(&harness).await;
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_correlated_trigger_must_declare_what_it_does_on_a_miss() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+
+    let refusal = harness
+        .try_declare_trigger_rendering_with_miss(
+            "acme",
+            "ready",
+            &labelled_on(REPOSITORY, READY),
+            "kestrel",
+            "builder",
+            &templates(
+                support::BRIEF,
+                None,
+                Some("{{ event.source }}{{ event.subject }}"),
+            ),
+            None,
+        )
+        .await
+        .expect_err("a correlated trigger without a miss behavior should be refused");
+
+    assert!(refusal.to_string().contains("must declare"));
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    ready_rendering(
+        &harness,
+        "ready",
+        support::BRIEF,
+        None,
+        Some("{{ event.source }}{{ event.subject }}"),
+    )
+    .await;
+    watching(&harness, &stub).await;
+
+    let sealed = opened(&harness, 1).await.remove(0);
+    let active = harness
+        .claim_run()
+        .await
+        .expect("the firing enqueued a run")
+        .run;
+    harness.complete_run(&active).await;
+    harness.seal_session(sealed.id).await;
+
+    // Scripted for the events endpoint alone: the comment the completed run posts would
+    // otherwise take this response off the shared queue.
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[github_stub::labelled(8, 43, READY)]),
+    );
+    let sessions = opened(&harness, 2).await;
+    let continuation = sessions
+        .into_iter()
+        .find(|session| session.id != sealed.id)
+        .expect("a new session should open after the seal");
+
+    assert_eq!(continuation.continues, Some(sealed.id));
+    assert_eq!(continuation.state, kestrel::domain::SessionState::Open);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn correlated_events_arriving_during_a_run_drain_into_one_entry_and_one_run() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    ready_rendering(
+        &harness,
+        "ready",
+        support::BRIEF,
+        None,
+        Some("{{ event.source }}{{ event.subject }}"),
+    )
+    .await;
+    watching(&harness, &stub).await;
+
+    let session = opened(&harness, 1).await.remove(0);
+    let active = harness
+        .claim_run()
+        .await
+        .expect("the firing enqueued a run")
+        .run;
+    stub.script(github_stub::page(&[
+        github_stub::labelled(9, 43, READY),
+        github_stub::labelled(8, 43, READY),
+    ]));
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while !harness.has_pending_messages(session.id).await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "correlated events never arrived"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(harness.runs(session.id).await.len(), 1);
+    harness.complete_run(&active).await;
+
+    let runs = harness.runs(session.id).await;
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].state, RunState::Queued);
+    let messages = harness
+        .transcript(session.id)
+        .await
+        .into_iter()
+        .filter_map(|recorded| match recorded.entry {
+            Entry::Messages { messages } => Some(messages),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        messages,
+        vec![vec![
+            Message {
+                participant: "ready".to_owned(),
+                message: "Work on an issue numbered 43".to_owned(),
+            },
+            Message {
+                participant: "ready".to_owned(),
+                message: "Work on an issue numbered 43".to_owned(),
+            },
+        ]]
     );
 
     harness.teardown().await;

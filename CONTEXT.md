@@ -84,8 +84,8 @@ does, each firing begins a campaign, and the session it starts belongs to that c
 _Avoid_: subscription, listener, automation, matcher
 
 **Firing**:
-One trigger matching one event, and the work that match starts. A firing either opens a session or
-feeds an open one it correlates to.
+One trigger matching one event, and what that match does: opens a session, feeds an open one it
+correlates to, or records an ignored correlation miss.
 _Avoid_: match, activation, invocation, execution
 
 **Brief**:

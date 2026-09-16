@@ -226,6 +226,34 @@ impl<'a> Sessions<'a> {
             .transpose()
     }
 
+    pub async fn sealed_holding_correlation(
+        &mut self,
+        organization: &Organization,
+        correlation: &str,
+    ) -> Result<Option<Session>> {
+        let sealed = sqlx::query(
+            "SELECT id FROM session
+             WHERE organization_id = ? AND state = ? AND correlation = ?
+             ORDER BY sealed_at DESC, id DESC
+             LIMIT 1",
+        )
+        .bind(organization.id.to_string())
+        .bind(SessionState::Sealed.as_str())
+        .bind(correlation)
+        .fetch_optional(&mut *self.connection)
+        .await
+        .with_context(|| {
+            format!("reading which sealed session held the correlation {correlation}")
+        })?;
+
+        let Some(sealed) = sealed else {
+            return Ok(None);
+        };
+        let id = sealed.get::<String, _>("id").parse()?;
+
+        Ok(Some(read(&mut *self.connection, id).await?))
+    }
+
     pub async fn enqueue_run(&mut self, session: &Session, model: Option<&str>) -> Result<Run> {
         let run = Run {
             id: RunId::generate(),

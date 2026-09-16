@@ -138,6 +138,18 @@ async fn firing(store: &Store, shutdown: &CancellationToken) -> Result<()> {
                             session,
                             run,
                         } => info!(%event, %session, %run, "a trigger fired"),
+                        trigger::Fired::Fed {
+                            event,
+                            session,
+                            run,
+                        } => info!(%event, %session, ?run, "a trigger fed a session"),
+                        trigger::Fired::Ignored {
+                            event,
+                            trigger,
+                            correlation,
+                        } => {
+                            info!(%event, %trigger, %correlation, "a trigger ignored a correlation miss")
+                        }
                         trigger::Fired::Failed {
                             event,
                             trigger,

@@ -8,7 +8,7 @@ use directories::ProjectDirs;
 use jiff::SignedDuration;
 
 use crate::compute::{Docker, Driver, LocalExec};
-use crate::domain::{Direction, EventRecordId, SessionId};
+use crate::domain::{CorrelationMiss, Direction, EventRecordId, SessionId};
 use crate::filter::Filter;
 use crate::integration::github;
 use crate::log::Cursor;
@@ -219,6 +219,9 @@ pub enum TriggerCommand {
         /// from `event`
         #[arg(long, value_name = "TEMPLATE")]
         correlation: Option<Template>,
+        /// What to do when the rendered correlation names no open Session: `open` or `ignore`
+        #[arg(long, value_name = "OPEN|IGNORE")]
+        on_miss: Option<CorrelationMiss>,
         /// The Workspace a firing's work happens against
         #[arg(long)]
         workspace: String,

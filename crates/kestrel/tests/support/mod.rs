@@ -30,8 +30,8 @@ use jiff::{SignedDuration, Timestamp};
 use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
-    Agent, Direction, Event, EventRecordId, Integration, IntegrationKind, Organization, Run, RunId,
-    Session, SessionId, Templates, Trigger, Workspace,
+    Agent, CorrelationMiss, Direction, Event, EventRecordId, Integration, IntegrationKind,
+    Organization, Run, RunId, Session, SessionId, Templates, Trigger, Workspace,
 };
 use kestrel::integration::{self, Registration};
 use kestrel::link::credential::Secret;
@@ -384,6 +384,62 @@ impl Harness {
         agent: &str,
         templates: &Templates,
     ) -> Trigger {
+        self.declare_trigger_rendering_with_miss(
+            organization,
+            name,
+            filter,
+            workspace,
+            agent,
+            templates,
+            templates
+                .correlation
+                .is_some()
+                .then_some(CorrelationMiss::Open),
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a trigger is what it is declared with"
+    )]
+    pub async fn declare_trigger_rendering_with_miss(
+        &self,
+        organization: &str,
+        name: &str,
+        filter: &str,
+        workspace: &str,
+        agent: &str,
+        templates: &Templates,
+        on_miss: Option<CorrelationMiss>,
+    ) -> Trigger {
+        self.try_declare_trigger_rendering_with_miss(
+            organization,
+            name,
+            filter,
+            workspace,
+            agent,
+            templates,
+            on_miss,
+        )
+        .await
+        .expect("the trigger should declare")
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a trigger is what it is declared with"
+    )]
+    pub async fn try_declare_trigger_rendering_with_miss(
+        &self,
+        organization: &str,
+        name: &str,
+        filter: &str,
+        workspace: &str,
+        agent: &str,
+        templates: &Templates,
+        on_miss: Option<CorrelationMiss>,
+    ) -> anyhow::Result<Trigger> {
         trigger::declare(
             &self.store,
             Declaration {
@@ -391,12 +447,12 @@ impl Harness {
                 name,
                 filter: &filter.parse().expect("the filter should parse"),
                 templates,
+                on_miss,
                 workspace,
                 agent,
             },
         )
         .await
-        .expect("the trigger should declare")
     }
 
     pub async fn test_trigger(
