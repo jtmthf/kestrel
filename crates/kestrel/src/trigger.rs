@@ -13,8 +13,8 @@ use crate::session;
 use crate::store::session::Opening;
 use crate::store::{Store, Tx};
 
-/// Each firing opens a Session and enqueues a Run, so a sweep takes a bounded bite rather
-/// than everything a Trigger declared over a busy repository matches at once.
+/// A sweep takes a bounded bite rather than every Event a Trigger declared over a busy repository
+/// matches at once.
 const AT_A_TIME: usize = 32;
 
 pub struct Declaration<'a> {
