@@ -3,10 +3,13 @@
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::domain::{Event, EventRecordId, RunId, SessionId, Templates, Trigger, TriggerState};
+use crate::domain::{
+    CorrelationMiss, Event, EventRecordId, RunId, SessionId, Templates, Trigger, TriggerState,
+};
 use crate::fanout::{self, Change};
 use crate::filter::Filter;
 use crate::log::Entry;
+use crate::session;
 use crate::store::session::Opening;
 use crate::store::{Store, Tx};
 
@@ -19,6 +22,7 @@ pub struct Declaration<'a> {
     pub name: &'a str,
     pub filter: &'a Filter,
     pub templates: &'a Templates,
+    pub on_miss: Option<CorrelationMiss>,
     pub workspace: &'a str,
     pub agent: &'a str,
 }
@@ -29,6 +33,16 @@ pub enum Fired {
         event: EventRecordId,
         session: SessionId,
         run: RunId,
+    },
+    Fed {
+        event: EventRecordId,
+        session: SessionId,
+        run: Option<RunId>,
+    },
+    Ignored {
+        event: EventRecordId,
+        trigger: String,
+        correlation: String,
     },
     Failed {
         event: EventRecordId,
@@ -51,6 +65,19 @@ pub struct Tested {
 }
 
 pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trigger> {
+    match (
+        declaration.templates.correlation.is_some(),
+        declaration.on_miss,
+    ) {
+        (true, None) => {
+            bail!("a trigger with a correlation must declare what it does when it misses")
+        }
+        (false, Some(_)) => {
+            bail!("a trigger without a correlation cannot declare what it does when it misses")
+        }
+        _ => {}
+    }
+
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(declaration.organization).await?;
     let workspace = tx
@@ -65,6 +92,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
             declaration.name,
             declaration.filter,
             declaration.templates,
+            declaration.on_miss,
             &workspace,
             &agent,
         )
@@ -182,19 +210,29 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
         Ok(rendered) => rendered,
         Err(error) => return failed(tx, trigger, event, format!("{error:#}")).await,
     };
-    if let Some(correlation) = &rendered.correlation
-        && let Some(holding) = tx
+    let continues = if let Some(correlation) = &rendered.correlation {
+        if let Some(holding) = tx
             .sessions()
             .holding_correlation(&trigger.organization, correlation)
             .await?
-    {
-        let because = format!(
-            "the trigger {} renders the correlation {correlation} for the event {}, which the \
-             open session {holding} already holds",
-            trigger.name, event.record_id
-        );
-        return failed(tx, trigger, event, because).await;
-    }
+        {
+            return fed(tx, trigger, event, &rendered, holding).await;
+        }
+
+        match trigger
+            .on_miss
+            .expect("a correlated trigger declares its miss behavior")
+        {
+            CorrelationMiss::Open => {
+                tx.sessions()
+                    .sealed_holding_correlation(&trigger.organization, correlation)
+                    .await?
+            }
+            CorrelationMiss::Ignore => return ignored(tx, trigger, event, correlation).await,
+        }
+    } else {
+        None
+    };
 
     let session = tx
         .sessions()
@@ -204,7 +242,7 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
             agent: &trigger.agent,
             branch: &rendered.branch,
             correlation: rendered.correlation.as_deref(),
-            continues: None,
+            continues: continues.as_ref(),
             started_by: Some(event),
         })
         .await?;
@@ -229,7 +267,7 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
 
     let run = tx.sessions().enqueue_run(&session, None).await?;
     tx.triggers()
-        .record_firing(trigger, event, &session)
+        .record_opened_firing(trigger, event, &session)
         .await?;
     tx.commit().await?;
     fanout::publish(Change::SessionOpened(&session));
@@ -238,6 +276,43 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
         event: event.record_id,
         session: session.id,
         run: run.id,
+    })
+}
+
+async fn fed(
+    mut tx: Tx<'_>,
+    trigger: &Trigger,
+    event: &Event,
+    rendered: &Rendered,
+    holding: SessionId,
+) -> Result<Fired> {
+    let session = tx.sessions().get(holding).await?;
+    let run = session::post_in(&mut tx, &session, &trigger.name, &rendered.brief).await?;
+    tx.triggers()
+        .record_fed_firing(trigger, event, &session)
+        .await?;
+    tx.commit().await?;
+
+    Ok(Fired::Fed {
+        event: event.record_id,
+        session: session.id,
+        run: run.map(|run| run.id),
+    })
+}
+
+async fn ignored(
+    mut tx: Tx<'_>,
+    trigger: &Trigger,
+    event: &Event,
+    correlation: &str,
+) -> Result<Fired> {
+    tx.triggers().record_ignored_firing(trigger, event).await?;
+    tx.commit().await?;
+
+    Ok(Fired::Ignored {
+        event: event.record_id,
+        trigger: trigger.name.clone(),
+        correlation: correlation.to_owned(),
     })
 }
 

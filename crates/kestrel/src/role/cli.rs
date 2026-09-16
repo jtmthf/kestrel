@@ -260,6 +260,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             brief,
             branch,
             correlation,
+            on_miss,
             workspace,
             agent,
         }) => {
@@ -274,6 +275,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                         branch: branch.clone(),
                         correlation: correlation.clone(),
                     },
+                    on_miss: *on_miss,
                     workspace,
                     agent,
                 },
@@ -339,6 +341,9 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                     .as_ref()
                     .map_or_else(|| "-".to_owned(), ToString::to_string)
             );
+            if let Some(on_miss) = trigger.on_miss {
+                println!("on miss       {on_miss}");
+            }
             println!("declared      {}", trigger.declared_at);
             println!();
             println!("{}", templates.brief);

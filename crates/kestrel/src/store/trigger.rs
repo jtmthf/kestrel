@@ -4,7 +4,8 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 use crate::domain::{
-    Agent, Event, Organization, Session, Templates, Trigger, TriggerId, TriggerState, Workspace,
+    Agent, CorrelationMiss, Event, Organization, Session, Templates, Trigger, TriggerId,
+    TriggerState, Workspace,
 };
 use crate::filter::{Attribute, Filter};
 use crate::store::{agent, integration, organization, workspace};
@@ -12,7 +13,7 @@ use crate::store::{agent, integration, organization, workspace};
 macro_rules! triggers_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, organization_id, name, filter, brief, branch, correlation, workspace_id,
+            "SELECT id, organization_id, name, filter, brief, branch, correlation, on_miss, workspace_id,
                     agent_id, state, declared_at
              FROM trigger
              WHERE ",
@@ -36,6 +37,7 @@ impl<'a> Triggers<'a> {
         name: &str,
         filter: &Filter,
         templates: &Templates,
+        on_miss: Option<CorrelationMiss>,
         workspace: &Workspace,
         agent: &Agent,
     ) -> Result<Trigger> {
@@ -45,6 +47,7 @@ impl<'a> Triggers<'a> {
             name: name.to_owned(),
             filter: filter.clone(),
             templates: templates.clone(),
+            on_miss,
             workspace: workspace.clone(),
             agent: agent.clone(),
             state: TriggerState::Enabled,
@@ -53,9 +56,9 @@ impl<'a> Triggers<'a> {
 
         sqlx::query(
             "INSERT INTO trigger
-                 (id, organization_id, name, filter, brief, branch, correlation, workspace_id,
+                 (id, organization_id, name, filter, brief, branch, correlation, on_miss, workspace_id,
                   agent_id, state, declared_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
         .bind(organization.id.to_string())
@@ -64,6 +67,7 @@ impl<'a> Triggers<'a> {
         .bind(templates.brief.to_string())
         .bind(templates.branch.as_ref().map(ToString::to_string))
         .bind(templates.correlation.as_ref().map(ToString::to_string))
+        .bind(on_miss.map(CorrelationMiss::as_str))
         .bind(workspace.id.to_string())
         .bind(agent.id.to_string())
         .bind(trigger.state.as_str())
@@ -198,13 +202,28 @@ impl<'a> Triggers<'a> {
         Ok(matched)
     }
 
-    pub async fn record_firing(
+    pub async fn record_opened_firing(
         &mut self,
         trigger: &Trigger,
         event: &Event,
         session: &Session,
     ) -> Result<()> {
-        self.record(trigger, event, Ok(session)).await
+        self.record(trigger, event, Some(session), "opened", None)
+            .await
+    }
+
+    pub async fn record_fed_firing(
+        &mut self,
+        trigger: &Trigger,
+        event: &Event,
+        session: &Session,
+    ) -> Result<()> {
+        self.record(trigger, event, Some(session), "fed", None)
+            .await
+    }
+
+    pub async fn record_ignored_firing(&mut self, trigger: &Trigger, event: &Event) -> Result<()> {
+        self.record(trigger, event, None, "ignored", None).await
     }
 
     pub async fn record_failed_firing(
@@ -213,25 +232,29 @@ impl<'a> Triggers<'a> {
         event: &Event,
         because: &str,
     ) -> Result<()> {
-        self.record(trigger, event, Err(because)).await
+        self.record(trigger, event, None, "failed", Some(because))
+            .await
     }
 
     async fn record(
         &mut self,
         trigger: &Trigger,
         event: &Event,
-        opened: Result<&Session, &str>,
+        session: Option<&Session>,
+        outcome: &str,
+        failure: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO firing
-                 (trigger_id, event_record_id, organization_id, session_id, failure, fired_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+                 (trigger_id, event_record_id, organization_id, session_id, outcome, failure, fired_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
         .bind(event.record_id.to_string())
         .bind(trigger.organization.id.to_string())
-        .bind(opened.ok().map(|session| session.id.to_string()))
-        .bind(opened.err())
+        .bind(session.map(|session| session.id.to_string()))
+        .bind(outcome)
+        .bind(failure)
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.connection)
         .await
@@ -369,6 +392,10 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
                 .map(|correlation| correlation.parse())
                 .transpose()?,
         },
+        on_miss: row
+            .get::<Option<String>, _>("on_miss")
+            .map(|miss| miss.parse())
+            .transpose()?,
         workspace,
         agent,
         state: row.get::<String, _>("state").parse()?,

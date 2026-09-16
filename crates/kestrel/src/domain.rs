@@ -211,6 +211,39 @@ pub enum TriggerState {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrelationMiss {
+    Open,
+    Ignore,
+}
+
+impl CorrelationMiss {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CorrelationMiss::Open => "open",
+            CorrelationMiss::Ignore => "ignore",
+        }
+    }
+}
+
+impl FromStr for CorrelationMiss {
+    type Err = anyhow::Error;
+
+    fn from_str(miss: &str) -> Result<Self> {
+        match miss {
+            "open" => Ok(CorrelationMiss::Open),
+            "ignore" => Ok(CorrelationMiss::Ignore),
+            other => bail!("{other} is not what a trigger does when correlation misses"),
+        }
+    }
+}
+
+impl fmt::Display for CorrelationMiss {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl TriggerState {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -246,6 +279,7 @@ pub struct Trigger {
     pub name: String,
     pub filter: Filter,
     pub templates: Templates,
+    pub on_miss: Option<CorrelationMiss>,
     pub workspace: Workspace,
     pub agent: Agent,
     pub state: TriggerState,

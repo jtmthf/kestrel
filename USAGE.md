@@ -333,6 +333,11 @@ rendering `on `. Ask first with `{% if event.data.pull_request is defined %}`. A
 inside the control plane, so how much work it does, how deep it recurses and how much it writes
 are all bounded.
 
+A correlation requires `--on-miss open` or `--on-miss ignore`. A hit feeds the open Session that
+holds the key; its configured Agent stays fixed. `open` starts a new Session when no open one holds
+the key, continuing the most recently sealed Session with that key when there is one. `ignore`
+records the firing but starts no work.
+
 Label an issue on that repository `ready-for-agent`, and within a poll interval there is a session
 open with a run queued behind it, which nobody asked for:
 
@@ -356,8 +361,8 @@ first transcript entry:
 
 A brief, branch or correlation that cannot render fails the firing: nothing opens, the control
 plane logs why, and no later sweep tries that trigger on that event again. A correlation is held by
-the session it opened, and is unique among the organization's open sessions, so a firing that
-renders one an open session already holds opens nothing either.
+the session it opened, and is unique among the organization's open sessions. Events arriving while
+that Session has an active Run wait together, then become one transcript entry and one next Run.
 
 A trigger fires at most once per event, so the same label arriving in two overlapping poll windows
 opens one session and not two. Taking the label off and putting it back is a new event, and starts
