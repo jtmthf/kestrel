@@ -1,4 +1,5 @@
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
@@ -205,17 +206,24 @@ pub struct Outcome {
     pub attempted_at: Option<Timestamp>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TriggerState {
     Enabled,
-    Disabled,
+    Disabled(DisableReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisableReason {
+    Operator,
+    FiringBudget,
 }
 
 impl TriggerState {
-    pub const fn as_str(self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             TriggerState::Enabled => "enabled",
-            TriggerState::Disabled => "disabled",
+            TriggerState::Disabled(DisableReason::Operator) => "disabled:operator",
+            TriggerState::Disabled(DisableReason::FiringBudget) => "disabled:firing-budget",
         }
     }
 }
@@ -226,7 +234,8 @@ impl FromStr for TriggerState {
     fn from_str(state: &str) -> Result<Self> {
         match state {
             "enabled" => Ok(TriggerState::Enabled),
-            "disabled" => Ok(TriggerState::Disabled),
+            "disabled:operator" => Ok(TriggerState::Disabled(DisableReason::Operator)),
+            "disabled:firing-budget" => Ok(TriggerState::Disabled(DisableReason::FiringBudget)),
             other => bail!("{other} is not a state a trigger can be in"),
         }
     }
@@ -234,7 +243,25 @@ impl FromStr for TriggerState {
 
 impl fmt::Display for TriggerState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        match self {
+            TriggerState::Enabled => f.write_str("enabled"),
+            TriggerState::Disabled(_) => f.write_str("disabled"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FiringBudget {
+    pub limit: NonZeroUsize,
+    pub window: SignedDuration,
+}
+
+impl Default for FiringBudget {
+    fn default() -> Self {
+        Self {
+            limit: NonZeroUsize::new(10).expect("a firing budget has a positive limit"),
+            window: SignedDuration::from_hours(1),
+        }
     }
 }
 
@@ -249,7 +276,18 @@ pub struct Trigger {
     pub workspace: Workspace,
     pub agent: Agent,
     pub state: TriggerState,
+    pub disabled_because: Option<String>,
+    pub firing_budget: FiringBudget,
     pub declared_at: Timestamp,
+}
+
+impl Trigger {
+    pub fn firing_budget_exhausted_because(&self) -> String {
+        format!(
+            "the trigger {} exhausted its budget of {} firings in {}",
+            self.name, self.firing_budget.limit, self.firing_budget.window
+        )
+    }
 }
 
 /// What a firing renders from the Event: never the Agent or the Workspace (ADR-0013).

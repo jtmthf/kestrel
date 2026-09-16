@@ -3,7 +3,9 @@
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::domain::{Event, EventRecordId, RunId, SessionId, Templates, Trigger, TriggerState};
+use crate::domain::{
+    DisableReason, Event, EventRecordId, RunId, SessionId, Templates, Trigger, TriggerState,
+};
 use crate::fanout::{self, Change};
 use crate::filter::Filter;
 use crate::log::Entry;
@@ -149,7 +151,13 @@ pub fn render(trigger: &Trigger, event: &Event) -> Result<Rendered> {
 }
 
 pub async fn disable(store: &Store, organization: &str, name: &str) -> Result<Trigger> {
-    set(store, organization, name, TriggerState::Disabled).await
+    set(
+        store,
+        organization,
+        name,
+        TriggerState::Disabled(DisableReason::Operator),
+    )
+    .await
 }
 
 pub async fn enable(store: &Store, organization: &str, name: &str) -> Result<Trigger> {
@@ -177,6 +185,27 @@ pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
 async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired> {
     let rendered = render(trigger, event);
     let mut tx = store.begin().await?;
+
+    if let Some(because) = tx.triggers().disabled_because(trigger).await? {
+        return failed(
+            tx,
+            trigger,
+            event,
+            format!("the trigger {} is disabled: {because}", trigger.name),
+        )
+        .await;
+    }
+    if tx
+        .triggers()
+        .firing_budget_is_exhausted(trigger, jiff::Timestamp::now())
+        .await?
+    {
+        let because = trigger.firing_budget_exhausted_because();
+        tx.triggers()
+            .set_state(trigger, TriggerState::Disabled(DisableReason::FiringBudget))
+            .await?;
+        return failed(tx, trigger, event, because).await;
+    }
 
     let rendered = match rendered {
         Ok(rendered) => rendered,
