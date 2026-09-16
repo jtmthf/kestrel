@@ -1,8 +1,3 @@
-//! The rule that turns an Event into work. Labelling an issue opens a Session on the branch
-//! the Trigger renders, with the rendered Brief as its first Transcript entry and a Run queued
-//! behind it, with nobody in the loop; a Trigger fires at most once per Event, never for an
-//! Event recorded before it was declared, and one that is disabled fires for nothing.
-
 mod support;
 
 use std::time::Duration;
