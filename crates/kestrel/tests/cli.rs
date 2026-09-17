@@ -87,6 +87,7 @@ impl Kestrel {
         Command::new(env!("CARGO_BIN_EXE_kestrel"))
             .env("KESTREL_DATA_DIR", self.data_dir.path())
             .env("KESTREL_LISTEN", listen)
+            .env("KESTREL_OPERATOR_LISTEN", "127.0.0.1:0")
             .env("KESTREL_COMPUTE", "local-exec")
             .env("KESTREL_SUPERVISOR", support::supervisor::binary())
             .env(
@@ -124,6 +125,7 @@ impl Kestrel {
         let mut kestrel = Command::new(env!("CARGO_BIN_EXE_kestrel"))
             .env("KESTREL_DATA_DIR", self.data_dir.path())
             .env("KESTREL_LISTEN", "127.0.0.1:0")
+            .env("KESTREL_OPERATOR_LISTEN", "127.0.0.1:0")
             .env("KESTREL_COMPUTE", "local-exec")
             .env("KESTREL_SUPERVISOR", support::supervisor::binary())
             .env("RUST_LOG", "trace")

@@ -30,6 +30,7 @@ impl Kestrel {
             .env("RUST_LOG", "info")
             .env("KESTREL_DATA_DIR", data_dir.path())
             .env("KESTREL_LISTEN", "127.0.0.1:0")
+            .env("KESTREL_OPERATOR_LISTEN", "127.0.0.1:0")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -165,11 +166,13 @@ fn serve_starts_only_the_serve_role() {
 }
 
 #[test]
-fn serve_reports_where_it_is_listening_for_the_link() {
+fn serve_reports_where_it_is_listening_for_the_link_and_for_operators() {
     let mut kestrel = Kestrel::spawn(&["serve"]);
 
-    kestrel.wait_for("the serve role to report its address", |line| {
-        line.contains("role started") && line.contains("address=127.0.0.1:")
+    kestrel.wait_for("the serve role to report its addresses", |line| {
+        line.contains("role started")
+            && line.contains("link=127.0.0.1:")
+            && line.contains("operator=127.0.0.1:")
     });
     kestrel.shut_down_cleanly(libc::SIGTERM);
 }

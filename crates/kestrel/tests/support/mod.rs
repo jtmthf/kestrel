@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod built;
+pub mod client;
 pub mod compose;
 pub mod control_plane;
 pub mod diagnostics;
@@ -38,6 +39,7 @@ use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
 use kestrel::log::{Cursor, Entry, Page, TranscriptEntry, Unreadable, Window};
 use kestrel::provider::{self, Held};
+use kestrel::role::serve::Listen;
 use kestrel::role::work::Dispatch;
 use kestrel::session;
 use kestrel::store::Store;
@@ -78,10 +80,13 @@ pub fn templates(brief: &str, branch: Option<&str>, correlation: Option<&str>) -
     }
 }
 
+const LOOPBACK: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
+
 pub struct Harness {
     data_dir: TempDir,
     store: Store,
-    address: SocketAddr,
+    bound: Listen,
     environment: Option<Provisions>,
     shutdown: CancellationToken,
     roles: JoinHandle<anyhow::Result<()>>,
@@ -99,7 +104,7 @@ pub struct Provisions {
 /// still reaches it.
 pub struct Stopped {
     data_dir: TempDir,
-    address: SocketAddr,
+    bound: Listen,
     environment: Option<Provisions>,
 }
 
@@ -116,7 +121,10 @@ impl Harness {
         let data_dir = TempDir::new().expect("a temporary data directory");
         Self::boot_against(
             data_dir,
-            "0.0.0.0:0".parse().expect("every interface"),
+            Listen {
+                link: "0.0.0.0:0".parse().expect("every interface"),
+                operator: LOOPBACK,
+            },
             None,
         )
         .await
@@ -148,7 +156,10 @@ impl Harness {
         let data_dir = TempDir::new().expect("a temporary data directory");
         Self::boot_against(
             data_dir,
-            "0.0.0.0:0".parse().expect("every interface"),
+            Listen {
+                link: "0.0.0.0:0".parse().expect("every interface"),
+                operator: LOOPBACK,
+            },
             Some(Provisions {
                 driver: Driver::Docker(Docker::provisioning_from(image)),
                 runtime: runtime.to_owned(),
@@ -162,7 +173,10 @@ impl Harness {
         let data_dir = TempDir::new().expect("a temporary data directory");
         Self::boot_against(
             data_dir,
-            "127.0.0.1:0".parse().expect("a loopback address"),
+            Listen {
+                link: LOOPBACK,
+                operator: LOOPBACK,
+            },
             environment,
         )
         .await
@@ -170,7 +184,7 @@ impl Harness {
 
     async fn boot_against(
         data_dir: TempDir,
-        listen: SocketAddr,
+        listen: Listen,
         environment: Option<Provisions>,
     ) -> Self {
         let store = Store::open(data_dir.path())
@@ -180,7 +194,8 @@ impl Harness {
         let all_in_one = kestrel::role::bind(store.clone(), listen)
             .await
             .expect("the control plane should bind its link");
-        let address = all_in_one.address();
+        let bound = all_in_one.bound();
+        let address = bound.link;
         let dispatch = environment.clone().map(|provisions| Dispatch {
             link: match provisions.driver {
                 Driver::Docker(_) => format!("http://host.docker.internal:{}", address.port()),
@@ -196,7 +211,7 @@ impl Harness {
         Self {
             data_dir,
             store,
-            address,
+            bound,
             environment,
             shutdown,
             roles,
@@ -208,11 +223,15 @@ impl Harness {
     }
 
     pub fn link(&self) -> String {
-        format!("http://{}", self.address)
+        format!("http://{}", self.bound.link)
+    }
+
+    pub fn operator(&self) -> String {
+        format!("http://{}", self.bound.operator)
     }
 
     pub fn link_from_an_environment(&self) -> String {
-        format!("http://host.docker.internal:{}", self.address.port())
+        format!("http://host.docker.internal:{}", self.bound.link.port())
     }
 
     pub async fn declare_organization(&self, name: &str) -> Organization {
@@ -997,7 +1016,7 @@ impl Harness {
 
         Stopped {
             data_dir: self.data_dir,
-            address: self.address,
+            bound: self.bound,
             environment: self.environment,
         }
     }
@@ -1015,7 +1034,7 @@ impl Harness {
 
         Stopped {
             data_dir: self.data_dir,
-            address: self.address,
+            bound: self.bound,
             environment: self.environment,
         }
     }
@@ -1023,7 +1042,7 @@ impl Harness {
 
 impl Stopped {
     pub async fn restart(self) -> Harness {
-        Harness::boot_against(self.data_dir, self.address, self.environment).await
+        Harness::boot_against(self.data_dir, self.bound, self.environment).await
     }
 
     pub async fn run(&self, id: RunId) -> Run {

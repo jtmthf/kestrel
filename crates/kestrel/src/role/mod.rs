@@ -2,8 +2,6 @@ pub mod cli;
 pub mod serve;
 pub mod work;
 
-use std::net::SocketAddr;
-
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
@@ -17,7 +15,7 @@ pub struct AllInOne {
 }
 
 /// One process is the only place ingest can wake the sweeps that consume what it recorded.
-pub async fn bind(store: Store, listen: SocketAddr) -> Result<AllInOne> {
+pub async fn bind(store: Store, listen: serve::Listen) -> Result<AllInOne> {
     let wake = Wake::default();
 
     Ok(AllInOne {
@@ -28,8 +26,8 @@ pub async fn bind(store: Store, listen: SocketAddr) -> Result<AllInOne> {
 }
 
 impl AllInOne {
-    pub fn address(&self) -> SocketAddr {
-        self.listening.address()
+    pub fn bound(&self) -> serve::Listen {
+        self.listening.bound()
     }
 
     pub async fn run(

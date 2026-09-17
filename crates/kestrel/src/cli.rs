@@ -13,6 +13,7 @@ use crate::compute::{Docker, Driver, LocalExec};
 use crate::domain::{CorrelationMiss, Direction, EventRecordId, SessionId};
 use crate::integration::github;
 use crate::log::Cursor;
+use crate::role::serve::Listen;
 use crate::role::work::Dispatch;
 use crate::template::Template;
 
@@ -87,6 +88,17 @@ pub struct Cli {
     )]
     pub listen: SocketAddr,
 
+    /// Where the control plane listens for Clients; it authenticates nobody, so keep it on
+    /// loopback and reach a remote one through a tunnel
+    #[arg(
+        long,
+        env = "KESTREL_OPERATOR_LISTEN",
+        global = true,
+        value_name = "ADDR",
+        default_value = "127.0.0.1:7718"
+    )]
+    operator_listen: SocketAddr,
+
     /// Where an Environment reaches the link, if not the address the control plane bound
     #[arg(long, env = "KESTREL_LINK", global = true, value_name = "URL")]
     link: Option<String>,
@@ -155,7 +167,8 @@ pub enum ComputeDriver {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
-    /// Serve the link an Environment dials out to, and the webhooks Events arrive by
+    /// Serve the link an Environment dials out to, the webhooks Events arrive by, and the
+    /// operator boundary Clients reach
     Serve,
     /// Claim queued Runs and execute them
     Work,
@@ -614,6 +627,13 @@ impl Cli {
         }
     }
 
+    pub fn listen(&self) -> Listen {
+        Listen {
+            link: self.listen,
+            operator: self.operator_listen,
+        }
+    }
+
     /// The one choice between the two `Compute` drivers, made here from configuration so that
     /// nothing that executes a Run has to make it.
     pub fn dispatch(&self, bound: SocketAddr) -> Result<Dispatch> {
@@ -802,6 +822,28 @@ mod tests {
     #[test]
     fn an_active_run_limit_of_zero_is_rejected() {
         assert!(Cli::try_parse_from(["kestrel", "--max-active-runs", "0"]).is_err());
+    }
+
+    #[test]
+    fn the_operator_boundary_listens_on_loopback_unless_configuration_says_otherwise() {
+        assert!(parsed(&[]).listen().operator.ip().is_loopback());
+    }
+
+    #[test]
+    fn the_operator_boundary_and_the_link_are_configured_apart() {
+        let listen = parsed(&[
+            "--listen",
+            "0.0.0.0:7717",
+            "--operator-listen",
+            "127.0.0.1:9000",
+        ])
+        .listen();
+
+        assert_eq!(listen.link, "0.0.0.0:7717".parse().expect("an address"));
+        assert_eq!(
+            listen.operator,
+            "127.0.0.1:9000".parse().expect("an address")
+        );
     }
 
     #[test]

@@ -252,6 +252,12 @@ pub struct Cursor {
     seq: i64,
 }
 
+impl Cursor {
+    pub const fn at(session: SessionId, seq: i64) -> Self {
+        Self { session, seq }
+    }
+}
+
 impl fmt::Display for Cursor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.session, self.seq)

@@ -1,0 +1,345 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "kestrel operator",
+    "version": "0.1.0",
+    "summary": "The boundary a Client reaches a control plane over.",
+    "description": "Server-sent events down, POST up, plain HTTP. It authenticates nobody, so the control plane serves it on a listener of its own, apart from the link, and binds that listener to loopback unless told otherwise. A remote control plane is reached through a tunnel.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "{controlPlane}",
+      "variables": {
+        "controlPlane": {
+          "default": "http://127.0.0.1:7718"
+        }
+      }
+    }
+  ],
+  "security": [],
+  "paths": {
+    "/operator/sessions/{session}/transcript": {
+      "get": {
+        "operationId": "transcript",
+        "summary": "Stream a Session's Transcript.",
+        "description": "Replays every entry after `Last-Event-ID`, in order, each as an `entry` event whose id is the cursor that resumes after it. A read that follows then stays open and delivers entries as they are appended; the stream ends with an `end` event once the Session is sealed, or at once for a read that does not follow. A cursor that names no position in this Transcript is refused rather than silently restarting the walk.",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "required": true,
+            "description": "The Session whose Transcript is read.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "follow",
+            "in": "query",
+            "required": false,
+            "description": "Whether to stay open for entries appended after the ones already recorded.",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "description": "The id of the last entry this reader was delivered. Absent means from the beginning.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stream is open. Each event carries an entry or the end of the stream as its data, and its kind as its event name.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "Refused": {
+        "description": "The control plane refused the request.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Refusal"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Recorded": {
+        "description": "One Transcript entry, and where it sits in the order.",
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "appended_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "entry": {
+            "$ref": "#/components/schemas/Entry"
+          }
+        },
+        "required": [
+          "seq",
+          "appended_at",
+          "entry"
+        ]
+      },
+      "Entry": {
+        "description": "One entry of a Session's Transcript.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ParticipantJoined"
+          },
+          {
+            "$ref": "#/components/schemas/Brief"
+          },
+          {
+            "$ref": "#/components/schemas/RunStarted"
+          },
+          {
+            "$ref": "#/components/schemas/Message"
+          },
+          {
+            "$ref": "#/components/schemas/Messages"
+          },
+          {
+            "$ref": "#/components/schemas/RunEnded"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "participant_joined": "#/components/schemas/ParticipantJoined",
+            "brief": "#/components/schemas/Brief",
+            "run_started": "#/components/schemas/RunStarted",
+            "said": "#/components/schemas/Message",
+            "messages": "#/components/schemas/Messages",
+            "run_ended": "#/components/schemas/RunEnded"
+          }
+        }
+      },
+      "ParticipantJoined": {
+        "description": "A Participant joined the Session.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "participant_joined"
+          },
+          "participant": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "participant"
+        ]
+      },
+      "Brief": {
+        "description": "The instruction a Session started with, rendered by the Trigger that fired.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "brief"
+          },
+          "trigger": {
+            "type": "string"
+          },
+          "brief": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "trigger",
+          "brief"
+        ]
+      },
+      "RunStarted": {
+        "description": "A Run started on behalf of the Session.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "run_started"
+          },
+          "run": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "kind",
+          "run"
+        ]
+      },
+      "Message": {
+        "description": "What a Participant said.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "said"
+          },
+          "participant": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "participant",
+          "message"
+        ]
+      },
+      "Messages": {
+        "description": "Messages that arrived while a Run was active, drained as one Transcript entry.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "messages"
+          },
+          "messages": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/SpokenMessage"
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "messages"
+        ]
+      },
+      "SpokenMessage": {
+        "description": "One Participant's message within a drained group.",
+        "type": "object",
+        "properties": {
+          "participant": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "participant",
+          "message"
+        ]
+      },
+      "RunEnded": {
+        "description": "A Run ended, and how it went.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "run_ended"
+          },
+          "run": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "exit": {
+            "$ref": "#/components/schemas/Exit"
+          }
+        },
+        "required": [
+          "kind",
+          "run",
+          "exit"
+        ]
+      },
+      "Exit": {
+        "description": "How a Run ended.",
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "succeeded",
+              "failed"
+            ]
+          },
+          "because": {
+            "type": "string",
+            "description": "Why it failed. Absent when it succeeded."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "Refusal": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
+      "End": {
+        "description": "The control plane closed the stream on purpose. A stream that closes without one was cut off, and is resumed from the last id delivered.",
+        "type": "object",
+        "properties": {
+          "because": {
+            "enum": [
+              "caught_up",
+              "sealed"
+            ],
+            "description": "`caught_up` when a read that does not follow has delivered every entry; `sealed` when the Session is sealed and every entry it will ever hold has been delivered."
+          }
+        },
+        "required": [
+          "because"
+        ]
+      },
+      "Event": {
+        "description": "One event on the stream. Its event name is its kind.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Recorded"
+          },
+          {
+            "$ref": "#/components/schemas/End"
+          }
+        ]
+      }
+    }
+  }
+}

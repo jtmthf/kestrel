@@ -170,6 +170,10 @@ impl<'a> Sessions<'a> {
         read(self.connection, id).await
     }
 
+    pub async fn find(&mut self, id: SessionId) -> Result<Option<Session>> {
+        find(self.connection, id).await
+    }
+
     pub async fn all(&mut self, organization: &Organization) -> Result<Vec<Session>> {
         let ids =
             sqlx::query("SELECT id FROM session WHERE organization_id = ? ORDER BY opened_at, id")
@@ -812,7 +816,13 @@ impl<'a> Sessions<'a> {
 }
 
 pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Result<Session> {
-    let row = sqlx::query(
+    find(connection, id)
+        .await?
+        .with_context(|| format!("no session {id}"))
+}
+
+async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option<Session>> {
+    let Some(row) = sqlx::query(
         "SELECT organization_id, workspace_id, agent_id, branch, correlation, state, opened_at,
                 last_active_at, sealed_at, continues, event_record_id
          FROM session
@@ -821,7 +831,9 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
     .bind(id.to_string())
     .fetch_optional(&mut *connection)
     .await?
-    .with_context(|| format!("no session {id}"))?;
+    else {
+        return Ok(None);
+    };
 
     let organization =
         organization::with_id(connection, row.get::<String, _>("organization_id").parse()?).await?;
@@ -838,7 +850,7 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
     )
     .await?;
 
-    Ok(Session {
+    Ok(Some(Session {
         id,
         organization,
         workspace,
@@ -857,7 +869,7 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
             .get::<Option<String>, _>("event_record_id")
             .map(|event| event.parse())
             .transpose()?,
-    })
+    }))
 }
 
 fn run(row: &SqliteRow) -> Result<Run> {
