@@ -193,6 +193,12 @@ the policy granted to it. An agent is configuration, not a running process — a
 run.
 _Avoid_: bot, worker, assistant
 
+**Skill**:
+Reusable instructions and supporting files made available to an Agent Runtime. Kestrel manages
+organization-owned versions selected by Workspaces and Agents; a repository may supply its own, and
+the runtime decides whether and when to load one.
+_Avoid_: playbook, command, brief
+
 **Agent Runtime**:
 An agent loop kestrel drives by speaking the Agent Client Protocol to it. opencode is the default;
 kestrel writes no agent loop and owns no contract for one.

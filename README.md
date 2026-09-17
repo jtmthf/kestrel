@@ -110,8 +110,9 @@ would have shipped it.
 
 Flexibility and "it just works" resolve into one rule: opinionated defaults, swappable underneath.
 One command yields a working system, with SQLite, Docker, a default model, and opencode already
-chosen for you. Configuration is an escape hatch, so any feature that requires configuration to work
-at all is a bug, and that holds after the tenth pluggable layer lands.
+chosen for you. The first PR needs no kestrel configuration. Optional integrations, managed Skills,
+external MCP servers and Organization SSO need declarations or credentials when a team chooses to
+use them; none is a prerequisite for the default path.
 
 ## What v1 means
 
@@ -126,34 +127,50 @@ to it, so the seam is proven against two ACP agents of different lineages — on
 protocol natively and one reached through an adapter — because that line is where resume behaviour,
 permission granularity and declared capabilities all differ, and a client with opencode-shaped
 assumptions fails on it. Adoption is the right outcome but the wrong line, since it is not something
-the project controls. Nine capabilities are the content of that freeze:
+the project controls. Twelve capabilities are the content of that freeze:
 
-1. **Trigger ingestion**: five sources, all round-trip. Generic webhook is the core and the named
-   integrations are adapters over it, so a sixth source is a contribution rather than a fork.
+1. **Trigger ingestion**: GitHub, Slack, Linear, Jira, Microsoft Teams, GitLab, generic webhook,
+   and schedule can start work. The seven external surfaces round-trip: the place that started work
+   receives its outcome. A schedule has no external recipient, so its result is visible in kestrel.
+   Generic CloudEvents ingestion is the core and the named integrations are adapters over it, so
+   another source is a contribution rather than a fork. Operators can dry-run a Trigger against a
+   sample or recorded Event without opening a Session, and trace every evaluation, including
+   nonmatches and ignored Firings. Scheduled Triggers support intervals and time-zone-aware cron
+   expressions; their Events take the same recorded path as external Events. An Event
+   supplies data, never authority.
 2. **Scheduling**: placement, concurrency limits per organization and per campaign, a spend cap on
    every campaign, and a queue that never rejects. kestrel retries *dispatch*, never *work*: a run
    that never started is dispatched again, a run that started and failed is never re-run, and a
    workflow that wants the work retried enqueues a new run. Priority is excluded from v1 on purpose,
    since fairness cannot be tuned without production load the project does not have yet; ready order
-   is FIFO, which is an order rather than a priority.
+   is FIFO, which is an order rather than a priority. The Client shows queued work, wait reasons and
+   Campaign spend; an operator can pause a Campaign without terminating its active Runs, resume it,
+   or cancel it and terminate active Runs.
 3. **Isolated execution**: every run in its own environment, provisioned through a compute contract
-   kestrel defines rather than a layer kestrel owns.
+   kestrel defines rather than a layer kestrel owns. An authorized operator can inspect live files
+   and unpublished work, including committed but unpushed, uncommitted and untracked changes; a
+   Policy-governed interactive Instance shell is audited rather than a raw compute-backend escape.
 4. **Model choice**: any provider the configured runtime supports, selectable per agent, with keys
    held per organization and reaching an environment only when a run needs them. Uniform behavior
    across models is not promised, and neither is model availability across runtimes: "any model" is
    scoped to whichever runtime you are running, and to whether that runtime lets a client select one
    at all. A run whose agent names a model the runtime cannot honour fails rather than quietly
-   running a different one.
+   running a different one. The Client shows the requested and effective model and explains a
+   runtime capability mismatch.
 5. **Persistent sessions**: a session survives everything except deliberate deletion, and an
    environment survives nothing. Process restart, environment teardown, and control-plane upgrade all
    preserve the session and its full transcript, and a run interrupted by a restart ends with an
    explicit exit status. Sessions do not stay open forever: an idle one is sealed, which ends it
    without deleting it — a sealed session is readable and is never reopened, and work that would have
    continued it starts a new session that records the sealed one. Nothing expires a transcript entry
-   at any age; there is no retention knob, only deletion you asked for.
+   at any age; there is no retention knob, only deletion you asked for. The Client distinguishes that
+   durable Session from the Agent Runtime's ACP conversation continuity, and shows the branch, pull
+   request or merge request, and unpublished work that can be recovered or reviewed.
 6. **Pluggable storage**: SQLite for the single-machine path, Postgres for production.
 7. **Multiplayer**: one uniform promise, designed to the weakest transport kestrel supports, so every
-   deployment gets the same guarantees and the faster ones are only faster.
+   deployment gets the same guarantees and the faster ones are only faster. People can discover,
+   read, join and take turns in authorized Sessions; Policy checks those operations separately.
+   Presence is best-effort and never gates correctness, and sharing a link grants no authority.
 8. **Workflows**: a declared roster rather than a declared sequence, with the sequence grown at
    runtime by runs enqueueing further sessions against it, under a campaign's caps and failure
    tolerances. A handoff is an enqueue and never a message: kestrel delivers ordering and once-only
@@ -161,10 +178,34 @@ the project controls. Nine capabilities are the content of that freeze:
    entry, which makes a handoff auditable and joinable by construction rather than private. Work runs
    concurrently *across* sessions while at most one run is ever active *within* one — Temporal, Step
    Functions, Prefect and Restate all draw that line the other way, which is why it is worth stating
-   rather than assuming.
+   rather than assuming. The Client shows a navigable Campaign graph with child Sessions,
+   dependencies, status, blocked reasons and spend; authorized people can follow up, pause, resume
+   and cancel.
 9. **Governance**: an audit record, policy enforced at the execution layer rather than by prompt, and
    a real path for routing an approval outward to the human the policy authorizes to resolve it —
-   who is usually not in the session, and does not join it by answering.
+   who is usually not in the session, and does not join it by answering. Operators sign in through
+   OIDC or SAML, with identity-provider groups mapped to Organization access grants; a local
+   administrator path serves the single-machine installation. External approvers remain verified
+   external principals, without mandatory kestrel accounts. Authorized operators can search and
+   filter the Audit Record, inspect decision inputs and the Policy snapshot, follow links to the
+   relevant work, and export stable paged records; routine output redacts secrets.
+10. **Browser Client**: a high-quality place to start and follow work, inspect live transcripts,
+    state, files and diffs, take a turn, and answer an Approval or Question. By v1 it handles routine
+    work and administration after initial installation, with prompt feedback, accessible and
+    responsive interaction. The CLI remains useful for scripting and power use.
+11. **Managed Skills**: an Organization catalog holds versioned Skills selected by Workspaces and
+    Agents. kestrel stages them at the Agent Runtime's filesystem convention; the runtime chooses
+    when to load one or invoke it as a command. A repository Skill of the same name wins unless
+    Policy denies it, and the effective source is visible without overwriting repository files. A
+    Run fails visibly if a selected Skill cannot be staged. It retains the exact managed versions
+    delivered to it and records Skills the agent advertises using, without inventing a use claim
+    when the agent reports none.
+12. **MCP extensibility**: kestrel supplies its own MCP tools and Organization-managed external MCP
+    servers selected by Workspaces and Agents. Stdio works across supported runtimes; HTTP is used
+    when the runtime advertises it, with SSE compatibility where needed. Unsupported transport
+    fails visibly. kestrel mediates external tool calls under Policy, records them in the Audit
+    Record, and supplies per-server, per-Run credentials without ambient secrets in the runtime.
+    Event data and unreviewed repository MCP configuration cannot grant tool authority.
 
 Underneath all of it sits one pluggability rule: every pluggable layer ships at least two real
 implementations at v1, one of them the default. A contract with a single implementation is an
