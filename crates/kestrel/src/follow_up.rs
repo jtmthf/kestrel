@@ -40,7 +40,17 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
         .expect("an unfollowed event has an originating session");
     let mut opened = None;
 
-    if session.state == SessionState::Sealed {
+    let holding = match (&session.state, &session.correlation) {
+        (SessionState::Sealed, Some(correlation)) => {
+            tx.sessions()
+                .holding_correlation(&session.organization, correlation)
+                .await?
+        }
+        _ => None,
+    };
+    if let Some(holding) = holding {
+        session = tx.sessions().get(holding).await?;
+    } else if session.state == SessionState::Sealed {
         let origin = tx
             .integrations()
             .event(
@@ -58,7 +68,7 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
                 workspace: &session.workspace,
                 agent: &session.agent,
                 branch: &session.branch,
-                correlation: None,
+                correlation: session.correlation.as_deref(),
                 continues: Some(&session),
                 started_by: Some(&origin),
             })

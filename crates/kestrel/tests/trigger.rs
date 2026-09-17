@@ -433,6 +433,67 @@ async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
 }
 
 #[tokio::test]
+async fn an_ignoring_trigger_still_continues_a_sealed_session_it_correlates_to() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let correlation = templates(
+        support::BRIEF,
+        None,
+        Some("{{ event.source }}{{ event.subject }}"),
+    );
+    harness
+        .declare_trigger_rendering_with_miss(
+            "acme",
+            "ready",
+            &labelled_on(REPOSITORY, READY),
+            "kestrel",
+            "builder",
+            &correlation,
+            Some(CorrelationMiss::Open),
+        )
+        .await;
+    harness
+        .declare_trigger_rendering_with_miss(
+            "acme",
+            "failing",
+            &labelled_on(REPOSITORY, "ci-failed"),
+            "kestrel",
+            "builder",
+            &correlation,
+            Some(CorrelationMiss::Ignore),
+        )
+        .await;
+    watching(&harness, &stub).await;
+
+    let sealed = opened(&harness, 1).await.remove(0);
+    let active = harness
+        .claim_run()
+        .await
+        .expect("the firing enqueued a run")
+        .run;
+    harness.complete_run(&active).await;
+    harness.seal_session(sealed.id).await;
+
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[github_stub::labelled(8, 43, "ci-failed")]),
+    );
+    let continuation = opened(&harness, 2)
+        .await
+        .into_iter()
+        .find(|session| session.id != sealed.id)
+        .expect("the ignoring trigger should continue the sealed session");
+
+    assert_eq!(continuation.continues, Some(sealed.id));
+    assert_eq!(continuation.correlation, sealed.correlation);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn correlated_events_arriving_during_a_run_drain_into_one_entry_and_one_run() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));

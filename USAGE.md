@@ -366,9 +366,11 @@ inside the control plane, so how much work it does, how deep it recurses and how
 are all bounded.
 
 A correlation requires `--on-miss open` or `--on-miss ignore`. A hit feeds the open Session that
-holds the key; its configured Agent stays fixed. `open` starts a new Session when no open one holds
-the key, continuing the most recently sealed Session with that key when there is one. `ignore`
-records the firing but starts no work.
+holds the key; its configured Agent stays fixed. A key only a sealed Session held is still
+kestrel's work, so either setting opens a new Session continuing the most recently sealed one. For a
+key no Session has held, `open` starts a new Session and `ignore` records the firing but starts no
+work. A comment that follows up a sealed Session feeds the open one holding its key, or opens a
+continuation that holds it.
 
 Label an issue on that repository `ready-for-agent`, and within a poll interval there is a session
 open with a run queued behind it, which nobody asked for:
