@@ -1361,6 +1361,49 @@ async fn a_scheduled_trigger_matches_what_its_own_schedule_minted_and_nothing_el
 }
 
 #[tokio::test]
+async fn a_webhook_naming_a_schedule_does_not_elapse_it() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let trigger = hourly(&harness, "Sweep the backlog").await;
+    let webhook = harness
+        .register_webhook("acme", "ci", "a-shared-secret")
+        .await;
+    let forged = serde_json::json!({
+        "id": "forged",
+        "source": format!("urn:kestrel:trigger:{}", trigger.id),
+        "specversion": "1.0",
+        "type": "dev.kestrel.schedule.elapsed",
+        "time": trigger.declared_at.to_string(),
+    });
+    let answered = reqwest::Client::new()
+        .post(format!("{}{}", harness.link(), webhook.webhook_path()))
+        .bearer_auth("a-shared-secret")
+        .header("content-type", "application/cloudevents+json")
+        .body(forged.to_string())
+        .send()
+        .await
+        .expect("the webhook answers");
+    assert!(answered.status().is_success());
+    let forged = recorded(&harness, 1).await.remove(0);
+
+    harness
+        .elapse(trigger.declared_at + SignedDuration::from_hours(1))
+        .await;
+    let session = opened(&harness, 1).await.remove(0);
+
+    assert!(
+        !harness
+            .test_trigger("acme", "sweep", forged.record_id)
+            .await
+            .matches
+    );
+    assert_ne!(session.started_by, Some(forged.record_id));
+    assert_eq!(harness.sessions("acme").await.len(), 1);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn a_trigger_that_fires_on_events_is_tested_against_a_named_one() {
     let harness = Harness::boot().await;
     an_organization(&harness, "acme").await;

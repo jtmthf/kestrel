@@ -313,7 +313,7 @@ impl<'a> Triggers<'a> {
 
     pub async fn matches(&mut self, trigger: &Trigger, event: &Event) -> Result<bool> {
         let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
-        predicate(&mut query, &trigger.filter());
+        matching(&mut query, trigger);
         query
             .push(" AS matched FROM event WHERE record_id = ")
             .push_bind(event.record_id.to_string());
@@ -365,7 +365,7 @@ impl<'a> Triggers<'a> {
                 )
                 .push_bind(trigger.id.to_string())
                 .push(") AND ");
-            predicate(&mut query, &trigger.filter());
+            matching(&mut query, &trigger);
             query
                 .push(" ORDER BY time, record_id LIMIT ")
                 .push_bind(i64::try_from(remaining)?);
@@ -468,6 +468,16 @@ impl<'a> Triggers<'a> {
 
         Ok(triggers)
     }
+}
+
+fn matching(query: &mut QueryBuilder<Sqlite>, trigger: &Trigger) {
+    query.push("(");
+    predicate(query, &trigger.filter());
+    // A webhook can name any source and type, so only kestrel's own minting elapses a schedule.
+    if matches!(trigger.fires, Fires::Every(_)) {
+        query.push(" AND event.integration_id IS NULL");
+    }
+    query.push(")");
 }
 
 /// Every comparison is coalesced to false, because an attribute an Event lacks is NULL and
