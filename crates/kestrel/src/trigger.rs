@@ -245,17 +245,15 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
             return fed(tx, trigger, event, &rendered, holding).await;
         }
 
-        match trigger
-            .on_miss
-            .expect("a correlated trigger declares its miss behavior")
-        {
-            CorrelationMiss::Open => {
-                tx.sessions()
-                    .sealed_holding_correlation(&trigger.organization, correlation)
-                    .await?
-            }
-            CorrelationMiss::Ignore => return ignored(tx, trigger, event, correlation).await,
+        // A key a sealed session held is kestrel's own work, so `ignore` does not drop it.
+        let sealed = tx
+            .sessions()
+            .sealed_holding_correlation(&trigger.organization, correlation)
+            .await?;
+        if sealed.is_none() && trigger.on_miss == Some(CorrelationMiss::Ignore) {
+            return ignored(tx, trigger, event, correlation).await;
         }
+        sealed
     } else {
         None
     };

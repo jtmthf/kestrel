@@ -539,3 +539,120 @@ async fn a_github_comment_after_sealing_opens_a_continuation() {
 
     harness.teardown().await;
 }
+
+async fn watching_correlated(harness: &Harness, stub: &GithubStub, correlation: &str) {
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(&organization, "kestrel", &[], "main")
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+    harness
+        .declare_trigger_rendering(
+            "acme",
+            "ready",
+            &support::labelled_on(REPOSITORY, "ready-for-agent"),
+            "kestrel",
+            "builder",
+            &support::templates(support::BRIEF, None, Some(correlation)),
+        )
+        .await;
+    harness
+        .register_integration(
+            "acme",
+            "github",
+            REPOSITORY,
+            &stub.base_url(),
+            &[Direction::Inbound],
+            SignedDuration::from_millis(1),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn a_continuation_opened_by_a_comment_holds_the_sealed_sessions_correlation() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(
+        7,
+        ISSUE,
+        "ready-for-agent",
+    )]));
+    let harness = Harness::boot().await;
+    watching_correlated(&harness, &stub, "{{ event.source }}{{ event.subject }}").await;
+    let sealed = sessions(&harness, 1).await.remove(0);
+    let first = harness
+        .claim_run()
+        .await
+        .expect("the first run should claim")
+        .run;
+    harness.complete_run(&first).await;
+    harness.seal_session(sealed.id).await;
+
+    stub.script_answer(
+        "GET",
+        COMMENTS,
+        github_stub::page(&[github_stub::issue_comment(
+            12,
+            ISSUE,
+            "jack",
+            "continue after the seal",
+        )]),
+    );
+    let opened = sessions(&harness, 2).await;
+    let continuation = opened
+        .iter()
+        .find(|session| session.id != sealed.id)
+        .expect("a continuation should open");
+
+    assert!(sealed.correlation.is_some());
+    assert_eq!(continuation.correlation, sealed.correlation);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_comment_on_a_sealed_session_feeds_the_open_one_holding_its_correlation() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(
+        7,
+        ISSUE,
+        "ready-for-agent",
+    )]));
+    let harness = Harness::boot().await;
+    watching_correlated(&harness, &stub, "the release").await;
+    let sealed = sessions(&harness, 1).await.remove(0);
+    let first = harness
+        .claim_run()
+        .await
+        .expect("the first run should claim")
+        .run;
+    harness.complete_run(&first).await;
+    harness.seal_session(sealed.id).await;
+
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[github_stub::labelled(8, ISSUE + 1, "ready-for-agent")]),
+    );
+    let holding = sessions(&harness, 2)
+        .await
+        .into_iter()
+        .find(|session| session.id != sealed.id)
+        .expect("the second label should continue the sealed session");
+    stub.script_answer(
+        "GET",
+        COMMENTS,
+        github_stub::page(&[github_stub::issue_comment(
+            12,
+            ISSUE,
+            "jack",
+            "about the release",
+        )]),
+    );
+
+    message_arrived(&harness, holding.id, "about the release").await;
+    assert_eq!(harness.sessions("acme").await.len(), 2);
+
+    harness.teardown().await;
+}
