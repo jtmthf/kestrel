@@ -8,13 +8,13 @@ use tracing::warn;
 
 use crate::domain::{Direction, Exit, Integration, Outcome, Run, RunId, Session};
 use crate::integration::back_off;
-use crate::integration::github::{Github, Refused};
+use crate::integration::github::{Github, MARKER, Refused};
 use crate::store::{Store, Tx};
 
 /// Invisible where GitHub renders it, and the whole of how a delivery that never learned
 /// whether its comment landed recognises its own.
 fn marker(run: RunId) -> String {
-    format!("<!-- kestrel run {run} -->")
+    format!("{MARKER}{run} -->")
 }
 
 pub(crate) async fn record(
@@ -111,7 +111,7 @@ async fn deferred(
 
     let mut tx = store.begin().await?;
     tx.integrations()
-        .outcome_deferred(outcome, back_off(integration, refused))
+        .outcome_deferred(outcome, back_off(integration.github()?.interval, refused))
         .await?;
     tx.commit().await?;
 

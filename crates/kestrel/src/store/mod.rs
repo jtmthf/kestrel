@@ -96,7 +96,7 @@ impl Tx<'_> {
     }
 
     pub fn integrations(&mut self) -> Integrations<'_> {
-        Integrations::over(&mut self.transaction)
+        Integrations::over(&mut self.transaction, self.keyring)
     }
 
     pub fn triggers(&mut self) -> Triggers<'_> {

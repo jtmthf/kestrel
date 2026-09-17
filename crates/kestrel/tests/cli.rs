@@ -1173,6 +1173,30 @@ fn the_cli_registers_an_integration_with_a_credential_and_lists_what_it_carries(
 }
 
 #[test]
+fn the_cli_registers_a_webhook_and_lists_where_it_is_delivered_to() {
+    let kestrel = Kestrel::new();
+    kestrel.run(&["organization", "declare", "acme"]);
+
+    let id = kestrel.run(&[
+        "integration",
+        "register",
+        "webhook",
+        "ci",
+        "--organization",
+        "acme",
+        "--secret",
+        "a-shared-secret",
+    ]);
+
+    let listed = kestrel.run(&["integration", "list", "--organization", "acme"]);
+    assert_eq!(
+        listed,
+        format!("{id}  ci  webhook  -  inbound  at /webhooks/{id}")
+    );
+    assert!(!listed.contains("a-shared-secret"));
+}
+
+#[test]
 fn an_integration_carries_only_the_directions_it_was_registered_with() {
     let kestrel = Kestrel::new();
     let stub = GithubStub::start();

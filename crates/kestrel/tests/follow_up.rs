@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use jiff::SignedDuration;
 use kestrel::domain::{
-    Direction, Integration, IntegrationId, IntegrationKind, OrganizationId, Run, RunId, RunState,
+    Connection, Direction, GithubConnection, Integration, IntegrationId, OrganizationId, Run,
+    RunId, RunState,
 };
 use kestrel::integration::credential::Token;
 use kestrel::integration::github::Github;
@@ -466,12 +467,14 @@ async fn a_comment_backlog_larger_than_ten_pages_loses_nothing() {
         id: IntegrationId::generate(),
         organization: OrganizationId::generate(),
         name: "github".to_owned(),
-        kind: IntegrationKind::Github,
-        repository: REPOSITORY.to_owned(),
-        api: stub.base_url(),
-        credential: Token::held("not-a-secret"),
+        connection: Connection::Github(GithubConnection {
+            repository: REPOSITORY.to_owned(),
+            api: stub.base_url(),
+            credential: Token::held("not-a-secret"),
+            interval: SignedDuration::from_secs(1),
+            signed: false,
+        }),
         carries: vec![Direction::Inbound],
-        interval: SignedDuration::from_secs(1),
         poll_due_at: None,
         polled_through: None,
         comments_polled_through: Some(99),

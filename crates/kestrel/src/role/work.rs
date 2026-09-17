@@ -49,12 +49,13 @@ enum Ended {
 pub async fn run(
     store: Store,
     dispatch: Option<Dispatch>,
+    wake: timer::Wake,
     shutdown: CancellationToken,
 ) -> Result<()> {
     info!(role = %Role::Work, "role started");
 
     tokio::try_join!(
-        timer::sweeping(&store, &shutdown),
+        timer::sweeping(&store, &wake, &shutdown),
         // A work role with nowhere to run a Run claims none: claiming one it cannot dispatch
         // would spend the Run's one dispatch on nothing.
         async {

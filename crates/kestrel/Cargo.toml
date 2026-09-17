@@ -18,6 +18,7 @@ clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
 futures-core = "0.3"
 getrandom = { version = "0.4", features = ["std"] }
+hmac = "0.13"
 jiff = { version = "0.2", features = ["serde"] }
 libc = "0.2"
 minijinja = { version = "2.24", features = ["fuel"] }

@@ -36,12 +36,12 @@ pub async fn run(cli: &Cli, shutdown: CancellationToken) -> anyhow::Result<()> {
             all_in_one.run(Some(dispatch), shutdown).await
         }
         Selection::Serve => {
-            let listening = role::serve::bind(store, cli.listen).await?;
+            let listening = role::serve::bind(store, cli.listen, timer::Wake::default()).await?;
             role::serve::run(listening, shutdown).await
         }
         Selection::Work => {
             let dispatch = cli.dispatch(cli.listen)?;
-            role::work::run(store, Some(dispatch), shutdown).await
+            role::work::run(store, Some(dispatch), timer::Wake::default(), shutdown).await
         }
         Selection::Cli(command) => role::cli::run(command, store).await,
     }

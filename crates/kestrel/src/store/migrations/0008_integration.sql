@@ -2,13 +2,15 @@ CREATE TABLE integration (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organization (id),
     name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    repository TEXT NOT NULL,
-    api TEXT NOT NULL,
-    credential TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('github', 'webhook')),
+    repository TEXT,
+    api TEXT,
+    credential TEXT,
     inbound INTEGER NOT NULL,
     outbound INTEGER NOT NULL,
-    interval_ms INTEGER NOT NULL,
+    interval_ms INTEGER,
+    signing_secret TEXT,
+    shared_secret_digest TEXT,
     poll_due_at TEXT,
     polled_through INTEGER,
     last_event_refusal_source TEXT,
@@ -17,7 +19,11 @@ CREATE TABLE integration (
     last_event_refusal_reason TEXT,
     last_event_refusal_at TEXT,
     registered_at TEXT NOT NULL,
-    UNIQUE (organization_id, name)
+    UNIQUE (organization_id, name),
+    CHECK ((kind = 'github') = (repository IS NOT NULL AND api IS NOT NULL
+                                AND credential IS NOT NULL AND interval_ms IS NOT NULL)),
+    CHECK (kind = 'github' OR signing_secret IS NULL),
+    CHECK ((kind = 'webhook') = (shared_secret_digest IS NOT NULL))
 ) STRICT;
 
 CREATE INDEX integration_poll_due ON integration (poll_due_at) WHERE poll_due_at IS NOT NULL;

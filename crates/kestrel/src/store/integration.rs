@@ -4,10 +4,13 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
 use crate::domain::{
-    Direction, Event, EventRecordId, EventRefusal, Integration, IntegrationId, IntegrationKind,
-    Occurrence, Organization, Outcome, Run, Session,
+    Connection, Direction, Event, EventRecordId, EventRefusal, GithubConnection, Integration,
+    IntegrationId, IntegrationKind, Occurrence, Organization, Outcome, Run, Session,
 };
 use crate::integration::credential::Token;
+use crate::integration::webhook::Verifier;
+use crate::keyring::Keyring;
+use crate::link::credential::Secret;
 use crate::store::{due, session, timestamp};
 
 /// The largest payload an Event may carry. An event stream is systems kestrel does not
@@ -24,7 +27,8 @@ macro_rules! integrations_where {
     ($tail:literal) => {
         concat!(
             "SELECT id, organization_id, name, kind, repository, api, credential, inbound,
-                    outbound, interval_ms, poll_due_at, polled_through, comments_polled_through,
+                    outbound, interval_ms, signing_secret IS NOT NULL AS signed, poll_due_at,
+                    polled_through, comments_polled_through,
                     last_event_refusal_source, last_event_refusal_id, last_event_refusal_bytes,
                     last_event_refusal_reason, last_event_refusal_at
              FROM integration
@@ -36,63 +40,76 @@ macro_rules! integrations_where {
 
 pub struct Integrations<'a> {
     connection: &'a mut SqliteConnection,
+    keyring: &'a Keyring,
 }
 
 impl<'a> Integrations<'a> {
-    pub(crate) fn over(connection: &'a mut SqliteConnection) -> Self {
-        Self { connection }
+    pub(crate) fn over(connection: &'a mut SqliteConnection, keyring: &'a Keyring) -> Self {
+        Self {
+            connection,
+            keyring,
+        }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "an integration is what it is declared with"
-    )]
+    /// `webhook_secret` is sealed for a GitHub Integration, which signs with it, and digested
+    /// for a generic one, whose sender presents it.
     pub async fn register(
         &mut self,
         organization: &Organization,
         name: &str,
-        kind: IntegrationKind,
-        repository: &str,
-        api: &str,
-        credential: &Token,
+        connection: Connection,
         carries: &[Direction],
-        interval: SignedDuration,
+        webhook_secret: Option<&str>,
     ) -> Result<Integration> {
-        let inbound = carries.contains(&Direction::Inbound);
+        let polled = matches!(&connection, Connection::Github(github) if !github.signed)
+            && carries.contains(&Direction::Inbound);
         let integration = Integration {
             id: IntegrationId::generate(),
             organization: organization.id,
             name: name.to_owned(),
-            kind,
-            repository: repository.to_owned(),
-            api: api.to_owned(),
-            credential: credential.clone(),
+            connection,
             carries: carries.to_vec(),
-            interval,
             // Due the moment it is registered, so an operator who registers one sees what is
             // on the repository rather than waiting an interval to find out.
-            poll_due_at: inbound.then(Timestamp::now),
+            poll_due_at: polled.then(Timestamp::now),
             polled_through: None,
             comments_polled_through: None,
             last_event_refusal: None,
+        };
+        let github = integration.github().ok();
+        let (signing_secret, shared_secret_digest) = match (&integration.connection, webhook_secret)
+        {
+            (_, None) => (None, None),
+            (Connection::Github(_), Some(secret)) => (
+                Some(self.keyring.seal(&bound_to(integration.id), secret)?),
+                None,
+            ),
+            (Connection::Webhook, Some(secret)) => (None, Some(Secret::presented(secret).digest())),
         };
 
         sqlx::query(
             "INSERT INTO integration
                  (id, organization_id, name, kind, repository, api, credential, inbound,
-                  outbound, interval_ms, poll_due_at, registered_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  outbound, interval_ms, signing_secret, shared_secret_digest, poll_due_at,
+                  registered_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(integration.id.to_string())
         .bind(integration.organization.to_string())
         .bind(&integration.name)
-        .bind(integration.kind.as_str())
-        .bind(&integration.repository)
-        .bind(&integration.api)
-        .bind(credential.presented_to_the_external_system())
-        .bind(inbound)
+        .bind(integration.kind().as_str())
+        .bind(github.map(|github| &github.repository))
+        .bind(github.map(|github| &github.api))
+        .bind(github.map(|github| github.credential.presented_to_the_external_system()))
+        .bind(carries.contains(&Direction::Inbound))
         .bind(carries.contains(&Direction::Outbound))
-        .bind(i64::try_from(interval.as_millis())?)
+        .bind(
+            github
+                .map(|github| i64::try_from(github.interval.as_millis()))
+                .transpose()?,
+        )
+        .bind(signing_secret)
+        .bind(shared_secret_digest)
         .bind(integration.poll_due_at.map(due))
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.connection)
@@ -100,6 +117,34 @@ impl<'a> Integrations<'a> {
         .with_context(|| format!("registering the integration {name}"))?;
 
         Ok(integration)
+    }
+
+    /// The one place a GitHub signing secret is decrypted.
+    pub async fn verifier(&mut self, integration: &Integration) -> Result<Option<Verifier>> {
+        let row = sqlx::query(
+            "SELECT signing_secret, shared_secret_digest FROM integration WHERE id = ?",
+        )
+        .bind(integration.id.to_string())
+        .fetch_one(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading how integration {} is verified", integration.name))?;
+
+        if let Some(sealed) = row.get::<Option<String>, _>("signing_secret") {
+            return Ok(Some(Verifier::Signing(
+                self.keyring
+                    .unseal(&bound_to(integration.id), &sealed)
+                    .with_context(|| {
+                        format!(
+                            "opening the signing secret of integration {}",
+                            integration.name
+                        )
+                    })?,
+            )));
+        }
+
+        Ok(row
+            .get::<Option<String>, _>("shared_secret_digest")
+            .map(|digest| Verifier::Shared { digest }))
     }
 
     pub async fn all(&mut self, organization: &Organization) -> Result<Vec<Integration>> {
@@ -135,6 +180,16 @@ impl<'a> Integrations<'a> {
             .with_context(|| format!("no integration {id}"))?;
 
         integration(&row)
+    }
+
+    pub async fn find(&mut self, id: IntegrationId) -> Result<Option<Integration>> {
+        sqlx::query(integrations_where!("id = ?"))
+            .bind(id.to_string())
+            .fetch_optional(&mut *self.connection)
+            .await?
+            .as_ref()
+            .map(integration)
+            .transpose()
     }
 
     pub async fn named(&mut self, organization: &Organization, name: &str) -> Result<Integration> {
@@ -507,6 +562,12 @@ pub(crate) async fn event_with_id(
     event(&row)
 }
 
+/// What a sealed signing secret is authenticated against, so one moved to another
+/// integration's row no longer opens.
+fn bound_to(integration: IntegrationId) -> String {
+    format!("integration/{integration}")
+}
+
 fn integration(row: &SqliteRow) -> Result<Integration> {
     let mut carries = Vec::new();
     if row.get::<bool, _>("inbound") {
@@ -516,16 +577,23 @@ fn integration(row: &SqliteRow) -> Result<Integration> {
         carries.push(Direction::Outbound);
     }
 
+    let connection = match row.get::<String, _>("kind").parse()? {
+        IntegrationKind::Github => Connection::Github(GithubConnection {
+            repository: row.get("repository"),
+            api: row.get("api"),
+            credential: Token::held(row.get("credential")),
+            interval: SignedDuration::from_millis(row.get("interval_ms")),
+            signed: row.get("signed"),
+        }),
+        IntegrationKind::Webhook => Connection::Webhook,
+    };
+
     Ok(Integration {
         id: row.get::<String, _>("id").parse()?,
         organization: row.get::<String, _>("organization_id").parse()?,
         name: row.get("name"),
-        kind: row.get::<String, _>("kind").parse()?,
-        repository: row.get("repository"),
-        api: row.get("api"),
-        credential: Token::held(row.get("credential")),
+        connection,
         carries,
-        interval: SignedDuration::from_millis(row.get("interval_ms")),
         poll_due_at: timestamp(row, "poll_due_at")?,
         polled_through: row.get("polled_through"),
         comments_polled_through: row.get("comments_polled_through"),

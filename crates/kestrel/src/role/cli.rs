@@ -8,8 +8,8 @@ use crate::cli::{
     OrganizationCommand, RegisterCommand, RunCommand, SessionCommand, TriggerCommand,
     WorkspaceCommand,
 };
-use crate::domain::{Direction, IntegrationKind, Templates};
-use crate::integration::{self, Registration};
+use crate::domain::{Connection, Direction, Templates};
+use crate::integration::{self, Connecting, Registration};
 use crate::log::Window;
 use crate::provider;
 use crate::session;
@@ -202,6 +202,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             token,
             carries,
             interval,
+            webhook_secret,
             api,
         })) => {
             let integration = integration::register(
@@ -209,12 +210,31 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 Registration {
                     organization,
                     name,
-                    kind: IntegrationKind::Github,
-                    repository,
-                    api,
-                    token,
                     carries,
-                    interval: *interval,
+                    connecting: Connecting::Github {
+                        repository,
+                        api,
+                        token,
+                        interval: *interval,
+                        signing_secret: webhook_secret.as_deref(),
+                    },
+                },
+            )
+            .await?;
+            println!("{}", integration.id);
+        }
+        CliCommand::Integration(IntegrationCommand::Register(RegisterCommand::Webhook {
+            name,
+            organization,
+            secret,
+        })) => {
+            let integration = integration::register(
+                &store,
+                Registration {
+                    organization,
+                    name,
+                    carries: &[Direction::Inbound],
+                    connecting: Connecting::Webhook { secret },
                 },
             )
             .await?;
@@ -222,12 +242,23 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
         }
         CliCommand::Integration(IntegrationCommand::List { organization }) => {
             for integration in integration::integrations(&store, organization).await? {
+                let (watching, receiving) = match &integration.connection {
+                    Connection::Github(github) if github.signed => (
+                        github.repository.as_str(),
+                        format!("at {}", integration.webhook_path()),
+                    ),
+                    Connection::Github(github) => (
+                        github.repository.as_str(),
+                        format!("every {:#}", github.interval),
+                    ),
+                    Connection::Webhook => ("-", format!("at {}", integration.webhook_path())),
+                };
                 println!(
-                    "{}  {}  {}  {}  {}  every {:#}",
+                    "{}  {}  {}  {}  {}  {}",
                     integration.id,
                     integration.name,
-                    integration.kind,
-                    integration.repository,
+                    integration.kind(),
+                    watching,
                     integration
                         .carries
                         .iter()
@@ -235,7 +266,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                         .map(Direction::as_str)
                         .collect::<Vec<_>>()
                         .join(","),
-                    integration.interval
+                    receiving
                 );
                 if let Some(refusal) = integration.last_event_refusal {
                     println!(
