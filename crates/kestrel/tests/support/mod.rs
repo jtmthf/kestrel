@@ -30,8 +30,8 @@ use jiff::{SignedDuration, Timestamp};
 use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
-    Agent, CorrelationMiss, Direction, Event, EventRecordId, Integration, Organization, Run, RunId,
-    Session, SessionId, Templates, Trigger, Workspace,
+    Agent, CorrelationMiss, Direction, Event, EventRecordId, Fires, Integration, Occurrence,
+    Organization, Run, RunId, Session, SessionId, Templates, Trigger, Workspace,
 };
 use kestrel::integration::{self, Connecting, Registration};
 use kestrel::link::credential::Secret;
@@ -493,7 +493,7 @@ impl Harness {
             Declaration {
                 organization,
                 name,
-                filter: &filter.parse().expect("the filter should parse"),
+                fires: &Fires::On(filter.parse().expect("the filter should parse")),
                 templates,
                 on_miss,
                 workspace,
@@ -520,7 +520,53 @@ impl Harness {
         name: &str,
         event: EventRecordId,
     ) -> anyhow::Result<Tested> {
-        trigger::test(&self.store, organization, name, event).await
+        trigger::test(&self.store, organization, name, Some(event)).await
+    }
+
+    pub async fn try_declare_scheduled_trigger(
+        &self,
+        organization: &str,
+        name: &str,
+        every: SignedDuration,
+        templates: &Templates,
+    ) -> anyhow::Result<Trigger> {
+        trigger::declare(
+            &self.store,
+            Declaration {
+                organization,
+                name,
+                fires: &Fires::Every(every),
+                templates,
+                on_miss: templates
+                    .correlation
+                    .is_some()
+                    .then_some(CorrelationMiss::Open),
+                workspace: "kestrel",
+                agent: "builder",
+            },
+        )
+        .await
+    }
+
+    pub async fn test_scheduled_trigger(&self, organization: &str, name: &str) -> Tested {
+        self.try_test_trigger_naming_no_event(organization, name)
+            .await
+            .expect("the trigger should test against its next elapsing")
+    }
+
+    pub async fn try_test_trigger_naming_no_event(
+        &self,
+        organization: &str,
+        name: &str,
+    ) -> anyhow::Result<Tested> {
+        trigger::test(&self.store, organization, name, None).await
+    }
+
+    /// Stands in for the wheel reaching `at`, which a test cannot wait for.
+    pub async fn elapse(&self, at: Timestamp) -> Vec<Occurrence> {
+        trigger::elapse(&self.store, at)
+            .await
+            .expect("the due schedules should elapse")
     }
 
     pub async fn triggers(&self, organization: &str) -> Vec<Trigger> {

@@ -5,7 +5,8 @@ use sqlx::{Row, SqliteConnection};
 
 use crate::domain::{
     Connection, Direction, Event, EventRecordId, EventRefusal, GithubConnection, Integration,
-    IntegrationId, IntegrationKind, Occurrence, Organization, Outcome, Run, Session,
+    IntegrationId, IntegrationKind, Occurrence, Organization, OrganizationId, Outcome, Run,
+    Session,
 };
 use crate::integration::credential::Token;
 use crate::integration::webhook::Verifier;
@@ -248,38 +249,24 @@ impl<'a> Integrations<'a> {
             return Ok(Recorded::Refused { because: reason });
         }
 
-        let recorded = sqlx::query(
-            "INSERT INTO event
-                 (record_id, organization_id, integration_id, id, source, specversion, type,
-                  subject, time, data, recorded_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT (organization_id, source, id) DO NOTHING",
+        insert_event(
+            self.connection,
+            integration.organization,
+            Some(integration.id),
+            occurrence,
+            &data,
         )
-        .bind(EventRecordId::generate().to_string())
-        .bind(integration.organization.to_string())
-        .bind(integration.id.to_string())
-        .bind(&occurrence.id)
-        .bind(&occurrence.source)
-        .bind(&occurrence.specversion)
-        .bind(&occurrence.r#type)
-        .bind(occurrence.subject.as_deref())
-        .bind(occurrence.time.to_string())
-        .bind(&data)
-        .bind(Timestamp::now().to_string())
-        .execute(&mut *self.connection)
         .await
-        .with_context(|| {
-            format!(
-                "recording the event {} on {}",
-                occurrence.id, occurrence.source
-            )
-        })?;
+    }
 
-        Ok(if recorded.rows_affected() > 0 {
-            Recorded::Recorded
-        } else {
-            Recorded::Already
-        })
+    /// Carries no Integration and so none of an Integration's refusals: kestrel is the producer.
+    pub async fn record_minted(
+        &mut self,
+        organization: &Organization,
+        occurrence: &Occurrence,
+    ) -> Result<Recorded> {
+        let data = serde_json::to_string(&occurrence.data)?;
+        insert_event(self.connection, organization.id, None, occurrence, &data).await
     }
 
     pub async fn acknowledge_event_refusal(&mut self, integration: &Integration) -> Result<()> {
@@ -410,7 +397,7 @@ impl<'a> Integrations<'a> {
              LIMIT 1",
         )
         .bind(event.organization.to_string())
-        .bind(event.integration.to_string())
+        .bind(event.integration.map(|integration| integration.to_string()))
         .bind(&event.occurrence.source)
         .bind(event.occurrence.subject.as_deref())
         .bind(event.occurrence.time.to_string())
@@ -562,6 +549,47 @@ pub(crate) async fn event_with_id(
     event(&row)
 }
 
+async fn insert_event(
+    connection: &mut SqliteConnection,
+    organization: OrganizationId,
+    integration: Option<IntegrationId>,
+    occurrence: &Occurrence,
+    data: &str,
+) -> Result<Recorded> {
+    let recorded = sqlx::query(
+        "INSERT INTO event
+             (record_id, organization_id, integration_id, id, source, specversion, type,
+              subject, time, data, recorded_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (organization_id, source, id) DO NOTHING",
+    )
+    .bind(EventRecordId::generate().to_string())
+    .bind(organization.to_string())
+    .bind(integration.map(|integration| integration.to_string()))
+    .bind(&occurrence.id)
+    .bind(&occurrence.source)
+    .bind(&occurrence.specversion)
+    .bind(&occurrence.r#type)
+    .bind(occurrence.subject.as_deref())
+    .bind(occurrence.time.to_string())
+    .bind(data)
+    .bind(Timestamp::now().to_string())
+    .execute(connection)
+    .await
+    .with_context(|| {
+        format!(
+            "recording the event {} on {}",
+            occurrence.id, occurrence.source
+        )
+    })?;
+
+    Ok(if recorded.rows_affected() > 0 {
+        Recorded::Recorded
+    } else {
+        Recorded::Already
+    })
+}
+
 /// What a sealed signing secret is authenticated against, so one moved to another
 /// integration's row no longer opens.
 fn bound_to(integration: IntegrationId) -> String {
@@ -627,7 +655,10 @@ fn event(row: &SqliteRow) -> Result<Event> {
     Ok(Event {
         record_id: row.get::<String, _>("record_id").parse()?,
         organization: row.get::<String, _>("organization_id").parse()?,
-        integration: row.get::<String, _>("integration_id").parse()?,
+        integration: row
+            .get::<Option<String>, _>("integration_id")
+            .map(|integration| integration.parse())
+            .transpose()?,
         occurrence: Occurrence {
             id: row.get("id"),
             source: row.get("source"),

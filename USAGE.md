@@ -457,6 +457,47 @@ Each Trigger has a budget of ten firings per hour. The firing that would exceed 
 without opening a Session, and disables only that Trigger. `kestrel trigger show` names the reason;
 an operator must explicitly enable it again, which starts its budget afresh.
 
+### A trigger on a schedule
+
+Some work has no event to start it: a weekly dependency sweep, a nightly triage pass. A trigger can
+declare a schedule in place of a filter, and not both:
+
+```sh
+kestrel trigger declare sweep \
+  --organization acme \
+  --every 24h \
+  --brief 'Sweep the backlog for stale issues as of {{ event.time }}' \
+  --branch 'kestrel/sweep-{{ event.id[:10] }}' \
+  --workspace kestrel \
+  --agent builder
+```
+
+Each time the schedule elapses, counting from the declaration, kestrel mints an event of its own and
+records it like any other, with no integration: `type` is `dev.kestrel.schedule.elapsed`, `source`
+is `urn:kestrel:trigger:<trigger id>`, `id` and `time` are the moment it was due, and `data` holds
+the trigger's name and interval. The trigger then fires for it on the same path a matched event
+takes, so the brief renders from `event`, the session's first entry is that brief, and the
+firing budget applies. A schedule that would exceed the budget is refused when you declare it, so
+nothing shorter than six minutes is accepted. Elapsings missed while kestrel was down fire once, not
+once each, and a disabled trigger's schedule does not elapse at all. A session opened this way has no
+issue to report to, so its outcome goes nowhere.
+
+`trigger test` needs no event for a scheduled trigger. Given none, it renders against the event the
+next elapsing would mint, and says when that is due:
+
+```sh
+kestrel trigger test sweep --organization acme
+```
+
+```
+matches
+elapsing      2026-09-17T14:02:03.118Z
+branch        kestrel/sweep-2026-09-17
+correlation   -
+
+Sweep the backlog for stale issues as of 2026-09-17T14:02:03.118Z
+```
+
 ## The answer comes back to the issue
 
 An integration carries kestrel's requests outbound as well as events inbound, and the one you
@@ -505,8 +546,8 @@ Pass `--as-participant NAME` to record a name other than `operator` in the trans
 
 Three things you will meet following this document.
 
-**Only GitHub hears back.** A generic webhook starts work but has nowhere to say how it went, no
-Slack message or schedule starts anything, and nothing decides which of several queued runs goes
+**Only GitHub hears back.** A generic webhook or a schedule starts work but has nowhere to say how
+it went, no Slack message starts anything, and nothing decides which of several queued runs goes
 first.
 
 **A failed run is not retried.** kestrel retries dispatch and never work: a run that started and

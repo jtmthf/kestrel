@@ -28,7 +28,10 @@ pub(crate) async fn record(
     };
 
     let event = tx.integrations().event(started_by).await?;
-    let integration = tx.integrations().with_id(event.integration).await?;
+    let Some(integration) = event.integration else {
+        return Ok(());
+    };
+    let integration = tx.integrations().with_id(integration).await?;
     if !integration.carries(Direction::Outbound) {
         warn!(
             integration = integration.name,

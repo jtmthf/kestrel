@@ -103,7 +103,7 @@ async fn a_binary_cloudevent_is_recorded_as_its_sender_named_it() {
     );
     assert_eq!(event.occurrence.r#type, "com.example.build.failed");
     assert_eq!(event.occurrence.data, serde_json::json!({"step": "test"}));
-    assert_eq!(event.integration, webhook.id);
+    assert_eq!(event.integration, Some(webhook.id));
 
     harness.teardown().await;
 }

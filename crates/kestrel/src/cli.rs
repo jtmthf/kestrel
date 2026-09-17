@@ -205,8 +205,12 @@ pub enum TriggerCommand {
         /// The Events it matches: a CloudEvents filter of exact, prefix, suffix, all, any and
         /// not over id, source, specversion, type, subject and time, which kestrel extends to
         /// reach into data.<path>
-        #[arg(long, value_name = "JSON")]
-        filter: Filter,
+        #[arg(long, value_name = "JSON", required_unless_present = "every")]
+        filter: Option<Filter>,
+        /// Fire on a schedule in place of a filter: each time this long elapses, starting from
+        /// the declaration, kestrel mints a `dev.kestrel.schedule.elapsed` Event and fires on it
+        #[arg(long, value_name = "DURATION", conflicts_with = "filter")]
+        every: Option<SignedDuration>,
         /// The Brief a firing hands its Session: a minijinja template over `event`, in which
         /// anything undefined is an error rather than nothing
         #[arg(long, value_name = "TEMPLATE")]
@@ -236,9 +240,10 @@ pub enum TriggerCommand {
         name: String,
         #[arg(long)]
         organization: String,
-        /// The Event's record, as `event list` prints it
+        /// The Event's record, as `event list` prints it; a scheduled Trigger without one is
+        /// tested against the Event its next elapsing would mint
         #[arg(long, value_name = "RECORD")]
-        event: EventRecordId,
+        event: Option<EventRecordId>,
     },
     /// List every Trigger in an Organization, and what each matches
     List {
@@ -637,6 +642,35 @@ mod tests {
             *command,
             CliCommand::Run(RunCommand::Enqueue { model: Some(model), .. }) if model == "scripted-max"
         ));
+    }
+
+    fn declaring(fires: &[&str]) -> Result<Cli, clap::Error> {
+        let mut argv = vec![
+            "kestrel",
+            "trigger",
+            "declare",
+            "sweep",
+            "--organization",
+            "acme",
+            "--brief",
+            "Sweep the backlog",
+            "--workspace",
+            "kestrel",
+            "--agent",
+            "builder",
+        ];
+        argv.extend_from_slice(fires);
+        Cli::try_parse_from(argv)
+    }
+
+    #[test]
+    fn a_trigger_declares_a_filter_or_a_schedule_and_not_both() {
+        let filter = r#"{"exact": {"type": "com.github.issues.labeled"}}"#;
+
+        assert!(declaring(&["--filter", filter]).is_ok());
+        assert!(declaring(&["--every", "1h"]).is_ok());
+        assert!(declaring(&["--filter", filter, "--every", "1h"]).is_err());
+        assert!(declaring(&[]).is_err());
     }
 
     #[test]

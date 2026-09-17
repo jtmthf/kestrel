@@ -783,7 +783,7 @@ async fn a_trigger_is_named_listed_and_disabled() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "ready");
     assert_eq!(
-        listed[0].filter.to_string(),
+        listed[0].fires.to_string(),
         r#"source = "https://github.com/jtmthf/kestrel" and type = "com.github.issues.labeled" and data.label.name = "ready-for-agent""#
     );
     assert_eq!(listed[0].workspace.name, "kestrel");
@@ -1069,6 +1069,190 @@ async fn a_brief_that_cannot_render_fails_naming_the_trigger_and_the_event() {
         failure.contains("undefined value"),
         "the failure does not say why: {failure}"
     );
+
+    harness.teardown().await;
+}
+
+async fn hourly(harness: &Harness, brief: &str) -> kestrel::domain::Trigger {
+    harness
+        .try_declare_scheduled_trigger(
+            "acme",
+            "sweep",
+            SignedDuration::from_hours(1),
+            &templates(brief, Some("kestrel/sweep-{{ event.id[:13] }}"), None),
+        )
+        .await
+        .expect("an hourly schedule should declare")
+}
+
+#[tokio::test]
+async fn a_schedule_elapsing_opens_a_session_the_way_a_matched_event_does() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let trigger = hourly(&harness, "Sweep the backlog for {{ event.data.trigger }}").await;
+
+    let minted = harness
+        .elapse(trigger.declared_at + SignedDuration::from_hours(1))
+        .await;
+    let session = opened(&harness, 1).await.remove(0);
+
+    assert_eq!(minted.len(), 1, "one schedule elapsed once");
+    let event = harness.events("acme").await.remove(0);
+    assert_eq!(event.integration, None, "kestrel minted it");
+    assert_eq!(
+        event.occurrence.source,
+        format!("urn:kestrel:trigger:{}", trigger.id)
+    );
+    assert_eq!(event.occurrence.r#type, "dev.kestrel.schedule.elapsed");
+    assert_eq!(
+        event.occurrence.time,
+        trigger.declared_at + SignedDuration::from_hours(1)
+    );
+    assert_eq!(session.started_by, Some(event.record_id));
+    assert_eq!(session.agent.name, "builder");
+    assert_eq!(
+        first_entry(&harness, &session).await,
+        Entry::Brief {
+            trigger: "sweep".to_owned(),
+            brief: "Sweep the backlog for sweep".to_owned(),
+        }
+    );
+    assert_eq!(harness.runs(session.id).await.len(), 1);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn elapsings_missed_while_nothing_swept_elapse_once() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let trigger = hourly(&harness, "Sweep the backlog").await;
+    let hours = |count| trigger.declared_at + SignedDuration::from_hours(count);
+
+    assert_eq!(harness.elapse(hours(5)).await.len(), 1);
+    assert!(
+        harness.elapse(hours(5)).await.is_empty(),
+        "the next elapsing is not due until the sixth hour"
+    );
+    let next = harness.elapse(hours(6)).await;
+
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].time, hours(6));
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_disabled_schedule_does_not_elapse() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let trigger = hourly(&harness, "Sweep the backlog").await;
+    harness.disable_trigger("acme", "sweep").await;
+
+    let minted = harness
+        .elapse(trigger.declared_at + SignedDuration::from_hours(3))
+        .await;
+
+    assert!(minted.is_empty());
+    assert!(harness.events("acme").await.is_empty());
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_schedule_faster_than_the_firing_budget_is_refused() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+
+    let refusal = harness
+        .try_declare_scheduled_trigger(
+            "acme",
+            "impatient",
+            SignedDuration::from_mins(1),
+            &templates("Sweep the backlog", None, None),
+        )
+        .await
+        .expect_err("a schedule that exhausts its budget should be refused");
+
+    assert!(
+        format!("{refusal:#}").contains("fire at most every 6m"),
+        "the refusal does not say what would do: {refusal:#}"
+    );
+    assert!(harness.triggers("acme").await.is_empty());
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_scheduled_trigger_is_tested_against_its_next_elapsing() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let trigger = hourly(&harness, "Sweep the backlog due {{ event.time }}").await;
+    let due = trigger.declared_at + SignedDuration::from_hours(1);
+
+    let tested = harness.test_scheduled_trigger("acme", "sweep").await;
+
+    assert!(tested.matches);
+    assert_eq!(tested.elapsing, Some(due));
+    let rendered = tested.rendered.expect("the brief should render");
+    assert_eq!(rendered.brief, format!("Sweep the backlog due {due}"));
+    assert_eq!(
+        rendered.branch,
+        format!("kestrel/sweep-{}", &due.to_string()[..13])
+    );
+    assert!(
+        harness.events("acme").await.is_empty(),
+        "a test records nothing"
+    );
+    assert!(harness.sessions("acme").await.is_empty());
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_scheduled_trigger_matches_what_its_own_schedule_minted_and_nothing_else() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let trigger = hourly(&harness, "Sweep the backlog").await;
+    harness
+        .elapse(trigger.declared_at + SignedDuration::from_hours(1))
+        .await;
+    watching(&harness, &stub).await;
+    let events = recorded(&harness, 2).await;
+    let (minted, labelled): (Vec<_>, Vec<_>) = events
+        .into_iter()
+        .partition(|event| event.integration.is_none());
+
+    assert!(
+        harness
+            .test_trigger("acme", "sweep", minted[0].record_id)
+            .await
+            .matches
+    );
+    assert!(
+        !harness
+            .test_trigger("acme", "sweep", labelled[0].record_id)
+            .await
+            .matches
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_trigger_that_fires_on_events_is_tested_against_a_named_one() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    ready_for_agent(&harness).await;
+
+    let refusal = harness
+        .try_test_trigger_naming_no_event("acme", "ready")
+        .await
+        .expect_err("a test of a matching trigger needs an event");
+
+    assert!(format!("{refusal:#}").contains("so a test names one"));
 
     harness.teardown().await;
 }

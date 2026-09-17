@@ -31,7 +31,8 @@ CREATE INDEX integration_poll_due ON integration (poll_due_at) WHERE poll_due_at
 CREATE TABLE event (
     record_id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organization (id),
-    integration_id TEXT NOT NULL REFERENCES integration (id),
+    -- NULL for an Event kestrel minted itself.
+    integration_id TEXT REFERENCES integration (id),
     id TEXT NOT NULL CHECK (id <> ''),
     source TEXT NOT NULL CHECK (source <> ''),
     specversion TEXT NOT NULL CHECK (specversion = '1.0'),
