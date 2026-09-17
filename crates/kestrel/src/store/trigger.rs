@@ -65,8 +65,8 @@ impl<'a> Triggers<'a> {
         sqlx::query(
             "INSERT INTO trigger
                  (id, organization_id, name, filter, brief, branch, correlation, on_miss, workspace_id,
-                  agent_id, state, applied, declared_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  agent_id, state, applied, enabled_at, declared_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
         .bind(organization.id.to_string())
@@ -80,6 +80,7 @@ impl<'a> Triggers<'a> {
         .bind(agent.id.to_string())
         .bind(trigger.state.as_str())
         .bind(applied)
+        .bind(trigger.declared_at.to_string())
         .bind(trigger.declared_at.to_string())
         .execute(&mut *self.connection)
         .await
@@ -173,12 +174,22 @@ impl<'a> Triggers<'a> {
     }
 
     pub async fn set_state(&mut self, trigger: &Trigger, state: TriggerState) -> Result<Trigger> {
-        sqlx::query("UPDATE trigger SET state = ? WHERE id = ?")
-            .bind(state.as_str())
-            .bind(trigger.id.to_string())
-            .execute(&mut *self.connection)
-            .await
-            .with_context(|| format!("changing whether the trigger {} fires", trigger.name))?;
+        let enabled = TriggerState::Enabled.as_str();
+        sqlx::query(
+            "UPDATE trigger
+             SET enabled_at = CASE WHEN ? = ? AND state <> ? THEN ? ELSE enabled_at END,
+                 state = ?
+             WHERE id = ?",
+        )
+        .bind(state.as_str())
+        .bind(enabled)
+        .bind(enabled)
+        .bind(Timestamp::now().to_string())
+        .bind(state.as_str())
+        .bind(trigger.id.to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("changing whether the trigger {} fires", trigger.name))?;
 
         let changed = Trigger {
             state,
@@ -207,9 +218,18 @@ impl<'a> Triggers<'a> {
         trigger: &Trigger,
         at: Timestamp,
     ) -> Result<bool> {
+        let enabled_at: Timestamp = sqlx::query("SELECT enabled_at FROM trigger WHERE id = ?")
+            .bind(trigger.id.to_string())
+            .fetch_one(&mut *self.connection)
+            .await
+            .with_context(|| format!("reading when trigger {} was enabled", trigger.name))?
+            .get::<String, _>("enabled_at")
+            .parse()?;
+        // Firings before an operator re-enabled the trigger would disable it again at once.
         let start = at
             .checked_sub(trigger.firing_budget.window)
-            .context("placing the start of a trigger's firing budget window")?;
+            .context("placing the start of a trigger's firing budget window")?
+            .max(enabled_at);
         let firings: i64 = sqlx::query(
             "SELECT COUNT(*) AS firings
              FROM firing

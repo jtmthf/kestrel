@@ -12,6 +12,7 @@ CREATE TABLE trigger (
     state TEXT NOT NULL,
     -- An apply removes only what an apply declared, never a one-off declared by flags.
     applied INTEGER NOT NULL CHECK (applied IN (0, 1)),
+    enabled_at TEXT NOT NULL,
     declared_at TEXT NOT NULL,
     CHECK ((correlation IS NULL) = (on_miss IS NULL)),
     UNIQUE (organization_id, name)
