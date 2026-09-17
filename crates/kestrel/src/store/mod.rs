@@ -109,6 +109,11 @@ impl Tx<'_> {
     }
 }
 
+pub struct Declared<T> {
+    pub record: T,
+    pub created: bool,
+}
+
 /// A due time is the one timestamp SQL compares rather than reads back, and at the precision
 /// jiff prints by default a whole second sorts after the fractions of it.
 fn due(at: Timestamp) -> String {
@@ -132,7 +137,7 @@ mod tests {
 
     async fn declared(store: &Store) -> (Organization, Workspace, Agent) {
         let mut tx = store.begin().await.unwrap();
-        let organization = tx.organizations().declare("acme").await.unwrap();
+        let organization = tx.organizations().declare("acme").await.unwrap().record;
         let workspace = tx
             .workspaces()
             .declare(
@@ -142,12 +147,14 @@ mod tests {
                 "main",
             )
             .await
-            .unwrap();
+            .unwrap()
+            .record;
         let agent = tx
             .agents()
             .declare(&organization, "builder", "opencode", Some("claude-opus-5"))
             .await
-            .unwrap();
+            .unwrap()
+            .record;
         tx.commit().await.unwrap();
 
         (organization, workspace, agent)

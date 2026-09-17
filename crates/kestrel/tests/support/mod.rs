@@ -240,7 +240,8 @@ impl Harness {
             .organizations()
             .declare(name)
             .await
-            .expect("the organization should declare");
+            .expect("the organization should declare")
+            .record;
         tx.commit().await.expect("the declaration should commit");
         organization
     }
@@ -265,7 +266,8 @@ impl Harness {
             .workspaces()
             .declare(organization, name, repositories, branch)
             .await
-            .expect("the workspace should declare");
+            .expect("the workspace should declare")
+            .record;
         tx.commit().await.expect("the declaration should commit");
         workspace
     }
@@ -297,7 +299,9 @@ impl Harness {
         runtime: &str,
         model: Option<&str>,
     ) -> anyhow::Result<Agent> {
-        agent::declare(&self.store, &organization.name, name, runtime, model).await
+        agent::declare(&self.store, &organization.name, name, runtime, model)
+            .await
+            .map(|declared| declared.record)
     }
 
     pub async fn set_agent_model(
@@ -309,6 +313,16 @@ impl Harness {
         agent::set_model(&self.store, &organization.name, name, model)
             .await
             .expect("the model should change")
+    }
+
+    pub async fn advertised(&self, organization: &Organization, runtime: &str, models: &[&str]) {
+        let models: Vec<String> = models.iter().map(|&model| model.to_owned()).collect();
+        let mut tx = self.store.begin().await.expect("a transaction");
+        tx.agents()
+            .record_models_advertised(organization.id, runtime, &models)
+            .await
+            .expect("the models should record");
+        tx.commit().await.expect("the models should commit");
     }
 
     pub async fn agents(&self, organization: &Organization) -> Vec<Agent> {

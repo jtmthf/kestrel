@@ -46,7 +46,9 @@ a container, because that is where to look when something goes wrong.
 ## Declare what the work happens against
 
 Three declarations, in this order, because each needs the one before it. Each prints the identifier
-it created.
+of what it declared. A declaration describes what should exist, so running one again is safe: an
+unchanged one changes nothing, and a changed one updates the workspace or agent by that name in
+place, keeping its identifier.
 
 An **organization** is the outermost boundary. Every record kestrel keeps belongs to exactly one:
 

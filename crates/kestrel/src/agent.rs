@@ -1,10 +1,12 @@
 //! An Agent's model is configuration rather than a rebuild: declared, changed, and refused
 //! against what its Agent Runtime has been seen to advertise (ADR-0007).
 
-use anyhow::{Result, bail};
+use std::fmt;
+
+use anyhow::Result;
 
 use crate::domain::{Agent, Organization};
-use crate::store::{Store, Tx};
+use crate::store::{Declared, Store, Tx};
 
 pub async fn declare(
     store: &Store,
@@ -12,19 +14,19 @@ pub async fn declare(
     name: &str,
     runtime: &str,
     model: Option<&str>,
-) -> Result<Agent> {
+) -> Result<Declared<Agent>> {
     let model = names(model);
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
     advertised(&mut tx, &organization, runtime, model).await?;
 
-    let agent = tx
+    let declared = tx
         .agents()
         .declare(&organization, name, runtime, model)
         .await?;
     tx.commit().await?;
 
-    Ok(agent)
+    Ok(declared)
 }
 
 pub async fn set_model(
@@ -78,8 +80,31 @@ async fn advertised(
         return Ok(());
     }
 
-    bail!(
-        "the agent runtime {runtime} offers {}, and not {model}",
-        advertised.join(", ")
-    )
+    Err(NotOffered {
+        runtime: runtime.to_owned(),
+        model: model.to_owned(),
+        advertised,
+    }
+    .into())
 }
+
+#[derive(Debug)]
+pub struct NotOffered {
+    pub runtime: String,
+    pub model: String,
+    pub advertised: Vec<String>,
+}
+
+impl fmt::Display for NotOffered {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the agent runtime {} offers {}, and not {}",
+            self.runtime,
+            self.advertised.join(", "),
+            self.model
+        )
+    }
+}
+
+impl std::error::Error for NotOffered {}

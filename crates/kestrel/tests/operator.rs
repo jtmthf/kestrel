@@ -8,7 +8,7 @@ use kestrel::link;
 use kestrel::log::{Entry, Message};
 use kestrel::operator;
 use reqwest::StatusCode;
-use serde_json::Value;
+use serde_json::{Value, json};
 use support::Harness;
 use support::client::{self, Client};
 
@@ -52,6 +52,398 @@ fn seqs(lines: &[String]) -> Vec<i64> {
             entry["seq"].as_i64().expect("a seq")
         })
         .collect()
+}
+
+fn records(lines: &[String]) -> Vec<Value> {
+    lines
+        .iter()
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("{line} is not a record: {error}"))
+        })
+        .collect()
+}
+
+async fn client(harness: &Harness, args: &[&str]) -> client::Finished {
+    let operator = harness.operator();
+    let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
+
+    tokio::task::spawn_blocking(move || {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        client::ran(&operator, &args)
+    })
+    .await
+    .expect("the client should run")
+}
+
+fn succeeded(finished: &client::Finished) -> Vec<Value> {
+    assert!(
+        finished.status.success(),
+        "the client failed:\n{}",
+        finished.err
+    );
+    assert!(
+        finished.left_behind.is_empty(),
+        "the client wrote {:?} where it ran",
+        finished.left_behind
+    );
+    records(&finished.out)
+}
+
+/// Every answer is checked against what the published document says the operation answers.
+async fn declared(harness: &Harness, path: &str, declaration: &Value) -> (StatusCode, Value) {
+    let response = reqwest::Client::new()
+        .post(format!("{}{path}", harness.operator()))
+        .json(declaration)
+        .send()
+        .await
+        .expect("the operator boundary should answer");
+    let status = response.status();
+    let body: Value = response.json().await.expect("a JSON answer");
+
+    conforms(path, "post", status, &body);
+    (status, body)
+}
+
+async fn listed(harness: &Harness, path: &str) -> Vec<Value> {
+    let response = reqwest::Client::new()
+        .get(format!("{}{path}", harness.operator()))
+        .send()
+        .await
+        .expect("the operator boundary should answer");
+    let status = response.status();
+    let body: Value = response.json().await.expect("a JSON answer");
+
+    conforms(path, "get", status, &body);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body.as_array().expect("an array of records").clone()
+}
+
+fn workspaces_of(organization: &str) -> String {
+    operator::WORKSPACES.replace("{organization}", organization)
+}
+
+fn agents_of(organization: &str) -> String {
+    operator::AGENTS.replace("{organization}", organization)
+}
+
+#[tokio::test]
+async fn a_client_declares_and_lists_organizations_without_opening_a_database() {
+    let harness = Harness::boot().await;
+
+    let declared = succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    succeeded(&client(&harness, &["organization", "declare", "globex"]).await);
+    let listed = succeeded(&client(&harness, &["organization", "list"]).await);
+
+    assert_eq!(declared.len(), 1);
+    assert_eq!(declared[0]["name"], "acme");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|organization| organization["name"].as_str().expect("a name"))
+            .collect::<Vec<_>>(),
+        vec!["acme", "globex"]
+    );
+    assert_eq!(listed[0]["id"], declared[0]["id"]);
+    assert_eq!(
+        harness.organizations().await[0].id.to_string(),
+        declared[0]["id"].as_str().expect("an id")
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_client_declares_and_lists_workspaces_and_agents() {
+    let harness = Harness::boot().await;
+    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+
+    let workspace = succeeded(
+        &client(
+            &harness,
+            &[
+                "workspace",
+                "declare",
+                "kestrel",
+                "--organization",
+                "acme",
+                "--repository",
+                "https://github.com/jtmthf/kestrel",
+                "--repository",
+                "https://github.com/jtmthf/skills",
+                "--branch",
+                "main",
+            ],
+        )
+        .await,
+    );
+    let agent = succeeded(
+        &client(
+            &harness,
+            &[
+                "agent",
+                "declare",
+                "builder",
+                "--organization",
+                "acme",
+                "--model",
+                "claude-opus-5",
+            ],
+        )
+        .await,
+    );
+    let workspaces =
+        succeeded(&client(&harness, &["workspace", "list", "--organization", "acme"]).await);
+    let agents = succeeded(&client(&harness, &["agent", "list", "--organization", "acme"]).await);
+
+    assert_eq!(workspaces, workspace);
+    assert_eq!(
+        workspaces[0]["repositories"],
+        json!([
+            "https://github.com/jtmthf/kestrel",
+            "https://github.com/jtmthf/skills"
+        ])
+    );
+    assert_eq!(workspaces[0]["branch"], "main");
+    assert_eq!(agents, agent);
+    assert_eq!(agents[0]["runtime"], "opencode");
+    assert_eq!(agents[0]["model"], "claude-opus-5");
+
+    let opened = harness.open_session("acme", "kestrel", "builder").await;
+    assert_eq!(
+        opened.workspace.id.to_string(),
+        workspace[0]["id"].as_str().expect("an id")
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
+    let harness = Harness::boot().await;
+    let workspace = json!({
+        "name": "kestrel",
+        "repositories": ["https://github.com/jtmthf/kestrel"],
+        "branch": "main",
+    });
+    let agent = json!({ "name": "builder", "runtime": "opencode", "model": "claude-opus-5" });
+
+    let declarations = [
+        (
+            operator::ORGANIZATIONS.to_owned(),
+            json!({ "name": "acme" }),
+        ),
+        (workspaces_of("acme"), workspace),
+        (agents_of("acme"), agent),
+    ];
+
+    for (path, declaration) in &declarations {
+        let (created, first) = declared(&harness, path, declaration).await;
+        let (repeated, second) = declared(&harness, path, declaration).await;
+
+        assert_eq!(created, StatusCode::CREATED, "{first}");
+        assert_eq!(repeated, StatusCode::OK, "{second}");
+        assert_eq!(first, second);
+    }
+    assert_eq!(listed(&harness, operator::ORGANIZATIONS).await.len(), 1);
+    assert_eq!(listed(&harness, &workspaces_of("acme")).await.len(), 1);
+    assert_eq!(listed(&harness, &agents_of("acme")).await.len(), 1);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_changed_workspace_declaration_converges_on_the_workspace_by_that_name() {
+    let harness = Harness::boot().await;
+    declared(
+        &harness,
+        operator::ORGANIZATIONS,
+        &json!({ "name": "acme" }),
+    )
+    .await;
+    let (_, first) = declared(
+        &harness,
+        &workspaces_of("acme"),
+        &json!({
+            "name": "kestrel",
+            "repositories": [
+                "https://github.com/jtmthf/kestrel",
+                "https://github.com/jtmthf/skills",
+            ],
+            "branch": "main",
+        }),
+    )
+    .await;
+
+    let (status, changed) = declared(
+        &harness,
+        &workspaces_of("acme"),
+        &json!({
+            "name": "kestrel",
+            "repositories": ["https://github.com/jtmthf/skills"],
+            "branch": "next",
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{changed}");
+    assert_eq!(changed["id"], first["id"]);
+    assert_eq!(
+        changed["repositories"],
+        json!(["https://github.com/jtmthf/skills"])
+    );
+    assert_eq!(changed["branch"], "next");
+    assert_eq!(
+        listed(&harness, &workspaces_of("acme")).await,
+        vec![changed]
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_changed_agent_declaration_converges_on_the_agent_by_that_name() {
+    let harness = Harness::boot().await;
+    declared(
+        &harness,
+        operator::ORGANIZATIONS,
+        &json!({ "name": "acme" }),
+    )
+    .await;
+    let (_, first) = declared(
+        &harness,
+        &agents_of("acme"),
+        &json!({ "name": "builder", "runtime": "opencode", "model": "claude-opus-5" }),
+    )
+    .await;
+
+    let (_, changed) = declared(
+        &harness,
+        &agents_of("acme"),
+        &json!({ "name": "builder", "runtime": "claude-code", "model": "claude-sonnet-5" }),
+    )
+    .await;
+    let (status, unnamed) = declared(
+        &harness,
+        &agents_of("acme"),
+        &json!({ "name": "builder", "runtime": "claude-code" }),
+    )
+    .await;
+
+    assert_eq!(changed["id"], first["id"]);
+    assert_eq!(changed["runtime"], "claude-code");
+    assert_eq!(changed["model"], "claude-sonnet-5");
+    assert_eq!(status, StatusCode::OK, "{unnamed}");
+    assert_eq!(unnamed["id"], first["id"]);
+    assert_eq!(unnamed["model"], Value::Null);
+    assert_eq!(listed(&harness, &agents_of("acme")).await, vec![unnamed]);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_client_declaring_into_no_such_organization_is_refused() {
+    let harness = Harness::boot().await;
+
+    let refused = client(
+        &harness,
+        &[
+            "workspace",
+            "declare",
+            "kestrel",
+            "--organization",
+            "acme",
+            "--repository",
+            "https://github.com/jtmthf/kestrel",
+            "--branch",
+            "main",
+        ],
+    )
+    .await;
+    let (status, refusal) = declared(
+        &harness,
+        &agents_of("acme"),
+        &json!({ "name": "builder", "runtime": "opencode" }),
+    )
+    .await;
+
+    assert!(!refused.status.success());
+    assert!(
+        refused.err.contains("no organization named acme"),
+        "{}",
+        refused.err
+    );
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(refusal["message"], "no organization named acme");
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_declaration_that_describes_nothing_declarable_is_refused() {
+    let harness = Harness::boot().await;
+    declared(
+        &harness,
+        operator::ORGANIZATIONS,
+        &json!({ "name": "acme" }),
+    )
+    .await;
+
+    let (malformed, _) = declared(
+        &harness,
+        operator::ORGANIZATIONS,
+        &json!({ "title": "acme" }),
+    )
+    .await;
+    let (unnamed, _) = declared(&harness, operator::ORGANIZATIONS, &json!({ "name": "" })).await;
+    let (nowhere, refusal) = declared(
+        &harness,
+        &workspaces_of("acme"),
+        &json!({ "name": "kestrel", "repositories": [], "branch": "main" }),
+    )
+    .await;
+
+    assert_eq!(malformed, StatusCode::BAD_REQUEST);
+    assert_eq!(unnamed, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(nowhere, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        refusal["message"]
+            .as_str()
+            .expect("a message")
+            .contains("repository"),
+        "{refusal}"
+    );
+    assert!(listed(&harness, &workspaces_of("acme")).await.is_empty());
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn an_agent_naming_a_model_its_runtime_does_not_advertise_is_refused() {
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .advertised(&organization, "opencode", &["claude-opus-5"])
+        .await;
+
+    let (status, refusal) = declared(
+        &harness,
+        &agents_of("acme"),
+        &json!({ "name": "builder", "runtime": "opencode", "model": "gpt-9" }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        refusal["message"]
+            .as_str()
+            .expect("a message")
+            .contains("claude-opus-5"),
+        "the refusal does not say what the runtime offers: {refusal}"
+    );
+    assert!(listed(&harness, &agents_of("acme")).await.is_empty());
+
+    harness.teardown().await;
 }
 
 #[tokio::test]
@@ -302,9 +694,21 @@ fn the_published_operator_document_describes_the_boundary_the_control_plane_serv
         })
         .collect();
 
+    let served = [
+        (operator::ORGANIZATIONS, "get"),
+        (operator::ORGANIZATIONS, "post"),
+        (operator::WORKSPACES, "get"),
+        (operator::WORKSPACES, "post"),
+        (operator::AGENTS, "get"),
+        (operator::AGENTS, "post"),
+        (operator::TRANSCRIPT, "get"),
+    ];
     assert_eq!(
         described,
-        vec![(operator::TRANSCRIPT.to_owned(), "get".to_owned())]
+        served
+            .iter()
+            .map(|(path, method)| ((*path).to_owned(), (*method).to_owned()))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -373,6 +777,66 @@ fn published() -> Value {
 
     serde_json::from_str(&fs::read_to_string(document).expect("a readable openapi document"))
         .expect("valid json")
+}
+
+/// The documented answer for this status must exist, and every field it requires must be served.
+fn conforms(path: &str, method: &str, status: StatusCode, body: &Value) {
+    let document = published();
+    let (_, operations) = document["paths"]
+        .as_object()
+        .expect("an object of paths")
+        .iter()
+        .find(|(template, _)| matches_template(template, path))
+        .unwrap_or_else(|| panic!("the document describes no path matching {path}"));
+    let answer = &operations[method]["responses"][status.as_str()];
+    assert!(
+        !answer.is_null(),
+        "the document says {method} {path} never answers {status}"
+    );
+    let answer = match answer["$ref"].as_str() {
+        Some(reference) => resolve(&document, reference),
+        None => answer,
+    };
+
+    requires(
+        &document,
+        &answer["content"]["application/json"]["schema"],
+        body,
+    );
+}
+
+fn requires(document: &Value, schema: &Value, body: &Value) {
+    let schema = match schema["$ref"].as_str() {
+        Some(reference) => resolve(document, reference),
+        None => schema,
+    };
+    if schema["type"] == "array" {
+        for item in body.as_array().expect("an array, as documented") {
+            requires(document, &schema["items"], item);
+        }
+        return;
+    }
+
+    for field in schema["required"]
+        .as_array()
+        .expect("an array of required fields")
+    {
+        let field = field.as_str().expect("a named field");
+        assert!(
+            body.get(field).is_some(),
+            "the document requires {field}, and the boundary served {body}"
+        );
+    }
+}
+
+fn matches_template(template: &str, path: &str) -> bool {
+    let (template, path): (Vec<_>, Vec<_>) =
+        (template.split('/').collect(), path.split('/').collect());
+    template.len() == path.len()
+        && template
+            .iter()
+            .zip(&path)
+            .all(|(step, given)| step.starts_with('{') || step == given)
 }
 
 fn resolve<'a>(document: &'a Value, reference: &str) -> &'a Value {
