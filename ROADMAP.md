@@ -12,7 +12,7 @@
 Seven rungs from an empty repository to v1, and no dates. Each is a `0.N` release, and each is named
 by a class of kestrel's own work rather than by a feature list, because the ladder is walked by
 kestrel building kestrel: a rung nobody can dogfood does not belong on it. [`README.md`](README.md)
-says what v1 means and what the nine capabilities are. This document says the order they arrive in,
+says what v1 means and what the twelve capabilities are. This document says the order they arrive in,
 and how you tell that one has landed.
 
 ## How to read the ladder
@@ -30,10 +30,11 @@ the point of no return is rung one.
 
 **Depth first, breadth once.** The generic CloudEvents endpoint accepts trigger events from any
 producer at `0.1`, so breadth arrives on the inbound path from the first rung. The named surfaces
-still wait until `0.6`: each needs its adapter and its outbound half, and all five must
-round-trip. That is repetition rather than invention, delayed until the durable session model has
-stopped moving underneath it. The order avoids coupling five adapters to the changing work model;
-it does not ask a team to wait for an adapter before kestrel can receive its events.
+still wait until `0.6`: each needs its adapter and outbound half, and all seven external surfaces
+must round-trip. A schedule has no external recipient, so its outcome is visible in kestrel. This
+adapter work is delayed until the durable session model has stopped moving underneath it. The
+order avoids coupling those adapters to the changing work model; it does not ask a team to wait for
+an adapter before kestrel can receive its events.
 
 **`Organization` is in every durable record from the first migration**, while multi-tenancy is a
 `0.7` capability. The boundary is ruinous to introduce late and cheap to carry early, so it is added
@@ -52,10 +53,10 @@ every read.
 | --- | -------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
 | 0.1 | **kestrel opens its own PRs**          | issues labelled `ready-for-agent` are worked by kestrel, not by you in a terminal | trigger ingestion (GitHub and generic CloudEvents), isolated execution, model choice, persistent sessions, storage (SQLite) |
 | 0.2 | **kestrel works the backlog**          | many issues at once; you stop being the queue                 | scheduling                                                                                   |
-| 0.3 | **kestrel's work is joinable mid-flight** | you pick up a running session instead of reading a finished one | multiplayer                                                                                |
-| 0.4 | **kestrel asks before it acts**        | kestrel does work you would not have let it do unsupervised   | governance                                                                                   |
-| 0.5 | **kestrel runs multi-step work**       | classes of work that are a sequence, not a single run         | workflows                                                                                    |
-| 0.6 | **kestrel meets the team where it works** | the surfaces you actually use, all round-tripping           | five named surfaces, with adapters and outcomes                                               |
+| 0.3 | **kestrel's work is joinable mid-flight** | you pick up a running session instead of reading a finished one | multiplayer, browser Client, queue and work visibility                                        |
+| 0.4 | **kestrel asks before it acts**        | kestrel does work you would not have let it do unsupervised   | governance, operator identity, managed Skills, MCP, Trigger inspection                      |
+| 0.5 | **kestrel runs multi-step work**       | classes of work that are a sequence, not a single run         | workflows and Campaign operations                                                             |
+| 0.6 | **kestrel meets the team where it works** | integrations return outcomes where work began               | seven external surfaces with outcomes, plus schedule                                          |
 | 0.7 | **kestrel runs where you run**         | kestrel develops itself on infrastructure that is not your laptop | pluggable storage, the rule of two, the eight targets                                    |
 | —   | **v1**                                 | the lock                                                      | —                                                                                            |
 
@@ -142,9 +143,17 @@ never the unit of session continuity — reconnecting with a cursor is the norma
 fallback — and presence is best-effort and never gates anything, because a stale presence entry that
 could block an approval would deadlock the session it was meant to describe.
 
-**The client is where joining surfaces.** A session watched as it happens is the client's first
-interactive view, over the event stream
-[ADR-0015](docs/adr/0015-the-cli-is-a-client-not-a-role.md) puts on the operator boundary.
+**The browser Client is where joining surfaces.** It starts and follows Sessions, shows the live
+transcript, shared state, diffs and read-only live files, and lets a person take a turn. It shows the
+declared branch, learned pull request or merge request, and unpublished Instance changes, including
+committed but unpushed, uncommitted and untracked work. It shows the requested and effective model,
+and reports ACP conversation continuity separately from the durable kestrel Session: losing runtime
+context must not look like successful resume. The queue shows FIFO order, active limits and wait
+reasons without inventing an estimated start time.
+Feedback is prompt, work state is clear, and the view is accessible and responsive. The same event
+stream serves the CLI and browser Client through the operator boundary
+([ADR-0015](docs/adr/0015-the-cli-is-a-client-not-a-role.md)). Presence is best-effort, never a
+prerequisite for turn-taking or approval.
 
 ### 0.4 — kestrel asks before it acts
 
@@ -158,19 +167,49 @@ record.
 
 **This is the rung on which kestrel becomes usable by someone who is not the maintainer.** Below it,
 kestrel acts on your repository with no approval path and no audit record: defensible for the one
-person who owns it, indefensible for anyone else. `0.6` is where kestrel becomes *pleasant* for a
-second person; `0.4` is where it becomes *permissible*.
+person who owns it, indefensible for anyone else. The browser Client already makes live work usable
+at `0.3`; `0.4` makes shared operation governable, and `0.6` carries it into the team's other tools.
 
 Approvals are proven here over GitHub and the generic webhook rather than over Slack. Building a chat
 adapter against a governance model that this rung is still inventing is the coupling depth-first
 exists to avoid, and the generic webhook gives approvals a second surface without a second
 integration.
 
-**The client answers approvals interactively**, which is what makes working an agent in the cloud
-feel like working one locally. The agent half already exists — the supervisor answers ACP's
-permission request, today by allowing once — so what this rung adds is the path outward to the person
-watching, and an operator identity worth authorising, which
-[ADR-0015](docs/adr/0015-the-cli-is-a-client-not-a-role.md) defers to exactly here.
+**The Client answers Approvals and Questions interactively** and becomes the place for routine
+administration. The agent half already exists — the supervisor answers ACP's permission request,
+today by allowing once — so this rung adds the path outward to the person watching. OIDC and SAML
+authenticate browser and remote CLI operators, identity-provider groups map to Organization access
+grants, and a local administrator path bootstraps a single-machine install. Policy authorizes Session
+discovery, read and join separately; possession of a link grants none of them. Approvals arriving
+through Integrations continue to authorize verified external identifiers without requiring a kestrel
+account. This fills the operator identity slot [ADR-0015](docs/adr/0015-the-cli-is-a-client-not-a-role.md)
+reserved for `0.4`, while retaining the external identity decision in
+[issue 16](https://github.com/jtmthf/kestrel/issues/16).
+
+**Operators can inspect decisions as well as answer them.** A Trigger dry-run evaluates a sample or
+recorded Event without starting a Session or changing what will fire next. It shows matching,
+correlation, rendered Brief and the reviewed Agent, Workspace, model and Policy that would supply
+authority. The historical Event trace includes nonmatches, Firings and ignored evaluations, using
+the inputs and verdict recorded at the time rather than today's configuration. The Audit Record is
+searchable by time, Session or Run, actor, attempted operation, Policy and verdict; entries expose
+decision inputs and the Policy snapshot and link to their causes and outcomes. Authorized readers
+can page through a stable machine-readable export, with secrets redacted from routine output. An
+authorized operator may open an interactive Instance shell under Policy, and its operations are
+audited rather than bypassing the control plane.
+
+**Skills and MCP become managed capabilities here.** An Organization catalog versions Skills selected
+by Workspaces and Agents. kestrel stages them in each Agent Runtime's filesystem convention; the
+runtime decides whether to load one or run it as a command. A repository copy wins by name unless
+Policy denies it; the effective source is visible, staging never overwrites repository files, and
+failure to stage a selected Skill fails the Run visibly. Each Run retains the exact managed versions
+delivered; agent-advertised use is recorded as a claim, with no inference when the agent reports
+none. Kestrel's own MCP tools start with
+pending Events ([issue 90](https://github.com/jtmthf/kestrel/issues/90)), and external MCP servers
+can be selected from an Organization catalog by Workspaces and Agents. Stdio is the baseline; HTTP
+requires runtime capability advertisement, SSE remains a compatibility path, and unsupported
+transport fails visibly. Kestrel mediates external tool calls through Policy and the Audit Record,
+supplying per-server, per-Run credentials without ambient runtime secrets. Event data and unreviewed
+repository MCP configuration cannot select tool authority.
 
 ### 0.5 — kestrel runs multi-step work
 
@@ -193,12 +232,26 @@ runs no git command ([ADR-0019](docs/adr/0019-kestrel-declares-the-branch-and-le
 governance machinery, so `0.4` has to land first. The README lists the two as independent
 capabilities; the ladder cannot.
 
+The Client makes a Campaign inspectable as a graph of child Sessions and dependency edges, with
+status, blocked or unreachable reasons, spend and navigation into each Session. Authorized people
+can post follow-ups, pause and resume a Campaign, or cancel it. Pause stops new dispatch while active
+Runs finish; cancel terminates active Runs. There is no separate skip or rewire operation.
+
 ### 0.6 — kestrel meets the team where it works
 
-Slack, Linear, GitHub, generic webhook, and schedule all round-trip, so the surface that started a
-session receives the result there. Inbound CloudEvents have worked since `0.1`; this rung adds the
-named surfaces' adapters and outbound half. It is deliberately repetition rather than invention:
-the session model it is building against stopped moving several rungs ago.
+GitHub, Slack, Linear, Jira, Microsoft Teams, GitLab and the generic webhook round-trip, so an
+external surface that started a Session receives its outcome there. GitLab is a second source-code
+host: its repository and issue Events can start work, and its merge request and result are correlated
+and reported there. Jira work items and Teams conversations can start work and receive results in
+their own context. Each Integration declares its inbound and outbound capabilities; they share the
+Event, Trigger, Session and Outcome model without pretending to have identical native operations.
+Inbound CloudEvents have worked since `0.1`; this rung adds the named adapters and outbound paths.
+
+Scheduled Triggers join the same Event and Firing path, with intervals and time-zone-aware calendar
+recurrence, including the [cron acceptance slice](https://github.com/jtmthf/kestrel/issues/198).
+A schedule has no external surface to reply to, so its outcome is visible in the Client and CLI.
+Bitbucket and Azure DevOps remain possible additions through the generic Integration seam, rather
+than named v1 guarantees.
 
 ### 0.7 — kestrel runs where you run
 
@@ -222,10 +275,13 @@ demo mode.
 
 ## v1 — the lock
 
-v1 is not a rung. It is the lock applied the day `0.7` closes: the implementation freezes, the
-project commits to no breaking changes until v2, and kestrel's ACP client has been proven against
-two agents of different lineages. Putting it on the ladder would re-import the reading that v1 is a feature
-set, when what it actually is is the day this project is willing to stop changing its mind. The `0.x`
-line carries real, recommended releases, and is where people will live for a long time.
+v1 is not a separate implementation rung. It is the stability lock applied after the `0.7` product
+floor is complete: the project commits to no breaking changes until v2, with semver on its public
+API, session-preserving migrations, a documented upgrade path and a deprecation policy. Kestrel's
+ACP client has been proven against two agents of different lineages. The browser Client handles
+routine work and administration after initial installation, while the CLI remains available for
+scripting and power use. The twelve capabilities in the README are the content of the freeze; the
+lock is the day this project is willing to stop changing its mind. The `0.x` line carries real,
+recommended releases, and is where people will live for a long time.
 
 By `0.7`, kestrel should be the thing that moves the marker at the top of this file.
