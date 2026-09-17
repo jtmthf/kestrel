@@ -8,23 +8,39 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{delete, get, put};
 use axum::{BoxError, Json, Router};
 use futures_core::Stream;
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::agent::{self, NotOffered};
-use crate::domain::{Agent, Organization, SessionId, SessionState, Workspace};
+use crate::declined::Declined;
+use crate::domain::{
+    self, Agent, Connection, Direction, EventRecordId, EventRefusal, Integration, Occurrence,
+    Organization, SessionId, SessionState, Workspace,
+};
+use crate::integration::{self, Connecting, Registration, github};
 use crate::log::{self, Cursor, Page, Unreadable, Window};
+use crate::provider::{self, Held};
 use crate::store::organization::NoSuchOrganization;
 use crate::store::{Declared, Store};
 
 pub const ORGANIZATIONS: &str = "/operator/organizations";
 pub const WORKSPACES: &str = "/operator/organizations/{organization}/workspaces";
 pub const AGENTS: &str = "/operator/organizations/{organization}/agents";
+pub const CREDENTIALS: &str = "/operator/organizations/{organization}/credentials";
+pub const CREDENTIAL: &str = "/operator/organizations/{organization}/credentials/{variable}";
+pub const INTEGRATIONS: &str = "/operator/organizations/{organization}/integrations";
+pub const EVENT_REFUSAL: &str =
+    "/operator/organizations/{organization}/integrations/{integration}/event-refusal";
+pub const EVENTS: &str = "/operator/organizations/{organization}/events";
+pub const EVENT: &str = "/operator/events/{record}";
 pub const TRANSCRIPT: &str = "/operator/sessions/{session}/transcript";
+
+const EVENTS_LISTED: usize = 50;
 
 const NO_SUCH_SESSION: &str = "no such session";
 
@@ -71,6 +87,12 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .route(ORGANIZATIONS, get(organizations).post(declare_organization))
         .route(WORKSPACES, get(workspaces).post(declare_workspace))
         .route(AGENTS, get(agents).post(declare_agent))
+        .route(CREDENTIALS, get(credentials))
+        .route(CREDENTIAL, put(hold_credential).delete(forget_credential))
+        .route(INTEGRATIONS, get(integrations).post(register_integration))
+        .route(EVENT_REFUSAL, delete(acknowledge_event_refusal))
+        .route(EVENTS, get(events))
+        .route(EVENT, get(event))
         .route(TRANSCRIPT, get(transcript))
         .with_state(ControlPlane { store, shutdown })
 }
@@ -249,6 +271,264 @@ async fn declare_agent(
     Ok(answered::<_, AgentRecord>(declared))
 }
 
+#[derive(Deserialize)]
+struct Secret {
+    secret: String,
+}
+
+#[derive(Serialize)]
+struct CredentialRecord {
+    variable: String,
+    set_at: Timestamp,
+}
+
+impl From<Held> for CredentialRecord {
+    fn from(held: Held) -> Self {
+        Self {
+            variable: held.variable,
+            set_at: held.set_at,
+        }
+    }
+}
+
+async fn credentials(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+) -> Result<Json<Vec<CredentialRecord>>, Refused> {
+    let held = provider::held(&control_plane.store, &organization).await?;
+
+    Ok(Json(held.into_iter().map(Into::into).collect()))
+}
+
+async fn hold_credential(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, variable)): Path<(String, String)>,
+    secret: Result<Json<Secret>, JsonRejection>,
+) -> Result<Json<CredentialRecord>, Refused> {
+    let Json(Secret { secret }) = secret?;
+    let held = provider::hold(&control_plane.store, &organization, &variable, &secret).await?;
+
+    Ok(Json(held.into()))
+}
+
+async fn forget_credential(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, variable)): Path<(String, String)>,
+) -> Result<StatusCode, Refused> {
+    provider::forget(&control_plane.store, &organization, &variable).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct IntegrationRegistration {
+    name: String,
+    carries: Option<Vec<Direction>>,
+    #[serde(flatten)]
+    connection: ConnectionRegistration,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ConnectionRegistration {
+    Github {
+        repository: String,
+        token: String,
+        interval: Option<String>,
+        webhook_secret: Option<String>,
+        api: Option<String>,
+    },
+    Webhook {
+        secret: String,
+    },
+}
+
+/// Never the token or a webhook secret: what an Integration presents stays behind the boundary.
+#[derive(Serialize)]
+struct IntegrationRecord {
+    id: String,
+    name: String,
+    kind: &'static str,
+    repository: Option<String>,
+    carries: Vec<Direction>,
+    polled_every: Option<String>,
+    webhook_path: Option<String>,
+    last_event_refusal: Option<EventRefusalRecord>,
+}
+
+#[derive(Serialize)]
+struct EventRefusalRecord {
+    source: String,
+    id: String,
+    bytes: usize,
+    reason: String,
+    observed_at: Timestamp,
+}
+
+impl From<Integration> for IntegrationRecord {
+    fn from(integration: Integration) -> Self {
+        let webhook_path = integration.webhook_path();
+        let kind = integration.kind().as_str();
+        let (repository, polled_every, webhook_path) = match integration.connection {
+            Connection::Github(github) if github.signed => {
+                (Some(github.repository), None, Some(webhook_path))
+            }
+            Connection::Github(github) if !integration.carries.contains(&Direction::Inbound) => {
+                (Some(github.repository), None, None)
+            }
+            Connection::Github(github) => (
+                Some(github.repository),
+                Some(format!("{:#}", github.interval)),
+                None,
+            ),
+            Connection::Webhook => (None, None, Some(webhook_path)),
+        };
+
+        Self {
+            id: integration.id.to_string(),
+            name: integration.name,
+            kind,
+            repository,
+            carries: integration.carries,
+            polled_every,
+            webhook_path,
+            last_event_refusal: integration.last_event_refusal.map(Into::into),
+        }
+    }
+}
+
+impl From<EventRefusal> for EventRefusalRecord {
+    fn from(refusal: EventRefusal) -> Self {
+        Self {
+            source: refusal.source,
+            id: refusal.id,
+            bytes: refusal.bytes,
+            reason: refusal.reason,
+            observed_at: refusal.observed_at,
+        }
+    }
+}
+
+async fn integrations(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+) -> Result<Json<Vec<IntegrationRecord>>, Refused> {
+    let integrations = integration::integrations(&control_plane.store, &organization).await?;
+
+    Ok(Json(integrations.into_iter().map(Into::into).collect()))
+}
+
+async fn register_integration(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    registration: Result<Json<IntegrationRegistration>, JsonRejection>,
+) -> Result<(StatusCode, Json<IntegrationRecord>), Refused> {
+    let Json(registration) = registration?;
+    named(&registration.name)?;
+
+    let (connecting, carries) = match &registration.connection {
+        ConnectionRegistration::Github {
+            repository,
+            token,
+            interval,
+            webhook_secret,
+            api,
+        } => (
+            Connecting::Github {
+                repository,
+                api: api.as_deref().unwrap_or(github::API),
+                token,
+                interval: interval
+                    .as_deref()
+                    .map_or(Ok(SignedDuration::from_mins(1)), str::parse)
+                    .map_err(|error| {
+                        Refused::Unprocessable(format!("an interval is a duration: {error}"))
+                    })?,
+                signing_secret: webhook_secret.as_deref(),
+            },
+            &[Direction::Inbound, Direction::Outbound][..],
+        ),
+        ConnectionRegistration::Webhook { secret } => {
+            (Connecting::Webhook { secret }, &[Direction::Inbound][..])
+        }
+    };
+    let registered = integration::register(
+        &control_plane.store,
+        Registration {
+            organization: &organization,
+            name: &registration.name,
+            carries: registration.carries.as_deref().unwrap_or(carries),
+            connecting,
+        },
+    )
+    .await?;
+
+    Ok((StatusCode::CREATED, Json(registered.into())))
+}
+
+async fn acknowledge_event_refusal(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, integration)): Path<(String, String)>,
+) -> Result<StatusCode, Refused> {
+    integration::acknowledge_event_refusal(&control_plane.store, &organization, &integration)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct Limited {
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct EventRecord {
+    record: String,
+    organization: String,
+    integration: Option<String>,
+    recorded_at: Timestamp,
+    event: Occurrence,
+}
+
+impl From<domain::Event> for EventRecord {
+    fn from(event: domain::Event) -> Self {
+        Self {
+            record: event.record_id.to_string(),
+            organization: event.organization.to_string(),
+            integration: event.integration.map(|integration| integration.to_string()),
+            recorded_at: event.recorded_at,
+            event: event.occurrence,
+        }
+    }
+}
+
+async fn events(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    Query(limited): Query<Limited>,
+) -> Result<Json<Vec<EventRecord>>, Refused> {
+    let events = integration::events(
+        &control_plane.store,
+        &organization,
+        limited.limit.unwrap_or(EVENTS_LISTED),
+    )
+    .await?;
+
+    Ok(Json(events.into_iter().map(Into::into).collect()))
+}
+
+async fn event(
+    State(control_plane): State<ControlPlane>,
+    Path(record): Path<String>,
+) -> Result<Json<EventRecord>, Refused> {
+    let record: EventRecordId = record
+        .parse()
+        .map_err(|_| Refused::NotFound(format!("no event {record}")))?;
+    let event = integration::event(&control_plane.store, record).await?;
+
+    Ok(Json(event.into()))
+}
+
 fn named(name: &str) -> Result<(), Refused> {
     if name.is_empty() {
         return Err(Refused::Unprocessable("a name cannot be empty".to_owned()));
@@ -355,6 +635,7 @@ fn last_event_id(headers: &HeaderMap) -> Result<Option<Cursor>, Refused> {
 enum Refused {
     BadRequest(String),
     NotFound(String),
+    Conflict(String),
     Unprocessable(String),
     Unavailable(anyhow::Error),
 }
@@ -362,9 +643,10 @@ enum Refused {
 impl Refused {
     fn into_error(self) -> BoxError {
         match self {
-            Refused::BadRequest(why) | Refused::NotFound(why) | Refused::Unprocessable(why) => {
-                why.into()
-            }
+            Refused::BadRequest(why)
+            | Refused::NotFound(why)
+            | Refused::Conflict(why)
+            | Refused::Unprocessable(why) => why.into(),
             Refused::Unavailable(error) => error.into(),
         }
     }
@@ -378,7 +660,12 @@ impl From<anyhow::Error> for Refused {
         if let Some(refused) = error.downcast_ref::<NotOffered>() {
             return Refused::Unprocessable(refused.to_string());
         }
-        Refused::Unavailable(error)
+        match error.downcast::<Declined>() {
+            Ok(Declined::Unacceptable(why)) => Refused::Unprocessable(why),
+            Ok(Declined::Missing(why)) => Refused::NotFound(why),
+            Ok(Declined::Taken(why)) => Refused::Conflict(why),
+            Err(error) => Refused::Unavailable(error),
+        }
     }
 }
 
@@ -402,6 +689,7 @@ impl IntoResponse for Refused {
         let (status, message) = match self {
             Refused::BadRequest(why) => (StatusCode::BAD_REQUEST, why),
             Refused::NotFound(why) => (StatusCode::NOT_FOUND, why),
+            Refused::Conflict(why) => (StatusCode::CONFLICT, why),
             Refused::Unprocessable(why) => (StatusCode::UNPROCESSABLE_ENTITY, why),
             Refused::Unavailable(error) => {
                 warn!(%error, "the operator boundary could not answer");

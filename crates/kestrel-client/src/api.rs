@@ -1,5 +1,5 @@
 use anyhow::{Context as _, Result, anyhow, bail};
-use reqwest::{Client, RequestBuilder, Url};
+use reqwest::{Client, RequestBuilder, Response, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -22,7 +22,16 @@ impl ControlPlane {
     }
 
     pub async fn get(&self, path: &[&str]) -> Result<Value> {
-        self.answered(self.client.get(self.url(path)?)).await
+        self.get_where(path, &[]).await
+    }
+
+    pub async fn get_where(&self, path: &[&str], query: &[(&str, &str)]) -> Result<Value> {
+        let mut url = self.url(path)?;
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
+
+        self.answered(self.client.get(url)).await
     }
 
     pub async fn post(&self, path: &[&str], body: &impl Serialize) -> Result<Value> {
@@ -30,17 +39,32 @@ impl ControlPlane {
             .await
     }
 
+    pub async fn put(&self, path: &[&str], body: &impl Serialize) -> Result<Value> {
+        self.answered(self.client.put(self.url(path)?).json(body))
+            .await
+    }
+
+    pub async fn delete(&self, path: &[&str]) -> Result<()> {
+        self.sent(self.client.delete(self.url(path)?)).await?;
+        Ok(())
+    }
+
     async fn answered(&self, request: RequestBuilder) -> Result<Value> {
+        self.sent(request)
+            .await?
+            .json()
+            .await
+            .context("reading the control plane's answer")
+    }
+
+    async fn sent(&self, request: RequestBuilder) -> Result<Response> {
         let response = request
             .send()
             .await
             .with_context(|| format!("reaching the control plane at {}", self.base))?;
         let status = response.status();
         if status.is_success() {
-            return response
-                .json()
-                .await
-                .context("reading the control plane's answer");
+            return Ok(response);
         }
 
         let why = response

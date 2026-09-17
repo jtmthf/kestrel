@@ -3,6 +3,7 @@ use jiff::{SignedDuration, Timestamp};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
+use crate::declined::Declined;
 use crate::domain::{
     Connection, Direction, Event, EventRecordId, EventRefusal, GithubConnection, Integration,
     IntegrationId, IntegrationKind, Occurrence, Organization, OrganizationId, Outcome, Run,
@@ -115,7 +116,14 @@ impl<'a> Integrations<'a> {
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.connection)
         .await
-        .with_context(|| format!("registering the integration {name}"))?;
+        .map_err(|error| match error.as_database_error() {
+            Some(refused) if refused.is_unique_violation() => Declined::Taken(format!(
+                "the organization {} already has an integration named {name}",
+                organization.name
+            ))
+            .into(),
+            _ => anyhow::Error::new(error).context(format!("registering the integration {name}")),
+        })?;
 
         Ok(integration)
     }
@@ -199,11 +207,11 @@ impl<'a> Integrations<'a> {
             .bind(name)
             .fetch_optional(&mut *self.connection)
             .await?
-            .with_context(|| {
-                format!(
+            .ok_or_else(|| {
+                Declined::Missing(format!(
                     "no integration named {name} in the organization {}",
                     organization.name
-                )
+                ))
             })?;
 
         integration(&row)
@@ -544,7 +552,7 @@ pub(crate) async fn event_with_id(
     .bind(id.to_string())
     .fetch_optional(&mut *connection)
     .await?
-    .with_context(|| format!("no event {id}"))?;
+    .ok_or_else(|| Declined::Missing(format!("no event {id}")))?;
 
     event(&row)
 }

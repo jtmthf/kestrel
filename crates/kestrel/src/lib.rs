@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod cli;
 pub mod compute;
+pub mod declined;
 pub mod domain;
 pub mod fanout;
 pub mod filter;

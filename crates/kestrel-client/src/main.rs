@@ -2,7 +2,9 @@ mod api;
 mod sse;
 mod transcript;
 
-use anyhow::{Context as _, Result};
+use std::io::Read as _;
+
+use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 use reqwest::Url;
 use serde_json::{Value, json};
@@ -42,9 +44,138 @@ enum Command {
     /// Declare and list Agents
     #[command(subcommand)]
     Agent(AgentCommand),
+    /// Hold, list and forget the Provider Credentials an Organization's Runs reach a model with
+    #[command(subcommand)]
+    Credential(CredentialCommand),
+    /// Register and list Integrations: credentialed connections to external systems
+    #[command(subcommand)]
+    Integration(IntegrationCommand),
+    /// Read the Events recorded for an Organization
+    #[command(subcommand)]
+    Event(EventCommand),
     /// Read Sessions
     #[command(subcommand)]
     Session(SessionCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum CredentialCommand {
+    /// Hold a Provider Credential against an Organization, read from standard input
+    Set {
+        /// The environment variable an Agent Runtime reads it from
+        variable: String,
+        /// The Organization that holds it
+        #[arg(long)]
+        organization: String,
+    },
+    /// List what an Organization holds, by the variable each is read from and never by value
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+    /// Forget a Provider Credential an Organization holds
+    Forget {
+        /// The environment variable it is read from
+        variable: String,
+        /// The Organization that holds it
+        #[arg(long)]
+        organization: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum IntegrationCommand {
+    /// Register an Integration
+    #[command(subcommand)]
+    Register(RegisterCommand),
+    /// List every Integration in an Organization, one JSON record a line
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+    /// Acknowledge the latest oversized Event refused by an Integration
+    AcknowledgeRefusal {
+        name: String,
+        #[arg(long)]
+        organization: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RegisterCommand {
+    /// A connection to GitHub, watching one repository
+    Github {
+        /// The name it is referred to by
+        name: String,
+        /// The Organization whose credential it holds
+        #[arg(long)]
+        organization: String,
+        /// The repository it watches, as owner/name
+        #[arg(long, value_name = "OWNER/NAME")]
+        repository: String,
+        /// The credential it presents to GitHub
+        #[arg(
+            long,
+            env = "KESTREL_GITHUB_TOKEN",
+            value_name = "TOKEN",
+            hide_env_values = true
+        )]
+        token: String,
+        /// A direction it carries — inbound, outbound; repeat for both
+        #[arg(
+            long = "carries",
+            value_name = "DIRECTION",
+            default_values = ["inbound", "outbound"]
+        )]
+        carries: Vec<String>,
+        /// How often the poll asks GitHub what has happened
+        #[arg(long, value_name = "DURATION", default_value = "1m")]
+        interval: String,
+        /// The secret GitHub signs webhook deliveries with; given one, kestrel receives the
+        /// repository's events by webhook and stops polling for them
+        #[arg(
+            long,
+            env = "KESTREL_GITHUB_WEBHOOK_SECRET",
+            value_name = "SECRET",
+            hide_env_values = true
+        )]
+        webhook_secret: Option<String>,
+        #[arg(long, env = "KESTREL_GITHUB_API", hide = true)]
+        api: Option<String>,
+    },
+    /// A generic endpoint any producer can POST CloudEvents to
+    Webhook {
+        /// The name it is referred to by
+        name: String,
+        /// The Organization whose Events it records
+        #[arg(long)]
+        organization: String,
+        /// The secret a sender presents as `Authorization: Bearer <secret>`
+        #[arg(
+            long,
+            env = "KESTREL_WEBHOOK_SECRET",
+            value_name = "SECRET",
+            hide_env_values = true
+        )]
+        secret: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum EventCommand {
+    /// List the Events recorded for an Organization, most recent first, one JSON record a line
+    List {
+        #[arg(long)]
+        organization: String,
+        /// How many to list at most
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Show one Event's whole envelope and payload
+    Show {
+        /// The Event's record identifier
+        record: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -185,6 +316,104 @@ async fn main() -> Result<()> {
         Command::Agent(AgentCommand::List { organization }) => {
             listed(&api.get(&["organizations", &organization, "agents"]).await?);
         }
+        Command::Credential(CredentialCommand::Set {
+            variable,
+            organization,
+        }) => {
+            let secret = json!({ "secret": read_the_secret()? });
+            printed(
+                &api.put(
+                    &["organizations", &organization, "credentials", &variable],
+                    &secret,
+                )
+                .await?,
+            );
+        }
+        Command::Credential(CredentialCommand::List { organization }) => {
+            listed(
+                &api.get(&["organizations", &organization, "credentials"])
+                    .await?,
+            );
+        }
+        Command::Credential(CredentialCommand::Forget {
+            variable,
+            organization,
+        }) => {
+            api.delete(&["organizations", &organization, "credentials", &variable])
+                .await?;
+        }
+        Command::Integration(IntegrationCommand::Register(register)) => {
+            let (organization, registration) = match register {
+                RegisterCommand::Github {
+                    name,
+                    organization,
+                    repository,
+                    token,
+                    carries,
+                    interval,
+                    webhook_secret,
+                    api,
+                } => (
+                    organization,
+                    json!({
+                        "kind": "github",
+                        "name": name,
+                        "repository": repository,
+                        "token": token,
+                        "carries": carries,
+                        "interval": interval,
+                        "webhook_secret": webhook_secret,
+                        "api": api,
+                    }),
+                ),
+                RegisterCommand::Webhook {
+                    name,
+                    organization,
+                    secret,
+                } => (
+                    organization,
+                    json!({ "kind": "webhook", "name": name, "secret": secret }),
+                ),
+            };
+            printed(
+                &api.post(
+                    &["organizations", &organization, "integrations"],
+                    &registration,
+                )
+                .await?,
+            );
+        }
+        Command::Integration(IntegrationCommand::List { organization }) => {
+            listed(
+                &api.get(&["organizations", &organization, "integrations"])
+                    .await?,
+            );
+        }
+        Command::Integration(IntegrationCommand::AcknowledgeRefusal { name, organization }) => {
+            api.delete(&[
+                "organizations",
+                &organization,
+                "integrations",
+                &name,
+                "event-refusal",
+            ])
+            .await?;
+        }
+        Command::Event(EventCommand::List {
+            organization,
+            limit,
+        }) => {
+            listed(
+                &api.get_where(
+                    &["organizations", &organization, "events"],
+                    &[("limit", &limit.to_string())],
+                )
+                .await?,
+            );
+        }
+        Command::Event(EventCommand::Show { record }) => {
+            printed(&api.get(&["events", &record]).await?);
+        }
         Command::Session(SessionCommand::Transcript {
             session,
             cursor,
@@ -209,4 +438,18 @@ fn listed(records: &Value) {
     for record in records.as_array().into_iter().flatten() {
         printed(record);
     }
+}
+
+/// Off standard input rather than out of an argument, so a provider's key is never in a shell
+/// history or in what `ps` shows of this process.
+fn read_the_secret() -> Result<String> {
+    let mut read = String::new();
+    std::io::stdin().read_to_string(&mut read)?;
+    let secret = read.trim();
+
+    if secret.is_empty() {
+        bail!("a provider credential is read from standard input, and nothing was on it");
+    }
+
+    Ok(secret.to_owned())
 }

@@ -83,10 +83,14 @@ impl<'a> Organizations<'a> {
         organization: OrganizationId,
         variable: &str,
         secret: &str,
-    ) -> Result<()> {
+    ) -> Result<Held> {
         let sealed = self
             .keyring
             .seal(&bound_to(organization, variable), secret)?;
+        let held = Held {
+            variable: variable.to_owned(),
+            set_at: Timestamp::now(),
+        };
 
         sqlx::query(
             "INSERT INTO provider_credential (organization_id, variable, sealed, set_at)
@@ -97,12 +101,12 @@ impl<'a> Organizations<'a> {
         .bind(organization.to_string())
         .bind(variable)
         .bind(sealed)
-        .bind(Timestamp::now().to_string())
+        .bind(held.set_at.to_string())
         .execute(&mut *self.connection)
         .await
         .with_context(|| format!("holding the provider credential {variable}"))?;
 
-        Ok(())
+        Ok(held)
     }
 
     pub async fn provider_credentials_held(
