@@ -32,6 +32,7 @@ tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v7"] }
+yaml_serde = "0.10"
 
 [dev-dependencies]
 kestrel-scripted-agent = { path = "../kestrel-scripted-agent" }

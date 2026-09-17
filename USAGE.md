@@ -334,9 +334,79 @@ kestrel event list --organization acme
 01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77  2026-09-07T14:01:58Z  jtmthf/kestrel  labeled  ready-for-agent  #44  0.1/21: The GitHub Trigger opens a Session from an Event
 ```
 
-Now the rule itself. What a trigger matches is a filter over the event's CloudEvents attributes —
-`exact`, `prefix` and `suffix` over `id`, `source`, `specversion`, `type`, `subject` and `time`,
-combined with `all`, `any` and `not` — and kestrel extends it with paths into the event's `data`:
+Now the rule itself. A trigger decides what an agent does to a repository with your
+organization's credentials, so declare it in a file you keep in version control and review in a
+pull request, `.kestrel/triggers.yaml`:
+
+```yaml
+triggers:
+  ready:
+    filter:
+      all:
+        - exact: {source: "https://github.com/jtmthf/kestrel"}
+        - exact: {type: com.github.issues.labeled}
+        - exact: {data.label.name: ready-for-agent}
+        - exact: {data.issue.author_association: MEMBER}
+    brief: |
+      Work {{ event.data.issue.html_url }}: {{ event.data.issue.title }}
+    branch: kestrel/issue-{{ event.data.issue.number }}
+    workspace: kestrel
+    agent: builder
+```
+
+kestrel cannot read that file out of the repository for itself: reading it takes a checkout, a
+checkout takes a session, and a session takes a trigger. So you apply it, and kestrel prints the
+diff it makes:
+
+```sh
+kestrel trigger apply --organization acme -f .kestrel/triggers.yaml
+```
+
+```
++ ready
+    matches
+      + source = "https://github.com/jtmthf/kestrel" and type = "com.github.issues.labeled" and data.label.name = "ready-for-agent" and data.issue.author_association = "MEMBER"
+    workspace
+      + kestrel
+    agent
+      + builder
+    branch
+      + kestrel/issue-{{ event.data.issue.number }}
+    brief
+      + Work {{ event.data.issue.html_url }}: {{ event.data.issue.title }}
+```
+
+The file is the whole of what applies: a trigger you change in it is changed, a trigger you take
+out of it is removed, and applying the same file again prints `no changes`. Add `--dry-run` to see
+the diff without making it, and `-f -` to read the file from standard input. An apply is one
+transaction, so a file naming an agent or workspace that does not exist changes nothing. Keep one
+declaration file per organization: an apply removes every trigger an earlier apply made that this
+file does not declare.
+
+What a trigger matches is a filter over the event's CloudEvents attributes — `exact`, `prefix` and
+`suffix` over `id`, `source`, `specversion`, `type`, `subject` and `time`, combined with `all`,
+`any` and `not` — and kestrel extends it with paths into the event's `data`. A trigger names the
+repository by its `source`, never the integration that saw the event, so it keeps matching whether
+kestrel learned of the event by polling or by webhook. Comparisons are case-sensitive, and a path
+into `data` that leads nowhere matches nothing.
+
+The `brief`, the `branch` and the optional `correlation` are
+[minijinja](https://docs.rs/minijinja) templates over `event`, rendered from the event and never
+choosing anything the declaration names. Leave `branch` out and the branch is the workspace's.
+Rendering is strict: a field the event does not have is an error, not an empty string, so a brief
+that says `on {{ event.data.pull_request.head.ref }}` over a labelled issue fails rather than
+rendering `on `. Ask first with `{% if event.data.pull_request is defined %}`. A template runs
+inside the control plane, so how much work it does, how deep it recurses and how much it writes
+are all bounded.
+
+A `correlation` requires `on_miss: open` or `on_miss: ignore`. A hit feeds the open Session that
+holds the key; its configured Agent stays fixed. `open` starts a new Session when no open one holds
+the key, continuing the most recently sealed Session with that key when there is one. `ignore`
+records the firing but starts no work.
+
+### One-off triggers
+
+For a trigger you are trying out, the same declaration goes on the command line:
 
 ```sh
 kestrel trigger declare ready \
@@ -346,29 +416,25 @@ kestrel trigger declare ready \
     {"exact": {"type": "com.github.issues.labeled"}},
     {"exact": {"data.label.name": "ready-for-agent"}}
   ]}' \
-  --brief 'Work {{ event.data.issue.html_url }}: {{ event.data.issue.title }}' \
+  --brief @.kestrel/briefs/ready.md \
   --branch 'kestrel/issue-{{ event.data.issue.number }}' \
   --workspace kestrel \
   --agent builder
 ```
 
-A trigger names the repository by its `source`, never the integration that saw the event, so it
-keeps matching whether kestrel learned of the event by polling or by webhook. Comparisons are
-case-sensitive, and a path into `data` that leads nowhere matches nothing.
+`--filter` and `--brief` each take their text as it is, from a file as `@path`, or from standard
+input as `-`. `--correlation` pairs with `--on-miss`. An apply leaves a trigger declared this way
+alone unless its file declares one of the same name, which it then takes over; `kestrel trigger
+show` says which way each was declared.
 
-The brief, the branch and the optional `--correlation` are
-[minijinja](https://docs.rs/minijinja) templates over `event`, rendered from the event and never
-choosing anything the declaration names. Leave `--branch` out and the branch is the workspace's.
-Rendering is strict: a field the event does not have is an error, not an empty string, so a brief
-that says `on {{ event.data.pull_request.head.ref }}` over a labelled issue fails rather than
-rendering `on `. Ask first with `{% if event.data.pull_request is defined %}`. A template runs
-inside the control plane, so how much work it does, how deep it recurses and how much it writes
-are all bounded.
+### Strangers
 
-A correlation requires `--on-miss open` or `--on-miss ignore`. A hit feeds the open Session that
-holds the key; its configured Agent stays fixed. `open` starts a new Session when no open one holds
-the key, continuing the most recently sealed Session with that key when there is one. `ignore`
-records the firing but starts no work.
+Both ways of declaring a trigger warn, by name, about one whose filter lets in events from people
+outside the organization — anything that does not require the `author_association` GitHub reports
+to be `OWNER`, `MEMBER` or `COLLABORATOR`, unless the filter rules out GitHub's events altogether.
+Until `0.4` there is no policy beneath a run, so such a trigger is an unsupervised agent with your
+credentials on your repository, briefed by whatever a stranger wrote. Keep it if that is what you
+meant; the warning is there so that it was decided rather than discovered.
 
 Label an issue on that repository `ready-for-agent`, and within a poll interval there is a session
 open with a run queued behind it, which nobody asked for:
@@ -403,17 +469,20 @@ new work.
 A trigger also fires only for events recorded after it was declared, so what kestrel already saw on
 the repository before you declared it opens nothing, however long that backlog is. That is why the
 integration comes first above: its first poll reads a page of what has already happened, and a
-trigger declared after that leaves it alone.
+trigger declared after that leaves it alone. The same holds for the first apply into a repository
+holding a month of events, and for an apply that changes a trigger: the changed trigger matches
+only what is recorded from then on, so widening a filter never reaches back for what the narrower
+one passed over.
 
 **The event chooses nothing.** The agent, the workspace and the model come from the declaration you
-just applied; only the data comes from the event. Anyone who can label an issue on a public
+applied; only the data comes from the event. Anyone who can label an issue on a public
 repository could otherwise pick which agent's credentials the run gets
 ([ADR-0013](docs/adr/0013-an-event-supplies-data-never-authority.md)).
 
 `kestrel trigger list --organization acme` shows what each one matches, the way you would say it:
 
 ```
-01a07c30-9b2e-7f41-a8c3-5d0e1f2a3b4c  ready  enabled  kestrel  builder  source = "https://github.com/jtmthf/kestrel" and type = "com.github.issues.labeled" and data.label.name = "ready-for-agent"
+01a07c30-9b2e-7f41-a8c3-5d0e1f2a3b4c  ready  enabled  kestrel  builder  source = "https://github.com/jtmthf/kestrel" and type = "com.github.issues.labeled" and data.label.name = "ready-for-agent" and data.issue.author_association = "MEMBER"
 ```
 
 Before trusting a trigger with work, ask it about an event kestrel already recorded. A test starts
@@ -435,7 +504,8 @@ Work https://github.com/jtmthf/kestrel/issues/44: 0.1/21: The GitHub Trigger ope
 ```
 
 It renders even when the filter does not match, so a brief can be written against the event it is
-for before the filter is right. A template that cannot render fails the test, naming the trigger,
+for before the filter is right. Add `-f .kestrel/triggers.yaml` to test the trigger as the file
+declares it, before you apply it. A template that cannot render fails the test, naming the trigger,
 the event, the line of the template that failed, and the variables it had to work with.
 
 An event several triggers match fires every one of them; no trigger is first, and matching one

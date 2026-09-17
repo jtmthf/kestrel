@@ -345,6 +345,7 @@ pub struct Trigger {
     pub state: TriggerState,
     pub disabled_because: Option<String>,
     pub firing_budget: FiringBudget,
+    pub applied: bool,
     pub declared_at: Timestamp,
 }
 

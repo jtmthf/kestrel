@@ -1278,3 +1278,301 @@ fn the_cli_lists_what_a_poll_recorded_and_the_credential_appears_in_neither_it_n
         "the control plane never said it polled:\n{said}"
     );
 }
+
+const APPLIED: &str = r#"
+triggers:
+  ready:
+    filter: {exact: {type: com.github.issues.labeled}}
+    brief: Work on {{ event.data.issue.title }}
+    workspace: kestrel
+    agent: builder
+  triage:
+    filter:
+      all:
+        - exact: {type: com.github.issues.opened}
+        - exact: {data.issue.author_association: MEMBER}
+    brief: Triage {{ event.data.issue.title }}
+    workspace: kestrel
+    agent: builder
+"#;
+
+fn applying(kestrel: &Kestrel, declarations: &str, flags: &[&str]) -> Output {
+    let file = kestrel.data_dir.path().join("triggers.yaml");
+    std::fs::write(&file, declarations).expect("the declaration file should be written");
+    let mut args = vec![
+        "trigger",
+        "apply",
+        "--organization",
+        "acme",
+        "-f",
+        file.to_str().expect("a UTF-8 path"),
+    ];
+    args.extend_from_slice(flags);
+    kestrel.try_run(&args)
+}
+
+fn applied(kestrel: &Kestrel, declarations: &str, flags: &[&str]) -> (String, String) {
+    let output = applying(kestrel, declarations, flags);
+    assert!(
+        output.status.success(),
+        "`kestrel trigger apply` failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+fn trigger_names(kestrel: &Kestrel) -> Vec<String> {
+    kestrel
+        .run(&["trigger", "list", "--organization", "acme"])
+        .lines()
+        .map(|line| line.split("  ").nth(1).expect("a name").to_owned())
+        .collect()
+}
+
+#[test]
+fn apply_prints_the_diff_it_makes_and_nothing_once_it_is_made() {
+    let kestrel = declared();
+
+    let (diff, _) = applied(&kestrel, APPLIED, &[]);
+
+    assert!(diff.contains("+ ready\n"), "{diff}");
+    assert!(diff.contains("+ triage\n"), "{diff}");
+    assert!(
+        diff.contains("    brief\n      + Work on {{ event.data.issue.title }}\n"),
+        "{diff}"
+    );
+    assert_eq!(trigger_names(&kestrel), ["ready", "triage"]);
+    let shown = kestrel.run(&["trigger", "show", "ready", "--organization", "acme"]);
+    assert!(shown.contains("declared by   a file"), "{shown}");
+
+    assert_eq!(applied(&kestrel, APPLIED, &[]).0, "no changes\n");
+}
+
+#[test]
+fn reapplying_changes_and_removes_only_what_a_file_applied() {
+    let kestrel = declared();
+    kestrel.run(&[
+        "trigger",
+        "declare",
+        "one-off",
+        "--organization",
+        "acme",
+        "--filter",
+        r#"{"exact": {"type": "com.example.build.failed"}}"#,
+        "--brief",
+        "Fix the build",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+    applied(&kestrel, APPLIED, &[]);
+
+    let changed = r#"
+triggers:
+  ready:
+    filter: {exact: {type: com.github.issues.labeled}}
+    brief: Work {{ event.data.issue.html_url }}
+    workspace: kestrel
+    agent: builder
+"#;
+    let (diff, _) = applied(&kestrel, changed, &[]);
+
+    assert_eq!(
+        diff,
+        "~ ready\n    brief\n      - Work on {{ event.data.issue.title }}\n      + Work {{ event.data.issue.html_url }}\n- triage\n"
+    );
+    assert_eq!(trigger_names(&kestrel), ["one-off", "ready"]);
+}
+
+#[test]
+fn a_one_off_a_file_declares_becomes_the_files() {
+    let kestrel = declared();
+    kestrel.run(&[
+        "trigger",
+        "declare",
+        "ready",
+        "--organization",
+        "acme",
+        "--filter",
+        r#"{"exact": {"type": "com.github.issues.labeled"}}"#,
+        "--brief",
+        "Work on {{ event.data.issue.title }}",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+
+    let (diff, _) = applied(&kestrel, APPLIED, &[]);
+
+    assert!(
+        diff.contains("~ ready\n    declared by\n      - flags\n      + a file\n"),
+        "{diff}"
+    );
+    applied(&kestrel, "triggers: {}", &[]);
+    assert!(trigger_names(&kestrel).is_empty());
+}
+
+#[test]
+fn a_dry_run_prints_the_diff_and_changes_nothing() {
+    let kestrel = declared();
+
+    let (diff, _) = applied(&kestrel, APPLIED, &["--dry-run"]);
+
+    assert!(diff.contains("+ ready\n"), "{diff}");
+    assert!(trigger_names(&kestrel).is_empty());
+}
+
+#[test]
+fn an_apply_that_cannot_be_made_whole_changes_nothing() {
+    let kestrel = declared();
+    let naming_a_stranger = format!(
+        "{APPLIED}  stranger:\n    filter: {{exact: {{type: x}}}}\n    brief: x\n    workspace: kestrel\n    agent: nobody\n"
+    );
+
+    let refusal = applying(&kestrel, &naming_a_stranger, &[]);
+
+    assert!(!refusal.status.success());
+    assert!(
+        String::from_utf8_lossy(&refusal.stderr).contains("nobody"),
+        "{}",
+        String::from_utf8_lossy(&refusal.stderr)
+    );
+    assert!(trigger_names(&kestrel).is_empty());
+}
+
+#[test]
+fn a_declaration_file_that_is_not_one_is_refused_saying_where() {
+    let kestrel = declared();
+
+    for (declarations, because) in [
+        ("", "triggers"),
+        ("triggers:\n  ready:\n    brief: x\n", "filter"),
+        (
+            "triggers:\n  ready:\n    filter: {sql: x}\n    brief: x\n    workspace: kestrel\n    agent: builder\n",
+            "the trigger ready",
+        ),
+        (
+            "triggers:\n  ready:\n    filter: {exact: {type: x}}\n    brief: x\n    correlation: x\n    workspace: kestrel\n    agent: builder\n",
+            "misses",
+        ),
+        (
+            "triggers:\n  ready:\n    filter: {exact: {type: x}}\n    brief: x\n    agnet: builder\n    workspace: kestrel\n",
+            "agnet",
+        ),
+    ] {
+        let refusal = applying(&kestrel, declarations, &[]);
+        let said = String::from_utf8_lossy(&refusal.stderr);
+        assert!(!refusal.status.success(), "{declarations:?} applied");
+        assert!(
+            said.contains(because),
+            "{declarations:?} was refused unhelpfully: {said}"
+        );
+    }
+}
+
+#[test]
+fn apply_names_each_trigger_that_admits_outsiders() {
+    let kestrel = declared();
+
+    let (_, warned) = applied(&kestrel, APPLIED, &["--dry-run"]);
+
+    assert!(warned.contains("the trigger ready fires"), "{warned}");
+    assert!(warned.contains("0.4"), "{warned}");
+    assert!(!warned.contains("the trigger triage"), "{warned}");
+}
+
+#[test]
+fn apply_reads_a_declaration_file_from_standard_input() {
+    let kestrel = declared();
+
+    let output = kestrel.try_run_on_stdin(
+        &["trigger", "apply", "--organization", "acme", "-f", "-"],
+        APPLIED,
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(trigger_names(&kestrel), ["ready", "triage"]);
+}
+
+#[test]
+fn a_brief_and_a_filter_are_read_from_a_file_or_standard_input() {
+    let kestrel = declared();
+    let brief = kestrel.data_dir.path().join("brief.md");
+    std::fs::write(
+        &brief,
+        "Work on {{ event.data.issue.title }}\n\nand say so.\n",
+    )
+    .expect("the brief should be written");
+    let from_a_file = format!("@{}", brief.display());
+
+    let output = kestrel.try_run_on_stdin(
+        &[
+            "trigger",
+            "declare",
+            "ready",
+            "--organization",
+            "acme",
+            "--filter",
+            "-",
+            "--brief",
+            &from_a_file,
+            "--workspace",
+            "kestrel",
+            "--agent",
+            "builder",
+        ],
+        r#"{"exact": {"type": "com.github.issues.labeled"}}"#,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let shown = kestrel.run(&["trigger", "show", "ready", "--organization", "acme"]);
+    assert!(
+        shown.contains(r#"matches       type = "com.github.issues.labeled""#),
+        "{shown}"
+    );
+    assert!(shown.ends_with("and say so."), "{shown}");
+    assert!(shown.contains("declared by   flags"), "{shown}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("the trigger ready fires"),
+        "a one-off admitting outsiders was declared without a warning"
+    );
+}
+
+#[test]
+fn only_one_of_a_filter_and_a_brief_is_read_from_standard_input() {
+    let kestrel = declared();
+
+    let refusal = refused(
+        &kestrel,
+        &[
+            "trigger",
+            "declare",
+            "ready",
+            "--organization",
+            "acme",
+            "--filter",
+            "-",
+            "--brief",
+            "-",
+            "--workspace",
+            "kestrel",
+            "--agent",
+            "builder",
+        ],
+    );
+
+    assert!(refusal.contains("standard input"), "{refusal}");
+}

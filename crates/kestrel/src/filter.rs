@@ -36,7 +36,7 @@ impl FromStr for Filter {
 }
 
 impl Filter {
-    fn from_json(value: &Value) -> Result<Self> {
+    pub fn from_json(value: &Value) -> Result<Self> {
         let (dialect, operand) = sole_entry(value, "a filter")?;
 
         Ok(match dialect.as_str() {
@@ -116,6 +116,50 @@ impl Filter {
         };
 
         Value::Object(Map::from_iter([(dialect.to_owned(), operand)]))
+    }
+}
+
+/// GitHub's word for someone with standing in the repository; every other association,
+/// and an Event that carries none, is a stranger's.
+const MEMBERS: &[&str] = &["OWNER", "MEMBER", "COLLABORATOR"];
+
+impl Filter {
+    /// Judged from the filter's shape alone, so it errs toward warning: only GitHub tells kestrel
+    /// who an actor is, and only a comparison every match must pass can be trusted to decline one.
+    pub fn admits_outsiders(&self) -> bool {
+        !(self.requires(&Filter::names_a_member) || self.requires(&Filter::excludes_github))
+    }
+
+    fn requires(&self, holds: &impl Fn(&Filter) -> bool) -> bool {
+        match self {
+            Filter::All(filters) => filters.iter().any(|filter| filter.requires(holds)),
+            Filter::Any(filters) => filters.iter().all(|filter| filter.requires(holds)),
+            filter => holds(filter),
+        }
+    }
+
+    fn names_a_member(&self) -> bool {
+        matches!(
+            self,
+            Filter::Exact(Attribute::Data(path), value)
+                if path.last().is_some_and(|key| key == "author_association")
+                    && MEMBERS.contains(&value.as_str())
+        )
+    }
+
+    fn excludes_github(&self) -> bool {
+        let (attribute, value, exact) = match self {
+            Filter::Exact(attribute, value) => (attribute, value, true),
+            Filter::Prefix(attribute, value) => (attribute, value, false),
+            _ => return false,
+        };
+        let github = match attribute {
+            Attribute::Source => "https://github.com/",
+            Attribute::Type => "com.github.",
+            _ => return false,
+        };
+
+        !(value.starts_with(github) || (!exact && github.starts_with(value.as_str())))
     }
 }
 
@@ -226,6 +270,63 @@ mod tests {
             filter.to_string(),
             r##"source = "https://github.com/jtmthf/kestrel" and (data.label.name = "ready-for-agent" or type ends with ".opened") and not subject starts with "#1""##
         );
+    }
+
+    #[test]
+    fn a_filter_admits_outsiders_unless_every_match_is_a_members_or_not_githubs() {
+        for (filter, admits) in [
+            (r#"{"exact": {"type": "com.github.issues.labeled"}}"#, true),
+            (
+                r#"{"all": [
+                    {"exact": {"type": "com.github.issues.labeled"}},
+                    {"exact": {"data.issue.author_association": "MEMBER"}}
+                ]}"#,
+                false,
+            ),
+            (
+                r#"{"all": [
+                    {"exact": {"type": "com.github.issues.labeled"}},
+                    {"any": [
+                        {"exact": {"data.issue.author_association": "OWNER"}},
+                        {"exact": {"data.issue.author_association": "COLLABORATOR"}}
+                    ]}
+                ]}"#,
+                false,
+            ),
+            (
+                r#"{"any": [
+                    {"exact": {"data.issue.author_association": "OWNER"}},
+                    {"exact": {"type": "com.github.issues.labeled"}}
+                ]}"#,
+                true,
+            ),
+            (
+                r#"{"exact": {"data.issue.author_association": "CONTRIBUTOR"}}"#,
+                true,
+            ),
+            (
+                r#"{"not": {"exact": {"data.issue.author_association": "NONE"}}}"#,
+                true,
+            ),
+            (
+                r#"{"prefix": {"data.issue.author_association": "MEMBER"}}"#,
+                true,
+            ),
+            (
+                r#"{"exact": {"source": "https://ci.example.com/pipelines/3"}}"#,
+                false,
+            ),
+            (r#"{"prefix": {"type": "com.example."}}"#, false),
+            (r#"{"prefix": {"type": "com."}}"#, true),
+            (
+                r#"{"prefix": {"source": "https://github.com/jtmthf/"}}"#,
+                true,
+            ),
+            (r#"{"suffix": {"type": ".failed"}}"#, true),
+        ] {
+            let parsed: Filter = filter.parse().expect("the filter should parse");
+            assert_eq!(parsed.admits_outsiders(), admits, "{filter}");
+        }
     }
 
     #[test]
