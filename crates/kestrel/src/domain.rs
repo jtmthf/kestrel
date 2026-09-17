@@ -111,12 +111,14 @@ impl fmt::Display for Direction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegrationKind {
     Github,
+    Webhook,
 }
 
 impl IntegrationKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             IntegrationKind::Github => "github",
+            IntegrationKind::Webhook => "webhook",
         }
     }
 }
@@ -127,6 +129,7 @@ impl FromStr for IntegrationKind {
     fn from_str(kind: &str) -> Result<Self> {
         match kind {
             "github" => Ok(IntegrationKind::Github),
+            "webhook" => Ok(IntegrationKind::Webhook),
             other => bail!("{other} is not an external system kestrel integrates with"),
         }
     }
@@ -143,12 +146,8 @@ pub struct Integration {
     pub id: IntegrationId,
     pub organization: OrganizationId,
     pub name: String,
-    pub kind: IntegrationKind,
-    pub repository: String,
-    pub api: String,
-    pub credential: Token,
+    pub connection: Connection,
     pub carries: Vec<Direction>,
-    pub interval: SignedDuration,
     pub poll_due_at: Option<Timestamp>,
     pub polled_through: Option<i64>,
     pub comments_polled_through: Option<i64>,
@@ -159,6 +158,40 @@ impl Integration {
     pub fn carries(&self, direction: Direction) -> bool {
         self.carries.contains(&direction)
     }
+
+    pub const fn kind(&self) -> IntegrationKind {
+        match self.connection {
+            Connection::Github(_) => IntegrationKind::Github,
+            Connection::Webhook => IntegrationKind::Webhook,
+        }
+    }
+
+    pub fn github(&self) -> Result<&GithubConnection> {
+        match &self.connection {
+            Connection::Github(github) => Ok(github),
+            Connection::Webhook => bail!("the integration {} is not a github one", self.name),
+        }
+    }
+
+    pub fn webhook_path(&self) -> String {
+        format!("/webhooks/{}", self.id)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Connection {
+    Github(GithubConnection),
+    Webhook,
+}
+
+#[derive(Debug, Clone)]
+pub struct GithubConnection {
+    pub repository: String,
+    pub api: String,
+    pub credential: Token,
+    pub interval: SignedDuration,
+    /// Delivered by a signed webhook rather than polled.
+    pub signed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

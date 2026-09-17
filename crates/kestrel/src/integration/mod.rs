@@ -1,12 +1,13 @@
 pub mod credential;
 pub mod github;
 pub mod outcome;
+pub mod webhook;
 
 use anyhow::{Result, bail};
 use jiff::{SignedDuration, Timestamp};
 use tracing::warn;
 
-use crate::domain::{Direction, Event, EventRecordId, Integration, IntegrationKind};
+use crate::domain::{Connection, Direction, Event, EventRecordId, GithubConnection, Integration};
 use crate::integration::credential::Token;
 use crate::integration::github::{Github, Refused};
 use crate::store::Store;
@@ -15,12 +16,22 @@ use crate::store::integration::Recorded;
 pub struct Registration<'a> {
     pub organization: &'a str,
     pub name: &'a str,
-    pub kind: IntegrationKind,
-    pub repository: &'a str,
-    pub api: &'a str,
-    pub token: &'a str,
     pub carries: &'a [Direction],
-    pub interval: SignedDuration,
+    pub connecting: Connecting<'a>,
+}
+
+pub enum Connecting<'a> {
+    /// A `signing_secret` means GitHub delivers by webhook, and the repository is not polled.
+    Github {
+        repository: &'a str,
+        api: &'a str,
+        token: &'a str,
+        interval: SignedDuration,
+        signing_secret: Option<&'a str>,
+    },
+    Webhook {
+        secret: &'a str,
+    },
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -33,11 +44,39 @@ pub async fn register(store: &Store, registration: Registration<'_>) -> Result<I
     if registration.carries.is_empty() {
         bail!("an integration carries something: name a direction it carries");
     }
-    if registration.interval <= SignedDuration::ZERO {
-        bail!("a poll interval is how long kestrel waits, and cannot be zero or negative");
-    }
 
-    let repository = github::repository(registration.repository)?;
+    let (connection, webhook_secret) = match registration.connecting {
+        Connecting::Github {
+            repository,
+            api,
+            token,
+            interval,
+            signing_secret,
+        } => {
+            if interval <= SignedDuration::ZERO {
+                bail!("a poll interval is how long kestrel waits, and cannot be zero or negative");
+            }
+            (
+                Connection::Github(GithubConnection {
+                    repository: github::repository(repository)?,
+                    api: api.to_owned(),
+                    credential: Token::held(token),
+                    interval,
+                    signed: signing_secret.is_some(),
+                }),
+                signing_secret,
+            )
+        }
+        Connecting::Webhook { secret } => {
+            if registration.carries.contains(&Direction::Outbound) {
+                bail!("a generic webhook carries events inbound only");
+            }
+            (Connection::Webhook, Some(secret))
+        }
+    };
+    if webhook_secret.is_some_and(str::is_empty) {
+        bail!("a webhook secret with nothing in it is not one");
+    }
 
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(registration.organization).await?;
@@ -46,12 +85,9 @@ pub async fn register(store: &Store, registration: Registration<'_>) -> Result<I
         .register(
             &organization,
             registration.name,
-            registration.kind,
-            &repository,
-            registration.api,
-            &Token::held(registration.token),
+            connection,
             registration.carries,
-            registration.interval,
+            webhook_secret,
         )
         .await?;
     tx.commit().await?;
@@ -96,6 +132,7 @@ pub async fn event(store: &Store, id: EventRecordId) -> Result<Event> {
 /// Integration where it was and the next one covers the same window again — which costs
 /// nothing, because an Event already recorded is recognised rather than recorded twice.
 pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> Result<Polled> {
+    let interval = integration.github()?.interval;
     let seen = github.issue_events(integration).await;
     let comments = github.issue_comments(integration).await;
     let mut tx = store.begin().await?;
@@ -160,8 +197,8 @@ pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> 
             seen.as_ref()
                 .map_or(integration.polled_through, |seen| seen.through),
             seen.as_ref().map_or_else(
-                |refused| back_off(integration, refused),
-                |_| Timestamp::now() + integration.interval,
+                |refused| back_off(interval, refused),
+                |_| Timestamp::now() + interval,
             ),
         )
         .await?;
@@ -178,12 +215,12 @@ pub async fn poll(store: &Store, github: &Github, integration: &Integration) -> 
 
 /// A rate limit names the moment it lifts, and asking again before then spends a request on
 /// another refusal; nothing is gained by polling more often than the interval either way.
-fn back_off(integration: &Integration, refused: &Refused) -> Timestamp {
-    let interval = Timestamp::now() + integration.interval;
+fn back_off(interval: SignedDuration, refused: &Refused) -> Timestamp {
+    let next = Timestamp::now() + interval;
 
     match refused {
-        Refused::RateLimited { until } => interval.max(*until),
-        Refused::Failed(_) => interval,
+        Refused::RateLimited { until } => next.max(*until),
+        Refused::Failed(_) => next,
     }
 }
 
@@ -192,52 +229,37 @@ mod tests {
     use anyhow::anyhow;
 
     use super::*;
-    use crate::domain::{IntegrationId, OrganizationId};
-
-    fn an_integration(interval: SignedDuration) -> Integration {
-        Integration {
-            id: IntegrationId::generate(),
-            organization: OrganizationId::generate(),
-            name: "github".to_owned(),
-            kind: IntegrationKind::Github,
-            repository: "jtmthf/kestrel".to_owned(),
-            api: github::API.to_owned(),
-            credential: Token::held("ghp_nothing"),
-            carries: vec![Direction::Inbound],
-            interval,
-            poll_due_at: Some(Timestamp::now()),
-            polled_through: None,
-            comments_polled_through: None,
-            last_event_refusal: None,
-        }
-    }
 
     #[test]
     fn a_rate_limit_defers_the_next_poll_to_the_moment_it_lifts() {
-        let integration = an_integration(SignedDuration::from_secs(1));
         let until = Timestamp::now() + SignedDuration::from_hours(1);
 
         assert_eq!(
-            back_off(&integration, &Refused::RateLimited { until }),
+            back_off(
+                SignedDuration::from_secs(1),
+                &Refused::RateLimited { until }
+            ),
             until
         );
     }
 
     #[test]
     fn a_rate_limit_that_has_already_lifted_still_waits_the_interval_out() {
-        let integration = an_integration(SignedDuration::from_secs(60));
         let until = Timestamp::now() - SignedDuration::from_hours(1);
 
-        assert!(back_off(&integration, &Refused::RateLimited { until }) > Timestamp::now());
+        assert!(
+            back_off(
+                SignedDuration::from_secs(60),
+                &Refused::RateLimited { until }
+            ) > Timestamp::now()
+        );
     }
 
     #[test]
     fn a_failure_waits_the_interval_out_rather_than_hammering() {
-        let integration = an_integration(SignedDuration::from_secs(60));
-
         assert!(
             back_off(
-                &integration,
+                SignedDuration::from_secs(60),
                 &Refused::Failed(anyhow!("connection refused"))
             ) > Timestamp::now() + SignedDuration::from_secs(50)
         );

@@ -1628,6 +1628,7 @@ dependencies = [
  "directories",
  "futures-core",
  "getrandom 0.4.3",
+ "hmac",
  "jiff",
  "kestrel-scripted-agent",
  "libc",

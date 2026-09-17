@@ -8,16 +8,22 @@ use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
 use crate::store::Store;
+use crate::timer::Wake;
 
 pub struct AllInOne {
     store: Store,
     listening: serve::Listening,
+    wake: Wake,
 }
 
+/// One process is the only place ingest can wake the sweeps that consume what it recorded.
 pub async fn bind(store: Store, listen: SocketAddr) -> Result<AllInOne> {
+    let wake = Wake::default();
+
     Ok(AllInOne {
         store: store.clone(),
-        listening: serve::bind(store, listen).await?,
+        listening: serve::bind(store, listen, wake.clone()).await?,
+        wake,
     })
 }
 
@@ -35,7 +41,7 @@ impl AllInOne {
             serve::run(self.listening, shutdown)
         }));
         let work = tokio::spawn(stopping_the_others(shutdown.clone(), |shutdown| {
-            work::run(self.store, dispatch, shutdown)
+            work::run(self.store, dispatch, self.wake, shutdown)
         }));
 
         let (serve, work) = tokio::join!(serve, work);

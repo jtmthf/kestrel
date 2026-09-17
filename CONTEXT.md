@@ -81,8 +81,8 @@ A single immutable thing that happened, recorded as a CloudEvent: an id, the sou
 it, the CloudEvents specification version, the type that source calls it, when it occurred, and its
 payload. An event from an integration is named in the vocabulary of the system that produced it:
 kestrel translates nothing into a vocabulary of its own. kestrel mints events for what kestrel
-itself does — a schedule elapsing, and an operator's push — which is not translation, and carries no
-authority for being internal. An Event belongs to one Organization; two Organizations that observe
+itself does — a schedule elapsing, and an operator's push — and wraps a POST whose sender named no
+event; none of that is translation, and none carries authority for being internal. An Event belongs to one Organization; two Organizations that observe
 the same producer event hold separate Events so neither Organization's data is shared with the
 other. An Event does not own or select an Integration; reviewed configuration chooses the
 connection whose authority kestrel uses.

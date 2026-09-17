@@ -1,10 +1,12 @@
 //! The in-process wheel (ADR-0005). The schedule is never in process memory alone, so a
 //! control plane that restarts finds every due time set before it existed and fires it.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use jiff::Timestamp;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -20,7 +22,24 @@ use crate::work;
 
 const SWEEP: Duration = Duration::from_millis(500);
 
-pub async fn sweeping(store: &Store, shutdown: &CancellationToken) -> Result<()> {
+/// Starts the sweeps that consume Events now rather than at their next tick. It reaches only a
+/// work role in the same process; across processes the sweep interval is the guarantee.
+#[derive(Clone)]
+pub struct Wake(Arc<watch::Sender<()>>);
+
+impl Default for Wake {
+    fn default() -> Self {
+        Self(Arc::new(watch::Sender::new(())))
+    }
+}
+
+impl Wake {
+    pub fn wake(&self) {
+        self.0.send_replace(());
+    }
+}
+
+pub async fn sweeping(store: &Store, wake: &Wake, shutdown: &CancellationToken) -> Result<()> {
     let github = Github::dialling_out()?;
 
     // Beside the lease sweep rather than in it: a poll waits on GitHub, and a lease left
@@ -28,8 +47,8 @@ pub async fn sweeping(store: &Store, shutdown: &CancellationToken) -> Result<()>
     tokio::try_join!(
         sweeping_leases(store, shutdown),
         polling(store, &github, shutdown),
-        firing(store, shutdown),
-        following_up(store, shutdown),
+        firing(store, wake.0.subscribe(), shutdown),
+        following_up(store, wake.0.subscribe(), shutdown),
         sealing_idle_sessions(store, shutdown),
         delivering(store, &github, shutdown)
     )?;
@@ -37,7 +56,11 @@ pub async fn sweeping(store: &Store, shutdown: &CancellationToken) -> Result<()>
     Ok(())
 }
 
-async fn following_up(store: &Store, shutdown: &CancellationToken) -> Result<()> {
+async fn following_up(
+    store: &Store,
+    mut woken: watch::Receiver<()>,
+    shutdown: &CancellationToken,
+) -> Result<()> {
     while !shutdown.is_cancelled() {
         match follow_up::receive(store).await {
             Ok(received) => {
@@ -53,7 +76,7 @@ async fn following_up(store: &Store, shutdown: &CancellationToken) -> Result<()>
             Err(error) => warn!(%error, "a follow-up sweep found nothing it could do"),
         }
 
-        tick(shutdown).await;
+        tick_or_woken(shutdown, &mut woken).await;
     }
 
     Ok(())
@@ -127,7 +150,11 @@ async fn delivering(store: &Store, github: &Github, shutdown: &CancellationToken
 
 /// Matching is its own sweep rather than the tail of a poll, so a control plane that stopped
 /// between recording an Event and firing for it finds it on the way back up.
-async fn firing(store: &Store, shutdown: &CancellationToken) -> Result<()> {
+async fn firing(
+    store: &Store,
+    mut woken: watch::Receiver<()>,
+    shutdown: &CancellationToken,
+) -> Result<()> {
     while !shutdown.is_cancelled() {
         match trigger::fire(store).await {
             Ok(fired) => {
@@ -163,7 +190,7 @@ async fn firing(store: &Store, shutdown: &CancellationToken) -> Result<()> {
             Err(error) => warn!(%error, "a firing found nothing it could do"),
         }
 
-        tick(shutdown).await;
+        tick_or_woken(shutdown, &mut woken).await;
     }
 
     Ok(())
@@ -172,6 +199,15 @@ async fn firing(store: &Store, shutdown: &CancellationToken) -> Result<()> {
 async fn tick(shutdown: &CancellationToken) {
     tokio::select! {
         () = tokio::time::sleep(SWEEP) => {}
+        () = shutdown.cancelled() => {}
+    }
+}
+
+/// A wake that arrives mid-sweep is kept, so the Event it announced is not left to the tick.
+async fn tick_or_woken(shutdown: &CancellationToken, woken: &mut watch::Receiver<()>) {
+    tokio::select! {
+        () = tokio::time::sleep(SWEEP) => {}
+        _ = woken.changed() => {}
         () = shutdown.cancelled() => {}
     }
 }
@@ -225,13 +261,55 @@ async fn poll(store: &Store, github: &Github) -> Result<()> {
         if recorded > 0 {
             info!(
                 integration = integration.name,
-                repository = integration.repository,
-                seen,
-                recorded,
-                "a poll recorded events"
+                seen, recorded, "a poll recorded events"
             );
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_wake_ends_the_wait_before_the_tick() {
+        let wake = Wake::default();
+        let mut woken = wake.0.subscribe();
+        let started = Instant::now();
+
+        wake.wake();
+        tick_or_woken(&CancellationToken::new(), &mut woken).await;
+
+        assert!(started.elapsed() < SWEEP / 2);
+    }
+
+    #[tokio::test]
+    async fn without_a_wake_the_tick_is_the_floor() {
+        let wake = Wake::default();
+        let mut woken = wake.0.subscribe();
+        let started = Instant::now();
+
+        tick_or_woken(&CancellationToken::new(), &mut woken).await;
+
+        assert!(started.elapsed() >= SWEEP);
+    }
+
+    #[tokio::test]
+    async fn one_wake_reaches_every_sweep_waiting_on_it() {
+        let wake = Wake::default();
+        let mut firing = wake.0.subscribe();
+        let mut following_up = wake.0.subscribe();
+        let shutdown = CancellationToken::new();
+        let started = Instant::now();
+
+        wake.wake();
+        tick_or_woken(&shutdown, &mut firing).await;
+        tick_or_woken(&shutdown, &mut following_up).await;
+
+        assert!(started.elapsed() < SWEEP / 2);
+    }
 }

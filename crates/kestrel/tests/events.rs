@@ -253,7 +253,10 @@ async fn the_poll_interval_survives_a_restart() {
     let harness = harness.kill_and_restart().await;
 
     assert_eq!(
-        harness.integrations("acme").await[0].interval,
+        harness.integrations("acme").await[0]
+            .github()
+            .expect("a github integration")
+            .interval,
         SignedDuration::from_secs(97)
     );
 

@@ -290,9 +290,41 @@ kestrel integration register github origin \
   --token ghp_your_token
 ```
 
-It discovers events by polling every minute rather than by webhook, so nothing here needs an inbound
-address or a tunnel. A first poll reads one page and stops, so an integration starts from roughly
-the moment you register it rather than walking the repository's whole back history.
+It discovers events by polling every minute, so nothing here needs an inbound address or a tunnel. A
+first poll reads one page and stops, so an integration starts from roughly the moment you register it
+rather than walking the repository's whole back history.
+
+If GitHub can reach kestrel, give the integration the secret you configure on the repository's
+webhook instead, with `--webhook-secret`. kestrel then stops polling and receives the repository's
+events as GitHub delivers them. `kestrel integration list` shows the path to point the webhook at,
+`/webhooks/<integration id>`, with content type `application/json`. A delivery whose
+`X-Hub-Signature-256` does not verify is refused and never recorded.
+
+### Events from anything else
+
+Anything that can POST can start work, through a generic webhook:
+
+```sh
+kestrel integration register webhook ci --organization acme --secret "$KESTREL_WEBHOOK_SECRET"
+```
+
+A sender presents the secret as `Authorization: Bearer <secret>` and POSTs to the integration's
+path. A CloudEvent in either HTTP mode keeps the `id`, `source` and `type` its sender gave it: binary
+mode (`ce-*` headers, the body is `data`) or structured mode (`application/cloudevents+json`, the
+body is the whole event). Any other POST is wrapped: its type is `dev.kestrel.webhook.received`, its
+source is the path it was posted to, and its body is `data`, as JSON when it is JSON and as text
+otherwise.
+
+```sh
+curl -X POST "http://127.0.0.1:7717/webhooks/$INTEGRATION" \
+  -H "Authorization: Bearer $KESTREL_WEBHOOK_SECRET" \
+  -H 'ce-specversion: 1.0' -H 'ce-id: build-7' \
+  -H 'ce-source: https://ci.example.com/pipelines/3' -H 'ce-type: com.example.build.failed' \
+  -H 'Content-Type: application/json' -d '{"step": "test"}'
+```
+
+kestrel answers `202 Accepted` once the event is recorded, and matches it afterwards. An event
+delivered twice with the same `source` and `id` is recorded once.
 
 ```sh
 kestrel event list --organization acme
@@ -471,8 +503,9 @@ Pass `--as-participant NAME` to record a name other than `operator` in the trans
 
 Three things you will meet following this document.
 
-**GitHub is the only external system that starts work.** No Slack message, generic webhook or
-schedule does, and nothing decides which of several queued runs goes first.
+**Only GitHub hears back.** A generic webhook starts work but has nowhere to say how it went, no
+Slack message or schedule starts anything, and nothing decides which of several queued runs goes
+first.
 
 **A failed run is not retried.** kestrel retries dispatch and never work: a run that started and
 failed stays failed.

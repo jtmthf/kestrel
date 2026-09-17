@@ -76,7 +76,7 @@ pub struct Cli {
     #[arg(long, env = "KESTREL_DATA_DIR", global = true, value_name = "DIR")]
     data_dir: Option<PathBuf>,
 
-    /// Where the control plane listens for the link an Environment dials out to
+    /// Where the control plane listens for the link an Environment dials out to, and for webhooks
     #[arg(
         long,
         env = "KESTREL_LISTEN",
@@ -154,7 +154,7 @@ pub enum ComputeDriver {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
-    /// Serve the API and the link an Environment dials out to
+    /// Serve the link an Environment dials out to, and the webhooks Events arrive by
     Serve,
     /// Claim queued Runs and execute them
     Work,
@@ -311,8 +311,23 @@ pub enum RegisterCommand {
         /// How often the poll asks GitHub what has happened
         #[arg(long, value_name = "DURATION", default_value = "1m")]
         interval: SignedDuration,
+        /// The secret GitHub signs webhook deliveries with; given one, kestrel receives the
+        /// repository's events by webhook and stops polling for them
+        #[arg(long, env = "KESTREL_GITHUB_WEBHOOK_SECRET", value_name = "SECRET")]
+        webhook_secret: Option<String>,
         #[arg(long, env = "KESTREL_GITHUB_API", default_value = github::API, hide = true)]
         api: String,
+    },
+    /// A generic endpoint any producer can POST CloudEvents to
+    Webhook {
+        /// The name it is referred to by
+        name: String,
+        /// The Organization whose Events it records
+        #[arg(long)]
+        organization: String,
+        /// The secret a sender presents as `Authorization: Bearer <secret>`
+        #[arg(long, env = "KESTREL_WEBHOOK_SECRET", value_name = "SECRET")]
+        secret: String,
     },
 }
 

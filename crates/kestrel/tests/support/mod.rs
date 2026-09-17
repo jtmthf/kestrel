@@ -30,10 +30,10 @@ use jiff::{SignedDuration, Timestamp};
 use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
-    Agent, CorrelationMiss, Direction, Event, EventRecordId, Integration, IntegrationKind,
-    Organization, Run, RunId, Session, SessionId, Templates, Trigger, Workspace,
+    Agent, CorrelationMiss, Direction, Event, EventRecordId, Integration, Organization, Run, RunId,
+    Session, SessionId, Templates, Trigger, Workspace,
 };
-use kestrel::integration::{self, Registration};
+use kestrel::integration::{self, Connecting, Registration};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
 use kestrel::log::{Cursor, Entry, Page, TranscriptEntry, Unreadable, Window};
@@ -327,15 +327,63 @@ impl Harness {
             Registration {
                 organization,
                 name,
-                kind: IntegrationKind::Github,
-                repository,
-                api,
-                token: TOKEN,
                 carries,
-                interval,
+                connecting: Connecting::Github {
+                    repository,
+                    api,
+                    token: TOKEN,
+                    interval,
+                    signing_secret: None,
+                },
             },
         )
         .await
+    }
+
+    pub async fn register_signed_github(
+        &self,
+        organization: &str,
+        name: &str,
+        repository: &str,
+        api: &str,
+        signing_secret: &str,
+    ) -> Integration {
+        integration::register(
+            &self.store,
+            Registration {
+                organization,
+                name,
+                carries: &[Direction::Inbound, Direction::Outbound],
+                connecting: Connecting::Github {
+                    repository,
+                    api,
+                    token: TOKEN,
+                    interval: SignedDuration::from_millis(1),
+                    signing_secret: Some(signing_secret),
+                },
+            },
+        )
+        .await
+        .expect("the integration should register")
+    }
+
+    pub async fn register_webhook(
+        &self,
+        organization: &str,
+        name: &str,
+        secret: &str,
+    ) -> Integration {
+        integration::register(
+            &self.store,
+            Registration {
+                organization,
+                name,
+                carries: &[Direction::Inbound],
+                connecting: Connecting::Webhook { secret },
+            },
+        )
+        .await
+        .expect("the webhook should register")
     }
 
     pub async fn integrations(&self, organization: &str) -> Vec<Integration> {

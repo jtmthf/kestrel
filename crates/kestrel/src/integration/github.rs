@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::domain::{Integration, Occurrence};
+use crate::domain::{GithubConnection, Integration, Occurrence};
 
 pub const API: &str = "https://api.github.com";
 
@@ -17,6 +17,9 @@ pub const API: &str = "https://api.github.com";
 /// label, so a trigger matching on the type and label alone would fire on both.
 pub const LABELLED: &str = "com.github.issues.labeled";
 pub const COMMENTED: &str = "com.github.issue_comment.created";
+
+/// Every outcome comment carries it, so kestrel never hears its own comment as a follow-up.
+pub const MARKER: &str = "<!-- kestrel run ";
 
 const VERSION: &str = "2022-11-28";
 const PER_PAGE: usize = 100;
@@ -69,12 +72,13 @@ impl Github {
     /// oldest first. A first poll takes one page rather than the repository's whole history:
     /// an Integration discovers what happens from the moment it is registered.
     pub async fn issue_events(&self, integration: &Integration) -> Result<Seen, Refused> {
-        let repository = repository(&integration.repository).map_err(Refused::Failed)?;
+        let github = integration.github().map_err(Refused::Failed)?;
+        let repository = repository(&github.repository).map_err(Refused::Failed)?;
         let mut newest_first = Vec::new();
         let mut through = integration.polled_through;
 
         for page in 1..=PAGES {
-            let reported = self.page(integration, &repository, page).await?;
+            let reported = self.page(github, &repository, page).await?;
             let short = reported.len() < PER_PAGE;
             let ids = reported
                 .iter()
@@ -91,7 +95,7 @@ impl Github {
                 .any(|(_, id)| Some(*id) <= integration.polled_through);
             for (event, id) in reported.into_iter().zip(ids) {
                 through = through.max(Some(id));
-                newest_first.push(occurrence(&event, integration).map_err(Refused::Failed)?);
+                newest_first.push(occurrence(&event, github).map_err(Refused::Failed)?);
             }
 
             if short || reached || integration.polled_through.is_none() {
@@ -113,7 +117,8 @@ impl Github {
     }
 
     pub async fn issue_comments(&self, integration: &Integration) -> Result<Seen, Refused> {
-        let repository = repository(&integration.repository).map_err(Refused::Failed)?;
+        let github = integration.github().map_err(Refused::Failed)?;
+        let repository = repository(&github.repository).map_err(Refused::Failed)?;
         let mut newest_first = Vec::new();
         let mut through = integration.comments_polled_through;
 
@@ -122,7 +127,7 @@ impl Github {
             let response = self
                 .request(
                     reqwest::Method::GET,
-                    integration,
+                    github,
                     &format!(
                         "repos/{repository}/issues/comments?sort=created&direction=desc&per_page={PER_PAGE}&page={page}"
                     ),
@@ -146,14 +151,9 @@ impl Github {
 
             for (comment, id) in reported.into_iter().zip(ids) {
                 through = through.max(Some(id));
-                if Some(id) > integration.comments_polled_through
-                    && !comment
-                        .get("body")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|body| body.contains("<!-- kestrel run "))
-                {
+                if Some(id) > integration.comments_polled_through && !said_by_kestrel(&comment) {
                     newest_first
-                        .push(comment_occurrence(&comment, integration).map_err(Refused::Failed)?);
+                        .push(comment_occurrence(&comment, github).map_err(Refused::Failed)?);
                 }
             }
 
@@ -172,14 +172,14 @@ impl Github {
 
     async fn page(
         &self,
-        integration: &Integration,
+        github: &GithubConnection,
         repository: &str,
         page: usize,
     ) -> Result<Vec<serde_json::Value>, Refused> {
         let response = self
             .request(
                 reqwest::Method::GET,
-                integration,
+                github,
                 &format!("repos/{repository}/issues/events?per_page={PER_PAGE}&page={page}"),
             )
             .send()
@@ -199,11 +199,12 @@ impl Github {
         subject: i64,
         body: &str,
     ) -> Result<Comment, Refused> {
-        let repository = repository(&integration.repository).map_err(Refused::Failed)?;
+        let github = integration.github().map_err(Refused::Failed)?;
+        let repository = repository(&github.repository).map_err(Refused::Failed)?;
         let response = self
             .request(
                 reqwest::Method::POST,
-                integration,
+                github,
                 &format!("repos/{repository}/issues/{subject}/comments"),
             )
             .json(&Body { body })
@@ -228,11 +229,12 @@ impl Github {
         marker: &str,
         since: Timestamp,
     ) -> Result<Option<Comment>, Refused> {
-        let repository = repository(&integration.repository).map_err(Refused::Failed)?;
+        let github = integration.github().map_err(Refused::Failed)?;
+        let repository = repository(&github.repository).map_err(Refused::Failed)?;
         let response = self
             .request(
                 reqwest::Method::GET,
-                integration,
+                github,
                 &format!(
                     "repos/{repository}/issues/{subject}/comments?per_page={PER_PAGE}&since={since}"
                 ),
@@ -256,17 +258,17 @@ impl Github {
     fn request(
         &self,
         method: reqwest::Method,
-        integration: &Integration,
+        github: &GithubConnection,
         path: &str,
     ) -> reqwest::RequestBuilder {
         self.client
             .request(
                 method,
-                format!("{}/{path}", integration.api.trim_end_matches('/')),
+                format!("{}/{path}", github.api.trim_end_matches('/')),
             )
             .header("accept", "application/vnd.github+json")
             .header("x-github-api-version", VERSION)
-            .bearer_auth(integration.credential.presented_to_the_external_system())
+            .bearer_auth(github.credential.presented_to_the_external_system())
     }
 }
 
@@ -324,7 +326,14 @@ fn comment_id(comment: &serde_json::Value) -> Result<i64> {
         .context("a GitHub issue comment has no integer id")
 }
 
-fn occurrence(event: &serde_json::Value, integration: &Integration) -> Result<Occurrence> {
+fn said_by_kestrel(comment: &serde_json::Value) -> bool {
+    comment
+        .get("body")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|body| body.contains(MARKER))
+}
+
+fn occurrence(event: &serde_json::Value, github: &GithubConnection) -> Result<Occurrence> {
     let issue = event
         .get("issue")
         .context("a GitHub issue event names no issue")?;
@@ -335,7 +344,7 @@ fn occurrence(event: &serde_json::Value, integration: &Integration) -> Result<Oc
 
     Ok(Occurrence {
         id: event_id(event)?.to_string(),
-        source: source(integration),
+        source: source(github),
         specversion: "1.0".to_owned(),
         r#type: if event_kind == "labeled" {
             LABELLED.to_owned()
@@ -361,7 +370,7 @@ fn occurrence(event: &serde_json::Value, integration: &Integration) -> Result<Oc
 
 fn comment_occurrence(
     comment: &serde_json::Value,
-    integration: &Integration,
+    github: &GithubConnection,
 ) -> Result<Occurrence> {
     let issue = comment
         .get("issue_url")
@@ -375,7 +384,7 @@ fn comment_occurrence(
 
     Ok(Occurrence {
         id: format!("comment:{}", comment_id(comment)?),
-        source: source(integration),
+        source: source(github),
         specversion: "1.0".to_owned(),
         r#type: COMMENTED.to_owned(),
         subject: Some(format!("#{issue}")),
@@ -401,6 +410,7 @@ impl<'a> EventData<'a> {
     pub fn actor(&self) -> Option<&str> {
         self.field(&["actor", "login"])
             .or_else(|| self.field(&["user", "login"]))
+            .or_else(|| self.field(&["sender", "login"]))
             .and_then(serde_json::Value::as_str)
     }
 
@@ -441,10 +451,65 @@ impl<'a> EventData<'a> {
     }
 }
 
+/// One webhook delivery, named in GitHub's webhook vocabulary, or nothing for a comment kestrel
+/// itself left. A comment keeps the id a poll gives it, so the two ways of learning it dedup.
+pub fn delivered(
+    github: &GithubConnection,
+    event: &str,
+    delivery: &str,
+    payload: serde_json::Value,
+) -> Result<Option<Occurrence>> {
+    if let Some(named) = payload
+        .get("repository")
+        .and_then(|repository| repository.get("full_name"))
+        .and_then(serde_json::Value::as_str)
+        && !named.eq_ignore_ascii_case(&github.repository)
+    {
+        bail!(
+            "the delivery is about {named}, and this integration watches {}",
+            github.repository
+        );
+    }
+    if event == "issue_comment" && payload.get("comment").is_some_and(said_by_kestrel) {
+        return Ok(None);
+    }
+
+    let action = payload.get("action").and_then(serde_json::Value::as_str);
+    let id = match (event, action) {
+        ("issue_comment", Some("created")) => format!(
+            "comment:{}",
+            payload
+                .get("comment")
+                .map(comment_id)
+                .context("an issue_comment delivery names no comment")??
+        ),
+        _ => delivery.to_owned(),
+    };
+    let subject = payload
+        .get("issue")
+        .or_else(|| payload.get("pull_request"))
+        .and_then(|issue| issue.get("number"))
+        .and_then(serde_json::Value::as_i64)
+        .map(|number| format!("#{number}"));
+
+    Ok(Some(Occurrence {
+        id,
+        source: source(github),
+        specversion: "1.0".to_owned(),
+        r#type: match action {
+            Some(action) => format!("com.github.{event}.{action}"),
+            None => format!("com.github.{event}"),
+        },
+        subject,
+        time: Timestamp::now(),
+        data: payload,
+    }))
+}
+
 /// The external resource the event is about (ADR-0011): the repository, never the
 /// integration, so an event dedups identically however kestrel learned it.
-fn source(integration: &Integration) -> String {
-    format!("https://github.com/{}", integration.repository)
+fn source(github: &GithubConnection) -> String {
+    format!("https://github.com/{}", github.repository)
 }
 
 /// `owner/name`, checked here because it is pasted into a URL rather than sent as a parameter.
@@ -539,6 +604,78 @@ mod tests {
         assert!(repository("jtmthf/").is_err());
     }
 
+    fn watching() -> GithubConnection {
+        GithubConnection {
+            repository: "jtmthf/kestrel".to_owned(),
+            api: API.to_owned(),
+            credential: crate::integration::credential::Token::held("nothing"),
+            interval: jiff::SignedDuration::from_secs(60),
+            signed: true,
+        }
+    }
+
+    #[test]
+    fn a_delivery_is_named_in_the_webhook_vocabulary() {
+        let payload = serde_json::json!({
+            "action": "labeled",
+            "label": { "name": "ready-for-agent" },
+            "issue": { "number": 43 },
+            "repository": { "full_name": "jtmthf/kestrel" },
+            "sender": { "login": "jtmthf" }
+        });
+
+        let occurrence = delivered(&watching(), "issues", "d-1", payload)
+            .unwrap()
+            .expect("a label is an event");
+
+        assert_eq!(occurrence.r#type, LABELLED);
+        assert_eq!(occurrence.id, "d-1");
+        assert_eq!(occurrence.source, "https://github.com/jtmthf/kestrel");
+        assert_eq!(occurrence.subject.as_deref(), Some("#43"));
+        assert_eq!(EventData::new(&occurrence).actor(), Some("jtmthf"));
+    }
+
+    #[test]
+    fn a_delivered_comment_is_identified_as_a_polled_one_is() {
+        let payload = serde_json::json!({
+            "action": "created",
+            "comment": { "id": 99, "body": "please add a test" },
+            "issue": { "number": 43 }
+        });
+
+        let occurrence = delivered(&watching(), "issue_comment", "d-2", payload)
+            .unwrap()
+            .expect("a comment is an event");
+
+        assert_eq!(occurrence.r#type, COMMENTED);
+        assert_eq!(occurrence.id, "comment:99");
+    }
+
+    #[test]
+    fn a_comment_kestrel_left_is_not_heard_back() {
+        let payload = serde_json::json!({
+            "action": "created",
+            "comment": { "id": 99, "body": "done\n<!-- kestrel run 1 -->" },
+            "issue": { "number": 43 }
+        });
+
+        assert!(
+            delivered(&watching(), "issue_comment", "d-3", payload)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_delivery_about_another_repository_is_refused() {
+        let payload = serde_json::json!({
+            "action": "labeled",
+            "repository": { "full_name": "someone/else" }
+        });
+
+        assert!(delivered(&watching(), "issues", "d-4", payload).is_err());
+    }
+
     #[test]
     fn an_issue_event_without_a_producer_id_is_refused() {
         let event = serde_json::json!({
@@ -546,23 +683,7 @@ mod tests {
             "created_at": "2026-09-01T12:00:00Z",
             "issue": { "number": 43 }
         });
-        let integration = Integration {
-            id: crate::domain::IntegrationId::generate(),
-            organization: crate::domain::OrganizationId::generate(),
-            name: "github".to_owned(),
-            kind: crate::domain::IntegrationKind::Github,
-            repository: "jtmthf/kestrel".to_owned(),
-            api: API.to_owned(),
-            credential: crate::integration::credential::Token::held("nothing"),
-            carries: vec![crate::domain::Direction::Inbound],
-            interval: jiff::SignedDuration::from_secs(60),
-            poll_due_at: None,
-            polled_through: None,
-            comments_polled_through: None,
-            last_event_refusal: None,
-        };
-
-        let refusal = occurrence(&event, &integration)
+        let refusal = occurrence(&event, &watching())
             .expect_err("an event without its producer id should be refused");
 
         assert!(refusal.to_string().contains("integer id"));
