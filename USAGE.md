@@ -453,7 +453,7 @@ disabled
 
 Each Trigger has a budget of ten firings per hour. The firing that would exceed it is recorded
 without opening a Session, and disables only that Trigger. `kestrel trigger show` names the reason;
-an operator must explicitly enable it again.
+an operator must explicitly enable it again, which starts its budget afresh.
 
 ## The answer comes back to the issue
 
