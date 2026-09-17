@@ -10,6 +10,7 @@ pub mod integration;
 pub mod keyring;
 pub mod link;
 pub mod log;
+pub mod operator;
 pub mod provider;
 pub mod role;
 pub mod session;
@@ -31,12 +32,12 @@ pub async fn run(cli: &Cli, shutdown: CancellationToken) -> anyhow::Result<()> {
 
     match cli.selection() {
         Selection::AllInOne => {
-            let all_in_one = role::bind(store, cli.listen).await?;
-            let dispatch = cli.dispatch(all_in_one.address())?;
+            let all_in_one = role::bind(store, cli.listen()).await?;
+            let dispatch = cli.dispatch(all_in_one.bound().link)?;
             all_in_one.run(Some(dispatch), shutdown).await
         }
         Selection::Serve => {
-            let listening = role::serve::bind(store, cli.listen, timer::Wake::default()).await?;
+            let listening = role::serve::bind(store, cli.listen(), timer::Wake::default()).await?;
             role::serve::run(listening, shutdown).await
         }
         Selection::Work => {

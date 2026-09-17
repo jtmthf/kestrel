@@ -1649,6 +1649,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kestrel-client"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "kestrel-scripted-agent"
 version = "0.0.0"
 dependencies = [
