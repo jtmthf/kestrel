@@ -735,6 +735,40 @@ async fn a_trigger_that_exceeds_its_firing_budget_disables_without_stopping_anot
     harness.teardown().await;
 }
 
+#[tokio::test]
+async fn a_trigger_enabled_after_exhausting_its_budget_fires_again_within_the_window() {
+    let stub = GithubStub::start();
+    let events = (7..18)
+        .map(|id| github_stub::labelled(id, id + 36, READY))
+        .collect::<Vec<_>>();
+    stub.script(github_stub::page(&events));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    ready_for_agent(&harness).await;
+    watching(&harness, &stub).await;
+
+    opened(&harness, 10).await;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while harness.show_trigger("acme", "ready").await.state == TriggerState::Enabled {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the trigger never exhausted its budget"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    harness.enable_trigger("acme", "ready").await;
+    stub.script(github_stub::page(&[github_stub::labelled(30, 66, READY)]));
+
+    opened(&harness, 11).await;
+    assert_eq!(
+        harness.show_trigger("acme", "ready").await.state,
+        TriggerState::Enabled
+    );
+
+    harness.teardown().await;
+}
+
 /// Disabling stops a Trigger firing without forgetting it, so what it was declared to match
 /// is still there to be enabled again.
 #[tokio::test]
