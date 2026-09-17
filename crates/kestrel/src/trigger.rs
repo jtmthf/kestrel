@@ -2,17 +2,18 @@
 //! firing starts work with are named in the declaration a human applied, never in the Event.
 
 use anyhow::{Context as _, Result, bail};
+use jiff::Timestamp;
 
 pub mod apply;
 
 use crate::domain::{
-    CorrelationMiss, DisableReason, Event, EventRecordId, FiringBudget, RunId, SessionId,
-    Templates, Trigger, TriggerId, TriggerState,
+    CorrelationMiss, DisableReason, Event, EventRecordId, Fires, FiringBudget, Occurrence, RunId,
+    SessionId, Templates, Trigger, TriggerId, TriggerState,
 };
 use crate::fanout::{self, Change};
-use crate::filter::Filter;
 use crate::log::Entry;
 use crate::session;
+use crate::store::integration::Recorded;
 use crate::store::session::Opening;
 use crate::store::{Store, Tx};
 
@@ -23,7 +24,7 @@ const AT_A_TIME: usize = 32;
 pub struct Declaration<'a> {
     pub organization: &'a str,
     pub name: &'a str,
-    pub filter: &'a Filter,
+    pub fires: &'a Fires,
     pub templates: &'a Templates,
     pub on_miss: Option<CorrelationMiss>,
     pub workspace: &'a str,
@@ -65,6 +66,8 @@ pub struct Rendered {
 pub struct Tested {
     pub matches: bool,
     pub rendered: Result<Rendered>,
+    /// When the elapsing a test named no Event for is due.
+    pub elapsing: Option<Timestamp>,
 }
 
 pub(crate) fn check_miss(templates: &Templates, on_miss: Option<CorrelationMiss>) -> Result<()> {
@@ -81,6 +84,18 @@ pub(crate) fn check_miss(templates: &Templates, on_miss: Option<CorrelationMiss>
 
 pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trigger> {
     check_miss(declaration.templates, declaration.on_miss)?;
+    if let Fires::Every(every) = declaration.fires {
+        let budget = FiringBudget::default();
+        let fastest = budget.window / i32::try_from(budget.limit.get())?;
+        if *every < fastest {
+            bail!(
+                "a trigger firing every {every:#} would exhaust its budget of {} firings in {:#}: \
+                 fire at most every {fastest:#}",
+                budget.limit,
+                budget.window
+            );
+        }
+    }
 
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(declaration.organization).await?;
@@ -94,7 +109,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
         .declare(
             &organization,
             declaration.name,
-            declaration.filter,
+            declaration.fires,
             declaration.templates,
             declaration.on_miss,
             &workspace,
@@ -128,7 +143,7 @@ pub async fn test(
     store: &Store,
     organization: &str,
     name: &str,
-    event: EventRecordId,
+    event: Option<EventRecordId>,
 ) -> Result<Tested> {
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
@@ -141,7 +156,7 @@ pub async fn test_declared(
     store: &Store,
     organization: &str,
     declared: &apply::Declared,
-    event: EventRecordId,
+    event: Option<EventRecordId>,
 ) -> Result<Tested> {
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
@@ -154,7 +169,7 @@ pub async fn test_declared(
         agent: tx.agents().named(&organization, &declared.agent).await?,
         organization,
         name: declared.name.clone(),
-        filter: declared.filter.clone(),
+        fires: Fires::On(declared.filter.clone()),
         templates: declared.templates.clone(),
         on_miss: declared.on_miss,
         state: TriggerState::Enabled,
@@ -167,7 +182,34 @@ pub async fn test_declared(
     tested(&mut tx, &trigger, event).await
 }
 
-async fn tested(tx: &mut Tx<'_>, trigger: &Trigger, event: EventRecordId) -> Result<Tested> {
+async fn tested(
+    tx: &mut Tx<'_>,
+    trigger: &Trigger,
+    event: Option<EventRecordId>,
+) -> Result<Tested> {
+    let Some(event) = event else {
+        let due = tx.triggers().due_at(trigger).await?.with_context(|| {
+            format!(
+                "the trigger {} fires on events, so a test names one",
+                trigger.name
+            )
+        })?;
+        let event = Event {
+            record_id: EventRecordId::generate(),
+            organization: trigger.organization.id,
+            integration: None,
+            occurrence: trigger
+                .elapsing(due)
+                .context("a trigger with a due time has a schedule")?,
+            recorded_at: Timestamp::now(),
+        };
+        return Ok(Tested {
+            matches: true,
+            rendered: render(trigger, &event),
+            elapsing: Some(due),
+        });
+    };
+
     let event = tx.integrations().event(event).await?;
     if event.organization != trigger.organization.id {
         bail!(
@@ -180,6 +222,7 @@ async fn tested(tx: &mut Tx<'_>, trigger: &Trigger, event: EventRecordId) -> Res
     Ok(Tested {
         matches: tx.triggers().matches(trigger, &event).await?,
         rendered: render(trigger, &event),
+        elapsing: None,
     })
 }
 
@@ -228,6 +271,38 @@ pub async fn disable(store: &Store, organization: &str, name: &str) -> Result<Tr
 
 pub async fn enable(store: &Store, organization: &str, name: &str) -> Result<Trigger> {
     set(store, organization, name, TriggerState::Enabled).await
+}
+
+/// Records what each due schedule mints and leaves the firing to [`fire`], so scheduled work
+/// is recorded and fired like any other Event. Elapsings missed while nothing swept coalesce
+/// into one.
+pub async fn elapse(store: &Store, at: Timestamp) -> Result<Vec<Occurrence>> {
+    let mut tx = store.begin().await?;
+    let mut minted = Vec::new();
+
+    for (trigger, due) in tx.triggers().schedules_due(at).await? {
+        let Fires::Every(every) = trigger.fires else {
+            bail!("the trigger {} is due but has no schedule", trigger.name);
+        };
+        let occurrence = trigger
+            .elapsing(due)
+            .context("a scheduled trigger mints an event")?;
+        if let Recorded::Recorded = tx
+            .integrations()
+            .record_minted(&trigger.organization, &occurrence)
+            .await?
+        {
+            minted.push(occurrence);
+        }
+
+        let missed = at.duration_since(due).as_nanos() / every.as_nanos();
+        let next =
+            Timestamp::from_nanosecond(due.as_nanosecond() + (missed + 1) * every.as_nanos())?;
+        tx.triggers().due_again(&trigger, next).await?;
+    }
+    tx.commit().await?;
+
+    Ok(minted)
 }
 
 /// An Event no Trigger matches opens nothing, and that is not a failure.

@@ -2,7 +2,9 @@ CREATE TABLE trigger (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organization (id),
     name TEXT NOT NULL,
-    filter TEXT NOT NULL,
+    filter TEXT,
+    every_ms INTEGER CHECK (every_ms > 0),
+    due_at TEXT,
     brief TEXT NOT NULL,
     branch TEXT,
     correlation TEXT,
@@ -15,6 +17,8 @@ CREATE TABLE trigger (
     enabled_at TEXT NOT NULL,
     declared_at TEXT NOT NULL,
     CHECK ((correlation IS NULL) = (on_miss IS NULL)),
+    CHECK ((filter IS NULL) <> (every_ms IS NULL)),
+    CHECK ((every_ms IS NULL) = (due_at IS NULL)),
     UNIQUE (organization_id, name)
 ) STRICT;
 

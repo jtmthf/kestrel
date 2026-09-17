@@ -7,7 +7,7 @@ use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::filter::Filter;
+use crate::filter::{Attribute, Filter};
 use crate::integration::credential::Token;
 use crate::template::Template;
 
@@ -210,7 +210,8 @@ pub struct Occurrence {
 pub struct Event {
     pub record_id: EventRecordId,
     pub organization: OrganizationId,
-    pub integration: IntegrationId,
+    /// None for an Event kestrel minted itself.
+    pub integration: Option<IntegrationId>,
     pub occurrence: Occurrence,
     pub recorded_at: Timestamp,
 }
@@ -337,7 +338,7 @@ pub struct Trigger {
     pub id: TriggerId,
     pub organization: Organization,
     pub name: String,
-    pub filter: Filter,
+    pub fires: Fires,
     pub templates: Templates,
     pub on_miss: Option<CorrelationMiss>,
     pub workspace: Workspace,
@@ -350,11 +351,66 @@ pub struct Trigger {
 }
 
 impl Trigger {
+    /// A scheduled Trigger matches only the Events its own elapsing mints, which is what puts
+    /// scheduled work on the one firing path.
+    pub fn filter(&self) -> Filter {
+        match &self.fires {
+            Fires::On(filter) => filter.clone(),
+            Fires::Every(_) => Filter::All(vec![
+                Filter::Exact(Attribute::Source, self.source()),
+                Filter::Exact(Attribute::Type, ELAPSED.to_owned()),
+            ]),
+        }
+    }
+
+    /// The Event its schedule mints on elapsing when due, keyed by that due time so a sweep
+    /// that runs twice records it once.
+    pub fn elapsing(&self, due: Timestamp) -> Option<Occurrence> {
+        let Fires::Every(every) = self.fires else {
+            return None;
+        };
+
+        Some(Occurrence {
+            id: due.to_string(),
+            source: self.source(),
+            specversion: "1.0".to_owned(),
+            r#type: ELAPSED.to_owned(),
+            subject: None,
+            time: due,
+            data: serde_json::json!({
+                "trigger": self.name,
+                "every": format!("{every:#}"),
+            }),
+        })
+    }
+
+    fn source(&self) -> String {
+        format!("urn:kestrel:trigger:{}", self.id)
+    }
+
     pub fn firing_budget_exhausted_because(&self) -> String {
         format!(
             "the trigger {} exhausted its budget of {} firings in {}",
             self.name, self.firing_budget.limit, self.firing_budget.window
         )
+    }
+}
+
+/// What kestrel calls a schedule elapsing.
+pub const ELAPSED: &str = "dev.kestrel.schedule.elapsed";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fires {
+    On(Filter),
+    Every(SignedDuration),
+}
+
+impl fmt::Display for Fires {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Fires::On(filter) => filter.fmt(f),
+            Fires::Every(every) => write!(f, "every {every:#}"),
+        }
     }
 }
 

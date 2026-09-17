@@ -364,6 +364,36 @@ fn a_disabled_trigger_shows_its_reason_and_budget() {
 }
 
 #[test]
+fn a_scheduled_trigger_shows_its_schedule_and_tests_without_an_event() {
+    let kestrel = declared();
+    kestrel.run(&[
+        "trigger",
+        "declare",
+        "sweep",
+        "--organization",
+        "acme",
+        "--every",
+        "2h",
+        "--brief",
+        "Sweep the backlog for {{ event.data.trigger }} every {{ event.data.every }}",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+
+    let shown = kestrel.run(&["trigger", "show", "sweep", "--organization", "acme"]);
+    let tested = kestrel.run(&["trigger", "test", "sweep", "--organization", "acme"]);
+
+    assert!(shown.contains("fires         every 2h"), "{shown}");
+    assert!(tested.starts_with("matches\nelapsing      "), "{tested}");
+    assert!(
+        tested.contains("Sweep the backlog for sweep every 2h"),
+        "{tested}"
+    );
+}
+
+#[test]
 fn an_agent_names_the_runtime_and_model_it_participates_with() {
     let kestrel = Kestrel::new();
     kestrel.run(&["organization", "declare", "acme"]);
@@ -1540,7 +1570,7 @@ fn a_brief_and_a_filter_are_read_from_a_file_or_standard_input() {
 
     let shown = kestrel.run(&["trigger", "show", "ready", "--organization", "acme"]);
     assert!(
-        shown.contains(r#"matches       type = "com.github.issues.labeled""#),
+        shown.contains(r#"fires         type = "com.github.issues.labeled""#),
         "{shown}"
     );
     assert!(shown.ends_with("and say so."), "{shown}");

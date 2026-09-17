@@ -8,7 +8,7 @@ use crate::cli::{
     OrganizationCommand, RegisterCommand, RunCommand, SessionCommand, TriggerCommand,
     WorkspaceCommand,
 };
-use crate::domain::{Connection, Direction, Templates};
+use crate::domain::{Connection, Direction, Fires, Templates};
 use crate::filter::Filter;
 use crate::integration::{self, Connecting, Registration};
 use crate::log::Window;
@@ -290,6 +290,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             name,
             organization,
             filter,
+            every,
             brief,
             branch,
             correlation,
@@ -297,19 +298,26 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             workspace,
             agent,
         }) => {
-            if *filter == Given::Stdin && *brief == Given::Stdin {
-                bail!("the filter and the brief cannot both be read from standard input");
-            }
-            let filter: Filter = filter.parse("filter")?;
-            if filter.admits_outsiders() {
-                warn_of_outsiders(name);
-            }
+            let fires = match (filter, every) {
+                (Some(filter), None) => {
+                    if *filter == Given::Stdin && *brief == Given::Stdin {
+                        bail!("the filter and the brief cannot both be read from standard input");
+                    }
+                    let filter: Filter = filter.parse("filter")?;
+                    if filter.admits_outsiders() {
+                        warn_of_outsiders(name);
+                    }
+                    Fires::On(filter)
+                }
+                (None, Some(every)) => Fires::Every(*every),
+                _ => bail!("a trigger declares a filter or a schedule, and not both"),
+            };
             let trigger = trigger::declare(
                 &store,
                 Declaration {
                     organization,
                     name,
-                    filter: &filter,
+                    fires: &fires,
                     templates: &Templates {
                         brief: brief.parse("brief")?,
                         branch: branch.clone(),
@@ -363,7 +371,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                     trigger.state,
                     trigger.workspace.name,
                     trigger.agent.name,
-                    trigger.filter
+                    trigger.fires
                 );
             }
         }
@@ -391,6 +399,9 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             } else {
                 println!("does not match");
             }
+            if let Some(elapsing) = tested.elapsing {
+                println!("elapsing      {elapsing}");
+            }
 
             let rendered = tested.rendered?;
             println!("branch        {}", rendered.branch);
@@ -415,7 +426,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 "budget        {} firings in {}",
                 trigger.firing_budget.limit, trigger.firing_budget.window
             );
-            println!("matches       {}", trigger.filter);
+            println!("fires         {}", trigger.fires);
             println!("workspace     {}", trigger.workspace.name);
             println!("agent         {}", trigger.agent.name);
             match &templates.branch {
@@ -485,7 +496,12 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             }
             println!("record        {}", event.record_id);
             println!("organization  {}", event.organization);
-            println!("integration   {}", event.integration);
+            println!(
+                "integration   {}",
+                event
+                    .integration
+                    .map_or_else(|| "-".to_owned(), |integration| integration.to_string())
+            );
             println!("id            {}", event.occurrence.id);
             println!("source        {}", event.occurrence.source);
             println!("specversion   {}", event.occurrence.specversion);

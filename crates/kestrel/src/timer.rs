@@ -47,6 +47,7 @@ pub async fn sweeping(store: &Store, wake: &Wake, shutdown: &CancellationToken) 
     tokio::try_join!(
         sweeping_leases(store, shutdown),
         polling(store, &github, shutdown),
+        elapsing(store, wake, shutdown),
         firing(store, wake.0.subscribe(), shutdown),
         following_up(store, wake.0.subscribe(), shutdown),
         sealing_idle_sessions(store, shutdown),
@@ -77,6 +78,26 @@ async fn following_up(
         }
 
         tick_or_woken(shutdown, &mut woken).await;
+    }
+
+    Ok(())
+}
+
+async fn elapsing(store: &Store, wake: &Wake, shutdown: &CancellationToken) -> Result<()> {
+    while !shutdown.is_cancelled() {
+        match trigger::elapse(store, Timestamp::now()).await {
+            Ok(minted) => {
+                for occurrence in &minted {
+                    info!(source = occurrence.source, due = %occurrence.time, "a schedule elapsed");
+                }
+                if !minted.is_empty() {
+                    wake.wake();
+                }
+            }
+            Err(error) => warn!(%error, "a schedule sweep found nothing it could do"),
+        }
+
+        tick(shutdown).await;
     }
 
     Ok(())

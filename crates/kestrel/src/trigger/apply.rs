@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
 
-use crate::domain::{CorrelationMiss, Templates, Trigger};
+use crate::domain::{CorrelationMiss, Fires, Templates, Trigger};
 use crate::filter::Filter;
 use crate::store::Store;
 use crate::trigger::check_miss;
@@ -122,6 +122,7 @@ pub async fn apply(
             .await?;
         let agent = tx.agents().named(&organization, &declared.agent).await?;
         let becomes = described(declared);
+        let fires = Fires::On(declared.filter.clone());
 
         let Some(trigger) = existing
             .iter()
@@ -131,7 +132,7 @@ pub async fn apply(
                 .declare(
                     &organization,
                     &declared.name,
-                    &declared.filter,
+                    &fires,
                     &declared.templates,
                     declared.on_miss,
                     &workspace,
@@ -152,7 +153,7 @@ pub async fn apply(
             tx.triggers()
                 .redeclare(
                     trigger,
-                    &declared.filter,
+                    &fires,
                     &declared.templates,
                     declared.on_miss,
                     &workspace,
@@ -225,7 +226,7 @@ fn described(declared: &Declared) -> Described {
 
 fn described_trigger(trigger: &Trigger) -> Described {
     describe(
-        &trigger.filter,
+        &trigger.filter(),
         &trigger.templates,
         trigger.on_miss,
         &trigger.workspace.name,

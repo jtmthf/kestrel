@@ -1,11 +1,11 @@
 use anyhow::{Context as _, Result};
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 use crate::domain::{
-    Agent, CorrelationMiss, DisableReason, Event, FiringBudget, Organization, Session, Templates,
-    Trigger, TriggerId, TriggerState, Workspace,
+    Agent, CorrelationMiss, DisableReason, Event, Fires, FiringBudget, Organization, Session,
+    Templates, Trigger, TriggerId, TriggerState, Workspace,
 };
 use crate::filter::{Attribute, Filter};
 use crate::store::{agent, integration, organization, workspace};
@@ -13,7 +13,7 @@ use crate::store::{agent, integration, organization, workspace};
 macro_rules! triggers_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, organization_id, name, filter, brief, branch, correlation, on_miss, workspace_id,
+            "SELECT id, organization_id, name, filter, every_ms, due_at, brief, branch, correlation, on_miss, workspace_id,
                     agent_id, state, applied, declared_at
              FROM trigger
              WHERE ",
@@ -39,7 +39,7 @@ impl<'a> Triggers<'a> {
         &mut self,
         organization: &Organization,
         name: &str,
-        filter: &Filter,
+        fires: &Fires,
         templates: &Templates,
         on_miss: Option<CorrelationMiss>,
         workspace: &Workspace,
@@ -50,7 +50,7 @@ impl<'a> Triggers<'a> {
             id: TriggerId::generate(),
             organization: organization.clone(),
             name: name.to_owned(),
-            filter: filter.clone(),
+            fires: fires.clone(),
             templates: templates.clone(),
             on_miss,
             workspace: workspace.clone(),
@@ -62,16 +62,27 @@ impl<'a> Triggers<'a> {
             declared_at: Timestamp::now(),
         };
 
+        let (filter, every, due_at) = match fires {
+            Fires::On(filter) => (Some(filter.to_json().to_string()), None, None),
+            Fires::Every(every) => (
+                None,
+                Some(i64::try_from(every.as_millis())?),
+                Some(trigger.declared_at.checked_add(*every)?.to_string()),
+            ),
+        };
+
         sqlx::query(
             "INSERT INTO trigger
-                 (id, organization_id, name, filter, brief, branch, correlation, on_miss, workspace_id,
-                  agent_id, state, applied, enabled_at, declared_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (id, organization_id, name, filter, every_ms, due_at, brief, branch, correlation,
+                  on_miss, workspace_id, agent_id, state, applied, enabled_at, declared_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
         .bind(organization.id.to_string())
         .bind(&trigger.name)
-        .bind(trigger.filter.to_json().to_string())
+        .bind(filter)
+        .bind(every)
+        .bind(due_at)
         .bind(templates.brief.to_string())
         .bind(templates.branch.as_ref().map(ToString::to_string))
         .bind(templates.correlation.as_ref().map(ToString::to_string))
@@ -94,26 +105,38 @@ impl<'a> Triggers<'a> {
     pub async fn redeclare(
         &mut self,
         trigger: &Trigger,
-        filter: &Filter,
+        fires: &Fires,
         templates: &Templates,
         on_miss: Option<CorrelationMiss>,
         workspace: &Workspace,
         agent: &Agent,
     ) -> Result<()> {
+        let declared_at = Timestamp::now();
+        let (filter, every, due_at) = match fires {
+            Fires::On(filter) => (Some(filter.to_json().to_string()), None, None),
+            Fires::Every(every) => (
+                None,
+                Some(i64::try_from(every.as_millis())?),
+                Some(declared_at.checked_add(*every)?.to_string()),
+            ),
+        };
+
         sqlx::query(
             "UPDATE trigger
-                SET filter = ?, brief = ?, branch = ?, correlation = ?, on_miss = ?,
-                    workspace_id = ?, agent_id = ?, applied = 1, declared_at = ?
+                SET filter = ?, every_ms = ?, due_at = ?, brief = ?, branch = ?, correlation = ?,
+                    on_miss = ?, workspace_id = ?, agent_id = ?, applied = 1, declared_at = ?
               WHERE id = ?",
         )
-        .bind(filter.to_json().to_string())
+        .bind(filter)
+        .bind(every)
+        .bind(due_at)
         .bind(templates.brief.to_string())
         .bind(templates.branch.as_ref().map(ToString::to_string))
         .bind(templates.correlation.as_ref().map(ToString::to_string))
         .bind(on_miss.map(CorrelationMiss::as_str))
         .bind(workspace.id.to_string())
         .bind(agent.id.to_string())
-        .bind(Timestamp::now().to_string())
+        .bind(declared_at.to_string())
         .bind(trigger.id.to_string())
         .execute(&mut *self.connection)
         .await
@@ -171,6 +194,49 @@ impl<'a> Triggers<'a> {
             })?;
 
         trigger(self.connection, &row).await
+    }
+
+    pub async fn due_at(&mut self, trigger: &Trigger) -> Result<Option<Timestamp>> {
+        sqlx::query("SELECT due_at FROM trigger WHERE id = ?")
+            .bind(trigger.id.to_string())
+            .fetch_one(&mut *self.connection)
+            .await
+            .with_context(|| format!("reading when the trigger {} is next due", trigger.name))?
+            .get::<Option<String>, _>("due_at")
+            .map(|due| due.parse())
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    /// A disabled Trigger's schedule does not elapse, so enabling it again is not a backlog.
+    pub async fn schedules_due(&mut self, at: Timestamp) -> Result<Vec<(Trigger, Timestamp)>> {
+        let rows = sqlx::query(triggers_where!(
+            "state = ? AND due_at <= ? ORDER BY due_at, id"
+        ))
+        .bind(TriggerState::Enabled.as_str())
+        .bind(at.to_string())
+        .fetch_all(&mut *self.connection)
+        .await
+        .context("reading which triggers' schedules are due")?;
+
+        let mut due = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let due_at = row.get::<String, _>("due_at").parse()?;
+            due.push((trigger(&mut *self.connection, row).await?, due_at));
+        }
+
+        Ok(due)
+    }
+
+    pub async fn due_again(&mut self, trigger: &Trigger, at: Timestamp) -> Result<()> {
+        sqlx::query("UPDATE trigger SET due_at = ? WHERE id = ?")
+            .bind(at.to_string())
+            .bind(trigger.id.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("setting when the trigger {} is next due", trigger.name))?;
+
+        Ok(())
     }
 
     pub async fn set_state(&mut self, trigger: &Trigger, state: TriggerState) -> Result<Trigger> {
@@ -247,7 +313,7 @@ impl<'a> Triggers<'a> {
 
     pub async fn matches(&mut self, trigger: &Trigger, event: &Event) -> Result<bool> {
         let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
-        predicate(&mut query, &trigger.filter);
+        matching(&mut query, trigger);
         query
             .push(" AS matched FROM event WHERE record_id = ")
             .push_bind(event.record_id.to_string());
@@ -299,7 +365,7 @@ impl<'a> Triggers<'a> {
                 )
                 .push_bind(trigger.id.to_string())
                 .push(") AND ");
-            predicate(&mut query, &trigger.filter);
+            matching(&mut query, &trigger);
             query
                 .push(" ORDER BY time, record_id LIMIT ")
                 .push_bind(i64::try_from(remaining)?);
@@ -402,6 +468,16 @@ impl<'a> Triggers<'a> {
 
         Ok(triggers)
     }
+}
+
+fn matching(query: &mut QueryBuilder<Sqlite>, trigger: &Trigger) {
+    query.push("(");
+    predicate(query, &trigger.filter());
+    // A webhook can name any source and type, so only kestrel's own minting elapses a schedule.
+    if matches!(trigger.fires, Fires::Every(_)) {
+        query.push(" AND event.integration_id IS NULL");
+    }
+    query.push(")");
 }
 
 /// Every comparison is coalesced to false, because an attribute an Event lacks is NULL and
@@ -508,7 +584,14 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
         id: row.get::<String, _>("id").parse()?,
         organization,
         name: row.get("name"),
-        filter: row.get::<String, _>("filter").parse()?,
+        fires: match (
+            row.get::<Option<String>, _>("filter"),
+            row.get::<Option<i64>, _>("every_ms"),
+        ) {
+            (Some(filter), None) => Fires::On(filter.parse()?),
+            (None, Some(every)) => Fires::Every(SignedDuration::from_millis(every)),
+            _ => anyhow::bail!("a trigger fires on a filter or a schedule, and not both"),
+        },
         templates: Templates {
             brief: row.get::<String, _>("brief").parse()?,
             branch: row
