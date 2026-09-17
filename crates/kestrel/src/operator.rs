@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -14,11 +15,18 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use crate::domain::{SessionId, SessionState};
+use crate::agent::{self, NotOffered};
+use crate::domain::{Agent, Organization, SessionId, SessionState, Workspace};
 use crate::log::{self, Cursor, Page, Unreadable, Window};
-use crate::store::Store;
+use crate::store::organization::NoSuchOrganization;
+use crate::store::{Declared, Store};
 
+pub const ORGANIZATIONS: &str = "/operator/organizations";
+pub const WORKSPACES: &str = "/operator/organizations/{organization}/workspaces";
+pub const AGENTS: &str = "/operator/organizations/{organization}/agents";
 pub const TRANSCRIPT: &str = "/operator/sessions/{session}/transcript";
+
+const NO_SUCH_SESSION: &str = "no such session";
 
 const POLL: Duration = Duration::from_millis(100);
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -60,8 +68,205 @@ struct Read {
 
 pub fn router(store: Store, shutdown: CancellationToken) -> Router {
     Router::new()
+        .route(ORGANIZATIONS, get(organizations).post(declare_organization))
+        .route(WORKSPACES, get(workspaces).post(declare_workspace))
+        .route(AGENTS, get(agents).post(declare_agent))
         .route(TRANSCRIPT, get(transcript))
         .with_state(ControlPlane { store, shutdown })
+}
+
+#[derive(Deserialize)]
+struct OrganizationDeclaration {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct WorkspaceDeclaration {
+    name: String,
+    repositories: Vec<String>,
+    branch: String,
+}
+
+#[derive(Deserialize)]
+struct AgentDeclaration {
+    name: String,
+    runtime: String,
+    model: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OrganizationRecord {
+    id: String,
+    name: String,
+}
+
+#[derive(Serialize)]
+struct WorkspaceRecord {
+    id: String,
+    name: String,
+    repositories: Vec<String>,
+    branch: String,
+}
+
+#[derive(Serialize)]
+struct AgentRecord {
+    id: String,
+    name: String,
+    runtime: String,
+    model: Option<String>,
+}
+
+impl From<Organization> for OrganizationRecord {
+    fn from(organization: Organization) -> Self {
+        Self {
+            id: organization.id.to_string(),
+            name: organization.name,
+        }
+    }
+}
+
+impl From<Workspace> for WorkspaceRecord {
+    fn from(workspace: Workspace) -> Self {
+        Self {
+            id: workspace.id.to_string(),
+            name: workspace.name,
+            repositories: workspace.repositories,
+            branch: workspace.branch,
+        }
+    }
+}
+
+impl From<Agent> for AgentRecord {
+    fn from(agent: Agent) -> Self {
+        Self {
+            id: agent.id.to_string(),
+            name: agent.name,
+            runtime: agent.runtime,
+            model: agent.model,
+        }
+    }
+}
+
+async fn organizations(
+    State(control_plane): State<ControlPlane>,
+) -> Result<Json<Vec<OrganizationRecord>>, Refused> {
+    let mut tx = control_plane.store.begin().await?;
+    let organizations = tx.organizations().all().await?;
+
+    Ok(Json(organizations.into_iter().map(Into::into).collect()))
+}
+
+async fn declare_organization(
+    State(control_plane): State<ControlPlane>,
+    declaration: Result<Json<OrganizationDeclaration>, JsonRejection>,
+) -> Result<Response, Refused> {
+    let Json(declaration) = declaration?;
+    named(&declaration.name)?;
+
+    let mut tx = control_plane.store.begin().await?;
+    let declared = tx.organizations().declare(&declaration.name).await?;
+    tx.commit().await?;
+
+    Ok(answered::<_, OrganizationRecord>(declared))
+}
+
+async fn workspaces(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+) -> Result<Json<Vec<WorkspaceRecord>>, Refused> {
+    let mut tx = control_plane.store.begin().await?;
+    let organization = tx.organizations().named(&organization).await?;
+    let workspaces = tx.workspaces().all(&organization).await?;
+
+    Ok(Json(workspaces.into_iter().map(Into::into).collect()))
+}
+
+async fn declare_workspace(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    declaration: Result<Json<WorkspaceDeclaration>, JsonRejection>,
+) -> Result<Response, Refused> {
+    let Json(declaration) = declaration?;
+    named(&declaration.name)?;
+    if declaration.repositories.is_empty() {
+        return Err(Refused::Unprocessable(
+            "a workspace names at least one repository".to_owned(),
+        ));
+    }
+    if declaration.branch.is_empty() {
+        return Err(Refused::Unprocessable(
+            "a workspace names the branch its work happens on".to_owned(),
+        ));
+    }
+
+    let mut tx = control_plane.store.begin().await?;
+    let organization = tx.organizations().named(&organization).await?;
+    let declared = tx
+        .workspaces()
+        .declare(
+            &organization,
+            &declaration.name,
+            &declaration.repositories,
+            &declaration.branch,
+        )
+        .await?;
+    tx.commit().await?;
+
+    Ok(answered::<_, WorkspaceRecord>(declared))
+}
+
+async fn agents(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+) -> Result<Json<Vec<AgentRecord>>, Refused> {
+    let agents = agent::agents(&control_plane.store, &organization).await?;
+
+    Ok(Json(agents.into_iter().map(Into::into).collect()))
+}
+
+async fn declare_agent(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    declaration: Result<Json<AgentDeclaration>, JsonRejection>,
+) -> Result<Response, Refused> {
+    let Json(declaration) = declaration?;
+    named(&declaration.name)?;
+    if declaration.runtime.is_empty() {
+        return Err(Refused::Unprocessable(
+            "an agent names the agent runtime that drives it".to_owned(),
+        ));
+    }
+
+    let declared = agent::declare(
+        &control_plane.store,
+        &organization,
+        &declaration.name,
+        &declaration.runtime,
+        declaration.model.as_deref(),
+    )
+    .await?;
+
+    Ok(answered::<_, AgentRecord>(declared))
+}
+
+fn named(name: &str) -> Result<(), Refused> {
+    if name.is_empty() {
+        return Err(Refused::Unprocessable("a name cannot be empty".to_owned()));
+    }
+    Ok(())
+}
+
+fn answered<T, R>(declared: Declared<T>) -> Response
+where
+    R: From<T> + Serialize,
+{
+    let status = if declared.created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+
+    (status, Json(R::from(declared.record))).into_response()
 }
 
 /// A stream that closes without an `end` event was cut off, and the reader resumes it from
@@ -72,7 +277,9 @@ async fn transcript(
     Query(following): Query<Following>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, BoxError>>>, Refused> {
-    let session: SessionId = session.parse().map_err(|_| Refused::NoSuchSession)?;
+    let session: SessionId = session
+        .parse()
+        .map_err(|_| Refused::NotFound(NO_SUCH_SESSION.to_owned()))?;
     let follow = following.follow.unwrap_or(true);
     let from = last_event_id(&headers)?;
     let mut read = reading(&control_plane.store, session, from).await?;
@@ -123,7 +330,7 @@ async fn reading(store: &Store, id: SessionId, from: Option<Cursor>) -> Result<R
         .sessions()
         .find(id)
         .await?
-        .ok_or(Refused::NoSuchSession)?;
+        .ok_or_else(|| Refused::NotFound(NO_SUCH_SESSION.to_owned()))?;
     let page = tx.log().page(&session, from, Window::DEFAULT).await?;
 
     Ok(Read {
@@ -147,15 +354,17 @@ fn last_event_id(headers: &HeaderMap) -> Result<Option<Cursor>, Refused> {
 
 enum Refused {
     BadRequest(String),
-    NoSuchSession,
+    NotFound(String),
+    Unprocessable(String),
     Unavailable(anyhow::Error),
 }
 
 impl Refused {
     fn into_error(self) -> BoxError {
         match self {
-            Refused::BadRequest(why) => why.into(),
-            Refused::NoSuchSession => "no such session".into(),
+            Refused::BadRequest(why) | Refused::NotFound(why) | Refused::Unprocessable(why) => {
+                why.into()
+            }
             Refused::Unavailable(error) => error.into(),
         }
     }
@@ -163,7 +372,19 @@ impl Refused {
 
 impl From<anyhow::Error> for Refused {
     fn from(error: anyhow::Error) -> Self {
+        if let Some(missing) = error.downcast_ref::<NoSuchOrganization>() {
+            return Refused::NotFound(missing.to_string());
+        }
+        if let Some(refused) = error.downcast_ref::<NotOffered>() {
+            return Refused::Unprocessable(refused.to_string());
+        }
         Refused::Unavailable(error)
+    }
+}
+
+impl From<JsonRejection> for Refused {
+    fn from(rejection: JsonRejection) -> Self {
+        Refused::BadRequest(rejection.body_text())
     }
 }
 
@@ -180,7 +401,8 @@ impl IntoResponse for Refused {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             Refused::BadRequest(why) => (StatusCode::BAD_REQUEST, why),
-            Refused::NoSuchSession => (StatusCode::NOT_FOUND, "no such session".to_owned()),
+            Refused::NotFound(why) => (StatusCode::NOT_FOUND, why),
+            Refused::Unprocessable(why) => (StatusCode::UNPROCESSABLE_ENTITY, why),
             Refused::Unavailable(error) => {
                 warn!(%error, "the operator boundary could not answer");
                 (

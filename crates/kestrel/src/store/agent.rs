@@ -4,6 +4,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
 use crate::domain::{Agent, AgentId, Organization, OrganizationId};
+use crate::store::Declared;
 
 pub struct Agents<'a> {
     connection: &'a mut SqliteConnection,
@@ -20,34 +21,64 @@ impl<'a> Agents<'a> {
         name: &str,
         runtime: &str,
         model: Option<&str>,
-    ) -> Result<Agent> {
+    ) -> Result<Declared<Agent>> {
+        let found = self.find(organization, name).await?;
         let agent = Agent {
-            id: AgentId::generate(),
+            id: found
+                .as_ref()
+                .map_or_else(AgentId::generate, |found| found.id),
             organization: organization.id,
             name: name.to_owned(),
             runtime: runtime.to_owned(),
             model: model.map(str::to_owned),
         };
 
-        sqlx::query(
-            "INSERT INTO agent (id, organization_id, name, runtime, model, declared_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(agent.id.to_string())
-        .bind(agent.organization.to_string())
-        .bind(&agent.name)
-        .bind(&agent.runtime)
-        .bind(&agent.model)
-        .bind(Timestamp::now().to_string())
-        .execute(&mut *self.connection)
-        .await
-        .with_context(|| format!("declaring the agent {name}"))?;
+        let created = found.is_none();
+        match found {
+            None => {
+                sqlx::query(
+                    "INSERT INTO agent (id, organization_id, name, runtime, model, declared_at)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(agent.id.to_string())
+                .bind(agent.organization.to_string())
+                .bind(&agent.name)
+                .bind(&agent.runtime)
+                .bind(&agent.model)
+                .bind(Timestamp::now().to_string())
+                .execute(&mut *self.connection)
+                .await
+                .with_context(|| format!("declaring the agent {name}"))?;
+            }
+            Some(found) if found.runtime == agent.runtime && found.model == agent.model => {}
+            Some(_) => {
+                sqlx::query("UPDATE agent SET runtime = ?, model = ? WHERE id = ?")
+                    .bind(&agent.runtime)
+                    .bind(&agent.model)
+                    .bind(agent.id.to_string())
+                    .execute(&mut *self.connection)
+                    .await
+                    .with_context(|| format!("redeclaring the agent {name}"))?;
+            }
+        }
 
-        Ok(agent)
+        Ok(Declared {
+            record: agent,
+            created,
+        })
     }
 
     pub async fn named(&mut self, organization: &Organization, name: &str) -> Result<Agent> {
-        let found = sqlx::query(
+        self.find(organization, name).await?.with_context(|| {
+            format!(
+                "no agent named {name} in the organization {}",
+                organization.name
+            )
+        })
+    }
+
+    async fn find(&mut self, organization: &Organization, name: &str) -> Result<Option<Agent>> {
+        sqlx::query(
             "SELECT id, organization_id, name, runtime, model
              FROM agent
              WHERE organization_id = ? AND name = ?",
@@ -56,14 +87,9 @@ impl<'a> Agents<'a> {
         .bind(name)
         .fetch_optional(&mut *self.connection)
         .await?
-        .with_context(|| {
-            format!(
-                "no agent named {name} in the organization {}",
-                organization.name
-            )
-        })?;
-
-        agent(&found)
+        .as_ref()
+        .map(agent)
+        .transpose()
     }
 
     pub async fn all(&mut self, organization: &Organization) -> Result<Vec<Agent>> {

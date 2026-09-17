@@ -8,6 +8,7 @@ use sqlx::{Row, SqliteConnection};
 use crate::domain::{Organization, OrganizationId};
 use crate::keyring::Keyring;
 use crate::provider::Held;
+use crate::store::Declared;
 
 pub struct Organizations<'a> {
     connection: &'a mut SqliteConnection,
@@ -22,7 +23,14 @@ impl<'a> Organizations<'a> {
         }
     }
 
-    pub async fn declare(&mut self, name: &str) -> Result<Organization> {
+    pub async fn declare(&mut self, name: &str) -> Result<Declared<Organization>> {
+        if let Some(organization) = self.find(name).await? {
+            return Ok(Declared {
+                record: organization,
+                created: false,
+            });
+        }
+
         let organization = Organization {
             id: OrganizationId::generate(),
             name: name.to_owned(),
@@ -36,7 +44,10 @@ impl<'a> Organizations<'a> {
             .await
             .with_context(|| format!("declaring the organization {name}"))?;
 
-        Ok(organization)
+        Ok(Declared {
+            record: organization,
+            created: true,
+        })
     }
 
     pub async fn all(&mut self) -> Result<Vec<Organization>> {
@@ -49,13 +60,22 @@ impl<'a> Organizations<'a> {
     }
 
     pub async fn named(&mut self, name: &str) -> Result<Organization> {
-        let found = sqlx::query("SELECT id, name FROM organization WHERE name = ?")
+        self.find(name).await?.ok_or_else(|| {
+            NoSuchOrganization {
+                name: name.to_owned(),
+            }
+            .into()
+        })
+    }
+
+    async fn find(&mut self, name: &str) -> Result<Option<Organization>> {
+        sqlx::query("SELECT id, name FROM organization WHERE name = ?")
             .bind(name)
             .fetch_optional(&mut *self.connection)
             .await?
-            .with_context(|| format!("no organization named {name}"))?;
-
-        organization(&found)
+            .as_ref()
+            .map(organization)
+            .transpose()
     }
 
     pub async fn hold_provider_credential(
@@ -152,6 +172,19 @@ impl<'a> Organizations<'a> {
         Ok(forgotten.rows_affected() > 0)
     }
 }
+
+#[derive(Debug)]
+pub struct NoSuchOrganization {
+    pub name: String,
+}
+
+impl std::fmt::Display for NoSuchOrganization {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no organization named {}", self.name)
+    }
+}
+
+impl std::error::Error for NoSuchOrganization {}
 
 pub(crate) async fn with_id(
     connection: &mut SqliteConnection,

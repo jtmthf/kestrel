@@ -23,9 +23,9 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
     match command {
         CliCommand::Organization(OrganizationCommand::Declare { name }) => {
             let mut tx = store.begin().await?;
-            let organization = tx.organizations().declare(name).await?;
+            let declared = tx.organizations().declare(name).await?;
             tx.commit().await?;
-            println!("{}", organization.id);
+            println!("{}", declared.record.id);
         }
         CliCommand::Organization(OrganizationCommand::List) => {
             let mut tx = store.begin().await?;
@@ -41,12 +41,12 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
         }) => {
             let mut tx = store.begin().await?;
             let organization = tx.organizations().named(organization).await?;
-            let workspace = tx
+            let declared = tx
                 .workspaces()
                 .declare(&organization, name, repositories, branch)
                 .await?;
             tx.commit().await?;
-            println!("{}", workspace.id);
+            println!("{}", declared.record.id);
         }
         CliCommand::Workspace(WorkspaceCommand::List { organization }) => {
             let mut tx = store.begin().await?;
@@ -69,7 +69,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
         }) => {
             let declared =
                 agent::declare(&store, organization, name, runtime, model.as_deref()).await?;
-            println!("{}", declared.id);
+            println!("{}", declared.record.id);
         }
         CliCommand::Agent(AgentCommand::Model {
             name,
