@@ -4,9 +4,11 @@
 use anyhow::{Context as _, Result, bail};
 use jiff::Timestamp;
 
+pub mod apply;
+
 use crate::domain::{
     CorrelationMiss, DisableReason, Event, EventRecordId, Fires, FiringBudget, Occurrence, RunId,
-    SessionId, Templates, Trigger, TriggerState,
+    SessionId, Templates, Trigger, TriggerId, TriggerState,
 };
 use crate::fanout::{self, Change};
 use crate::log::Entry;
@@ -68,19 +70,20 @@ pub struct Tested {
     pub elapsing: Option<Timestamp>,
 }
 
-pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trigger> {
-    match (
-        declaration.templates.correlation.is_some(),
-        declaration.on_miss,
-    ) {
+pub(crate) fn check_miss(templates: &Templates, on_miss: Option<CorrelationMiss>) -> Result<()> {
+    match (templates.correlation.is_some(), on_miss) {
         (true, None) => {
             bail!("a trigger with a correlation must declare what it does when it misses")
         }
         (false, Some(_)) => {
             bail!("a trigger without a correlation cannot declare what it does when it misses")
         }
-        _ => {}
+        _ => Ok(()),
     }
+}
+
+pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trigger> {
+    check_miss(declaration.templates, declaration.on_miss)?;
     if let Fires::Every(every) = declaration.fires {
         let budget = FiringBudget::default();
         let fastest = budget.window / i32::try_from(budget.limit.get())?;
@@ -111,6 +114,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
             declaration.on_miss,
             &workspace,
             &agent,
+            false,
         )
         .await?;
     tx.commit().await?;
@@ -145,8 +149,46 @@ pub async fn test(
     let organization = tx.organizations().named(organization).await?;
     let trigger = tx.triggers().named(&organization, name).await?;
 
+    tested(&mut tx, &trigger, event).await
+}
+
+pub async fn test_declared(
+    store: &Store,
+    organization: &str,
+    declared: &apply::Declared,
+    event: Option<EventRecordId>,
+) -> Result<Tested> {
+    let mut tx = store.begin().await?;
+    let organization = tx.organizations().named(organization).await?;
+    let trigger = Trigger {
+        id: TriggerId::generate(),
+        workspace: tx
+            .workspaces()
+            .named(&organization, &declared.workspace)
+            .await?,
+        agent: tx.agents().named(&organization, &declared.agent).await?,
+        organization,
+        name: declared.name.clone(),
+        fires: Fires::On(declared.filter.clone()),
+        templates: declared.templates.clone(),
+        on_miss: declared.on_miss,
+        state: TriggerState::Enabled,
+        disabled_because: None,
+        firing_budget: FiringBudget::default(),
+        applied: true,
+        declared_at: jiff::Timestamp::now(),
+    };
+
+    tested(&mut tx, &trigger, event).await
+}
+
+async fn tested(
+    tx: &mut Tx<'_>,
+    trigger: &Trigger,
+    event: Option<EventRecordId>,
+) -> Result<Tested> {
     let Some(event) = event else {
-        let due = tx.triggers().due_at(&trigger).await?.with_context(|| {
+        let due = tx.triggers().due_at(trigger).await?.with_context(|| {
             format!(
                 "the trigger {} fires on events, so a test names one",
                 trigger.name
@@ -154,7 +196,7 @@ pub async fn test(
         })?;
         let event = Event {
             record_id: EventRecordId::generate(),
-            organization: organization.id,
+            organization: trigger.organization.id,
             integration: None,
             occurrence: trigger
                 .elapsing(due)
@@ -163,23 +205,23 @@ pub async fn test(
         };
         return Ok(Tested {
             matches: true,
-            rendered: render(&trigger, &event),
+            rendered: render(trigger, &event),
             elapsing: Some(due),
         });
     };
 
     let event = tx.integrations().event(event).await?;
-    if event.organization != organization.id {
+    if event.organization != trigger.organization.id {
         bail!(
             "no event {} in the organization {}",
             event.record_id,
-            organization.name
+            trigger.organization.name
         );
     }
 
     Ok(Tested {
-        matches: tx.triggers().matches(&trigger, &event).await?,
-        rendered: render(&trigger, &event),
+        matches: tx.triggers().matches(trigger, &event).await?,
+        rendered: render(trigger, &event),
         elapsing: None,
     })
 }

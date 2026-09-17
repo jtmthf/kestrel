@@ -829,6 +829,96 @@ async fn a_trigger_never_fires_for_events_recorded_before_it_was_declared() {
     harness.teardown().await;
 }
 
+fn applying_ready_for(label: &str) -> String {
+    format!(
+        r#"
+triggers:
+  ready:
+    filter:
+      all:
+        - exact: {{source: "https://github.com/{REPOSITORY}"}}
+        - exact: {{type: com.github.issues.labeled}}
+        - exact: {{data.label.name: {label}}}
+    brief: "Work on {{{{ event.data.issue.title }}}}"
+    workspace: kestrel
+    agent: builder
+"#
+    )
+}
+
+/// The first apply in a repository kestrel has watched for a month must not open a session for
+/// every issue that month labelled.
+#[tokio::test]
+async fn applying_a_declaration_file_never_fires_for_events_already_recorded() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[
+        github_stub::labelled(9, 45, READY),
+        github_stub::labelled(8, 44, READY),
+    ]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    watching(&harness, &stub).await;
+
+    recorded(&harness, 2).await;
+    harness
+        .apply_triggers("acme", &applying_ready_for(READY))
+        .await;
+
+    nothing_opens(&harness).await;
+
+    harness.teardown().await;
+}
+
+/// Widening what a trigger matches is not a way to reach back for the events the narrower one
+/// passed over.
+#[tokio::test]
+async fn reapplying_a_changed_filter_never_fires_for_events_already_recorded() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(
+        7,
+        43,
+        "needs-triage",
+    )]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    harness
+        .apply_triggers("acme", &applying_ready_for(READY))
+        .await;
+    watching(&harness, &stub).await;
+
+    recorded(&harness, 1).await;
+    harness
+        .apply_triggers("acme", &applying_ready_for("needs-triage"))
+        .await;
+
+    nothing_opens(&harness).await;
+
+    harness.teardown().await;
+}
+
+/// An applied trigger is the same rule a declared one is: it fires for what arrives after it,
+/// and removing it leaves the work it started alone.
+#[tokio::test]
+async fn an_applied_trigger_fires_for_events_recorded_after_it() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    harness
+        .apply_triggers("acme", &applying_ready_for(READY))
+        .await;
+    watching(&harness, &stub).await;
+
+    let session = opened(&harness, 1).await.remove(0);
+    assert_eq!(session.agent.name, "builder");
+
+    harness.apply_triggers("acme", "triggers: {}").await;
+    assert!(harness.triggers("acme").await.is_empty());
+    assert_eq!(harness.sessions("acme").await.len(), 1);
+
+    harness.teardown().await;
+}
+
 #[tokio::test]
 async fn a_trigger_fires_only_for_the_source_it_names() {
     let stub = GithubStub::start();
@@ -999,6 +1089,35 @@ async fn trigger_test_renders_the_brief_and_resolves_the_branch() {
             correlation: Some("https://github.com/jtmthf/kestrel#43".to_owned()),
         }
     );
+
+    harness.teardown().await;
+}
+
+/// A declaration under review is worth testing before it is applied, and testing it applies
+/// nothing.
+#[tokio::test]
+async fn trigger_test_answers_for_a_declaration_not_yet_applied() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    watching(&harness, &stub).await;
+    let event = recorded(&harness, 1).await.remove(0).record_id;
+
+    let tested = harness
+        .test_declared_trigger("acme", &applying_ready_for(READY), "ready", event)
+        .await;
+
+    assert!(tested.matches);
+    assert_eq!(
+        tested.rendered.expect("the trigger should render"),
+        Rendered {
+            brief: "Work on an issue numbered 43".to_owned(),
+            branch: "main".to_owned(),
+            correlation: None,
+        }
+    );
+    assert!(harness.triggers("acme").await.is_empty());
 
     harness.teardown().await;
 }

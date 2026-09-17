@@ -42,6 +42,7 @@ use kestrel::role::work::Dispatch;
 use kestrel::session;
 use kestrel::store::Store;
 use kestrel::store::session::Opening;
+use kestrel::trigger::apply::Applied;
 use kestrel::trigger::{self, Declaration, Tested};
 use kestrel::work::{self, Claimed};
 use tempfile::TempDir;
@@ -503,6 +504,17 @@ impl Harness {
         .await
     }
 
+    pub async fn apply_triggers(&self, organization: &str, file: &str) -> Applied {
+        trigger::apply::apply(
+            &self.store,
+            organization,
+            &trigger::apply::parse(file).expect("the declaration file should parse"),
+            false,
+        )
+        .await
+        .expect("the declaration file should apply")
+    }
+
     pub async fn test_trigger(
         &self,
         organization: &str,
@@ -567,6 +579,24 @@ impl Harness {
         trigger::elapse(&self.store, at)
             .await
             .expect("the due schedules should elapse")
+    }
+
+    pub async fn test_declared_trigger(
+        &self,
+        organization: &str,
+        file: &str,
+        name: &str,
+        event: EventRecordId,
+    ) -> Tested {
+        let declarations = trigger::apply::parse(file).expect("the declaration file should parse");
+        let declared = declarations
+            .iter()
+            .find(|declared| declared.name == name)
+            .expect("the declaration file should declare the trigger");
+
+        trigger::test_declared(&self.store, organization, declared, Some(event))
+            .await
+            .expect("the declared trigger should test")
     }
 
     pub async fn triggers(&self, organization: &str) -> Vec<Trigger> {

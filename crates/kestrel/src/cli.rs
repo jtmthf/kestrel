@@ -1,3 +1,5 @@
+use std::convert::Infallible;
+use std::io::Read as _;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -9,7 +11,6 @@ use jiff::SignedDuration;
 
 use crate::compute::{Docker, Driver, LocalExec};
 use crate::domain::{CorrelationMiss, Direction, EventRecordId, SessionId};
-use crate::filter::Filter;
 use crate::integration::github;
 use crate::log::Cursor;
 use crate::role::work::Dispatch;
@@ -195,7 +196,18 @@ pub enum CliCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum TriggerCommand {
-    /// Declare a Trigger: what it matches, and the Agent and Workspace it starts work with
+    /// Make an Organization's applied Triggers what a declaration file says, printing the diff
+    Apply {
+        #[arg(long)]
+        organization: String,
+        /// The declaration file, or `-` for standard input
+        #[arg(short = 'f', long = "file", value_name = "FILE", value_parser = Given::path)]
+        file: Given,
+        /// Print the diff without making it
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Declare a one-off Trigger: what it matches, and the Agent and Workspace it starts work with
     Declare {
         /// The name it is referred to by
         name: String,
@@ -204,17 +216,23 @@ pub enum TriggerCommand {
         organization: String,
         /// The Events it matches: a CloudEvents filter of exact, prefix, suffix, all, any and
         /// not over id, source, specversion, type, subject and time, which kestrel extends to
-        /// reach into data.<path>
-        #[arg(long, value_name = "JSON", required_unless_present = "every")]
-        filter: Option<Filter>,
+        /// reach into data.<path>; `@FILE` reads it from a file and `-` from standard input
+        #[arg(
+            long,
+            value_name = "JSON",
+            value_parser = Given::text,
+            required_unless_present = "every"
+        )]
+        filter: Option<Given>,
         /// Fire on a schedule in place of a filter: each time this long elapses, starting from
         /// the declaration, kestrel mints a `dev.kestrel.schedule.elapsed` Event and fires on it
         #[arg(long, value_name = "DURATION", conflicts_with = "filter")]
         every: Option<SignedDuration>,
         /// The Brief a firing hands its Session: a minijinja template over `event`, in which
-        /// anything undefined is an error rather than nothing
-        #[arg(long, value_name = "TEMPLATE")]
-        brief: Template,
+        /// anything undefined is an error rather than nothing; `@FILE` reads it from a file and
+        /// `-` from standard input
+        #[arg(long, value_name = "TEMPLATE", value_parser = Given::text)]
+        brief: Given,
         /// The branch a firing's work happens on, rendered from `event`; the Workspace's
         /// branch when not given
         #[arg(long, value_name = "TEMPLATE")]
@@ -244,6 +262,10 @@ pub enum TriggerCommand {
         /// tested against the Event its next elapsing would mint
         #[arg(long, value_name = "RECORD")]
         event: Option<EventRecordId>,
+        /// Test the Trigger as a declaration file declares it rather than as it was applied;
+        /// `-` for standard input
+        #[arg(short = 'f', long = "file", value_name = "FILE", value_parser = Given::path)]
+        file: Option<Given>,
     },
     /// List every Trigger in an Organization, and what each matches
     List {
@@ -271,6 +293,68 @@ pub enum TriggerCommand {
         #[arg(long)]
         organization: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Given {
+    Text(String),
+    File(PathBuf),
+    Stdin,
+}
+
+impl Given {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "clap's value_parser takes a Result"
+    )]
+    fn text(given: &str) -> Result<Self, Infallible> {
+        Ok(match given {
+            "-" => Given::Stdin,
+            _ => match given.strip_prefix('@') {
+                Some(path) => Given::File(path.into()),
+                None => Given::Text(given.to_owned()),
+            },
+        })
+    }
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "clap's value_parser takes a Result"
+    )]
+    fn path(given: &str) -> Result<Self, Infallible> {
+        Ok(match given {
+            "-" => Given::Stdin,
+            _ => Given::File(given.into()),
+        })
+    }
+
+    pub fn read(&self) -> Result<String> {
+        match self {
+            Given::Text(text) => Ok(text.clone()),
+            Given::File(path) => {
+                std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+            }
+            Given::Stdin => {
+                let mut read = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut read)
+                    .context("reading standard input")?;
+                Ok(read)
+            }
+        }
+    }
+
+    pub fn parse<T>(&self, what: &str) -> Result<T>
+    where
+        T: std::str::FromStr<Err = anyhow::Error>,
+    {
+        let text = self.read()?;
+        text.parse().with_context(|| match self {
+            Given::Text(_) => format!("the {what}"),
+            Given::File(path) => format!("the {what} in {}", path.display()),
+            Given::Stdin => format!("the {what} on standard input"),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
