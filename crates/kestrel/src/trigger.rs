@@ -3,9 +3,11 @@
 
 use anyhow::{Context as _, Result, bail};
 
+pub mod apply;
+
 use crate::domain::{
-    CorrelationMiss, DisableReason, Event, EventRecordId, RunId, SessionId, Templates, Trigger,
-    TriggerState,
+    CorrelationMiss, DisableReason, Event, EventRecordId, FiringBudget, RunId, SessionId,
+    Templates, Trigger, TriggerId, TriggerState,
 };
 use crate::fanout::{self, Change};
 use crate::filter::Filter;
@@ -65,19 +67,20 @@ pub struct Tested {
     pub rendered: Result<Rendered>,
 }
 
-pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trigger> {
-    match (
-        declaration.templates.correlation.is_some(),
-        declaration.on_miss,
-    ) {
+pub(crate) fn check_miss(templates: &Templates, on_miss: Option<CorrelationMiss>) -> Result<()> {
+    match (templates.correlation.is_some(), on_miss) {
         (true, None) => {
             bail!("a trigger with a correlation must declare what it does when it misses")
         }
         (false, Some(_)) => {
             bail!("a trigger without a correlation cannot declare what it does when it misses")
         }
-        _ => {}
+        _ => Ok(()),
     }
+}
+
+pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trigger> {
+    check_miss(declaration.templates, declaration.on_miss)?;
 
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(declaration.organization).await?;
@@ -96,6 +99,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
             declaration.on_miss,
             &workspace,
             &agent,
+            false,
         )
         .await?;
     tx.commit().await?;
@@ -129,18 +133,53 @@ pub async fn test(
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
     let trigger = tx.triggers().named(&organization, name).await?;
+
+    tested(&mut tx, &trigger, event).await
+}
+
+pub async fn test_declared(
+    store: &Store,
+    organization: &str,
+    declared: &apply::Declared,
+    event: EventRecordId,
+) -> Result<Tested> {
+    let mut tx = store.begin().await?;
+    let organization = tx.organizations().named(organization).await?;
+    let trigger = Trigger {
+        id: TriggerId::generate(),
+        workspace: tx
+            .workspaces()
+            .named(&organization, &declared.workspace)
+            .await?,
+        agent: tx.agents().named(&organization, &declared.agent).await?,
+        organization,
+        name: declared.name.clone(),
+        filter: declared.filter.clone(),
+        templates: declared.templates.clone(),
+        on_miss: declared.on_miss,
+        state: TriggerState::Enabled,
+        disabled_because: None,
+        firing_budget: FiringBudget::default(),
+        applied: true,
+        declared_at: jiff::Timestamp::now(),
+    };
+
+    tested(&mut tx, &trigger, event).await
+}
+
+async fn tested(tx: &mut Tx<'_>, trigger: &Trigger, event: EventRecordId) -> Result<Tested> {
     let event = tx.integrations().event(event).await?;
-    if event.organization != organization.id {
+    if event.organization != trigger.organization.id {
         bail!(
             "no event {} in the organization {}",
             event.record_id,
-            organization.name
+            trigger.organization.name
         );
     }
 
     Ok(Tested {
-        matches: tx.triggers().matches(&trigger, &event).await?,
-        rendered: render(&trigger, &event),
+        matches: tx.triggers().matches(trigger, &event).await?,
+        rendered: render(trigger, &event),
     })
 }
 

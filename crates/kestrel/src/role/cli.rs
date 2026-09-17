@@ -1,19 +1,21 @@
 use std::io::Read as _;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 
 use crate::agent;
 use crate::cli::{
-    AgentCommand, CliCommand, CredentialCommand, EventCommand, IntegrationCommand,
+    AgentCommand, CliCommand, CredentialCommand, EventCommand, Given, IntegrationCommand,
     OrganizationCommand, RegisterCommand, RunCommand, SessionCommand, TriggerCommand,
     WorkspaceCommand,
 };
 use crate::domain::{Connection, Direction, Templates};
+use crate::filter::Filter;
 use crate::integration::{self, Connecting, Registration};
 use crate::log::Window;
 use crate::provider;
 use crate::session;
 use crate::store::Store;
+use crate::trigger::apply::{self, Action};
 use crate::trigger::{self, Declaration};
 use crate::work;
 
@@ -295,14 +297,21 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             workspace,
             agent,
         }) => {
+            if *filter == Given::Stdin && *brief == Given::Stdin {
+                bail!("the filter and the brief cannot both be read from standard input");
+            }
+            let filter: Filter = filter.parse("filter")?;
+            if filter.admits_outsiders() {
+                warn_of_outsiders(name);
+            }
             let trigger = trigger::declare(
                 &store,
                 Declaration {
                     organization,
                     name,
-                    filter,
+                    filter: &filter,
                     templates: &Templates {
-                        brief: brief.clone(),
+                        brief: brief.parse("brief")?,
                         branch: branch.clone(),
                         correlation: correlation.clone(),
                     },
@@ -313,6 +322,37 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             )
             .await?;
             println!("{}", trigger.id);
+        }
+        CliCommand::Trigger(TriggerCommand::Apply {
+            organization,
+            file,
+            dry_run,
+        }) => {
+            let declarations = apply::parse(&file.read()?)?;
+            let applied = apply::apply(&store, organization, &declarations, *dry_run).await?;
+
+            if applied.changes.is_empty() {
+                println!("no changes");
+            }
+            for change in &applied.changes {
+                let sign = match change.action {
+                    Action::Add => '+',
+                    Action::Change => '~',
+                    Action::Remove => '-',
+                };
+                println!("{sign} {}", change.name);
+                for difference in &change.differences {
+                    println!("    {}", difference.field);
+                    for (sign, value) in [('-', &difference.was), ('+', &difference.becomes)] {
+                        for line in value.iter().flat_map(|value| value.lines()) {
+                            println!("      {sign} {line}");
+                        }
+                    }
+                }
+            }
+            for name in &applied.admitting_outsiders {
+                warn_of_outsiders(name);
+            }
         }
         CliCommand::Trigger(TriggerCommand::List { organization }) => {
             for trigger in trigger::triggers(&store, organization).await? {
@@ -331,8 +371,21 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             name,
             organization,
             event,
+            file,
         }) => {
-            let tested = trigger::test(&store, organization, name, *event).await?;
+            let tested = match file {
+                Some(file) => {
+                    let declarations = apply::parse(&file.read()?)?;
+                    let declared = declarations
+                        .iter()
+                        .find(|declared| declared.name == *name)
+                        .with_context(|| {
+                            format!("the declaration file declares no trigger {name}")
+                        })?;
+                    trigger::test_declared(&store, organization, declared, *event).await?
+                }
+                None => trigger::test(&store, organization, name, *event).await?,
+            };
             if tested.matches {
                 println!("matches");
             } else {
@@ -383,6 +436,10 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 println!("on miss       {on_miss}");
             }
             println!("declared      {}", trigger.declared_at);
+            println!(
+                "declared by   {}",
+                if trigger.applied { "a file" } else { "flags" }
+            );
             println!();
             println!("{}", templates.brief);
         }
@@ -459,6 +516,16 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn warn_of_outsiders(name: &str) {
+    eprintln!(
+        "warning: the trigger {name} fires for events from people outside the organization. \
+         Until 0.4, it is an unsupervised agent with your credentials on your repository, \
+         briefed by whatever a stranger writes. Filter on the author_association GitHub \
+         reports as OWNER, MEMBER or COLLABORATOR to decline strangers, or keep it as a \
+         decision you made on purpose."
+    );
 }
 
 /// Off standard input rather than out of an argument, so a provider's key is never in a shell

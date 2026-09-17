@@ -14,7 +14,7 @@ macro_rules! triggers_where {
     ($tail:literal) => {
         concat!(
             "SELECT id, organization_id, name, filter, brief, branch, correlation, on_miss, workspace_id,
-                    agent_id, state, declared_at
+                    agent_id, state, applied, declared_at
              FROM trigger
              WHERE ",
             $tail
@@ -44,6 +44,7 @@ impl<'a> Triggers<'a> {
         on_miss: Option<CorrelationMiss>,
         workspace: &Workspace,
         agent: &Agent,
+        applied: bool,
     ) -> Result<Trigger> {
         let trigger = Trigger {
             id: TriggerId::generate(),
@@ -57,14 +58,15 @@ impl<'a> Triggers<'a> {
             state: TriggerState::Enabled,
             disabled_because: None,
             firing_budget: FiringBudget::default(),
+            applied,
             declared_at: Timestamp::now(),
         };
 
         sqlx::query(
             "INSERT INTO trigger
                  (id, organization_id, name, filter, brief, branch, correlation, on_miss, workspace_id,
-                  agent_id, state, enabled_at, declared_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  agent_id, state, applied, enabled_at, declared_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
         .bind(organization.id.to_string())
@@ -77,6 +79,7 @@ impl<'a> Triggers<'a> {
         .bind(workspace.id.to_string())
         .bind(agent.id.to_string())
         .bind(trigger.state.as_str())
+        .bind(applied)
         .bind(trigger.declared_at.to_string())
         .bind(trigger.declared_at.to_string())
         .execute(&mut *self.connection)
@@ -84,6 +87,64 @@ impl<'a> Triggers<'a> {
         .with_context(|| format!("declaring the trigger {name}"))?;
 
         Ok(trigger)
+    }
+
+    /// Matches only what is recorded from now on, because the Events recorded under the old
+    /// declaration were never judged against the new one.
+    pub async fn redeclare(
+        &mut self,
+        trigger: &Trigger,
+        filter: &Filter,
+        templates: &Templates,
+        on_miss: Option<CorrelationMiss>,
+        workspace: &Workspace,
+        agent: &Agent,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE trigger
+                SET filter = ?, brief = ?, branch = ?, correlation = ?, on_miss = ?,
+                    workspace_id = ?, agent_id = ?, applied = 1, declared_at = ?
+              WHERE id = ?",
+        )
+        .bind(filter.to_json().to_string())
+        .bind(templates.brief.to_string())
+        .bind(templates.branch.as_ref().map(ToString::to_string))
+        .bind(templates.correlation.as_ref().map(ToString::to_string))
+        .bind(on_miss.map(CorrelationMiss::as_str))
+        .bind(workspace.id.to_string())
+        .bind(agent.id.to_string())
+        .bind(Timestamp::now().to_string())
+        .bind(trigger.id.to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("redeclaring the trigger {}", trigger.name))?;
+
+        Ok(())
+    }
+
+    pub async fn adopt(&mut self, trigger: &Trigger) -> Result<()> {
+        sqlx::query("UPDATE trigger SET applied = 1 WHERE id = ?")
+            .bind(trigger.id.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("applying the trigger {}", trigger.name))?;
+
+        Ok(())
+    }
+
+    pub async fn remove(&mut self, trigger: &Trigger) -> Result<()> {
+        sqlx::query("DELETE FROM firing WHERE trigger_id = ?")
+            .bind(trigger.id.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("forgetting the firings of the trigger {}", trigger.name))?;
+        sqlx::query("DELETE FROM trigger WHERE id = ?")
+            .bind(trigger.id.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("removing the trigger {}", trigger.name))?;
+
+        Ok(())
     }
 
     pub async fn all(&mut self, organization: &Organization) -> Result<Vec<Trigger>> {
@@ -468,6 +529,7 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
         state: state.clone(),
         disabled_because: None,
         firing_budget: FiringBudget::default(),
+        applied: row.get("applied"),
         declared_at: row.get::<String, _>("declared_at").parse()?,
     };
 
