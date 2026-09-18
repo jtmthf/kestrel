@@ -43,7 +43,6 @@ use kestrel::role::serve::Listen;
 use kestrel::role::work::{AgentRuntime, Dispatch};
 use kestrel::session;
 use kestrel::store::Store;
-use kestrel::store::session::Opening;
 use kestrel::trigger::apply::Applied;
 use kestrel::trigger::{self, Declaration, Tested};
 use kestrel::work::{self, Claimed};
@@ -740,8 +739,6 @@ impl Harness {
             .expect("the session should open")
     }
 
-    /// Only a firing opens a Session on a branch other than its Workspace's, so this stands in
-    /// for one without an Event to fire on.
     pub async fn open_session_on(
         &self,
         organization: &str,
@@ -749,38 +746,16 @@ impl Harness {
         agent: &str,
         branch: &str,
     ) -> Session {
-        let mut tx = self.store.begin().await.expect("a transaction");
-        let organization = tx
-            .organizations()
-            .named(organization)
-            .await
-            .expect("the organization should be declared");
-        let workspace = tx
-            .workspaces()
-            .named(&organization, workspace)
-            .await
-            .expect("the workspace should be declared");
-        let agent = tx
-            .agents()
-            .named(&organization, agent)
-            .await
-            .expect("the agent should be declared");
-        let session = tx
-            .sessions()
-            .open(Opening {
-                organization: &organization,
-                workspace: &workspace,
-                agent: &agent,
-                branch,
-                correlation: None,
-                continues: None,
-                started_by: None,
-            })
-            .await
-            .expect("the session should open");
-        tx.commit().await.expect("the session should commit");
-
-        session
+        session::open(
+            &self.store,
+            organization,
+            workspace,
+            agent,
+            Some(branch),
+            None,
+        )
+        .await
+        .expect("the session should open")
     }
 
     pub async fn continue_session(
@@ -802,7 +777,7 @@ impl Harness {
         agent: &str,
         continues: Option<SessionId>,
     ) -> anyhow::Result<Session> {
-        session::open(&self.store, organization, workspace, agent, continues).await
+        session::open(&self.store, organization, workspace, agent, None, continues).await
     }
 
     pub async fn seal_session(&self, id: SessionId) -> Session {
@@ -1044,6 +1019,14 @@ impl Harness {
         instruction: Instruction,
     ) -> anyhow::Result<link::SentInstruction> {
         link::instruct(&self.store, run, instruction).await
+    }
+
+    pub async fn start(&self, run: &Run) {
+        self.try_start(run).await.expect("the run should start");
+    }
+
+    pub async fn try_start(&self, run: &Run) -> anyhow::Result<link::SentInstruction> {
+        link::start(&self.store, run).await
     }
 
     /// A lease that is up when the caller says rather than when a real one would be. The only

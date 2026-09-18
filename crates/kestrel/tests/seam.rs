@@ -81,6 +81,33 @@ async fn every_durable_record_carries_its_organization() {
 }
 
 #[tokio::test]
+async fn a_workspace_redeclared_after_a_session_opens_moves_none_of_its_checkout() {
+    let harness = Harness::boot().await;
+    declare_fixture(&harness).await;
+    let session = harness.open_session("acme", "kestrel", "builder").await;
+    let organization = harness.declare_organization("acme").await;
+
+    harness
+        .declare_workspace(
+            &organization,
+            "kestrel",
+            &["https://github.com/jtmthf/elsewhere".to_owned()],
+            "trunk",
+        )
+        .await;
+
+    let shown = harness.show_session(session.id).await;
+    assert_eq!(
+        shown.checkout.repositories,
+        vec!["https://github.com/jtmthf/kestrel".to_owned()]
+    );
+    assert_eq!(shown.checkout.base, "main");
+    assert_eq!(shown.checkout, session.checkout);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn declaring_a_workspace_and_an_agent_lists_them_back() {
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;

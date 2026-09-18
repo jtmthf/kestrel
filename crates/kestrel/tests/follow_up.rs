@@ -9,7 +9,6 @@ use kestrel::domain::{
 };
 use kestrel::integration::credential::Token;
 use kestrel::integration::github::Github;
-use kestrel::link::Instruction;
 use kestrel::log::{Entry, Message};
 use kestrel_scripted_agent::{FIRST_MEMORY, LAST_MEMORY};
 use support::Harness;
@@ -300,7 +299,7 @@ async fn a_cold_run_is_seeded_with_every_page_of_earlier_context() {
         Script::Recalls,
     );
     supervisor.wait_until_it_says("reported connected").await;
-    harness.instruct(&second, Instruction::Start).await;
+    harness.start(&second).await;
     supervisor.wait_until_it_says("reported finished").await;
 
     assert!(harness.transcript(session.id).await.iter().any(|recorded| {

@@ -4,8 +4,8 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
 use crate::domain::{
-    Agent, Connected, Cost, Event, Exit, Organization, Run, RunId, RunState, Session, SessionId,
-    SessionState, Usage, Workspace,
+    Agent, Checkout, Connected, Cost, Event, Exit, Organization, Run, RunId, RunState, Session,
+    SessionId, SessionState, Usage, Workspace,
 };
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
@@ -43,7 +43,8 @@ pub struct Opening<'a> {
     pub organization: &'a Organization,
     pub workspace: &'a Workspace,
     pub agent: &'a Agent,
-    pub branch: &'a str,
+    /// None declares the Session a branch of its own.
+    pub branch: Option<&'a str>,
     pub correlation: Option<&'a str>,
     pub continues: Option<&'a Session>,
     pub started_by: Option<&'a Event>,
@@ -60,12 +61,19 @@ impl<'a> Sessions<'a> {
 
     pub async fn open(&mut self, opening: Opening<'_>) -> Result<Session> {
         let opened_at = Timestamp::now();
+        let id = SessionId::generate();
         let session = Session {
-            id: SessionId::generate(),
+            id,
             organization: opening.organization.clone(),
             workspace: opening.workspace.clone(),
             agent: opening.agent.clone(),
-            branch: opening.branch.to_owned(),
+            checkout: Checkout {
+                repositories: opening.workspace.repositories.clone(),
+                base: opening.workspace.branch.clone(),
+                branch: opening
+                    .branch
+                    .map_or_else(|| format!("kestrel/{id}"), ToOwned::to_owned),
+            },
             correlation: opening.correlation.map(ToOwned::to_owned),
             state: SessionState::Open,
             opened_at,
@@ -77,9 +85,9 @@ impl<'a> Sessions<'a> {
 
         sqlx::query(
             "INSERT INTO session
-                 (id, organization_id, workspace_id, agent_id, runtime, model, branch,
+                 (id, organization_id, workspace_id, agent_id, runtime, model, base, branch,
                   correlation, state, opened_at, last_active_at, continues, event_record_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.to_string())
         .bind(session.organization.id.to_string())
@@ -87,7 +95,8 @@ impl<'a> Sessions<'a> {
         .bind(session.agent.id.to_string())
         .bind(&session.agent.runtime)
         .bind(&session.agent.model)
-        .bind(&session.branch)
+        .bind(&session.checkout.base)
+        .bind(&session.checkout.branch)
         .bind(&session.correlation)
         .bind(session.state.as_str())
         .bind(session.opened_at.to_string())
@@ -97,6 +106,20 @@ impl<'a> Sessions<'a> {
         .execute(&mut *self.connection)
         .await
         .context("opening a session")?;
+
+        for (position, url) in session.checkout.repositories.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO session_repository (session_id, organization_id, position, url)
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(session.id.to_string())
+            .bind(session.organization.id.to_string())
+            .bind(i64::try_from(position)?)
+            .bind(url)
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("fixing the repository {url} to the session {id}"))?;
+        }
 
         Ok(session)
     }
@@ -825,8 +848,9 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
 
 async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option<Session>> {
     let Some(row) = sqlx::query(
-        "SELECT organization_id, workspace_id, agent_id, runtime, model, branch, correlation,
-                state, opened_at, last_active_at, sealed_at, continues, event_record_id
+        "SELECT organization_id, workspace_id, agent_id, runtime, model, base, branch,
+                correlation, state, opened_at, last_active_at, sealed_at, continues,
+                event_record_id
          FROM session
          WHERE id = ?",
     )
@@ -856,13 +880,25 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
         )
         .await?
     };
+    let repositories =
+        sqlx::query("SELECT url FROM session_repository WHERE session_id = ? ORDER BY position")
+            .bind(id.to_string())
+            .fetch_all(&mut *connection)
+            .await?
+            .iter()
+            .map(|row| row.get("url"))
+            .collect();
 
     Ok(Some(Session {
         id,
         organization,
         workspace,
         agent,
-        branch: row.get("branch"),
+        checkout: Checkout {
+            repositories,
+            base: row.get("base"),
+            branch: row.get("branch"),
+        },
         correlation: row.get("correlation"),
         state: row.get::<String, _>("state").parse()?,
         opened_at: row.get::<String, _>("opened_at").parse()?,

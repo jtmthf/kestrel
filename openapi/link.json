@@ -281,16 +281,44 @@
         }
       },
       "Start": {
-        "description": "Execute the Run this Environment was provisioned for.",
+        "description": "Check out, then execute the Run this Environment was provisioned for. A checkout that fails is reported as the Run finished failed, and the Run never starts.",
         "type": "object",
         "properties": {
           "kind": {
             "const": "start"
+          },
+          "checkout": {
+            "$ref": "#/components/schemas/Checkout"
           }
         },
         "required": [
-          "kind"
+          "kind",
+          "checkout"
         ]
+      },
+      "Checkout": {
+        "description": "What the agent works in: each repository cloned into the working directory, on the branch, which is cut from the base when the repository does not have it yet.",
+        "type": "object",
+        "properties": {
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "base": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repositories",
+          "base",
+          "branch"
+        ],
+        "additionalProperties": false
       },
       "Stop": {
         "description": "Leave the link and exit.",

@@ -64,7 +64,7 @@ pub enum Fired {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rendered {
     pub brief: String,
-    pub branch: String,
+    pub branch: Option<String>,
     pub correlation: Option<String>,
 }
 
@@ -306,12 +306,15 @@ pub fn render(trigger: &Trigger, event: &Event) -> Result<Rendered> {
             .brief
             .render(occurrence)
             .with_context(|| unrenderable("brief"))?,
-        branch: match &templates.branch {
-            Some(branch) => branch
-                .render_line(occurrence)
-                .with_context(|| unrenderable("branch"))?,
-            None => trigger.workspace.branch.clone(),
-        },
+        branch: templates
+            .branch
+            .as_ref()
+            .map(|branch| {
+                branch
+                    .render_line(occurrence)
+                    .with_context(|| unrenderable("branch"))
+            })
+            .transpose()?,
         correlation: templates
             .correlation
             .as_ref()
@@ -447,7 +450,10 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
             organization: &trigger.organization,
             workspace: &trigger.workspace,
             agent,
-            branch: &rendered.branch,
+            branch: continues
+                .as_ref()
+                .map(|sealed| sealed.checkout.branch.as_str())
+                .or(rendered.branch.as_deref()),
             correlation: rendered.correlation.as_deref(),
             continues: continues.as_ref(),
             started_by: Some(event),

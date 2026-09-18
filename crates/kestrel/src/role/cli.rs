@@ -113,9 +113,18 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             organization,
             workspace,
             agent,
+            branch,
             continues,
         }) => {
-            let session = session::open(&store, organization, workspace, agent, *continues).await?;
+            let session = session::open(
+                &store,
+                organization,
+                workspace,
+                agent,
+                branch.as_deref(),
+                *continues,
+            )
+            .await?;
             println!("{}", session.id);
         }
         CliCommand::Session(SessionCommand::List { organization }) => {
@@ -158,7 +167,8 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 "model         {}",
                 session.agent.model.as_deref().unwrap_or("-")
             );
-            println!("branch        {}", session.branch);
+            println!("branch        {}", session.checkout.branch);
+            println!("base          {}", session.checkout.base);
             if let Some(correlation) = &session.correlation {
                 println!("correlation   {correlation}");
             }
@@ -412,7 +422,10 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
 
             let rendered = tested.rendered?;
             println!("agent         {}", tested.agent?);
-            println!("branch        {}", rendered.branch);
+            println!(
+                "branch        {}",
+                rendered.branch.as_deref().unwrap_or("the session's own")
+            );
             println!(
                 "correlation   {}",
                 rendered.correlation.as_deref().unwrap_or("-")
@@ -451,7 +464,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             match &templates.branch {
                 Some(branch) => println!("branch        {branch}"),
                 None => println!(
-                    "branch        {} (the workspace's)",
+                    "branch        the session's own, cut from {}",
                     trigger.workspace.branch
                 ),
             }

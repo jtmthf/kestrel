@@ -358,8 +358,14 @@ fn the_client_recognises_every_instruction_the_published_document_declares() {
     let published = published();
 
     for (kind, _) in declared(&published, "Instruction") {
-        let instruction: Instruction =
-            serde_json::from_str(&format!("{{\"kind\":\"{kind}\"}}")).expect("an instruction");
+        let sent = match kind.as_str() {
+            "start" => serde_json::json!({
+                "kind": kind,
+                "checkout": {"repositories": [], "base": "main", "branch": "main"},
+            }),
+            _ => serde_json::json!({"kind": kind}),
+        };
+        let instruction: Instruction = serde_json::from_value(sent).expect("an instruction");
 
         assert_eq!(
             instruction.kind(),

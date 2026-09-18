@@ -248,8 +248,8 @@ pub enum TriggerCommand {
         /// `-` from standard input
         #[arg(long, value_name = "TEMPLATE", value_parser = Given::text)]
         brief: Given,
-        /// The branch a firing's work happens on, rendered from `event`; the Workspace's
-        /// branch when not given
+        /// The branch a firing's work happens on, rendered from `event`; a branch of the
+        /// Session's own, cut from the Workspace's, when not given
         #[arg(long, value_name = "TEMPLATE")]
         branch: Option<Template>,
         /// The key that decides whether a Session for this work already exists, rendered
@@ -489,6 +489,10 @@ pub enum SessionCommand {
         /// The Agent that participates in it
         #[arg(long)]
         agent: String,
+        /// An existing branch its work happens on; a branch of its own, cut from the
+        /// Workspace's, when not given
+        #[arg(long)]
+        branch: Option<String>,
         /// The sealed Session this one carries on from
         #[arg(long, value_name = "SESSION")]
         continues: Option<SessionId>,
