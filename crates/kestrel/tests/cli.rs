@@ -1327,9 +1327,13 @@ fn secrets_set_through_the_client_appear_in_no_log_line() {
             && said.contains("INSERT INTO integration"),
         "the control plane logged nothing of what it was asked to hold:\n{said}"
     );
-    for secret in [provider_key, support::TOKEN, signing_secret] {
-        assert!(!printed.contains(secret), "the client printed {secret}");
-        assert!(!said.contains(secret), "a log line spelled {secret} out");
+    for (name, secret) in [
+        ("the provider key", provider_key),
+        ("the token", support::TOKEN),
+        ("the signing secret", signing_secret),
+    ] {
+        assert!(!printed.contains(secret), "the client printed {name}");
+        assert!(!said.contains(secret), "a log line spelled {name} out");
     }
 }
 
