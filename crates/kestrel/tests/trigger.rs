@@ -246,7 +246,8 @@ async fn prompted(harness: &Harness, session: &Session) -> String {
     );
     supervisor.wait_until_it_says("reported connected").await;
     harness.start(&claimed.run).await;
-    supervisor.wait_until_it_says("reported finished").await;
+    supervisor.wait_until_it_says("reported answered").await;
+    harness.stop_run(claimed.run.id).await;
     assert!(supervisor.finishes().await.success());
 
     harness

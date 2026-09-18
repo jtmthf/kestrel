@@ -269,6 +269,9 @@
             "$ref": "#/components/schemas/Start"
           },
           {
+            "$ref": "#/components/schemas/Prompt"
+          },
+          {
             "$ref": "#/components/schemas/Stop"
           }
         ],
@@ -276,12 +279,13 @@
           "propertyName": "kind",
           "mapping": {
             "start": "#/components/schemas/Start",
+            "prompt": "#/components/schemas/Prompt",
             "stop": "#/components/schemas/Stop"
           }
         }
       },
       "Start": {
-        "description": "Check out, then execute the Run this Environment was provisioned for. A checkout that fails is reported as the Run finished failed, and the Run never starts.",
+        "description": "Check out, then open the Run's one agent conversation and prompt its first turn. A checkout that fails is reported as the Run finished failed, and the Run never starts.",
         "type": "object",
         "properties": {
           "kind": {
@@ -298,6 +302,23 @@
         "required": [
           "kind",
           "checkout"
+        ]
+      },
+      "Prompt": {
+        "description": "Prompt the next turn, in the conversation the Run's first turn opened. Sent only once the turn before it is answered.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "prompt"
+          },
+          "prompt": {
+            "description": "The agent's whole prompt, sent exactly as given.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "prompt"
         ]
       },
       "Checkout": {
@@ -325,7 +346,7 @@
         "additionalProperties": false
       },
       "Stop": {
-        "description": "Leave the link and exit.",
+        "description": "Leave the link and exit, ending the agent conversation with it.",
         "type": "object",
         "properties": {
           "kind": {
@@ -337,7 +358,7 @@
         ]
       },
       "Report": {
-        "description": "What an Environment tells the control plane about itself. A report that belongs to its ordered account of the turn carries a seq and is taken once; what it says about itself costs nothing to take twice.",
+        "description": "What an Environment tells the control plane about itself. A report that belongs to its ordered account of the Run carries a seq and is taken once; what it says about itself costs nothing to take twice.",
         "oneOf": [
           {
             "$ref": "#/components/schemas/Connected"
@@ -358,6 +379,9 @@
             "$ref": "#/components/schemas/Used"
           },
           {
+            "$ref": "#/components/schemas/Answered"
+          },
+          {
             "$ref": "#/components/schemas/Finished"
           }
         ],
@@ -370,6 +394,7 @@
             "model": "#/components/schemas/Model",
             "said": "#/components/schemas/Said",
             "used": "#/components/schemas/Used",
+            "answered": "#/components/schemas/Answered",
             "finished": "#/components/schemas/Finished"
           }
         }
@@ -487,8 +512,24 @@
           "usage"
         ]
       },
+      "Answered": {
+        "description": "The agent answered the turn, and its conversation waits for another prompt. The Run goes on.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "answered"
+          },
+          "seq": {
+            "$ref": "#/components/schemas/Seq"
+          }
+        },
+        "required": [
+          "kind",
+          "seq"
+        ]
+      },
       "Finished": {
-        "description": "The Run is over, and this is how it went. The Environment exits after saying so.",
+        "description": "The Run is over, and this is how it went: its conversation failed, or it never started. The Environment exits after saying so.",
         "type": "object",
         "properties": {
           "kind": {

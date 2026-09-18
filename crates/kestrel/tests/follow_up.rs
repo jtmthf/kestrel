@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use jiff::SignedDuration;
 use kestrel::domain::{
-    Connection, Direction, GithubConnection, Integration, IntegrationId, OrganizationId, Run,
-    RunId, RunState,
+    Connection, Direction, GithubConnection, Integration, IntegrationId, OrganizationId, RunState,
 };
 use kestrel::integration::credential::Token;
 use kestrel::integration::github::Github;
@@ -78,19 +77,7 @@ async fn sessions(harness: &Harness, count: usize) -> Vec<kestrel::domain::Sessi
 }
 
 async fn runs(harness: &Harness, session: kestrel::domain::SessionId, count: usize) {
-    runs_within(harness, session, count, PATIENCE).await;
-}
-
-/// A caller waiting on two whole real Environment lifecycles back to back — provisioned,
-/// worked, and destroyed, twice over — needs more room than the one lifecycle `PATIENCE` is
-/// sized for.
-async fn runs_within(
-    harness: &Harness,
-    session: kestrel::domain::SessionId,
-    count: usize,
-    patience: Duration,
-) {
-    let deadline = tokio::time::Instant::now() + patience;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
         if harness.runs(session).await.len() == count {
             return;
@@ -107,30 +94,6 @@ async fn message_arrived(harness: &Harness, session: kestrel::domain::SessionId,
             matches!(&recorded.entry, Entry::Said { message: said, .. } if said == message)
         }) {
             return;
-        }
-        assert!(tokio::time::Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
-async fn ended(harness: &Harness, run: RunId) -> Run {
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-    loop {
-        let run = harness.run(run).await;
-        if run.state == RunState::Ended {
-            return run;
-        }
-        assert!(tokio::time::Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
-async fn provisioned(harness: &Harness, run: RunId) -> Run {
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-    loop {
-        let run = harness.run(run).await;
-        if run.supervisor.is_some() {
-            return run;
         }
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -298,7 +261,8 @@ async fn a_cold_run_is_seeded_with_every_page_of_earlier_context() {
     );
     supervisor.wait_until_it_says("reported connected").await;
     harness.start(&second).await;
-    supervisor.wait_until_it_says("reported finished").await;
+    supervisor.wait_until_it_says("reported answered").await;
+    harness.stop_run(second.id).await;
 
     assert!(harness.transcript(session.id).await.iter().any(|recorded| {
         matches!(
@@ -331,28 +295,22 @@ async fn the_second_run_starts_a_fresh_supervisor_on_the_same_instance_after_the
     let session = harness.open_session("acme", "kestrel", "builder").await;
 
     let first = harness.post(session.id, "operator", FIRST_MEMORY).await;
-    let first = provisioned(&harness, first.id).await;
-    assert!(
-        harness
-            .post_while_busy(session.id, "operator", LAST_MEMORY)
-            .await
-            .is_none()
-    );
-    assert_eq!(harness.runs(session.id).await.len(), 1);
-
-    runs_within(&harness, session.id, 2, PATIENCE * 2).await;
-    let first = ended(&harness, first.id).await;
+    harness.answered(first.id, 1).await;
+    harness.stop_run(first.id).await;
+    let first = harness.run(first.id).await;
     let first_supervisor = first.supervisor.as_deref().expect("a supervisor");
     support::environment::Environment::named(first_supervisor)
         .is_gone()
         .await;
 
-    let second = harness.runs(session.id).await[1].clone();
-    let second = ended(&harness, second.id).await;
+    let second = harness.post(session.id, "operator", LAST_MEMORY).await;
+    harness.answered(second.id, 1).await;
+    let second = harness.run(second.id).await;
     let second_supervisor = second.supervisor.as_deref().expect("a supervisor");
 
     assert_ne!(first_supervisor, second_supervisor);
     assert_eq!(first.instance, second.instance);
+    harness.stop_run(second.id).await;
     support::environment::Environment::named(second_supervisor)
         .is_gone()
         .await;

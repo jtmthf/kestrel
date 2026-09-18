@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
@@ -12,12 +13,15 @@ use agent_client_protocol::schema::v1::{
     NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigId, SessionConfigKind,
     SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOptions,
-    SessionConfigValueId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    StopReason, TextContent,
+    SessionConfigValueId, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, StopReason, TextContent,
 };
 use agent_client_protocol::{AcpAgent, Client, ConnectionTo, Error};
 
-use crate::link::{Cost, Exit, Usage};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+use crate::link::{Cost, Usage};
 use crate::permission::{self, Subject};
 
 /// Nothing on the link carries work for a Run, so every Run asks the same thing.
@@ -34,12 +38,14 @@ pub struct Runtime {
     pub model: Option<String>,
 }
 
+/// One turn's account. `failed` says why the conversation is over; without it, the agent
+/// answered and waits for another prompt.
 pub struct Worked {
     pub said: Vec<String>,
     pub usage: Option<Usage>,
     pub allowed: Vec<Subject>,
     pub on: Option<On>,
-    pub exit: Exit,
+    pub failed: Option<String>,
 }
 
 /// Which model the agent works the turn on — the one its Run named, or the one the runtime
@@ -56,20 +62,90 @@ struct Selects {
     on: On,
 }
 
-/// Everything that can go wrong here is an exit status: a Run ends with one however it went.
-///
-/// `provider` reaches the agent's own process and nothing else: not this one's environment, not
-/// a file, and not ACP, which carries no credentials (ADR-0007).
-pub async fn work(runtime: &Runtime, provider: BTreeMap<String, String>, prompt: &str) -> Worked {
+/// Long enough for an agent between turns to see its connection close; one mid-turn is cut off.
+const CLOSING: Duration = Duration::from_millis(500);
+
+/// One ACP conversation for the whole Run, held apart from the link so that losing the link loses
+/// nothing of it (ADR-0024). Dropping it kills the agent.
+pub struct Conversation {
+    prompts: mpsc::UnboundedSender<String>,
+    turns: mpsc::UnboundedReceiver<Worked>,
+    task: JoinHandle<()>,
+}
+
+impl Conversation {
+    /// `provider` reaches the agent's own process and nothing else: not this one's
+    /// environment, not a file, and not ACP, which carries no credentials (ADR-0007).
+    pub fn open(runtime: &Runtime, provider: BTreeMap<String, String>, first: String) -> Self {
+        let (prompts, prompted) = mpsc::unbounded_channel();
+        let (answered, turns) = mpsc::unbounded_channel();
+        prompts
+            .send(first)
+            .expect("the conversation has not started, so nothing has hung up on it");
+        let task = tokio::spawn(conversing(
+            runtime.command.clone(),
+            runtime.auth.clone(),
+            runtime.model.clone(),
+            provider,
+            prompted,
+            answered,
+        ));
+
+        Self {
+            prompts,
+            turns,
+            task,
+        }
+    }
+
+    pub fn prompt(&self, prompt: String) {
+        // A conversation that is over says so as its last turn, which is where that is heard.
+        let _ = self.prompts.send(prompt);
+    }
+
+    /// Cancel-safe, so a caller may stop waiting on it and come back.
+    pub async fn turn(&mut self) -> Worked {
+        self.turns.recv().await.unwrap_or_else(|| {
+            Heard::default().worked(Some("the agent conversation ended unannounced".to_owned()))
+        })
+    }
+
+    /// Waited out, because the agent runs in a process group of its own that only its
+    /// connection closing kills, and an exit that beats that leaves the agent behind.
+    pub async fn end(mut self) {
+        let (hung_up, _) = mpsc::unbounded_channel();
+        drop(std::mem::replace(&mut self.prompts, hung_up));
+        if tokio::time::timeout(CLOSING, &mut self.task).await.is_err() {
+            self.task.abort();
+            let _ = (&mut self.task).await;
+        }
+    }
+}
+
+impl Drop for Conversation {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Everything that can go wrong here ends the conversation, and is its last turn.
+async fn conversing(
+    command: String,
+    auth: Option<String>,
+    model: Option<String>,
+    provider: BTreeMap<String, String>,
+    mut prompts: mpsc::UnboundedReceiver<String>,
+    turns: mpsc::UnboundedSender<Worked>,
+) {
     let heard = Arc::new(Mutex::new(Heard::default()));
 
-    let spawn = match AcpAgent::from_str(&runtime.command) {
+    let spawn = match AcpAgent::from_str(&command) {
         Ok(spawn) => spawn,
         Err(error) => {
-            return Heard::default().worked(failed(format!(
-                "the agent runtime {:?} could not be spawned: {error}",
-                runtime.command
-            )));
+            let _ = turns.send(Heard::default().worked(Some(format!(
+                "the agent runtime {command:?} could not be spawned: {error}"
+            ))));
+            return;
         }
     };
     let spawn = AcpAgent::new(spawn.into_config().envs(provider));
@@ -114,36 +190,57 @@ pub async fn work(runtime: &Runtime, provider: BTreeMap<String, String>, prompt:
             agent_client_protocol::on_receive_request!(),
         )
         .connect_with(spawn, {
-            // Owned rather than borrowed, because the connection outlives this call's frame.
-            let (auth, model) = (runtime.auth.clone(), runtime.model.clone());
             let heard = Arc::clone(&heard);
+            let turns = turns.clone();
 
             async move |connection: ConnectionTo<agent_client_protocol::Agent>| {
-                a_turn(&connection, auth, model, prompt, &heard).await
+                let conversed = set_up(&connection, auth, model, &heard).await?;
+
+                while let Some(prompt) = prompts.recv().await {
+                    let answered = connection
+                        .send_request(PromptRequest::new(
+                            conversed.clone(),
+                            vec![ContentBlock::Text(TextContent::new(prompt))],
+                        ))
+                        .block_task()
+                        .await?;
+                    if let Some(because) = stopped_short(answered.stop_reason) {
+                        return Ok(Some(because));
+                    }
+                    if turns.send(taken(&heard).worked(None)).is_err() {
+                        return Ok(None);
+                    }
+                }
+
+                Ok(None)
             }
         })
         .await;
 
-    let heard = std::mem::take(
+    let because = match stopped {
+        Ok(None) => return,
+        Ok(Some(because)) => because,
+        Err(error) => error.to_string(),
+    };
+    let _ = turns.send(taken(&heard).worked(Some(because)));
+}
+
+fn taken(heard: &Mutex<Heard>) -> Heard {
+    std::mem::take(
         &mut *heard
             .lock()
             .expect("what the agent said should not be poisoned"),
-    );
-
-    match stopped {
-        Ok(stop) => heard.worked(ended(stop)),
-        Err(error) => heard.worked(failed(error.to_string())),
-    }
+    )
 }
 
-/// Everything kestrel asks of an agent, in the order ACP has a client ask it.
-async fn a_turn(
+/// Everything kestrel asks of an agent before its first prompt, in the order ACP has a client
+/// ask it.
+async fn set_up(
     connection: &ConnectionTo<agent_client_protocol::Agent>,
     auth: Option<String>,
     model: Option<String>,
-    prompt: &str,
     heard: &Mutex<Heard>,
-) -> Result<StopReason, Error> {
+) -> Result<SessionId, Error> {
     let initialized = connection
         .send_request(InitializeRequest::new(ProtocolVersion::V1))
         .block_task()
@@ -203,15 +300,7 @@ async fn a_turn(
             .on = Some(selects.on);
     }
 
-    let answered = connection
-        .send_request(PromptRequest::new(
-            set_up.session_id,
-            vec![ContentBlock::Text(TextContent::new(prompt))],
-        ))
-        .block_task()
-        .await?;
-
-    Ok(answered.stop_reason)
+    Ok(set_up.session_id)
 }
 
 pub fn prompt(entries: &[crate::link::Entry]) -> String {
@@ -335,21 +424,18 @@ fn working_directory() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
-fn failed(because: String) -> Exit {
-    Exit::Failed { because }
-}
+/// Why a turn that stopped for anything but ending it ends the conversation too.
+fn stopped_short(stop: StopReason) -> Option<String> {
+    let because = match stop {
+        StopReason::EndTurn => return None,
+        StopReason::MaxTokens => "the agent ran out of tokens".to_owned(),
+        StopReason::MaxTurnRequests => "the agent ran out of requests".to_owned(),
+        StopReason::Refusal => "the agent refused the work".to_owned(),
+        StopReason::Cancelled => "the agent was cancelled".to_owned(),
+        other => format!("the agent stopped for a reason kestrel does not know: {other:?}"),
+    };
 
-fn ended(stop: StopReason) -> Exit {
-    match stop {
-        StopReason::EndTurn => Exit::Succeeded,
-        StopReason::MaxTokens => failed("the agent ran out of tokens".to_owned()),
-        StopReason::MaxTurnRequests => failed("the agent ran out of requests".to_owned()),
-        StopReason::Refusal => failed("the agent refused the work".to_owned()),
-        StopReason::Cancelled => failed("the agent was cancelled".to_owned()),
-        other => failed(format!(
-            "the agent stopped for a reason kestrel does not know: {other:?}"
-        )),
-    }
+    Some(because)
 }
 
 /// An Agent's reasoning, its plan and its tool calls are the Run's business, and are dropped here.
@@ -411,7 +497,7 @@ impl Heard {
         }
     }
 
-    fn worked(mut self, exit: Exit) -> Worked {
+    fn worked(mut self, failed: Option<String>) -> Worked {
         self.close();
 
         Worked {
@@ -419,7 +505,7 @@ impl Heard {
             usage: self.usage,
             allowed: self.allowed,
             on: self.on,
-            exit,
+            failed,
         }
     }
 }
@@ -444,7 +530,7 @@ mod tests {
             heard.update(update);
         }
 
-        heard.worked(Exit::Succeeded)
+        heard.worked(None)
     }
 
     #[test]
@@ -642,8 +728,8 @@ mod tests {
     }
 
     #[test]
-    fn ending_the_turn_is_the_only_stop_reason_a_run_succeeds_on() {
-        assert_eq!(ended(StopReason::EndTurn), Exit::Succeeded);
+    fn ending_the_turn_is_the_only_stop_reason_the_conversation_goes_on_after() {
+        assert_eq!(stopped_short(StopReason::EndTurn), None);
 
         for stop in [
             StopReason::MaxTokens,
@@ -651,7 +737,7 @@ mod tests {
             StopReason::Refusal,
             StopReason::Cancelled,
         ] {
-            assert!(matches!(ended(stop), Exit::Failed { .. }), "{stop:?}");
+            assert!(stopped_short(stop).is_some(), "{stop:?}");
         }
     }
 }

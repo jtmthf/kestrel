@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
+use jiff::{SignedDuration, Timestamp};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -21,6 +22,7 @@ use crate::work::{self, Claimed};
 /// Nothing subscribes to `Fanout` at 0.1 (ADR-0005), so a queued Run is found by asking
 /// `Store` again rather than by being told.
 const POLL: Duration = Duration::from_millis(100);
+const LEAVING: SignedDuration = SignedDuration::from_secs(3);
 
 #[derive(Clone)]
 pub struct Dispatch {
@@ -279,6 +281,12 @@ fn relay(run: RunId, said: impl Read + Send + 'static) {
 
 async fn stop_left_behind(store: &Store, driver: &Driver) -> Result<()> {
     for (run, supervisor) in work::supervisors_to_stop(store).await? {
+        if run
+            .ended_at
+            .is_some_and(|ended| Timestamp::now().duration_since(ended) < LEAVING)
+        {
+            continue;
+        }
         match driver.stop_named(&supervisor) {
             Ok(()) => {
                 work::supervisor_gone(store, &run).await?;
@@ -323,7 +331,10 @@ async fn start(
     let ended = attend(store, run, &mut supervisor, shutdown).await;
 
     let exit = match ended? {
-        Ended::TheRun(exit) => exit,
+        Ended::TheRun(exit) => {
+            left_the_link(&mut supervisor).await;
+            exit
+        }
         Ended::Supervisor(exited) => {
             let unreported =
                 format!("the supervisor exited {exited} without reporting how the run went");
@@ -347,6 +358,20 @@ async fn start(
     }
 
     Ok(exit)
+}
+
+/// A Run stopped or sealed tells its supervisor to leave, and one that does closes its agent
+/// conversation on the way out; killed first, it would leave the agent's own process group
+/// running.
+async fn left_the_link(supervisor: &mut Supervisor) {
+    let deadline = tokio::time::Instant::now() + LEAVING.unsigned_abs();
+
+    while tokio::time::Instant::now() < deadline {
+        if !matches!(supervisor.status(), Ok(None)) {
+            return;
+        }
+        tokio::time::sleep(POLL).await;
+    }
 }
 
 /// The supervisor reports its own outcome over the link, so what this waits for is the

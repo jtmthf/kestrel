@@ -9,7 +9,7 @@ mod support;
 use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver};
-use kestrel::domain::{Exit, Run, RunId, RunState, Session};
+use kestrel::domain::{Exit, Run, RunId, Session};
 use support::Harness;
 use support::image::{self, Container};
 use support::scripted_agent::{self, Script};
@@ -72,8 +72,9 @@ async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -
     }
 }
 
+/// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
 async fn ended(harness: &Harness, run: RunId) -> Run {
-    until(harness, run, "ended", |run| run.state == RunState::Ended).await
+    harness.after_one_turn_within(run, PATIENCE).await
 }
 
 async fn started(harness: &Harness, run: RunId) -> Run {

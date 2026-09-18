@@ -337,6 +337,7 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
                 "cost": {"amount": 0.42, "currency": "USD"},
             },
         },
+        "answered": {"kind": "answered", "seq": 1},
         "finished": {"kind": "finished", "seq": 1, "exit": {"status": "succeeded"}},
     });
     assert_eq!(

@@ -31,8 +31,8 @@ use jiff::{SignedDuration, Timestamp};
 use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
-    Agent, CorrelationMiss, Direction, Event, EventRecordId, Fires, Integration, Occurrence,
-    Organization, Run, RunId, Session, SessionId, Templates, Trigger, Workspace,
+    Agent, CorrelationMiss, Direction, Event, EventRecordId, Exit, Fires, Integration, Occurrence,
+    Organization, Run, RunId, RunState, Session, SessionId, Templates, Trigger, Turn, Workspace,
 };
 use kestrel::integration::{self, Connecting, Registration};
 use kestrel::link::credential::Secret;
@@ -49,6 +49,8 @@ use kestrel::work::{self, Claimed};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Distinctive enough that a test can assert it is nowhere it should not be.
 pub const TOKEN: &str = "ghp_kestrel_should_never_say_this_out_loud";
@@ -956,6 +958,71 @@ impl Harness {
         work::runs(&self.store, session)
             .await
             .expect("the runs should list")
+    }
+
+    pub async fn turns(&self, run: RunId) -> Vec<Turn> {
+        work::turns(&self.store, run)
+            .await
+            .expect("the run's turns should read")
+    }
+
+    pub async fn stop_run(&self, run: RunId) -> Exit {
+        self.try_stop_run(run).await.expect("the run should stop")
+    }
+
+    pub async fn try_stop_run(&self, run: RunId) -> anyhow::Result<Exit> {
+        work::stop(&self.store, run).await
+    }
+
+    pub async fn answered(&self, run: RunId, count: usize) -> Run {
+        self.answered_within(run, count, PATIENCE).await
+    }
+
+    /// Once `count` of the Run's turns are answered, or once it has ended short of them.
+    pub async fn answered_within(
+        &self,
+        run: RunId,
+        count: usize,
+        patience: std::time::Duration,
+    ) -> Run {
+        let deadline = tokio::time::Instant::now() + patience;
+
+        loop {
+            let answered = self
+                .turns(run)
+                .await
+                .iter()
+                .filter(|turn| turn.answered_at.is_some())
+                .count();
+            let run = self.run(run).await;
+            if answered >= count || run.state == RunState::Ended {
+                return run;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the run {} is {} with {answered} of {count} turns answered",
+                run.id,
+                run.state
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// A Run whose first turn is over has ended either way: by that turn, or stopped after it
+    /// the way an operator would, because answering never ends one (ADR-0024).
+    pub async fn after_one_turn(&self, run: RunId) -> Run {
+        self.after_one_turn_within(run, PATIENCE).await
+    }
+
+    pub async fn after_one_turn_within(&self, run: RunId, patience: std::time::Duration) -> Run {
+        let answered = self.answered_within(run, 1, patience).await;
+        if answered.state != RunState::Ended {
+            self.try_stop_run(run)
+                .await
+                .expect("a run between turns should stop");
+        }
+
+        self.run(run).await
     }
 
     pub async fn complete_run(&self, run: &Run) {

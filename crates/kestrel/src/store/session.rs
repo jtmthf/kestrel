@@ -5,7 +5,7 @@ use sqlx::{Row, SqliteConnection};
 
 use crate::domain::{
     Agent, Checkout, Connected, Cost, Event, Exit, Organization, Run, RunId, RunState, Session,
-    SessionId, SessionState, Usage, Workspace,
+    SessionId, SessionState, Turn, Usage, Workspace,
 };
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
@@ -859,6 +859,83 @@ impl<'a> Sessions<'a> {
             })
         })
         .collect()
+    }
+
+    pub async fn prompt_turn(&mut self, run: &Run) -> Result<i64> {
+        let prompted = sqlx::query(
+            "INSERT INTO turn (run_id, organization_id, seq, prompted_at)
+             VALUES (
+                 ?,
+                 ?,
+                 (SELECT COALESCE(MAX(seq), 0) + 1 FROM turn WHERE run_id = ?),
+                 ?
+             )
+             RETURNING seq",
+        )
+        .bind(run.id.to_string())
+        .bind(run.organization.to_string())
+        .bind(run.id.to_string())
+        .bind(Timestamp::now().to_string())
+        .fetch_one(&mut *self.connection)
+        .await
+        .with_context(|| format!("prompting a turn of the run {}", run.id))?;
+
+        Ok(prompted.get("seq"))
+    }
+
+    /// `false` when no turn was waiting on an answer, so an answer replayed after a reconnect
+    /// closes nothing twice.
+    pub async fn answer_turn(&mut self, run: &Run) -> Result<bool> {
+        let answered =
+            sqlx::query("UPDATE turn SET answered_at = ? WHERE run_id = ? AND answered_at IS NULL")
+                .bind(Timestamp::now().to_string())
+                .bind(run.id.to_string())
+                .execute(&mut *self.connection)
+                .await
+                .with_context(|| format!("answering the turn of the run {}", run.id))?;
+
+        Ok(answered.rows_affected() > 0)
+    }
+
+    pub async fn turns(&mut self, run: RunId) -> Result<Vec<Turn>> {
+        sqlx::query(
+            "SELECT seq, prompted_at, answered_at
+             FROM turn
+             WHERE run_id = ?
+             ORDER BY seq",
+        )
+        .bind(run.to_string())
+        .fetch_all(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading the turns of the run {run}"))?
+        .iter()
+        .map(|row| {
+            Ok(Turn {
+                seq: row.get("seq"),
+                prompted_at: row.get::<String, _>("prompted_at").parse()?,
+                answered_at: timestamp(row, "answered_at")?,
+            })
+        })
+        .collect()
+    }
+
+    /// Between turns: prompted at least once, and every prompt answered. A Run not yet
+    /// prompted is still getting to its first turn.
+    pub async fn is_waiting(&mut self, run: &Run) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS prompted, COUNT(answered_at) AS answered
+             FROM turn
+             WHERE run_id = ?",
+        )
+        .bind(run.id.to_string())
+        .fetch_one(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading whether the run {} is between turns", run.id))?;
+        let prompted: i64 = row.get("prompted");
+
+        Ok(run.state == RunState::Active
+            && prompted > 0
+            && prompted == row.get::<i64, _>("answered"))
     }
 }
 
