@@ -22,6 +22,7 @@ use tracing::{info, warn};
 use crate::domain::{Checkout, Run, RunId, Session};
 use crate::link::credential::Secret;
 use crate::log::{self, Cursor, Unreadable, Window};
+use crate::profile;
 use crate::provider;
 use crate::session;
 use crate::store::Store;
@@ -85,6 +86,12 @@ struct Paging {
 #[derive(Serialize)]
 struct Credentials {
     variables: BTreeMap<String, String>,
+    files: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct Refreshed {
+    files: BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -103,7 +110,7 @@ struct Recorded {
 
 pub fn router(store: Store, shutdown: CancellationToken) -> Router {
     Router::new()
-        .route(CREDENTIALS, get(credentials))
+        .route(CREDENTIALS, get(credentials).patch(refresh_credentials))
         .route(ENTRIES, get(entries))
         .route(INSTRUCTIONS, get(instructions))
         .route(REPORTS, post(report))
@@ -192,22 +199,59 @@ async fn instructions(
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)))
 }
 
-/// The Provider Credentials of the Run's Organization, decrypted here and held nowhere else:
-/// a supervisor asks as it spawns its Agent Runtime, and an idle one never asks.
+/// The Provider Credentials of the Run's Organization and the Subscription Profile its Session
+/// names, decrypted here and held nowhere else: a supervisor asks as it spawns its Agent
+/// Runtime, and an idle one never asks.
 async fn credentials(
     State(control_plane): State<ControlPlane>,
     Path(run): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<Credentials>, Refused> {
     let run = authenticated(&control_plane, &headers, &run).await?;
-    let variables = provider::reaching(&control_plane.store, run.organization).await?;
+    let mut variables = provider::reaching(&control_plane.store, run.organization).await?;
+    let mut files = BTreeMap::new();
+    if let Some(named) = session::show(&control_plane.store, run.session)
+        .await?
+        .profile
+    {
+        let contents = profile::contents(&control_plane.store, &named).await?;
+        variables.extend(contents.variables);
+        files = contents.files;
+    }
     info!(
         run = %run.id,
         variables = variables.keys().cloned().collect::<Vec<_>>().join(", "),
+        files = files.keys().cloned().collect::<Vec<_>>().join(", "),
         "an environment took the credentials its run needs"
     );
 
-    Ok(Json(Credentials { variables }))
+    Ok(Json(Credentials { variables, files }))
+}
+
+async fn refresh_credentials(
+    State(control_plane): State<ControlPlane>,
+    Path(run): Path<String>,
+    headers: HeaderMap,
+    Json(refreshed): Json<Refreshed>,
+) -> Result<StatusCode, Refused> {
+    let run = authenticated(&control_plane, &headers, &run).await?;
+    let Some(named) = session::show(&control_plane.store, run.session)
+        .await?
+        .profile
+    else {
+        return Err(Refused::BadRequest(
+            "this run's session names no subscription profile to refresh".to_owned(),
+        ));
+    };
+    let taken = profile::refresh(&control_plane.store, &named, &refreshed.files).await?;
+    info!(
+        run = %run.id,
+        profile = %named.name,
+        files = taken.join(", "),
+        "an environment handed back the logins its runtime refreshed"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn entries(

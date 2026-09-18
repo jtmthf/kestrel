@@ -32,12 +32,14 @@ use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
     Agent, CorrelationMiss, Direction, Event, EventRecordId, Fires, Integration, Occurrence,
-    Organization, Run, RunId, Session, SessionId, Templates, Trigger, Workspace,
+    Organization, Run, RunId, Session, SessionId, SubscriptionProfile, Templates, Trigger,
+    Workspace,
 };
 use kestrel::integration::{self, Connecting, Registration};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
 use kestrel::log::{Cursor, Entry, Page, TranscriptEntry, Unreadable, Window};
+use kestrel::profile::{self, Contents};
 use kestrel::provider::{self, Held};
 use kestrel::role::serve::Listen;
 use kestrel::role::work::{AgentRuntime, Dispatch};
@@ -101,6 +103,8 @@ pub struct Provisions {
 
 /// The runtime an Agent names unless a test says otherwise, spawned as whatever the test plays.
 pub const RUNTIME: &str = "opencode";
+/// The runtime whose Runs on one Subscription Profile the work role dispatches one at a time.
+pub const SERIALIZED: &str = "codex";
 
 fn spawning(runtimes: &[(&str, &str)]) -> Vec<AgentRuntime> {
     runtimes
@@ -229,6 +233,7 @@ impl Harness {
             runtimes: provisions.runtimes,
             auth: None,
             max_active_runs: provisions.max_active_runs,
+            serialized: vec![SERIALIZED.to_owned()],
         });
         let roles = tokio::spawn(all_in_one.run(dispatch, shutdown.clone()));
 
@@ -557,6 +562,7 @@ impl Harness {
                 workspace,
                 agent,
                 allows: &[],
+                profile: None,
             },
         )
         .await
@@ -590,6 +596,7 @@ impl Harness {
                     .iter()
                     .map(|&name| name.to_owned())
                     .collect::<Vec<_>>(),
+                profile: None,
             },
         )
         .await
@@ -648,6 +655,7 @@ impl Harness {
                 workspace: "kestrel",
                 agent: "builder",
                 allows: &[],
+                profile: None,
             },
         )
         .await
@@ -733,6 +741,65 @@ impl Harness {
             .expect("what the organization holds should list")
     }
 
+    pub async fn declare_profile(
+        &self,
+        organization: &str,
+        name: &str,
+        owner: &str,
+    ) -> anyhow::Result<SubscriptionProfile> {
+        profile::declare(&self.store, organization, name, owner)
+            .await
+            .map(|declared| declared.record)
+    }
+
+    pub async fn hold_in_profile(
+        &self,
+        organization: &str,
+        name: &str,
+        entry: &profile::Entry,
+        login: &str,
+    ) {
+        profile::hold(&self.store, organization, name, entry, login)
+            .await
+            .expect("the login should be held");
+    }
+
+    pub async fn profiles(
+        &self,
+        organization: &str,
+    ) -> Vec<(SubscriptionProfile, Vec<profile::Held>)> {
+        profile::profiles(&self.store, organization)
+            .await
+            .expect("the profiles should list")
+    }
+
+    /// What the next Run spawned with the profile would be handed.
+    pub async fn profile_contents(&self, profile: &SubscriptionProfile) -> Contents {
+        profile::contents(&self.store, profile)
+            .await
+            .expect("the profile should open")
+    }
+
+    pub async fn open_session_with(
+        &self,
+        organization: &str,
+        workspace: &str,
+        agent: &str,
+        profile: &str,
+    ) -> Session {
+        session::open(
+            &self.store,
+            organization,
+            workspace,
+            agent,
+            Some(profile),
+            None,
+            None,
+        )
+        .await
+        .expect("the session should open")
+    }
+
     pub async fn open_session(&self, organization: &str, workspace: &str, agent: &str) -> Session {
         self.try_open_session(organization, workspace, agent, None)
             .await
@@ -751,6 +818,7 @@ impl Harness {
             organization,
             workspace,
             agent,
+            None,
             Some(branch),
             None,
         )
@@ -777,7 +845,16 @@ impl Harness {
         agent: &str,
         continues: Option<SessionId>,
     ) -> anyhow::Result<Session> {
-        session::open(&self.store, organization, workspace, agent, None, continues).await
+        session::open(
+            &self.store,
+            organization,
+            workspace,
+            agent,
+            None,
+            None,
+            continues,
+        )
+        .await
     }
 
     pub async fn seal_session(&self, id: SessionId) -> Session {
@@ -932,7 +1009,7 @@ impl Harness {
     }
 
     pub async fn claim_run(&self) -> Option<Claimed> {
-        work::claim(&self.store)
+        work::claim(&self.store, &[SERIALIZED.to_owned()])
             .await
             .expect("the claim should ask")
     }

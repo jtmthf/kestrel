@@ -423,6 +423,342 @@
         }
       }
     },
+    "/operator/organizations/{organization}/profiles": {
+      "get": {
+        "operationId": "listSubscriptionProfiles",
+        "summary": "List the Subscription Profiles declared in an Organization.",
+        "description": "Each with its owner and what it holds, by kind and name and when it was set, and never by value.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every profile declared, ordered by name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SubscriptionProfileListed"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      },
+      "post": {
+        "operationId": "declareSubscriptionProfile",
+        "summary": "Declare a Subscription Profile.",
+        "description": "A person's login to a subscribed Agent Runtime. It reaches only the Runs of Sessions that name it. A profile by this name that already exists is answered as it is; one that belongs to someone else is refused with 409, because a profile never changes hands.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscriptionProfileDeclaration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A profile by this name already existed, and belongs to this owner.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionProfile"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "No profile by this name existed, and one was made.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionProfile"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "409": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "422": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/profiles/{profile}/variables/{variable}": {
+      "put": {
+        "operationId": "holdSubscriptionProfileVariable",
+        "summary": "Hold a variable in a Subscription Profile.",
+        "description": "Replaces whatever the profile held as this variable. It is put into the Agent Runtime's environment as the Run is spawned. It is encrypted at rest and never answered back.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Subscription Profile.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "variable",
+            "in": "path",
+            "required": true,
+            "description": "The environment variable the Agent Runtime is spawned with.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderCredentialSecret"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The login is held.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionProfileLogin"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "422": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "forgetSubscriptionProfileVariable",
+        "summary": "Forget a variable a Subscription Profile holds.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Subscription Profile.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "variable",
+            "in": "path",
+            "required": true,
+            "description": "The environment variable the Agent Runtime is spawned with.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The login is forgotten."
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "422": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/profiles/{profile}/files/{path}": {
+      "put": {
+        "operationId": "holdSubscriptionProfileFile",
+        "summary": "Hold a file in a Subscription Profile.",
+        "description": "Replaces whatever the profile held as this file. It is written beneath the agent's home as the Run is spawned, read back as the Run ends, and held again if the runtime rewrote it, so a refreshed login persists; the secret is the file's contents, byte for byte. It is encrypted at rest and never answered back.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Subscription Profile.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "description": "Where the file sits beneath the agent's home, as one segment with its slashes percent-encoded.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderCredentialSecret"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The login is held.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionProfileLogin"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "422": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "forgetSubscriptionProfileFile",
+        "summary": "Forget a file a Subscription Profile holds.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Subscription Profile.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "description": "Where the file sits beneath the agent's home, as one segment with its slashes percent-encoded.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The login is forgotten."
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "422": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
     "/operator/organizations/{organization}/integrations": {
       "get": {
         "operationId": "listIntegrations",
@@ -875,6 +1211,92 @@
         "required": [
           "variable",
           "set_at"
+        ]
+      },
+      "SubscriptionProfileDeclaration": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The person it belongs to, which never changes."
+          }
+        },
+        "required": [
+          "name",
+          "owner"
+        ]
+      },
+      "SubscriptionProfile": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "owner"
+        ]
+      },
+      "SubscriptionProfileLogin": {
+        "description": "A login as everything but the Run that carries it sees it.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "variable",
+              "file"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "The variable, or the path beneath the agent's home."
+          },
+          "set_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was last held, whether by a person or by a Run handing back a refreshed login."
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "set_at"
+        ]
+      },
+      "SubscriptionProfileListed": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SubscriptionProfile"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "holds": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SubscriptionProfileLogin"
+                }
+              }
+            },
+            "required": [
+              "holds"
+            ]
+          }
         ]
       },
       "Direction": {

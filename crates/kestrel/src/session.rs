@@ -16,6 +16,7 @@ pub async fn open(
     organization: &str,
     workspace: &str,
     agent: &str,
+    profile: Option<&str>,
     branch: Option<&str>,
     continues: Option<SessionId>,
 ) -> Result<Session> {
@@ -24,6 +25,10 @@ pub async fn open(
     let organization = tx.organizations().named(organization).await?;
     let workspace = tx.workspaces().named(&organization, workspace).await?;
     let agent = tx.agents().named(&organization, agent).await?;
+    let profile = match profile {
+        Some(profile) => Some(tx.profiles().named(&organization, profile).await?),
+        None => None,
+    };
     let continues = match continues {
         Some(sealed) => Some(continued(&mut tx, &organization, sealed).await?),
         None => None,
@@ -35,6 +40,7 @@ pub async fn open(
             organization: &organization,
             workspace: &workspace,
             agent: &agent,
+            profile: profile.as_ref(),
             branch,
             correlation: None,
             continues: continues.as_ref(),

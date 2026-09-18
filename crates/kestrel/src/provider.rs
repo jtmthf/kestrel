@@ -89,7 +89,7 @@ pub async fn reaching(
 
 /// A credential is named by the environment variable the runtime reads it from, so a name a
 /// process could not carry is refused where it is set rather than where it is spawned.
-fn named(variable: &str) -> Result<()> {
+pub(crate) fn named(variable: &str) -> Result<()> {
     let acceptable = variable
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || character == '_');

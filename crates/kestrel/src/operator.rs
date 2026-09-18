@@ -20,10 +20,11 @@ use crate::agent::{self, NotOffered};
 use crate::declined::Declined;
 use crate::domain::{
     self, Agent, Connection, Direction, EventRecordId, EventRefusal, Firing, Integration,
-    Occurrence, Organization, SessionId, SessionState, Workspace,
+    Occurrence, Organization, SessionId, SessionState, SubscriptionProfile, Workspace,
 };
 use crate::integration::{self, Connecting, Registration, github};
 use crate::log::{self, Cursor, Page, Unreadable, Window};
+use crate::profile::{self, Entry};
 use crate::provider::{self, Held};
 use crate::store::organization::NoSuchOrganization;
 use crate::store::{Declared, Store};
@@ -34,6 +35,12 @@ pub const WORKSPACES: &str = "/operator/organizations/{organization}/workspaces"
 pub const AGENTS: &str = "/operator/organizations/{organization}/agents";
 pub const CREDENTIALS: &str = "/operator/organizations/{organization}/credentials";
 pub const CREDENTIAL: &str = "/operator/organizations/{organization}/credentials/{variable}";
+pub const PROFILES: &str = "/operator/organizations/{organization}/profiles";
+pub const PROFILE_VARIABLE: &str =
+    "/operator/organizations/{organization}/profiles/{profile}/variables/{variable}";
+/// One segment, with the path's slashes percent-encoded in it.
+pub const PROFILE_FILE: &str =
+    "/operator/organizations/{organization}/profiles/{profile}/files/{path}";
 pub const INTEGRATIONS: &str = "/operator/organizations/{organization}/integrations";
 pub const EVENT_REFUSAL: &str =
     "/operator/organizations/{organization}/integrations/{integration}/event-refusal";
@@ -90,6 +97,15 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .route(AGENTS, get(agents).post(declare_agent))
         .route(CREDENTIALS, get(credentials))
         .route(CREDENTIAL, put(hold_credential).delete(forget_credential))
+        .route(PROFILES, get(profiles).post(declare_profile))
+        .route(
+            PROFILE_VARIABLE,
+            put(hold_profile_variable).delete(forget_profile_variable),
+        )
+        .route(
+            PROFILE_FILE,
+            put(hold_profile_file).delete(forget_profile_file),
+        )
         .route(INTEGRATIONS, get(integrations).post(register_integration))
         .route(EVENT_REFUSAL, delete(acknowledge_event_refusal))
         .route(EVENTS, get(events))
@@ -320,6 +336,140 @@ async fn forget_credential(
     Path((organization, variable)): Path<(String, String)>,
 ) -> Result<StatusCode, Refused> {
     provider::forget(&control_plane.store, &organization, &variable).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct ProfileDeclaration {
+    name: String,
+    owner: String,
+}
+
+#[derive(Serialize)]
+struct ProfileRecord {
+    id: String,
+    name: String,
+    owner: String,
+}
+
+#[derive(Serialize)]
+struct ListedProfile {
+    #[serde(flatten)]
+    profile: ProfileRecord,
+    holds: Vec<LoginRecord>,
+}
+
+#[derive(Serialize)]
+struct LoginRecord {
+    kind: &'static str,
+    name: String,
+    set_at: Timestamp,
+}
+
+impl From<SubscriptionProfile> for ProfileRecord {
+    fn from(profile: SubscriptionProfile) -> Self {
+        Self {
+            id: profile.id.to_string(),
+            name: profile.name,
+            owner: profile.owner,
+        }
+    }
+}
+
+impl From<profile::Held> for LoginRecord {
+    fn from(held: profile::Held) -> Self {
+        Self {
+            kind: held.entry.kind.as_str(),
+            name: held.entry.name,
+            set_at: held.set_at,
+        }
+    }
+}
+
+async fn profiles(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+) -> Result<Json<Vec<ListedProfile>>, Refused> {
+    let listed = profile::profiles(&control_plane.store, &organization).await?;
+
+    Ok(Json(
+        listed
+            .into_iter()
+            .map(|(profile, held)| ListedProfile {
+                profile: profile.into(),
+                holds: held.into_iter().map(Into::into).collect(),
+            })
+            .collect(),
+    ))
+}
+
+async fn declare_profile(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    declaration: Result<Json<ProfileDeclaration>, JsonRejection>,
+) -> Result<Response, Refused> {
+    let Json(declaration) = declaration?;
+    named(&declaration.name)?;
+
+    let declared = profile::declare(
+        &control_plane.store,
+        &organization,
+        &declaration.name,
+        &declaration.owner,
+    )
+    .await?;
+
+    Ok(answered::<_, ProfileRecord>(declared))
+}
+
+async fn hold_profile_variable(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, profile, variable)): Path<(String, String, String)>,
+    secret: Result<Json<Secret>, JsonRejection>,
+) -> Result<Json<LoginRecord>, Refused> {
+    let entry = Entry::variable(&variable)?;
+    held_in_profile(&control_plane, &organization, &profile, &entry, secret).await
+}
+
+async fn hold_profile_file(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, profile, path)): Path<(String, String, String)>,
+    secret: Result<Json<Secret>, JsonRejection>,
+) -> Result<Json<LoginRecord>, Refused> {
+    let entry = Entry::file(&path)?;
+    held_in_profile(&control_plane, &organization, &profile, &entry, secret).await
+}
+
+async fn held_in_profile(
+    control_plane: &ControlPlane,
+    organization: &str,
+    profile: &str,
+    entry: &Entry,
+    secret: Result<Json<Secret>, JsonRejection>,
+) -> Result<Json<LoginRecord>, Refused> {
+    let Json(Secret { secret }) = secret?;
+    let held = profile::hold(&control_plane.store, organization, profile, entry, &secret).await?;
+
+    Ok(Json(held.into()))
+}
+
+async fn forget_profile_variable(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, profile, variable)): Path<(String, String, String)>,
+) -> Result<StatusCode, Refused> {
+    let entry = Entry::variable(&variable)?;
+    profile::forget(&control_plane.store, &organization, &profile, &entry).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn forget_profile_file(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, profile, path)): Path<(String, String, String)>,
+) -> Result<StatusCode, Refused> {
+    let entry = Entry::file(&path)?;
+    profile::forget(&control_plane.store, &organization, &profile, &entry).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -209,6 +209,51 @@ agent runs can reach the proxy at all. That is the shipped default rather than a
 [ADR-0009](docs/adr/0009-the-daemon-is-reached-through-a-filtered-proxy.md) lists what is allowed and
 says plainly what the filter does not buy.
 
+### Run on your own subscription
+
+A **subscription profile** is one person's login to a subscribed runtime: Codex through a ChatGPT
+plan, Claude Code through a Claude plan, or an OpenCode Go key. kestrel keeps it, so no image,
+checkout or provider account has to. It reaches only the runs of sessions that name it.
+
+```sh
+kestrel profile declare jack --organization acme --owner jack
+docker compose exec -T kestrel kestrel profile set jack --organization acme \
+  --file .codex/auth.json < ~/.codex/auth.json
+docker compose exec -T kestrel kestrel profile set jack --organization acme \
+  --file .local/share/opencode/auth.json < ~/.local/share/opencode/auth.json
+kestrel profile set jack --organization acme --variable CLAUDE_CODE_OAUTH_TOKEN
+```
+
+`-T` lets a file reach the command through the alias's `docker compose exec`. The last command waits
+for the token `claude setup-token` printed: paste it and press Ctrl-D. Each login is read from
+standard input, sealed with the key beside the database, and never printed again. `kestrel profile
+list --organization acme` shows a profile's owner and what it holds, by name only. A `--variable`
+goes into the agent runtime's environment. A `--file` is written at that path beneath the agent's
+home when the run starts. When the run ends it is read back and removed from the instance, so a
+login the runtime refreshed there is the one the next run gets, on this instance or a fresh one. A
+profile belongs to the owner it was declared with, and redeclaring it under another owner is
+refused.
+
+Codex writes `auth.json` only when `cli_auth_credentials_store = "file"` is set where you log in.
+Claude Code keeps a macOS login in the Keychain rather than a file, which is why its token is held
+as a variable. Whether a Claude plan may be used through its ACP adapter is unsettled
+([ADR-0025](docs/adr/0025-subscription-profiles-are-personal.md)).
+
+Name the profile when you open the session, or give a trigger's declaration `profile: jack`:
+
+```sh
+kestrel session open --organization acme --workspace kestrel --agent codex --profile jack
+```
+
+A session that names a profile needs no provider credential, and a follow-up that continues it keeps
+the profile. The operator boundary authenticates nobody, so naming a profile is its owner's
+authorization. Review a trigger that names one as carefully as one that admits strangers.
+
+Codex rotates its login as it refreshes it, and two copies refreshing at once can revoke each other.
+The work role therefore runs one Codex run per profile at a time and leaves the others queued.
+`--serialized-runtime` (`KESTREL_SERIALIZED_RUNTIME`) names the runtimes handled this way, and
+defaults to `codex`.
+
 ## Your sessions survive a restart
 
 A session is durable from the moment it is opened. A run in flight is not. Bring the whole stack

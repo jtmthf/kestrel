@@ -67,6 +67,7 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
                 organization: &session.organization,
                 workspace: &session.workspace,
                 agent: &session.agent,
+                profile: session.profile.as_ref(),
                 branch: Some(&session.checkout.branch),
                 correlation: session.correlation.as_deref(),
                 continues: Some(&session),

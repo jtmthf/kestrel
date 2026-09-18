@@ -47,6 +47,7 @@ identifiers!(
     IntegrationId,
     EventRecordId,
     TriggerId,
+    SubscriptionProfileId,
 );
 
 #[derive(Debug, Clone)]
@@ -72,6 +73,14 @@ pub struct Agent {
     pub runtime: String,
     /// None when the Agent names none, and the Agent Runtime's own default is the answer.
     pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubscriptionProfile {
+    pub id: SubscriptionProfileId,
+    pub organization: OrganizationId,
+    pub name: String,
+    pub owner: String,
 }
 
 /// Which way an Integration carries: events inbound, kestrel's requests outbound, or both.
@@ -345,6 +354,7 @@ pub struct Trigger {
     pub workspace: Workspace,
     pub agent: Agent,
     pub allows: Vec<Agent>,
+    pub profile: Option<SubscriptionProfile>,
     pub state: TriggerState,
     pub disabled_because: Option<String>,
     pub firing_budget: FiringBudget,
@@ -446,6 +456,7 @@ pub struct Session {
     pub organization: Organization,
     pub workspace: Workspace,
     pub agent: Agent,
+    pub profile: Option<SubscriptionProfile>,
     pub checkout: Checkout,
     pub correlation: Option<String>,
     pub state: SessionState,

@@ -5,13 +5,14 @@ use anyhow::{Context as _, Result, bail};
 use crate::agent;
 use crate::cli::{
     AgentCommand, CliCommand, CredentialCommand, EventCommand, Given, IntegrationCommand,
-    OrganizationCommand, RegisterCommand, RunCommand, SessionCommand, TriggerCommand,
-    WorkspaceCommand,
+    OrganizationCommand, ProfileCommand, ProfileEntry, RegisterCommand, RunCommand, SessionCommand,
+    TriggerCommand, WorkspaceCommand,
 };
 use crate::domain::{Connection, Direction, Fires, Templates};
 use crate::filter::Filter;
 use crate::integration::{self, Connecting, Registration};
 use crate::log::Window;
+use crate::profile::{self, Entry, Kind};
 use crate::provider;
 use crate::session;
 use crate::store::Store;
@@ -109,10 +110,46 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             provider::forget(&store, organization, variable).await?;
             println!("{variable}");
         }
+        CliCommand::Profile(ProfileCommand::Declare {
+            name,
+            organization,
+            owner,
+        }) => {
+            let declared = profile::declare(&store, organization, name, owner).await?;
+            println!("{}", declared.record.id);
+        }
+        CliCommand::Profile(ProfileCommand::Set {
+            name,
+            organization,
+            entry,
+        }) => {
+            let entry = entry.named()?;
+            let login = read_the_login(entry.kind)?;
+            profile::hold(&store, organization, name, &entry, &login).await?;
+            println!("{entry}");
+        }
+        CliCommand::Profile(ProfileCommand::List { organization }) => {
+            for (profile, held) in profile::profiles(&store, organization).await? {
+                println!("{}  {}  {}", profile.id, profile.name, profile.owner);
+                for held in held {
+                    println!("  {}  {}", held.entry, held.set_at);
+                }
+            }
+        }
+        CliCommand::Profile(ProfileCommand::Forget {
+            name,
+            organization,
+            entry,
+        }) => {
+            let entry = entry.named()?;
+            profile::forget(&store, organization, name, &entry).await?;
+            println!("{entry}");
+        }
         CliCommand::Session(SessionCommand::Open {
             organization,
             workspace,
             agent,
+            profile,
             branch,
             continues,
         }) => {
@@ -121,6 +158,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 organization,
                 workspace,
                 agent,
+                profile.as_deref(),
                 branch.as_deref(),
                 *continues,
             )
@@ -167,6 +205,9 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 "model         {}",
                 session.agent.model.as_deref().unwrap_or("-")
             );
+            if let Some(profile) = &session.profile {
+                println!("profile       {}  {}", profile.name, profile.owner);
+            }
             println!("branch        {}", session.checkout.branch);
             println!("base          {}", session.checkout.base);
             if let Some(correlation) = &session.correlation {
@@ -313,6 +354,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             workspace,
             agent,
             allows,
+            profile,
         }) => {
             let fires = match (filter, every) {
                 (Some(filter), None) => {
@@ -343,6 +385,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                     workspace,
                     agent,
                     allows,
+                    profile: profile.as_deref(),
                 },
             )
             .await?;
@@ -469,6 +512,9 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
+            }
+            if let Some(profile) = &trigger.profile {
+                println!("profile       {}  {}", profile.name, profile.owner);
             }
             match &templates.branch {
                 Some(branch) => println!("branch        {branch}"),
@@ -597,4 +643,30 @@ fn read_the_secret() -> Result<String> {
     }
 
     Ok(secret.to_owned())
+}
+
+/// A file is held exactly as it was read, because it is written back exactly as it was held.
+fn read_the_login(kind: Kind) -> Result<String> {
+    let mut read = String::new();
+    std::io::stdin().read_to_string(&mut read)?;
+    let login = match kind {
+        Kind::Variable => read.trim().to_owned(),
+        Kind::File => read,
+    };
+
+    if login.trim().is_empty() {
+        bail!("a login is read from standard input, and nothing was on it");
+    }
+
+    Ok(login)
+}
+
+impl ProfileEntry {
+    fn named(&self) -> Result<Entry> {
+        match (&self.variable, &self.file) {
+            (Some(variable), None) => Entry::variable(variable),
+            (None, Some(file)) => Entry::file(file),
+            _ => bail!("a login is held as a variable or a file, and not both"),
+        }
+    }
 }

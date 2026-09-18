@@ -17,7 +17,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use clap::Parser;
 use kestrel_scripted_agent::{
-    CONFIDED, DEFAULT_MODEL, FIRST_MEMORY, LAST_MEMORY, OTHER_MODEL, Script,
+    CONFIDED, DEFAULT_MODEL, FIRST_MEMORY, LAST_MEMORY, LOGIN, OTHER_MODEL, REFRESHED, Script,
 };
 
 const SESSION: &str = "scripted";
@@ -152,6 +152,10 @@ async fn play(
         say(connection, "message-1", &confided())?;
         return Ok(StopReason::EndTurn);
     }
+    if script == Script::Refreshes {
+        say(connection, "message-1", &refreshed())?;
+        return Ok(StopReason::EndTurn);
+    }
     if script == Script::Recalls {
         let remembers = prompted.contains(FIRST_MEMORY) && prompted.contains(LAST_MEMORY);
         let message = match remembers {
@@ -252,6 +256,21 @@ fn confided() -> String {
     match reached.is_empty() {
         true => "nothing reached this agent".to_owned(),
         false => reached.join(" "),
+    }
+}
+
+fn refreshed() -> String {
+    let Some(home) = std::env::var_os("HOME") else {
+        return "this agent has no home".to_owned();
+    };
+    let login = std::path::Path::new(&home).join(LOGIN);
+
+    match std::fs::read_to_string(&login) {
+        Ok(found) => match std::fs::write(&login, format!("{found}{REFRESHED}")) {
+            Ok(()) => format!("logged in as {found}"),
+            Err(error) => format!("logged in as {found}, and could not refresh it: {error}"),
+        },
+        Err(_) => "no login was found".to_owned(),
     }
 }
 

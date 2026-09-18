@@ -176,6 +176,7 @@ mod tests {
                 runtime: "opencode".to_owned(),
                 model: None,
             },
+            profile: None,
             organization,
             checkout: Checkout {
                 repositories: Vec::new(),

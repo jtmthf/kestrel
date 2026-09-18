@@ -35,6 +35,7 @@ pub struct Declaration<'a> {
     pub workspace: &'a str,
     pub agent: &'a str,
     pub allows: &'a [String],
+    pub profile: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +113,10 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
         .await?;
     let agent = tx.agents().named(&organization, declaration.agent).await?;
     let allows = allowed(&mut tx, &organization, declaration.allows).await?;
+    let profile = match declaration.profile {
+        Some(profile) => Some(tx.profiles().named(&organization, profile).await?),
+        None => None,
+    };
     let trigger = tx
         .triggers()
         .declare(
@@ -123,6 +128,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
             &workspace,
             &agent,
             &allows,
+            profile.as_ref(),
             false,
         )
         .await?;
@@ -228,6 +234,10 @@ pub async fn test_declared(
             .await?,
         agent: tx.agents().named(&organization, &declared.agent).await?,
         allows: allowed(&mut tx, &organization, &declared.allows).await?,
+        profile: match &declared.profile {
+            Some(profile) => Some(tx.profiles().named(&organization, profile).await?),
+            None => None,
+        },
         organization,
         name: declared.name.clone(),
         fires: Fires::On(declared.filter.clone()),
@@ -453,6 +463,7 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
             organization: &trigger.organization,
             workspace: &trigger.workspace,
             agent,
+            profile: trigger.profile.as_ref(),
             branch: continues
                 .as_ref()
                 .map(|sealed| sealed.checkout.branch.as_str())

@@ -17,6 +17,7 @@ pub struct Declared {
     pub workspace: String,
     pub agent: String,
     pub allows: Vec<String>,
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +67,7 @@ struct Entry {
     agent: String,
     #[serde(default)]
     allows: Vec<String>,
+    profile: Option<String>,
 }
 
 pub fn parse(text: &str) -> Result<Vec<Declared>> {
@@ -103,6 +105,7 @@ fn declared(name: &str, entry: Entry) -> Result<Declared> {
         workspace: entry.workspace,
         agent: entry.agent,
         allows: entry.allows,
+        profile: entry.profile,
     })
 }
 
@@ -126,6 +129,10 @@ pub async fn apply(
             .await?;
         let agent = tx.agents().named(&organization, &declared.agent).await?;
         let allows = allowed(&mut tx, &organization, &declared.allows).await?;
+        let profile = match &declared.profile {
+            Some(profile) => Some(tx.profiles().named(&organization, profile).await?),
+            None => None,
+        };
         let becomes = described(declared);
         let fires = Fires::On(declared.filter.clone());
 
@@ -143,6 +150,7 @@ pub async fn apply(
                     &workspace,
                     &agent,
                     &allows,
+                    profile.as_ref(),
                     true,
                 )
                 .await?;
@@ -165,6 +173,7 @@ pub async fn apply(
                     &workspace,
                     &agent,
                     &allows,
+                    profile.as_ref(),
                 )
                 .await?;
         } else if !trigger.applied {
@@ -219,7 +228,7 @@ pub async fn apply(
     })
 }
 
-type Described = [(&'static str, Option<String>); 8];
+type Described = [(&'static str, Option<String>); 9];
 
 fn described(declared: &Declared) -> Described {
     describe(
@@ -229,6 +238,7 @@ fn described(declared: &Declared) -> Described {
         &declared.workspace,
         &declared.agent,
         &declared.allows,
+        declared.profile.as_deref(),
     )
 }
 
@@ -244,6 +254,10 @@ fn described_trigger(trigger: &Trigger) -> Described {
             .iter()
             .map(|agent| agent.name.clone())
             .collect::<Vec<_>>(),
+        trigger
+            .profile
+            .as_ref()
+            .map(|profile| profile.name.as_str()),
     )
 }
 
@@ -254,6 +268,7 @@ fn describe(
     workspace: &str,
     agent: &str,
     allows: &[String],
+    profile: Option<&str>,
 ) -> Described {
     let mut allows = allows.to_vec();
     allows.sort();
@@ -264,6 +279,7 @@ fn describe(
         ("workspace", Some(workspace.to_owned())),
         ("agent", Some(agent.to_owned())),
         ("allows", (!allows.is_empty()).then(|| allows.join(", "))),
+        ("profile", profile.map(str::to_owned)),
         ("branch", templates.branch.as_ref().map(ToString::to_string)),
         (
             "correlation",

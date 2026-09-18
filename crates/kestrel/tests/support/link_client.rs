@@ -129,6 +129,26 @@ impl Link {
         request.send().await.expect("the link should answer")
     }
 
+    pub async fn refresh(
+        &self,
+        run: RunId,
+        credential: &Secret,
+        files: &[(&str, &str)],
+    ) -> Response {
+        let files: serde_json::Map<String, serde_json::Value> = files
+            .iter()
+            .map(|(path, contents)| ((*path).to_owned(), (*contents).into()))
+            .collect();
+
+        self.client
+            .patch(format!("{}/link/runs/{run}/credentials", self.base))
+            .bearer_auth(credential.as_str())
+            .json(&serde_json::json!({ "files": files }))
+            .send()
+            .await
+            .expect("the link should answer")
+    }
+
     pub async fn report(
         &self,
         run: RunId,

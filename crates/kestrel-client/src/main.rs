@@ -5,7 +5,7 @@ mod transcript;
 use std::io::Read as _;
 
 use anyhow::{Context as _, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use reqwest::Url;
 use serde_json::{Value, json};
 
@@ -47,6 +47,9 @@ enum Command {
     /// Hold, list and forget the Provider Credentials an Organization's Runs reach a model with
     #[command(subcommand)]
     Credential(CredentialCommand),
+    /// Declare Subscription Profiles, and hold, list and forget the logins in them
+    #[command(subcommand)]
+    Profile(ProfileCommand),
     /// Register and list Integrations: credentialed connections to external systems
     #[command(subcommand)]
     Integration(IntegrationCommand),
@@ -81,6 +84,69 @@ enum CredentialCommand {
         #[arg(long)]
         organization: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProfileCommand {
+    /// Declare a Subscription Profile: a person's login to a subscribed Agent Runtime
+    Declare {
+        /// The name a Session or Trigger names it by
+        name: String,
+        /// The Organization it is declared in
+        #[arg(long)]
+        organization: String,
+        /// The person it belongs to, which never changes
+        #[arg(long)]
+        owner: String,
+    },
+    /// Hold a login in a profile, read from standard input
+    Set {
+        /// The profile it is held in
+        name: String,
+        #[arg(long)]
+        organization: String,
+        #[command(flatten)]
+        entry: ProfileEntry,
+    },
+    /// List every profile in an Organization with what each holds, one JSON record a line
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+    /// Forget a login a profile holds
+    Forget {
+        /// The profile it is held in
+        name: String,
+        #[arg(long)]
+        organization: String,
+        #[command(flatten)]
+        entry: ProfileEntry,
+    },
+}
+
+#[derive(Debug, Args)]
+#[group(required = true, multiple = false)]
+struct ProfileEntry {
+    /// An environment variable the Agent Runtime is spawned with
+    #[arg(long, value_name = "NAME")]
+    variable: Option<String>,
+    /// A file beneath the agent's home, handed back after each Run so a refreshed login
+    /// persists
+    #[arg(long, value_name = "PATH")]
+    file: Option<String>,
+}
+
+impl ProfileEntry {
+    fn path<'a>(&'a self, organization: &'a str, profile: &'a str) -> Vec<&'a str> {
+        let mut path = vec!["organizations", organization, "profiles", profile];
+        match (&self.variable, &self.file) {
+            (Some(variable), _) => path.extend(["variables", variable.as_str()]),
+            (None, Some(file)) => path.extend(["files", file.as_str()]),
+            (None, None) => unreachable!("clap requires one of them"),
+        }
+
+        path
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -342,6 +408,40 @@ async fn main() -> Result<()> {
             api.delete(&["organizations", &organization, "credentials", &variable])
                 .await?;
         }
+        Command::Profile(ProfileCommand::Declare {
+            name,
+            organization,
+            owner,
+        }) => {
+            printed(
+                &api.post(
+                    &["organizations", &organization, "profiles"],
+                    &json!({ "name": name, "owner": owner }),
+                )
+                .await?,
+            );
+        }
+        Command::Profile(ProfileCommand::Set {
+            name,
+            organization,
+            entry,
+        }) => {
+            let login = json!({ "secret": read_the_login(entry.file.is_some())? });
+            printed(&api.put(&entry.path(&organization, &name), &login).await?);
+        }
+        Command::Profile(ProfileCommand::List { organization }) => {
+            listed(
+                &api.get(&["organizations", &organization, "profiles"])
+                    .await?,
+            );
+        }
+        Command::Profile(ProfileCommand::Forget {
+            name,
+            organization,
+            entry,
+        }) => {
+            api.delete(&entry.path(&organization, &name)).await?;
+        }
         Command::Integration(IntegrationCommand::Register(register)) => {
             let (organization, registration) = match register {
                 RegisterCommand::Github {
@@ -438,6 +538,18 @@ fn listed(records: &Value) {
     for record in records.as_array().into_iter().flatten() {
         printed(record);
     }
+}
+
+/// A file is held exactly as it was read, because it is written back exactly as it was held.
+fn read_the_login(file: bool) -> Result<String> {
+    let mut read = String::new();
+    std::io::stdin().read_to_string(&mut read)?;
+
+    if read.trim().is_empty() {
+        bail!("a login is read from standard input, and nothing was on it");
+    }
+
+    Ok(if file { read } else { read.trim().to_owned() })
 }
 
 /// Off standard input rather than out of an argument, so a provider's key is never in a shell

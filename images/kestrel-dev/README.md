@@ -66,7 +66,10 @@ An Agent names its runtime as `opencode`, `claude` or `codex`, and the work role
 Nothing in the image signs a runtime or `gh` in. The home directory contains only the skeleton
 files `useradd` creates, and no variable in the image's environment names a key, token, or secret.
 Credentials come in when the Run starts ([ADR-0010](../../docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md)).
-`gh` reads `GH_TOKEN` from its own environment.
+A Subscription Profile's files, such as `.codex/auth.json`, are written beneath `/home/kestrel`
+for the length of one Run and removed when it ends
+([ADR-0025](../../docs/adr/0025-subscription-profiles-are-personal.md)). `gh` reads `GH_TOKEN` from
+its own environment.
 
 ## How it is checked
 

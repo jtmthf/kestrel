@@ -109,11 +109,18 @@ pub struct Cost {
     pub currency: String,
 }
 
-/// What the Agent Runtime is spawned with to reach a model provider. Never written down: it
-/// goes into that process's environment and dies with it.
+/// What the Agent Runtime is spawned with to reach a model: variables for its environment, and
+/// a Subscription Profile's files for beneath its home.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Credentials {
     pub variables: BTreeMap<String, String>,
+    #[serde(default)]
+    pub files: BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct Refreshed<'a> {
+    files: &'a BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,6 +233,26 @@ impl Link {
         }
 
         Ok(response.json().await?)
+    }
+
+    pub async fn refresh(&self, files: &BTreeMap<String, String>) -> Result<(), Error> {
+        let response = self
+            .client
+            .patch(self.url(CREDENTIALS))
+            .bearer_auth(&self.credential)
+            .json(&Refreshed { files })
+            .send()
+            .await?;
+
+        let response = refuse_if_declined(response).await?;
+        if !response.status().is_success() {
+            return Err(Error::Lost(format!(
+                "the link answered {} to the logins this run refreshed",
+                response.status().as_u16()
+            )));
+        }
+
+        Ok(())
     }
 
     pub async fn entries(&self, cursor: Option<&str>) -> Result<Page, Error> {
