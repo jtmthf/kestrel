@@ -1,0 +1,27 @@
+name: Development image
+
+on:
+  schedule:
+    - cron: "43 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  self-check:
+    name: kestrel passes its own checks in kestrel-dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: jdx/mise-action@v4
+        with:
+          install_args: rust
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format, lint, build and test inside the image
+        run: cargo test --locked --package kestrel --test development -- --ignored kestrel_passes_its_own_checks

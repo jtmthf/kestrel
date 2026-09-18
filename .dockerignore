@@ -1,6 +1,9 @@
-# An image builds from the repository root, and from nothing in it but the workspace.
+# An image builds from the repository root, and from nothing in it but the workspace and the
+# adapters kestrel-dev pins.
 *
 !Cargo.lock
 !Cargo.toml
 !crates
 !rust-toolchain.toml
+!images/kestrel-dev/package.json
+!images/kestrel-dev/package-lock.json

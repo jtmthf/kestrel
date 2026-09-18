@@ -76,31 +76,11 @@ holds it to it.
 
 ## Deriving from it
 
-Claude Code is reached through Zed's `claude-code-acp` adapter, which is Node, which is why it is a
-derived image rather than the default. It is documented here and built nowhere:
-
-```dockerfile
-FROM kestrel-env
-
-USER root
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends nodejs npm \
-    && rm --recursive --force /var/lib/apt/lists/* \
-    && npm install --global @zed-industries/claude-code-acp
-USER kestrel
-```
-
-The Agent that runs in it names `claude-code-acp` as its runtime, and the supervisor spawns that
-instead of `opencode acp`. An adapter usually advertises more than one way to be logged in, and ACP
-gives a client no way to choose between them, so a derived image is configured with `--agent-auth`
-as well. `crates/kestrel/tests/support/conformance-env.Dockerfile` is a worked example: the
-conformance suite's second agent, built this way and driven with nothing kestrel branches on.
-
-`images/kestrel-env-github/Dockerfile` is the same pattern for a different gap: nothing in the base
-image can reach GitHub's API, so an agent that clones a repository can read and write files in it
-but has no way to open a pull request on it. The derived image adds `gh`, pinned and checksummed the
-same way opencode is above. Nothing here logs it in — a `GH_TOKEN` an Organization holds reaches the
-agent's process the same way a provider credential does
-([ADR-0010](../../docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md)), and `gh`
-reads that variable itself. Point `KESTREL_IMAGE` at `kestrel-env-github` for a Workspace that needs
-this; the base image stays exactly what this document opens by saying it carries.
+A derived image adds what one kind of work needs and keeps the supervisor as its entrypoint.
+[`images/kestrel-dev`](../kestrel-dev/README.md) is the one this repository ships. It adds Rust,
+`gh`, and the Claude Code and Codex ACP adapters so Kestrel can work on itself. Those adapters are
+Node programs, which is why they are in a derived image rather than this one. An adapter usually
+advertises more than one way to sign in, and ACP gives a client no way to choose between them, so an
+Agent on a derived image is configured with `--agent-auth` as well.
+`crates/kestrel/tests/support/conformance-env.Dockerfile` is a smaller worked example. It builds the
+conformance suite's second agent this way and drives it without any Kestrel code branching on it.
