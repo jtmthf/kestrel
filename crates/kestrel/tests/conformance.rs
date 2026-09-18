@@ -22,7 +22,6 @@ use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver, Environment};
 use kestrel::domain::{Exit, Run, RunId, RunState, Session, Usage};
-use kestrel::link::Instruction;
 use kestrel::link::credential::Secret;
 use support::Harness;
 use support::diagnostics::Diagnostics;
@@ -69,7 +68,7 @@ impl Driven {
 
         diagnostics.wait_until_it_says("reported connected").await;
         lineage.configure(&mut environment);
-        harness.instruct(&run, Instruction::Start).await;
+        harness.start(&run).await;
 
         Self {
             lineage,
@@ -197,12 +196,7 @@ fn provisioned(
 async fn a_session(harness: &Harness, lineage: Lineage, model: &str) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
-            &organization,
-            "kestrel",
-            &["https://github.com/jtmthf/kestrel".to_owned()],
-            "main",
-        )
+        .declare_workspace(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", lineage.command(), Some(model))

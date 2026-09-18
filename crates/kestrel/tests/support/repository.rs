@@ -1,6 +1,7 @@
 //! A repository a Workspace can name that is on this machine rather than on a forge, so a Run
 //! that checks its Workspace out reaches nothing over the network.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
@@ -8,6 +9,7 @@ use tempfile::TempDir;
 
 pub const NAME: &str = "kestrel";
 pub const BRANCH: &str = "main";
+pub const EXISTING_BRANCH: &str = "kestrel/existing";
 
 pub fn url() -> &'static str {
     static REPOSITORY: OnceLock<(TempDir, String)> = OnceLock::new();
@@ -22,35 +24,48 @@ fn initialized() -> (TempDir, String) {
     std::fs::write(repository.join("README.md"), "a workspace's repository\n")
         .expect("the repository should have something in it");
 
-    for arguments in [
-        vec!["init", "--initial-branch", BRANCH],
-        vec!["add", "README.md"],
+    let committed = |message| {
         vec![
             "-c",
             "user.name=kestrel",
             "-c",
             "user.email=kestrel@example.com",
             "commit",
+            "--all",
             "--message",
-            "the commit the branch points at",
-        ],
+            message,
+        ]
+    };
+    for arguments in [
+        vec!["init", "--initial-branch", BRANCH],
+        vec!["add", "README.md"],
+        committed("the commit the branch points at"),
+        vec!["checkout", "-b", EXISTING_BRANCH],
     ] {
-        let ran = Command::new("git")
-            .args(&arguments)
-            .current_dir(&repository)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .expect("git should be reachable");
-        assert!(
-            ran.status.success(),
-            "`git {}` failed:\n{}",
-            arguments.join(" "),
-            String::from_utf8_lossy(&ran.stderr)
-        );
+        git(&repository, &arguments);
     }
+    std::fs::write(repository.join("README.md"), "an existing branch's work\n")
+        .expect("the existing branch should have work of its own");
+    git(&repository, &committed("the work on an existing branch"));
+    git(&repository, &["checkout", BRANCH]);
 
     let url = format!("file://{}", repository.display());
 
     (directory, url)
+}
+
+fn git(repository: &Path, arguments: &[&str]) {
+    let ran = Command::new("git")
+        .args(arguments)
+        .current_dir(repository)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("git should be reachable");
+    assert!(
+        ran.status.success(),
+        "`git {}` failed:\n{}",
+        arguments.join(" "),
+        String::from_utf8_lossy(&ran.stderr)
+    );
 }

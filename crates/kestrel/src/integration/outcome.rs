@@ -150,8 +150,8 @@ mod tests {
 
     use super::*;
     use crate::domain::{
-        Agent, AgentId, Organization, OrganizationId, RunState, SessionId, SessionState, Workspace,
-        WorkspaceId,
+        Agent, AgentId, Checkout, Organization, OrganizationId, RunState, SessionId, SessionState,
+        Workspace, WorkspaceId,
     };
 
     fn a_session() -> Session {
@@ -177,7 +177,11 @@ mod tests {
                 model: None,
             },
             organization,
-            branch: "main".to_owned(),
+            checkout: Checkout {
+                repositories: Vec::new(),
+                base: "main".to_owned(),
+                branch: "main".to_owned(),
+            },
             correlation: None,
             state: SessionState::Open,
             opened_at: Timestamp::now(),

@@ -220,6 +220,9 @@ async fn declare_workspace(
             "a workspace names the branch its work happens on".to_owned(),
         ));
     }
+    if let Some(clash) = sharing_a_directory(&declaration.repositories) {
+        return Err(Refused::Unprocessable(clash));
+    }
 
     let mut tx = control_plane.store.begin().await?;
     let organization = tx.organizations().named(&organization).await?;
@@ -527,6 +530,27 @@ async fn event(
     let event = integration::event(&control_plane.store, record).await?;
 
     Ok(Json(event.into()))
+}
+
+fn sharing_a_directory(repositories: &[String]) -> Option<String> {
+    let mut claimed = std::collections::HashMap::new();
+    repositories.iter().find_map(|repository| {
+        let directory = cloned_into(repository);
+        claimed.insert(directory, repository).map(|earlier| {
+            format!("{earlier} and {repository} would both be checked out into {directory}")
+        })
+    })
+}
+
+// Must name the directory kestrel-supervisor's checkout clones into.
+fn cloned_into(repository: &str) -> &str {
+    let name = repository
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(repository);
+
+    name.strip_suffix(".git").unwrap_or(name)
 }
 
 fn named(name: &str) -> Result<(), Refused> {

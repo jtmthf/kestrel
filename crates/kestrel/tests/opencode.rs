@@ -13,7 +13,6 @@ use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver, Environment};
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
-use kestrel::link::Instruction;
 use kestrel::link::credential::Secret;
 use serde_json::json;
 use support::Harness;
@@ -63,7 +62,7 @@ impl Driven {
             .environment
             .write_file("opencode.json", configured_with(model).as_bytes())
             .expect("the agent runtime should be configured");
-        harness.instruct(&driven.run, Instruction::Start).await;
+        harness.start(&driven.run).await;
 
         driven
     }
@@ -143,12 +142,7 @@ fn configured_with(model: &Model) -> String {
 async fn a_session(harness: &Harness) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
-            &organization,
-            "kestrel",
-            &["https://github.com/jtmthf/kestrel".to_owned()],
-            "main",
-        )
+        .declare_workspace(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", "opencode", Some(MODEL))

@@ -16,6 +16,7 @@ pub async fn open(
     organization: &str,
     workspace: &str,
     agent: &str,
+    branch: Option<&str>,
     continues: Option<SessionId>,
 ) -> Result<Session> {
     let mut tx = store.begin().await?;
@@ -34,7 +35,7 @@ pub async fn open(
             organization: &organization,
             workspace: &workspace,
             agent: &agent,
-            branch: &workspace.branch,
+            branch,
             correlation: None,
             continues: continues.as_ref(),
             started_by: None,

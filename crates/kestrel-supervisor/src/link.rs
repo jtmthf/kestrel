@@ -22,7 +22,9 @@ const SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Instruction {
-    Start,
+    Start {
+        checkout: Checkout,
+    },
     Stop,
     /// A control plane kestrel upgraded under a live Environment (ADR-0002) may send an
     /// instruction this supervisor predates; letting it past keeps the cursor moving.
@@ -33,11 +35,18 @@ pub enum Instruction {
 impl Instruction {
     pub const fn kind(&self) -> &'static str {
         match self {
-            Instruction::Start => "start",
+            Instruction::Start { .. } => "start",
             Instruction::Stop => "stop",
             Instruction::Unrecognized => "unrecognized",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Checkout {
+    pub repositories: Vec<String>,
+    pub base: String,
+    pub branch: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

@@ -152,8 +152,8 @@ async fn a_workspaces_repositories_and_its_branch_are_in_the_container() {
         "--show-current",
     ]);
     assert_eq!(
-        branch.out, BRANCH,
-        "the workspace is not on its branch: {branch:?}"
+        branch.out, session.checkout.branch,
+        "the workspace is not on its session's branch: {branch:?}"
     );
     let readme = container.exec(&["test", "-f", "/workspace/kestrel/README.md"]);
     assert_eq!(

@@ -150,7 +150,11 @@ impl Provisioned for Process {
     }
 
     fn destroy(&mut self) -> io::Result<()> {
-        self.kill_tree()?;
+        // Darwin refuses to signal a group whose only member left is its unreaped leader, which
+        // is what `destroy_named` reaping it first leaves behind.
+        if let Err(error) = self.kill_tree() {
+            self.child.kill().map_err(|_| error)?;
+        }
         self.child.wait()?;
 
         removed(&self.workspace)

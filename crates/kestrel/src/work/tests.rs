@@ -27,7 +27,7 @@ impl Fixture {
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let session = session::open(&store, "acme", "kestrel", "builder", None)
+        let session = session::open(&store, "acme", "kestrel", "builder", None, None)
             .await
             .unwrap();
         enqueue(&store, session.id, None).await.unwrap();

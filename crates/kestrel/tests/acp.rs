@@ -6,7 +6,6 @@ mod support;
 use std::time::Duration;
 
 use kestrel::domain::{Cost, Exit, Run, RunId, RunState, Session, Usage};
-use kestrel::link::Instruction;
 use kestrel_scripted_agent::{DEFAULT_MODEL, OTHER_MODEL};
 use support::Harness;
 use support::repository;
@@ -179,7 +178,7 @@ async fn a_permission_request_is_answered_and_the_round_trip_is_observable() {
 
     let mut supervisor = Supervisor::provision(&harness.link(), run.id, &credential);
     supervisor.wait_until_it_says("reported connected").await;
-    harness.instruct(&run, Instruction::Start).await;
+    harness.start(&run).await;
     supervisor.wait_until_it_says("reported finished").await;
 
     assert!(
@@ -290,7 +289,7 @@ async fn the_supervisor_sets_the_model_it_was_given() {
         OTHER_MODEL,
     );
     supervisor.wait_until_it_says("reported connected").await;
-    harness.instruct(&run, Instruction::Start).await;
+    harness.start(&run).await;
     supervisor.wait_until_it_says("reported finished").await;
 
     let ended = ended(&harness, run.id).await;

@@ -4,7 +4,6 @@
 mod support;
 
 use kestrel::domain::{RunState, Session, SessionState};
-use kestrel::link::Instruction;
 use kestrel::log::Window;
 use support::Harness;
 
@@ -218,7 +217,7 @@ async fn a_sealed_session_refuses_a_turn() {
     harness.seal_session(session.id).await;
 
     let refusal = harness
-        .try_instruct(&run, Instruction::Start)
+        .try_start(&run)
         .await
         .expect_err("a sealed session takes no turn");
 

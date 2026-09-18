@@ -219,7 +219,7 @@ async fn a_session_opens_on_the_branch_and_correlation_its_trigger_renders() {
     let session = opened(&harness, 1).await.remove(0);
     let shown = harness.show_session(session.id).await;
 
-    assert_eq!(shown.branch, "kestrel/issue-43");
+    assert_eq!(shown.checkout.branch, "kestrel/issue-43");
     assert_eq!(
         shown.correlation.as_deref(),
         Some("https://github.com/jtmthf/kestrel#43")
@@ -229,7 +229,7 @@ async fn a_session_opens_on_the_branch_and_correlation_its_trigger_renders() {
 }
 
 #[tokio::test]
-async fn a_session_whose_trigger_renders_no_branch_opens_on_the_workspaces() {
+async fn a_session_whose_trigger_renders_no_branch_opens_on_its_own_cut_from_the_workspaces() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
@@ -240,7 +240,8 @@ async fn a_session_whose_trigger_renders_no_branch_opens_on_the_workspaces() {
     let session = opened(&harness, 1).await.remove(0);
     let shown = harness.show_session(session.id).await;
 
-    assert_eq!(shown.branch, "main");
+    assert_eq!(shown.checkout.branch, format!("kestrel/{}", session.id));
+    assert_eq!(shown.checkout.base, "main");
     assert_eq!(shown.correlation, None);
 
     harness.teardown().await;
@@ -427,6 +428,7 @@ async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
         .expect("a new session should open after the seal");
 
     assert_eq!(continuation.continues, Some(sealed.id));
+    assert_eq!(continuation.checkout.branch, sealed.checkout.branch);
     assert_eq!(continuation.state, kestrel::domain::SessionState::Open);
 
     harness.teardown().await;
@@ -1085,7 +1087,7 @@ async fn trigger_test_renders_the_brief_and_resolves_the_branch() {
         Rendered {
             brief: "Work https://github.com/jtmthf/kestrel/issues/43: an issue numbered 43"
                 .to_owned(),
-            branch: "kestrel/issue-43".to_owned(),
+            branch: Some("kestrel/issue-43".to_owned()),
             correlation: Some("https://github.com/jtmthf/kestrel#43".to_owned()),
         }
     );
@@ -1113,7 +1115,7 @@ async fn trigger_test_answers_for_a_declaration_not_yet_applied() {
         tested.rendered.expect("the trigger should render"),
         Rendered {
             brief: "Work on an issue numbered 43".to_owned(),
-            branch: "main".to_owned(),
+            branch: None,
             correlation: None,
         }
     );
@@ -1123,7 +1125,7 @@ async fn trigger_test_answers_for_a_declaration_not_yet_applied() {
 }
 
 #[tokio::test]
-async fn a_trigger_that_renders_no_branch_resolves_the_workspaces() {
+async fn a_trigger_that_renders_no_branch_leaves_the_session_its_own() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
@@ -1138,7 +1140,7 @@ async fn a_trigger_that_renders_no_branch_resolves_the_workspaces() {
         .rendered
         .expect("the trigger should render");
 
-    assert_eq!(rendered.branch, "main");
+    assert_eq!(rendered.branch, None);
     assert_eq!(rendered.correlation, None);
 
     harness.teardown().await;
@@ -1317,7 +1319,7 @@ async fn a_scheduled_trigger_is_tested_against_its_next_elapsing() {
     assert_eq!(rendered.brief, format!("Sweep the backlog due {due}"));
     assert_eq!(
         rendered.branch,
-        format!("kestrel/sweep-{}", &due.to_string()[..13])
+        Some(format!("kestrel/sweep-{}", &due.to_string()[..13]))
     );
     assert!(
         harness.events("acme").await.is_empty(),
