@@ -3,14 +3,15 @@ mod support;
 use std::fs;
 use std::path::Path;
 
-use kestrel::domain::{Exit, RunId};
+use kestrel::domain::{EventRecordId, Exit, RunId};
 use kestrel::link;
 use kestrel::log::{Entry, Message};
 use kestrel::operator;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
-use support::Harness;
 use support::client::{self, Client};
+use support::github_stub::GithubStub;
+use support::{Harness, TOKEN};
 
 async fn an_open_session(harness: &Harness, said: usize) -> (String, kestrel::domain::Run) {
     let organization = harness.declare_organization("acme").await;
@@ -65,12 +66,20 @@ fn records(lines: &[String]) -> Vec<Value> {
 }
 
 async fn client(harness: &Harness, args: &[&str]) -> client::Finished {
+    client_given(harness, args, None).await
+}
+
+async fn client_given(harness: &Harness, args: &[&str], input: Option<&str>) -> client::Finished {
     let operator = harness.operator();
     let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
+    let input = input.map(str::to_owned);
 
     tokio::task::spawn_blocking(move || {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        client::ran(&operator, &args)
+        match input {
+            Some(input) => client::ran_given(&operator, &args, &input),
+            None => client::ran(&operator, &args),
+        }
     })
     .await
     .expect("the client should run")
@@ -91,32 +100,51 @@ fn succeeded(finished: &client::Finished) -> Vec<Value> {
 }
 
 /// Every answer is checked against what the published document says the operation answers.
-async fn declared(harness: &Harness, path: &str, declaration: &Value) -> (StatusCode, Value) {
-    let response = reqwest::Client::new()
-        .post(format!("{}{path}", harness.operator()))
-        .json(declaration)
+async fn requested(
+    harness: &Harness,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+) -> (StatusCode, Value) {
+    let mut request =
+        reqwest::Client::new().request(method.clone(), format!("{}{path}", harness.operator()));
+    if let Some(body) = body {
+        request = request.json(body);
+    }
+    let response = request
         .send()
         .await
         .expect("the operator boundary should answer");
     let status = response.status();
-    let body: Value = response.json().await.expect("a JSON answer");
+    let text = response.text().await.expect("an answer");
+    let body = if text.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&text).unwrap_or_else(|error| panic!("{text} is not JSON: {error}"))
+    };
 
-    conforms(path, "post", status, &body);
+    let (path, _) = path.split_once('?').unwrap_or((path, ""));
+    conforms(path, &method.as_str().to_lowercase(), status, &body);
     (status, body)
 }
 
-async fn listed(harness: &Harness, path: &str) -> Vec<Value> {
-    let response = reqwest::Client::new()
-        .get(format!("{}{path}", harness.operator()))
-        .send()
-        .await
-        .expect("the operator boundary should answer");
-    let status = response.status();
-    let body: Value = response.json().await.expect("a JSON answer");
+async fn declared(harness: &Harness, path: &str, declaration: &Value) -> (StatusCode, Value) {
+    requested(harness, reqwest::Method::POST, path, Some(declaration)).await
+}
 
-    conforms(path, "get", status, &body);
+async fn got(harness: &Harness, path: &str) -> (StatusCode, Value) {
+    requested(harness, reqwest::Method::GET, path, None).await
+}
+
+async fn listed(harness: &Harness, path: &str) -> Vec<Value> {
+    let (status, body) = got(harness, path).await;
+
     assert_eq!(status, StatusCode::OK, "{body}");
     body.as_array().expect("an array of records").clone()
+}
+
+async fn listed_nothing(harness: &Harness, path: &str) -> bool {
+    listed(harness, path).await.is_empty()
 }
 
 fn workspaces_of(organization: &str) -> String {
@@ -125,6 +153,43 @@ fn workspaces_of(organization: &str) -> String {
 
 fn agents_of(organization: &str) -> String {
     operator::AGENTS.replace("{organization}", organization)
+}
+
+fn credentials_of(organization: &str) -> String {
+    operator::CREDENTIALS.replace("{organization}", organization)
+}
+
+fn credential_of(organization: &str, variable: &str) -> String {
+    operator::CREDENTIAL
+        .replace("{organization}", organization)
+        .replace("{variable}", variable)
+}
+
+fn integrations_of(organization: &str) -> String {
+    operator::INTEGRATIONS.replace("{organization}", organization)
+}
+
+fn event_refusal_of(organization: &str, integration: &str) -> String {
+    operator::EVENT_REFUSAL
+        .replace("{organization}", organization)
+        .replace("{integration}", integration)
+}
+
+fn events_of(organization: &str) -> String {
+    operator::EVENTS.replace("{organization}", organization)
+}
+
+fn event_at(record: &str) -> String {
+    operator::EVENT.replace("{record}", record)
+}
+
+fn failed(finished: &client::Finished) -> &str {
+    assert!(
+        !finished.status.success(),
+        "the client was expected to be refused, and printed {:?}",
+        finished.out
+    );
+    &finished.err
 }
 
 #[tokio::test]
@@ -447,6 +512,502 @@ async fn an_agent_naming_a_model_its_runtime_does_not_advertise_is_refused() {
 }
 
 #[tokio::test]
+async fn a_client_sets_lists_and_forgets_provider_credentials_without_saying_them() {
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    let secret = "sk-kestrel-should-never-say-this";
+
+    let set = client_given(
+        &harness,
+        &[
+            "credential",
+            "set",
+            "ANTHROPIC_API_KEY",
+            "--organization",
+            "acme",
+        ],
+        Some(&format!("{secret}\n")),
+    )
+    .await;
+    let held = succeeded(&set);
+    let listed = client(&harness, &["credential", "list", "--organization", "acme"]).await;
+
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0]["variable"], "ANTHROPIC_API_KEY");
+    assert_eq!(succeeded(&listed), held);
+    for said in [&set, &listed] {
+        assert!(
+            !said.out.join("\n").contains(secret) && !said.err.contains(secret),
+            "the client spelled the credential out"
+        );
+    }
+    assert_eq!(
+        harness.provider_credentials_held(&organization).await[0].variable,
+        "ANTHROPIC_API_KEY"
+    );
+
+    let forgotten = client(
+        &harness,
+        &[
+            "credential",
+            "forget",
+            "ANTHROPIC_API_KEY",
+            "--organization",
+            "acme",
+        ],
+    )
+    .await;
+    assert!(succeeded(&forgotten).is_empty());
+    assert!(listed_nothing(&harness, &credentials_of("acme")).await);
+    assert!(
+        harness
+            .provider_credentials_held(&organization)
+            .await
+            .is_empty()
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_credential_answers_back_what_it_is_read_from_and_never_its_value() {
+    let harness = Harness::boot().await;
+    harness.declare_organization("acme").await;
+
+    let (status, held) = requested(
+        &harness,
+        reqwest::Method::PUT,
+        &credential_of("acme", "OPENAI_API_KEY"),
+        Some(&json!({ "secret": "the-first-key" })),
+    )
+    .await;
+    let (replaced, again) = requested(
+        &harness,
+        reqwest::Method::PUT,
+        &credential_of("acme", "OPENAI_API_KEY"),
+        Some(&json!({ "secret": "the-second-key" })),
+    )
+    .await;
+    let listed = listed(&harness, &credentials_of("acme")).await;
+
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert_eq!(replaced, StatusCode::OK, "{again}");
+    assert_eq!(listed, vec![again.clone()]);
+    for answered in [&held, &again, &Value::Array(listed)] {
+        let answered = answered.to_string();
+        assert!(
+            !answered.contains("the-first-key") && !answered.contains("the-second-key"),
+            "the boundary answered a secret: {answered}"
+        );
+    }
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_credential_no_process_could_carry_or_nobody_holds_is_refused() {
+    let harness = Harness::boot().await;
+    harness.declare_organization("acme").await;
+
+    let (unnamed, refusal) = requested(
+        &harness,
+        reqwest::Method::PUT,
+        &credential_of("acme", "NOT-A-VARIABLE"),
+        Some(&json!({ "secret": "a-key" })),
+    )
+    .await;
+    let (empty, _) = requested(
+        &harness,
+        reqwest::Method::PUT,
+        &credential_of("acme", "A_KEY"),
+        Some(&json!({ "secret": "" })),
+    )
+    .await;
+    let (nowhere, _) = requested(
+        &harness,
+        reqwest::Method::PUT,
+        &credential_of("globex", "A_KEY"),
+        Some(&json!({ "secret": "a-key" })),
+    )
+    .await;
+    let (unheld, _) = requested(
+        &harness,
+        reqwest::Method::DELETE,
+        &credential_of("acme", "A_KEY"),
+        None,
+    )
+    .await;
+    let nothing_on_stdin = client_given(
+        &harness,
+        &["credential", "set", "A_KEY", "--organization", "acme"],
+        Some(""),
+    )
+    .await;
+    let forgetting = client(
+        &harness,
+        &["credential", "forget", "A_KEY", "--organization", "acme"],
+    )
+    .await;
+
+    assert_eq!(unnamed, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        refusal["message"]
+            .as_str()
+            .expect("a message")
+            .contains("NOT-A-VARIABLE"),
+        "{refusal}"
+    );
+    assert_eq!(empty, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(nowhere, StatusCode::NOT_FOUND);
+    assert_eq!(unheld, StatusCode::NOT_FOUND);
+    assert!(failed(&nothing_on_stdin).contains("standard input"));
+    assert!(failed(&forgetting).contains("holds no provider credential named A_KEY"));
+    assert!(listed_nothing(&harness, &credentials_of("acme")).await);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_client_registers_and_lists_integrations_without_saying_their_secrets() {
+    let harness = Harness::boot().await;
+    let stub = GithubStub::start();
+    harness.declare_organization("acme").await;
+
+    let github = client(
+        &harness,
+        &[
+            "integration",
+            "register",
+            "github",
+            "hub",
+            "--organization",
+            "acme",
+            "--repository",
+            "jtmthf/kestrel",
+            "--token",
+            TOKEN,
+            "--api",
+            &stub.base_url(),
+            "--interval",
+            "5m",
+        ],
+    )
+    .await;
+    let webhook = client(
+        &harness,
+        &[
+            "integration",
+            "register",
+            "webhook",
+            "ci",
+            "--organization",
+            "acme",
+            "--secret",
+            "a-shared-secret",
+        ],
+    )
+    .await;
+    let listed = client(&harness, &["integration", "list", "--organization", "acme"]).await;
+
+    let github = succeeded(&github);
+    let webhook = succeeded(&webhook);
+    let records = succeeded(&listed);
+    assert_eq!(records, [webhook.clone(), github.clone()].concat());
+    assert_eq!(github[0]["kind"], "github");
+    assert_eq!(github[0]["repository"], "jtmthf/kestrel");
+    assert_eq!(github[0]["carries"], json!(["inbound", "outbound"]));
+    assert_eq!(github[0]["polled_every"], "5m");
+    assert_eq!(github[0]["webhook_path"], Value::Null);
+    assert_eq!(webhook[0]["kind"], "webhook");
+    assert_eq!(webhook[0]["carries"], json!(["inbound"]));
+    assert_eq!(
+        webhook[0]["webhook_path"],
+        format!("/webhooks/{}", webhook[0]["id"].as_str().expect("an id"))
+    );
+    assert_eq!(webhook[0]["last_event_refusal"], Value::Null);
+    let said = listed.out.join("\n");
+    assert!(!said.contains(TOKEN), "the listing spelled the token out");
+    assert!(
+        !said.contains("a-shared-secret"),
+        "the listing spelled the webhook secret out"
+    );
+    assert_eq!(
+        harness.integrations("acme").await[0].id.to_string(),
+        webhook[0]["id"].as_str().expect("an id")
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn an_integration_is_registered_with_what_it_is_declared_to_carry() {
+    let harness = Harness::boot().await;
+    harness.declare_organization("acme").await;
+
+    let (status, signed) = declared(
+        &harness,
+        &integrations_of("acme"),
+        &json!({
+            "kind": "github",
+            "name": "hub",
+            "repository": "jtmthf/kestrel",
+            "token": TOKEN,
+            "carries": ["outbound"],
+            "webhook_secret": "a-signing-secret",
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "{signed}");
+    assert_eq!(signed["carries"], json!(["outbound"]));
+    assert_eq!(signed["polled_every"], Value::Null);
+    assert!(signed["webhook_path"].is_string(), "{signed}");
+    assert!(!signed.to_string().contains("a-signing-secret"));
+    assert!(!signed.to_string().contains(TOKEN));
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_registration_that_describes_no_usable_integration_is_refused() {
+    let harness = Harness::boot().await;
+    harness.declare_organization("acme").await;
+    let webhook = json!({ "kind": "webhook", "name": "ci", "secret": "a-shared-secret" });
+    declared(&harness, &integrations_of("acme"), &webhook).await;
+
+    let refusals = [
+        (
+            integrations_of("acme"),
+            webhook.clone(),
+            StatusCode::CONFLICT,
+        ),
+        (
+            integrations_of("globex"),
+            webhook.clone(),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            integrations_of("acme"),
+            json!({ "kind": "pager", "name": "pd" }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            integrations_of("acme"),
+            json!({ "kind": "webhook", "name": "", "secret": "a-shared-secret" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            integrations_of("acme"),
+            json!({ "kind": "webhook", "name": "out", "secret": "s", "carries": ["outbound"] }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            integrations_of("acme"),
+            json!({ "kind": "github", "name": "hub", "repository": "kestrel", "token": TOKEN }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            integrations_of("acme"),
+            json!({
+                "kind": "github",
+                "name": "hub",
+                "repository": "jtmthf/kestrel",
+                "token": TOKEN,
+                "interval": "whenever",
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            integrations_of("acme"),
+            json!({
+                "kind": "github",
+                "name": "hub",
+                "repository": "jtmthf/kestrel",
+                "token": TOKEN,
+                "carries": [],
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ];
+    for (path, registration, expected) in &refusals {
+        let (status, refusal) = declared(&harness, path, registration).await;
+        assert_eq!(status, *expected, "{registration} was answered {refusal}");
+        assert!(
+            !refusal.to_string().contains(TOKEN),
+            "a refusal spelled the token out: {refusal}"
+        );
+    }
+    let taken = client(
+        &harness,
+        &[
+            "integration",
+            "register",
+            "webhook",
+            "ci",
+            "--organization",
+            "acme",
+            "--secret",
+            "another",
+        ],
+    )
+    .await;
+
+    assert!(failed(&taken).contains("already has an integration named ci"));
+    assert_eq!(listed(&harness, &integrations_of("acme")).await.len(), 1);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_client_acknowledges_the_event_an_integration_refused() {
+    let harness = Harness::boot().await;
+    harness.declare_organization("acme").await;
+    let webhook = harness
+        .register_webhook("acme", "ci", "a-shared-secret")
+        .await;
+    reqwest::Client::new()
+        .post(format!("{}{}", harness.link(), webhook.webhook_path()))
+        .bearer_auth("a-shared-secret")
+        .header("content-type", "text/plain")
+        .body("x".repeat(1024 * 1024 + 1))
+        .send()
+        .await
+        .expect("the webhook answers");
+
+    let refused =
+        succeeded(&client(&harness, &["integration", "list", "--organization", "acme"]).await);
+    let acknowledged = client(
+        &harness,
+        &[
+            "integration",
+            "acknowledge-refusal",
+            "ci",
+            "--organization",
+            "acme",
+        ],
+    )
+    .await;
+    let (status, _) = requested(
+        &harness,
+        reqwest::Method::DELETE,
+        &event_refusal_of("acme", "ci"),
+        None,
+    )
+    .await;
+    let (unknown, _) = requested(
+        &harness,
+        reqwest::Method::DELETE,
+        &event_refusal_of("acme", "pager"),
+        None,
+    )
+    .await;
+
+    let refusal = &refused[0]["last_event_refusal"];
+    assert!(
+        refusal["bytes"].as_u64().expect("a size") > 1024 * 1024,
+        "{refusal}"
+    );
+    assert!(refusal["reason"].is_string(), "{refusal}");
+    assert!(succeeded(&acknowledged).is_empty());
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(unknown, StatusCode::NOT_FOUND);
+    assert_eq!(
+        listed(&harness, &integrations_of("acme")).await[0]["last_event_refusal"],
+        Value::Null
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_client_lists_an_organizations_events_and_shows_one_whole() {
+    let harness = Harness::boot().await;
+    harness.declare_organization("acme").await;
+    let webhook = harness
+        .register_webhook("acme", "ci", "a-shared-secret")
+        .await;
+    for id in ["deploy-1", "deploy-2"] {
+        let answered = reqwest::Client::new()
+            .post(format!("{}{}", harness.link(), webhook.webhook_path()))
+            .bearer_auth("a-shared-secret")
+            .header("content-type", "application/cloudevents+json")
+            .body(
+                json!({
+                    "specversion": "1.0",
+                    "id": id,
+                    "source": "/argo/sensors/deploy",
+                    "type": "io.argoproj.deployed",
+                    "subject": "kestrel",
+                    "data": { "image": "kestrel:1" },
+                })
+                .to_string(),
+            )
+            .send()
+            .await
+            .expect("the webhook answers");
+        assert_eq!(answered.status(), StatusCode::ACCEPTED);
+    }
+
+    let events = succeeded(&client(&harness, &["event", "list", "--organization", "acme"]).await);
+    let limited = succeeded(
+        &client(
+            &harness,
+            &["event", "list", "--organization", "acme", "--limit", "1"],
+        )
+        .await,
+    );
+    let record = events[0]["record"].as_str().expect("a record id");
+    let shown = succeeded(&client(&harness, &["event", "show", record]).await);
+
+    assert_eq!(events.len(), 2);
+    assert_eq!(limited, events[..1]);
+    assert_eq!(shown, events[..1]);
+    assert_eq!(shown[0]["integration"], webhook.id.to_string());
+    assert_eq!(shown[0]["event"]["source"], "/argo/sensors/deploy");
+    assert_eq!(shown[0]["event"]["type"], "io.argoproj.deployed");
+    assert_eq!(shown[0]["event"]["specversion"], "1.0");
+    assert_eq!(shown[0]["event"]["subject"], "kestrel");
+    assert_eq!(shown[0]["event"]["data"], json!({ "image": "kestrel:1" }));
+    assert_eq!(
+        harness.events("acme").await[0].record_id.to_string(),
+        record
+    );
+    assert_eq!(
+        got(&harness, &format!("{}?limit=1", events_of("acme")))
+            .await
+            .1,
+        Value::Array(limited)
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn an_event_nobody_recorded_is_refused() {
+    let harness = Harness::boot().await;
+
+    let (unrecorded, refusal) =
+        got(&harness, &event_at(&EventRecordId::generate().to_string())).await;
+    let (malformed, _) = got(&harness, &event_at("yesterday")).await;
+    let (nowhere, _) = got(&harness, &events_of("acme")).await;
+    let showing = client(&harness, &["event", "show", "yesterday"]).await;
+
+    assert_eq!(unrecorded, StatusCode::NOT_FOUND);
+    assert!(
+        refusal["message"]
+            .as_str()
+            .expect("a message")
+            .starts_with("no event"),
+        "{refusal}"
+    );
+    assert_eq!(malformed, StatusCode::NOT_FOUND);
+    assert_eq!(nowhere, StatusCode::NOT_FOUND);
+    assert!(failed(&showing).contains("no event yesterday"));
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn a_client_in_its_own_process_reads_a_transcript_over_the_operator_boundary() {
     let harness = Harness::boot().await;
     let (session, _) = an_open_session(&harness, 2).await;
@@ -701,6 +1262,14 @@ fn the_published_operator_document_describes_the_boundary_the_control_plane_serv
         (operator::WORKSPACES, "post"),
         (operator::AGENTS, "get"),
         (operator::AGENTS, "post"),
+        (operator::CREDENTIALS, "get"),
+        (operator::CREDENTIAL, "put"),
+        (operator::CREDENTIAL, "delete"),
+        (operator::INTEGRATIONS, "get"),
+        (operator::INTEGRATIONS, "post"),
+        (operator::EVENT_REFUSAL, "delete"),
+        (operator::EVENTS, "get"),
+        (operator::EVENT, "get"),
         (operator::TRANSCRIPT, "get"),
     ];
     assert_eq!(
@@ -798,11 +1367,15 @@ fn conforms(path: &str, method: &str, status: StatusCode, body: &Value) {
         None => answer,
     };
 
-    requires(
-        &document,
-        &answer["content"]["application/json"]["schema"],
-        body,
-    );
+    let schema = &answer["content"]["application/json"]["schema"];
+    if schema.is_null() {
+        assert!(
+            body.is_null(),
+            "the document says {method} {path} answers {status} with nothing, and it served {body}"
+        );
+        return;
+    }
+    requires(&document, schema, body);
 }
 
 fn requires(document: &Value, schema: &Value, body: &Value) {

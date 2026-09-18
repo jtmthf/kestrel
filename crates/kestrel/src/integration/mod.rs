@@ -7,6 +7,7 @@ use anyhow::{Result, bail};
 use jiff::{SignedDuration, Timestamp};
 use tracing::warn;
 
+use crate::declined::Declined;
 use crate::domain::{Connection, Direction, Event, EventRecordId, GithubConnection, Integration};
 use crate::integration::credential::Token;
 use crate::integration::github::{Github, Refused};
@@ -42,7 +43,9 @@ pub struct Polled {
 
 pub async fn register(store: &Store, registration: Registration<'_>) -> Result<Integration> {
     if registration.carries.is_empty() {
-        bail!("an integration carries something: name a direction it carries");
+        bail!(Declined::Unacceptable(
+            "an integration carries something: name a direction it carries".to_owned()
+        ));
     }
 
     let (connection, webhook_secret) = match registration.connecting {
@@ -54,7 +57,10 @@ pub async fn register(store: &Store, registration: Registration<'_>) -> Result<I
             signing_secret,
         } => {
             if interval <= SignedDuration::ZERO {
-                bail!("a poll interval is how long kestrel waits, and cannot be zero or negative");
+                bail!(Declined::Unacceptable(
+                    "a poll interval is how long kestrel waits, and cannot be zero or negative"
+                        .to_owned()
+                ));
             }
             (
                 Connection::Github(GithubConnection {
@@ -69,13 +75,17 @@ pub async fn register(store: &Store, registration: Registration<'_>) -> Result<I
         }
         Connecting::Webhook { secret } => {
             if registration.carries.contains(&Direction::Outbound) {
-                bail!("a generic webhook carries events inbound only");
+                bail!(Declined::Unacceptable(
+                    "a generic webhook carries events inbound only".to_owned()
+                ));
             }
             (Connection::Webhook, Some(secret))
         }
     };
     if webhook_secret.is_some_and(str::is_empty) {
-        bail!("a webhook secret with nothing in it is not one");
+        bail!(Declined::Unacceptable(
+            "a webhook secret with nothing in it is not one".to_owned()
+        ));
     }
 
     let mut tx = store.begin().await?;

@@ -4,7 +4,7 @@
     "title": "kestrel operator",
     "version": "0.1.0",
     "summary": "The boundary a Client reaches a control plane over.",
-    "description": "Server-sent events down, POST up, plain HTTP. It authenticates nobody, so the control plane serves it on a listener of its own, apart from the link, and binds that listener to loopback unless told otherwise. A remote control plane is reached through a tunnel.",
+    "description": "Server-sent events down, JSON up, plain HTTP. It authenticates nobody, so the control plane serves it on a listener of its own, apart from the link, and binds that listener to loopback unless told otherwise. A remote control plane is reached through a tunnel.",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -288,6 +288,358 @@
         }
       }
     },
+    "/operator/organizations/{organization}/credentials": {
+      "get": {
+        "operationId": "listProviderCredentials",
+        "summary": "List the Provider Credentials an Organization holds.",
+        "description": "Each by the variable it is read from and when it was set, and never by value.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every credential held, ordered by variable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderCredential"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/credentials/{variable}": {
+      "put": {
+        "operationId": "holdProviderCredential",
+        "summary": "Hold a Provider Credential.",
+        "description": "Replaces whatever the Organization held under this variable. The secret is encrypted at rest and never answered back.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "variable",
+            "in": "path",
+            "required": true,
+            "description": "The environment variable an Agent Runtime reads the credential from.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderCredentialSecret"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The credential is held.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderCredential"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "422": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "forgetProviderCredential",
+        "summary": "Forget a Provider Credential.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "variable",
+            "in": "path",
+            "required": true,
+            "description": "The environment variable an Agent Runtime reads the credential from.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The credential is forgotten."
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/integrations": {
+      "get": {
+        "operationId": "listIntegrations",
+        "summary": "List every Integration in an Organization.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every record, ordered by name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Integration"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      },
+      "post": {
+        "operationId": "registerIntegration",
+        "summary": "Register an Integration.",
+        "description": "The credentials a registration carries are held by the control plane and never answered back. A name the Organization already gives an Integration is refused with 409.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntegrationRegistration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The Integration is registered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Integration"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "409": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "422": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/integrations/{integration}/event-refusal": {
+      "delete": {
+        "operationId": "acknowledgeEventRefusal",
+        "summary": "Acknowledge the latest Event an Integration refused.",
+        "description": "Clears the refusal an Integration keeps visible. Acknowledging when there is none changes nothing.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "integration",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Integration.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No refusal is visible on the Integration."
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/events": {
+      "get": {
+        "operationId": "listEvents",
+        "summary": "List the Events recorded for an Organization.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "description": "The name of the Organization the records belong to.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "How many to list at most.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The most recently recorded first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventRecord"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
+    "/operator/events/{record}": {
+      "get": {
+        "operationId": "showEvent",
+        "summary": "Show one Event's whole envelope and payload.",
+        "parameters": [
+          {
+            "name": "record",
+            "in": "path",
+            "required": true,
+            "description": "The Event's record identifier.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Event.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventRecord"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "503": {
+            "$ref": "#/components/responses/Refused"
+          }
+        }
+      }
+    },
     "/operator/sessions/{session}/transcript": {
       "get": {
         "operationId": "transcript",
@@ -493,6 +845,323 @@
           "name",
           "runtime",
           "model"
+        ]
+      },
+      "ProviderCredentialSecret": {
+        "type": "object",
+        "properties": {
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "secret"
+        ]
+      },
+      "ProviderCredential": {
+        "description": "A credential as everything but the Run that carries it sees it.",
+        "type": "object",
+        "properties": {
+          "variable": {
+            "type": "string"
+          },
+          "set_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "variable",
+          "set_at"
+        ]
+      },
+      "Direction": {
+        "enum": [
+          "inbound",
+          "outbound"
+        ]
+      },
+      "IntegrationRegistration": {
+        "description": "A registration, by the kind of external system it connects to.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/GithubRegistration"
+          },
+          {
+            "$ref": "#/components/schemas/WebhookRegistration"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "github": "#/components/schemas/GithubRegistration",
+            "webhook": "#/components/schemas/WebhookRegistration"
+          }
+        }
+      },
+      "GithubRegistration": {
+        "description": "A connection to GitHub, watching one repository.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "github"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "repository": {
+            "type": "string",
+            "description": "The repository it watches, as owner/name."
+          },
+          "token": {
+            "type": "string",
+            "writeOnly": true,
+            "description": "The credential it presents to GitHub."
+          },
+          "carries": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/Direction"
+            },
+            "description": "The directions it carries. Absent means both."
+          },
+          "interval": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": "1m",
+            "description": "How often the poll asks GitHub what has happened, as a duration such as `1m` or `PT30S`."
+          },
+          "webhook_secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "writeOnly": true,
+            "description": "The secret GitHub signs webhook deliveries with. Given one, the repository's events arrive by webhook and it is not polled."
+          },
+          "api": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": "https://api.github.com",
+            "description": "The GitHub API it reaches."
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "repository",
+          "token"
+        ]
+      },
+      "WebhookRegistration": {
+        "description": "A generic endpoint any producer can POST CloudEvents to. It carries inbound only.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "webhook"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "secret": {
+            "type": "string",
+            "minLength": 1,
+            "writeOnly": true,
+            "description": "The secret a sender presents as `Authorization: Bearer <secret>`."
+          },
+          "carries": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/Direction"
+            },
+            "description": "The directions it carries. Absent means inbound."
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "secret"
+        ]
+      },
+      "Integration": {
+        "description": "A registered Integration. What it presents to the external system is never part of it.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "github",
+              "webhook"
+            ]
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The repository a GitHub Integration watches."
+          },
+          "carries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Direction"
+            }
+          },
+          "polled_every": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How often it is polled, when it is."
+          },
+          "webhook_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where on the link its events are delivered, when they are delivered rather than polled."
+          },
+          "last_event_refusal": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EventRefusal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "repository",
+          "carries",
+          "polled_every",
+          "webhook_path",
+          "last_event_refusal"
+        ]
+      },
+      "EventRefusal": {
+        "description": "The latest Event an Integration refused rather than stored, visible until acknowledged.",
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "source",
+          "id",
+          "bytes",
+          "reason",
+          "observed_at"
+        ]
+      },
+      "EventRecord": {
+        "description": "An Event as kestrel recorded it.",
+        "type": "object",
+        "properties": {
+          "record": {
+            "type": "string",
+            "format": "uuid",
+            "description": "kestrel's own identifier for the record."
+          },
+          "organization": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "integration": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The Integration that recorded it. Null for an Event kestrel minted itself."
+          },
+          "recorded_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "event": {
+            "$ref": "#/components/schemas/CloudEvent"
+          }
+        },
+        "required": [
+          "record",
+          "organization",
+          "integration",
+          "recorded_at",
+          "event"
+        ]
+      },
+      "CloudEvent": {
+        "description": "The Event's CloudEvents envelope and payload.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "specversion": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {}
+        },
+        "required": [
+          "id",
+          "source",
+          "specversion",
+          "type",
+          "subject",
+          "time",
+          "data"
         ]
       },
       "Recorded": {

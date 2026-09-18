@@ -9,6 +9,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::declined::Declined;
 use crate::domain::{GithubConnection, Integration, Occurrence};
 
 pub const API: &str = "https://api.github.com";
@@ -514,9 +515,12 @@ fn source(github: &GithubConnection) -> String {
 
 /// `owner/name`, checked here because it is pasted into a URL rather than sent as a parameter.
 pub fn repository(repository: &str) -> Result<String> {
-    let (owner, name) = repository
-        .split_once('/')
-        .with_context(|| format!("{repository} is not a github repository: name it owner/name"))?;
+    let unnamed = || {
+        Declined::Unacceptable(format!(
+            "{repository} is not a github repository: name it owner/name"
+        ))
+    };
+    let (owner, name) = repository.split_once('/').ok_or_else(unnamed)?;
 
     for part in [owner, name] {
         if part.is_empty()
@@ -524,7 +528,7 @@ pub fn repository(repository: &str) -> Result<String> {
                 .chars()
                 .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
         {
-            bail!("{repository} is not a github repository: name it owner/name");
+            bail!(unnamed());
         }
     }
 

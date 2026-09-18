@@ -75,7 +75,8 @@ pub struct Agent {
 }
 
 /// Which way an Integration carries: events inbound, kestrel's requests outbound, or both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Direction {
     Inbound,
     Outbound,

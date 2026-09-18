@@ -7,6 +7,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use support::client;
 use support::github_stub::{self, GithubStub};
 use support::scripted_agent::Script;
 use tempfile::TempDir;
@@ -1256,6 +1257,109 @@ fn an_integration_carries_only_the_directions_it_was_registered_with() {
         listed.contains("  inbound  "),
         "an integration registered inbound lists as {listed}"
     );
+}
+
+/// A Client hands the control plane every secret it holds over the operator boundary, and
+/// the control plane says none of them back while it takes them.
+#[test]
+fn secrets_set_through_the_client_appear_in_no_log_line() {
+    let kestrel = Kestrel::new();
+    let stub = GithubStub::start();
+    let (mut booted, said) = kestrel.booted_saying_everything();
+    let operator = operator_of(&said);
+    let provider_key = "sk-kestrel-should-never-say-this-either";
+    let signing_secret = "whsec-kestrel-should-never-say-this";
+
+    let ran = |finished: client::Finished| {
+        assert!(
+            finished.status.success(),
+            "the client failed:\n{}",
+            finished.err
+        );
+        finished.out.join("\n")
+    };
+    let mut printed = ran(client::ran(&operator, &["organization", "declare", "acme"]));
+    printed += &ran(client::ran_given(
+        &operator,
+        &[
+            "credential",
+            "set",
+            "ANTHROPIC_API_KEY",
+            "--organization",
+            "acme",
+        ],
+        provider_key,
+    ));
+    let registering = [
+        "integration",
+        "register",
+        "github",
+        "hub",
+        "--organization",
+        "acme",
+        "--repository",
+        "jtmthf/kestrel",
+        "--token",
+        support::TOKEN,
+        "--api",
+        &stub.base_url(),
+        "--webhook-secret",
+        signing_secret,
+    ];
+    printed += &ran(client::ran(&operator, &registering));
+    let taken = client::ran(&operator, &registering);
+    assert!(!taken.status.success(), "a taken name was registered twice");
+    printed += &taken.err;
+    printed += &ran(client::ran(
+        &operator,
+        &["credential", "list", "--organization", "acme"],
+    ));
+    printed += &ran(client::ran(
+        &operator,
+        &["integration", "list", "--organization", "acme"],
+    ));
+    let _ = booted.kill();
+    booted.wait().expect("kestrel should be waitable");
+    let said = said.lock().expect("the log should not be poisoned").clone();
+
+    assert!(
+        said.contains("INSERT INTO provider_credential")
+            && said.contains("INSERT INTO integration"),
+        "the control plane logged nothing of what it was asked to hold:\n{said}"
+    );
+    for (name, secret) in [
+        ("the provider key", provider_key),
+        ("the token", support::TOKEN),
+        ("the signing secret", signing_secret),
+    ] {
+        assert!(!printed.contains(secret), "the client printed {name}");
+        assert!(!said.contains(secret), "a log line spelled {name} out");
+    }
+}
+
+fn operator_of(said: &Mutex<String>) -> String {
+    let deadline = Instant::now() + PATIENCE;
+
+    loop {
+        let started = said
+            .lock()
+            .expect("the log should not be poisoned")
+            .lines()
+            .find(|line| line.contains("role started") && line.contains("operator="))
+            .map(str::to_owned);
+        if let Some(line) = started {
+            let address = line
+                .split_whitespace()
+                .find_map(|field| field.strip_prefix("operator="))
+                .expect("the line should name the operator address");
+            return format!("http://{address}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the control plane never said where operators reach it"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// The one command that has a credential in it, and the whole of what kestrel says while it

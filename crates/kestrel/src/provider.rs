@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use anyhow::{Result, bail};
 use jiff::Timestamp;
 
+use crate::declined::Declined;
 use crate::domain::OrganizationId;
 use crate::store::Store;
 
@@ -17,19 +18,23 @@ pub struct Held {
     pub set_at: Timestamp,
 }
 
-pub async fn hold(store: &Store, organization: &str, variable: &str, secret: &str) -> Result<()> {
+pub async fn hold(store: &Store, organization: &str, variable: &str, secret: &str) -> Result<Held> {
     named(variable)?;
     if secret.is_empty() {
-        bail!("a provider credential with nothing in it is not one");
+        bail!(Declined::Unacceptable(
+            "a provider credential with nothing in it is not one".to_owned()
+        ));
     }
 
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
-    tx.organizations()
+    let held = tx
+        .organizations()
         .hold_provider_credential(organization.id, variable, secret)
         .await?;
+    tx.commit().await?;
 
-    tx.commit().await
+    Ok(held)
 }
 
 pub async fn held(store: &Store, organization: &str) -> Result<Vec<Held>> {
@@ -50,10 +55,10 @@ pub async fn forget(store: &Store, organization: &str, variable: &str) -> Result
         .forget_provider_credential(organization.id, variable)
         .await?
     {
-        bail!(
+        bail!(Declined::Missing(format!(
             "the organization {} holds no provider credential named {variable}",
             organization.name
-        );
+        )));
     }
 
     tx.commit().await
@@ -94,7 +99,9 @@ fn named(variable: &str) -> Result<()> {
         .is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
 
     if !acceptable || !starts {
-        bail!("{variable} is not an environment variable an Agent Runtime could be spawned with");
+        bail!(Declined::Unacceptable(format!(
+            "{variable} is not an environment variable an Agent Runtime could be spawned with"
+        )));
     }
 
     Ok(())

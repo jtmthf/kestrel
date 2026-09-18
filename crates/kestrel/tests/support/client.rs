@@ -1,7 +1,7 @@
 //! `kestrel-client` as an operator runs it: its own process, handed a control-plane URL and
 //! nothing else, in a home and a working directory holding no database.
 
-use std::io::{BufRead as _, BufReader, Read as _};
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
@@ -38,6 +38,10 @@ pub struct Finished {
 
 impl Client {
     pub fn spawn(control_plane: &str, args: &[&str]) -> Self {
+        Self::spawn_given(control_plane, args, None)
+    }
+
+    fn spawn_given(control_plane: &str, args: &[&str], input: Option<&str>) -> Self {
         let home = TempDir::new().expect("a temporary home");
         let mut child = Command::new(binary())
             .args(args)
@@ -45,11 +49,21 @@ impl Client {
             .env_clear()
             .env("HOME", home.path())
             .env("KESTREL_CONTROL_PLANE", control_plane)
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("the client should spawn");
+        if let Some(input) = input {
+            let mut stdin = child.stdin.take().expect("stdin should be piped");
+            stdin
+                .write_all(input.as_bytes())
+                .expect("the input should reach the client");
+        }
 
         let pipe = child.stdout.take().expect("stdout should be piped");
         let (lines, stdout) = channel();
@@ -133,4 +147,8 @@ impl Drop for Client {
 /// Runs to completion, printing whatever it prints.
 pub fn ran(control_plane: &str, args: &[&str]) -> Finished {
     Client::spawn(control_plane, args).finish()
+}
+
+pub fn ran_given(control_plane: &str, args: &[&str], input: &str) -> Finished {
+    Client::spawn_given(control_plane, args, Some(input)).finish()
 }
