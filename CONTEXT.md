@@ -90,7 +90,8 @@ _Avoid_: signal, notification, hook, payload
 
 **Trigger**:
 A standing, configured rule that starts work: what it matches, the brief it renders, and the agent
-and workspace it starts that work with. Named, listable, disableable, and bounded by a firing
+and workspace it starts that work with. It may allow other agents that a label on the work item
+can choose instead. Named, listable, disableable, and bounded by a firing
 budget. A trigger is the rule, never an individual firing; the session records the event that
 started it. A trigger matches only events recorded after it was declared: working the history a
 repository already holds is a deliberate act, and declaring a trigger is not it. One that declares
@@ -251,7 +252,9 @@ words from drifting.
 - A trigger renders its brief **once** per firing. A brief that cannot be rendered **fails** the
   firing and starts nothing.
 - A trigger's agent applies when a firing **opens** a session, never when it **feeds** one. A
-  session's agent is fixed for its life.
+  session's agent, and the runtime and model it had when the session opened, are fixed for its life.
+- A label chooses only among agents a trigger **allows**. A label that chooses **two** agents, or one
+  the trigger does not allow, starts **nothing**.
 - A session's correlation is unique among an organization's **open** sessions. A sealed session
   holds its correlation against nothing.
 - A firing **never** interrupts a run. Events arriving while a run is active are pending, and drain

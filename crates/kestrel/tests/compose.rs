@@ -299,6 +299,7 @@ fn the_commands_usage_documents_are_the_commands_that_work() {
         "organization  acme".to_owned(),
         "workspace     kestrel".to_owned(),
         "agent         builder".to_owned(),
+        "runtime       opencode".to_owned(),
         "state         open".to_owned(),
         "opened        ".to_owned(),
     ] {

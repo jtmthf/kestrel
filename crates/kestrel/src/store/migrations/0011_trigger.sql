@@ -22,6 +22,14 @@ CREATE TABLE trigger (
     UNIQUE (organization_id, name)
 ) STRICT;
 
+-- The agents besides its own that an `agent:<name>` label on the work item may choose.
+CREATE TABLE trigger_agent (
+    trigger_id TEXT NOT NULL REFERENCES trigger (id),
+    organization_id TEXT NOT NULL REFERENCES organization (id),
+    agent_id TEXT NOT NULL REFERENCES agent (id),
+    PRIMARY KEY (trigger_id, agent_id)
+) STRICT;
+
 -- The key makes one trigger-event pair fire at most once, including failures and ignored misses.
 CREATE TABLE firing (
     trigger_id TEXT NOT NULL REFERENCES trigger (id),

@@ -85,14 +85,16 @@ impl<'a> Sessions<'a> {
 
         sqlx::query(
             "INSERT INTO session
-                 (id, organization_id, workspace_id, agent_id, base, branch, correlation, state,
-                  opened_at, last_active_at, continues, event_record_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (id, organization_id, workspace_id, agent_id, runtime, model, base, branch,
+                  correlation, state, opened_at, last_active_at, continues, event_record_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.to_string())
         .bind(session.organization.id.to_string())
         .bind(session.workspace.id.to_string())
         .bind(session.agent.id.to_string())
+        .bind(&session.agent.runtime)
+        .bind(&session.agent.model)
         .bind(&session.checkout.base)
         .bind(&session.checkout.branch)
         .bind(&session.correlation)
@@ -846,8 +848,9 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
 
 async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option<Session>> {
     let Some(row) = sqlx::query(
-        "SELECT organization_id, workspace_id, agent_id, base, branch, correlation, state, opened_at,
-                last_active_at, sealed_at, continues, event_record_id
+        "SELECT organization_id, workspace_id, agent_id, runtime, model, base, branch,
+                correlation, state, opened_at, last_active_at, sealed_at, continues,
+                event_record_id
          FROM session
          WHERE id = ?",
     )
@@ -866,12 +869,17 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
         row.get::<String, _>("workspace_id").parse()?,
     )
     .await?;
-    let agent = agent::with_id(
-        connection,
-        &organization,
-        row.get::<String, _>("agent_id").parse()?,
-    )
-    .await?;
+    // What the Agent was declared as when the session opened, not what it has been redeclared as.
+    let agent = Agent {
+        runtime: row.get("runtime"),
+        model: row.get("model"),
+        ..agent::with_id(
+            connection,
+            &organization,
+            row.get::<String, _>("agent_id").parse()?,
+        )
+        .await?
+    };
     let repositories =
         sqlx::query("SELECT url FROM session_repository WHERE session_id = ? ORDER BY position")
             .bind(id.to_string())

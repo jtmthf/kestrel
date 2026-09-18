@@ -15,7 +15,7 @@ use support::supervisor::{self, Supervisor};
 const PATIENCE: Duration = Duration::from_secs(30);
 /// The Agent Runtime the harness actually drives, so what a Run sees it advertise is recorded
 /// against the name an Agent declared here names.
-const RUNTIME: &str = "scripted";
+use support::RUNTIME;
 
 async fn a_session(harness: &Harness) -> Session {
     a_session_naming(harness, Some(OTHER_MODEL)).await

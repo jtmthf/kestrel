@@ -19,14 +19,15 @@ use tracing::warn;
 use crate::agent::{self, NotOffered};
 use crate::declined::Declined;
 use crate::domain::{
-    self, Agent, Connection, Direction, EventRecordId, EventRefusal, Integration, Occurrence,
-    Organization, SessionId, SessionState, Workspace,
+    self, Agent, Connection, Direction, EventRecordId, EventRefusal, Firing, Integration,
+    Occurrence, Organization, SessionId, SessionState, Workspace,
 };
 use crate::integration::{self, Connecting, Registration, github};
 use crate::log::{self, Cursor, Page, Unreadable, Window};
 use crate::provider::{self, Held};
 use crate::store::organization::NoSuchOrganization;
 use crate::store::{Declared, Store};
+use crate::trigger;
 
 pub const ORGANIZATIONS: &str = "/operator/organizations";
 pub const WORKSPACES: &str = "/operator/organizations/{organization}/workspaces";
@@ -491,17 +492,19 @@ struct EventRecord {
     integration: Option<String>,
     recorded_at: Timestamp,
     event: Occurrence,
+    firings: Vec<Firing>,
 }
 
-impl From<domain::Event> for EventRecord {
-    fn from(event: domain::Event) -> Self {
-        Self {
+impl EventRecord {
+    async fn read(store: &Store, event: domain::Event) -> Result<Self, Refused> {
+        Ok(Self {
             record: event.record_id.to_string(),
             organization: event.organization.to_string(),
             integration: event.integration.map(|integration| integration.to_string()),
             recorded_at: event.recorded_at,
+            firings: trigger::firings(store, event.record_id).await?,
             event: event.occurrence,
-        }
+        })
     }
 }
 
@@ -516,8 +519,12 @@ async fn events(
         limited.limit.unwrap_or(EVENTS_LISTED),
     )
     .await?;
+    let mut records = Vec::new();
+    for event in events {
+        records.push(EventRecord::read(&control_plane.store, event).await?);
+    }
 
-    Ok(Json(events.into_iter().map(Into::into).collect()))
+    Ok(Json(records))
 }
 
 async fn event(
@@ -529,7 +536,7 @@ async fn event(
         .map_err(|_| Refused::NotFound(format!("no event {record}")))?;
     let event = integration::event(&control_plane.store, record).await?;
 
-    Ok(Json(event.into()))
+    Ok(Json(EventRecord::read(&control_plane.store, event).await?))
 }
 
 fn sharing_a_directory(repositories: &[String]) -> Option<String> {

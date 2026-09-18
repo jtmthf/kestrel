@@ -420,6 +420,14 @@ impl<'a> EventData<'a> {
             .and_then(serde_json::Value::as_str)
     }
 
+    pub fn labels(&self) -> impl Iterator<Item = &str> {
+        self.field(&["issue", "labels"])
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|label| label.get("name").and_then(serde_json::Value::as_str))
+    }
+
     pub fn title(&self) -> Option<&str> {
         self.field(&["issue", "title"])
             .and_then(serde_json::Value::as_str)
