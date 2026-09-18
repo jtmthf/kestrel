@@ -289,6 +289,10 @@
           },
           "checkout": {
             "$ref": "#/components/schemas/Checkout"
+          },
+          "prompt": {
+            "description": "The agent's whole prompt, sent exactly as given. Absent, the Environment prompts the agent with the Transcript as earlier context.",
+            "type": "string"
           }
         },
         "required": [
@@ -634,6 +638,9 @@
             "$ref": "#/components/schemas/ParticipantJoined"
           },
           {
+            "$ref": "#/components/schemas/Brief"
+          },
+          {
             "$ref": "#/components/schemas/RunStarted"
           },
           {
@@ -650,6 +657,7 @@
           "propertyName": "kind",
           "mapping": {
             "participant_joined": "#/components/schemas/ParticipantJoined",
+            "brief": "#/components/schemas/Brief",
             "run_started": "#/components/schemas/RunStarted",
             "said": "#/components/schemas/Message",
             "messages": "#/components/schemas/Messages",
@@ -671,6 +679,26 @@
         "required": [
           "kind",
           "participant"
+        ]
+      },
+      "Brief": {
+        "description": "The instruction a Session started with, rendered by the Trigger that fired.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "brief"
+          },
+          "trigger": {
+            "type": "string"
+          },
+          "brief": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "trigger",
+          "brief"
         ]
       },
       "RunStarted": {

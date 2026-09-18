@@ -7,7 +7,9 @@ use kestrel::domain::{CorrelationMiss, Direction, Event, RunState, Session, Trig
 use kestrel::log::{Entry, Message};
 use kestrel::trigger::Rendered;
 use support::github_stub::{self, GithubStub};
-use support::{Harness, labelled_on, templates};
+use support::scripted_agent::Script;
+use support::supervisor::Supervisor;
+use support::{A_PROVIDER_KEY, Harness, PROVIDER_KEY, labelled_on, templates};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 const REPOSITORY: &str = "jtmthf/kestrel";
@@ -196,6 +198,108 @@ async fn the_rendered_brief_is_the_sessions_first_transcript_entry() {
             },
         ]
     );
+
+    harness.teardown().await;
+}
+
+const SKILLED: &str = "/implement https://github.com/jtmthf/kestrel/issues/43\n\n\
+                       Fetch its current body and comments with `gh issue view --comments` first.";
+
+/// Opened by a firing whose brief leads with a harness's skill invocation, in a workspace a
+/// supervisor can check out without reaching GitHub.
+async fn briefed(harness: &Harness, stub: &GithubStub) -> Session {
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(&organization, "kestrel", &[], "main")
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+    harness
+        .hold_provider_credential(&organization, PROVIDER_KEY, A_PROVIDER_KEY)
+        .await;
+    ready_rendering(
+        harness,
+        "ready",
+        "/implement {{ event.data.issue.html_url }}\n\n\
+         Fetch its current body and comments with `gh issue view --comments` first.",
+        None,
+        None,
+    )
+    .await;
+    watching(harness, stub).await;
+
+    opened(harness, 1).await.remove(0)
+}
+
+/// What the agent was prompted with, which the echoing agent says back.
+async fn prompted(harness: &Harness, session: &Session) -> String {
+    let claimed = harness
+        .claim_run()
+        .await
+        .expect("the firing's run should claim");
+    let mut supervisor = Supervisor::provision_playing(
+        &harness.link(),
+        claimed.run.id,
+        &claimed.credential,
+        Script::Echoes,
+    );
+    supervisor.wait_until_it_says("reported connected").await;
+    harness.start(&claimed.run).await;
+    supervisor.wait_until_it_says("reported finished").await;
+    assert!(supervisor.finishes().await.success());
+
+    harness
+        .transcript(session.id)
+        .await
+        .into_iter()
+        .find_map(|recorded| match recorded.entry {
+            Entry::Said {
+                participant,
+                message,
+            } if participant == "builder" => Some(message),
+            _ => None,
+        })
+        .expect("the agent should say what it was prompted with")
+}
+
+#[tokio::test]
+async fn the_agent_is_first_prompted_with_exactly_the_brief_its_session_preserved() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    let session = briefed(&harness, &stub).await;
+
+    assert_eq!(
+        first_entry(&harness, &session).await,
+        Entry::Brief {
+            trigger: "ready".to_owned(),
+            brief: SKILLED.to_owned(),
+        }
+    );
+    assert_eq!(prompted(&harness, &session).await, SKILLED);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_brief_something_was_said_after_reaches_the_agent_as_earlier_context() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
+    let harness = Harness::boot().await;
+    let session = briefed(&harness, &stub).await;
+    harness
+        .post_while_busy(session.id, "operator", "and add a test")
+        .await;
+
+    let prompt = prompted(&harness, &session).await;
+
+    assert!(prompt.starts_with("Earlier context"), "{prompt}");
+    assert!(
+        prompt.contains("/implement https://github.com/jtmthf/kestrel/issues/43"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("and add a test"), "{prompt}");
 
     harness.teardown().await;
 }

@@ -37,13 +37,23 @@ impl fmt::Display for Template {
 
 impl Template {
     pub fn render(&self, event: &Occurrence) -> Result<String> {
+        self.render_in(context! { event => event })
+    }
+
+    /// A Brief is also rendered over the instruction a dispatch supplied, `none` when it
+    /// supplied none, so a template can tell the two apart under strict rendering.
+    pub fn render_brief(&self, event: &Occurrence, instruction: Option<&str>) -> Result<String> {
+        self.render_in(context! { event => event, instruction => instruction })
+    }
+
+    fn render_in(&self, scope: minijinja::Value) -> Result<String> {
         let environment = environment();
         let template = environment
             .template_from_str(&self.0)
             .map_err(|error| anyhow!("{error:#}"))?;
 
         let mut output = Bounded::default();
-        if let Err(error) = template.render_captured_to(context! { event => event }, &mut output) {
+        if let Err(error) = template.render_captured_to(scope, &mut output) {
             if output.overflowed {
                 bail!("it renders more than {MOST_BYTES} bytes");
             }
@@ -139,6 +149,28 @@ mod tests {
                 .render(&labelled())
                 .expect("the template should render"),
             "an issue numbered 43 (#43, com.github.issues.labeled)"
+        );
+    }
+
+    #[test]
+    fn a_brief_renders_a_dispatchs_instruction_in_place_of_its_default() {
+        let template: Template =
+            "{% if instruction %}{{ instruction }}{% else %}/implement{% endif %} \
+             https://github.com/jtmthf/kestrel/issues/{{ event.data.issue.number }}"
+                .parse()
+                .expect("the template should parse");
+
+        assert_eq!(
+            template
+                .render_brief(&labelled(), None)
+                .expect("the brief should render"),
+            "/implement https://github.com/jtmthf/kestrel/issues/43"
+        );
+        assert_eq!(
+            template
+                .render_brief(&labelled(), Some("$tdd fix the flaky test in"))
+                .expect("the brief should render"),
+            "$tdd fix the flaky test in https://github.com/jtmthf/kestrel/issues/43"
         );
     }
 

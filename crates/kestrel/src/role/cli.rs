@@ -397,7 +397,15 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             organization,
             event,
             file,
+            instruction,
         }) => {
+            if *file == Some(Given::Stdin) && *instruction == Some(Given::Stdin) {
+                bail!(
+                    "the declaration file and the instruction cannot both be read from standard input"
+                );
+            }
+            let instruction = instruction.as_ref().map(Given::read).transpose()?;
+            let instruction = instruction.as_deref();
             let tested = match file {
                 Some(file) => {
                     let declarations = apply::parse(&file.read()?)?;
@@ -407,9 +415,10 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                         .with_context(|| {
                             format!("the declaration file declares no trigger {name}")
                         })?;
-                    trigger::test_declared(&store, organization, declared, *event).await?
+                    trigger::test_declared(&store, organization, declared, *event, instruction)
+                        .await?
                 }
-                None => trigger::test(&store, organization, name, *event).await?,
+                None => trigger::test(&store, organization, name, *event, instruction).await?,
             };
             if tested.matches {
                 println!("matches");

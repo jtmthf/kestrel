@@ -60,11 +60,7 @@ struct Selects {
 ///
 /// `provider` reaches the agent's own process and nothing else: not this one's environment, not
 /// a file, and not ACP, which carries no credentials (ADR-0007).
-pub async fn work(
-    runtime: &Runtime,
-    provider: BTreeMap<String, String>,
-    entries: &[crate::link::Entry],
-) -> Worked {
+pub async fn work(runtime: &Runtime, provider: BTreeMap<String, String>, prompt: &str) -> Worked {
     let heard = Arc::new(Mutex::new(Heard::default()));
 
     let spawn = match AcpAgent::from_str(&runtime.command) {
@@ -123,7 +119,7 @@ pub async fn work(
             let heard = Arc::clone(&heard);
 
             async move |connection: ConnectionTo<agent_client_protocol::Agent>| {
-                a_turn(&connection, auth, model, entries, &heard).await
+                a_turn(&connection, auth, model, prompt, &heard).await
             }
         })
         .await;
@@ -145,7 +141,7 @@ async fn a_turn(
     connection: &ConnectionTo<agent_client_protocol::Agent>,
     auth: Option<String>,
     model: Option<String>,
-    entries: &[crate::link::Entry],
+    prompt: &str,
     heard: &Mutex<Heard>,
 ) -> Result<StopReason, Error> {
     let initialized = connection
@@ -210,7 +206,7 @@ async fn a_turn(
     let answered = connection
         .send_request(PromptRequest::new(
             set_up.session_id,
-            vec![ContentBlock::Text(TextContent::new(prompt(entries)))],
+            vec![ContentBlock::Text(TextContent::new(prompt))],
         ))
         .block_task()
         .await?;
@@ -218,7 +214,7 @@ async fn a_turn(
     Ok(answered.stop_reason)
 }
 
-fn prompt(entries: &[crate::link::Entry]) -> String {
+pub fn prompt(entries: &[crate::link::Entry]) -> String {
     if entries.is_empty() {
         return PROMPT.to_owned();
     }

@@ -401,6 +401,47 @@ fn a_scheduled_trigger_shows_its_schedule_and_tests_without_an_event() {
 }
 
 #[test]
+fn a_trigger_test_renders_the_brief_over_a_dispatchs_instruction() {
+    let kestrel = declared();
+    kestrel.run(&[
+        "trigger",
+        "declare",
+        "sweep",
+        "--organization",
+        "acme",
+        "--every",
+        "2h",
+        "--brief",
+        "{% if instruction %}{{ instruction }}{% else %}Sweep the backlog{% endif %} for \
+         {{ event.data.trigger }}",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+
+    let by_default = kestrel.run(&["trigger", "test", "sweep", "--organization", "acme"]);
+    let instructed = kestrel.run(&[
+        "trigger",
+        "test",
+        "sweep",
+        "--organization",
+        "acme",
+        "--instruction",
+        "/triage the oldest issue",
+    ]);
+
+    assert!(
+        by_default.ends_with("\n\nSweep the backlog for sweep"),
+        "{by_default}"
+    );
+    assert!(
+        instructed.ends_with("\n\n/triage the oldest issue for sweep"),
+        "{instructed}"
+    );
+}
+
+#[test]
 fn an_agent_names_the_runtime_and_model_it_participates_with() {
     let kestrel = Kestrel::new();
     kestrel.run(&["organization", "declare", "acme"]);

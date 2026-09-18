@@ -42,7 +42,11 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Instruction {
-    Start { checkout: Checkout },
+    Start {
+        checkout: Checkout,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+    },
     Stop,
 }
 
@@ -106,11 +110,26 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .with_state(ControlPlane { store, shutdown })
 }
 
+/// A Brief nothing has followed is the agent's whole prompt, verbatim, so a harness still
+/// recognises the skill invocation it may lead with.
 pub async fn start(store: &Store, run: &Run) -> Result<SentInstruction> {
-    sent(store, run, |session| Instruction::Start {
-        checkout: session.checkout.clone(),
-    })
-    .await
+    let mut tx = store.begin().await?;
+    let session = tx.sessions().get(run.session).await?;
+    session.accepts("turn")?;
+    let prompt = tx.log().unfollowed_brief(&session).await?;
+    let sent = tx
+        .sessions()
+        .send_instruction(
+            run,
+            Instruction::Start {
+                checkout: session.checkout.clone(),
+                prompt,
+            },
+        )
+        .await?;
+    tx.commit().await?;
+
+    Ok(sent)
 }
 
 pub async fn instruct(

@@ -42,6 +42,7 @@ enum Attended {
 struct Attending {
     cursor: Option<String>,
     started: bool,
+    prompt: Option<String>,
     worked: bool,
     taken: i64,
     saying: VecDeque<Report>,
@@ -144,7 +145,10 @@ async fn attend(
 
             match delivered.instruction {
                 Instruction::Stop => return Ok(Attended::Stopped),
-                Instruction::Start { checkout } => break checkout,
+                Instruction::Start { checkout, prompt } => {
+                    attending.prompt = prompt;
+                    break checkout;
+                }
                 Instruction::Unrecognized => {}
             }
         };
@@ -164,7 +168,10 @@ async fn attend(
     say(link, attending, diagnostics).await?;
 
     if !attending.worked {
-        let entries = all_entries(link).await?;
+        let prompt = match attending.prompt.clone() {
+            Some(prompt) => prompt,
+            None => runtime::prompt(&all_entries(link).await?),
+        };
         let provider = link.credentials().await?.variables;
         if !provider.is_empty() {
             diagnostics.info(&format!(
@@ -173,7 +180,7 @@ async fn attend(
             ));
         }
 
-        let worked = runtime::work(runtime, provider, &entries).await;
+        let worked = runtime::work(runtime, provider, &prompt).await;
         if let Some(on) = &worked.on {
             diagnostics.info(&format!("on the model {}", on.model));
         }

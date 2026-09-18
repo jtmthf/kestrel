@@ -502,6 +502,25 @@ first transcript entry:
 2  2026-09-07T14:02:03.118Z  participant joined  builder
 ```
 
+The agent's first prompt is that brief, character for character, and nothing else. kestrel does not
+wrap it, summarise it or read skill syntax in it, so a brief that leads with your harness's own
+invocation — `/implement` for Claude Code, `$tdd` for Codex — reaches the harness where it looks for
+one. Copying the issue's body into the brief would hand the agent a snapshot; give it the link and
+ask it to read the current issue and its comments itself, with `gh`, which the development image
+carries. Once anything is said after the brief, the next prompt is the transcript as earlier
+context instead.
+
+A brief can also take an instruction supplied with a dispatch, rather than one written into the
+trigger. It is the template's `instruction` — `none` when the dispatch gave none — so the template
+decides whether it replaces the usual work or adds to it:
+
+```yaml
+    brief: |
+      {% if instruction %}{{ instruction }}{% else %}/implement{% endif %} {{ event.data.issue.html_url }}
+
+      Read the issue and its comments with `gh issue view --comments` before you start.
+```
+
 A brief, branch or correlation that cannot render fails the firing: nothing opens, the control
 plane logs why, and no later sweep tries that trigger on that event again. A correlation is held by
 the session it opened, and is unique among the organization's open sessions. Events arriving while
@@ -550,7 +569,8 @@ Work https://github.com/jtmthf/kestrel/issues/44: 0.1/21: The GitHub Trigger ope
 
 It renders even when the filter does not match, so a brief can be written against the event it is
 for before the filter is right. Add `-f .kestrel/triggers.yaml` to test the trigger as the file
-declares it, before you apply it. A template that cannot render fails the test, naming the trigger,
+declares it, before you apply it, and `--instruction` to render the brief as a dispatch carrying
+that instruction would. A template that cannot render fails the test, naming the trigger,
 the event, the line of the template that failed, and the variables it had to work with.
 
 An event several triggers match fires every one of them; no trigger is first, and matching one
