@@ -14,6 +14,7 @@ use super::docker::{self, Ran, removed};
 const IMAGE: &str = "kestrel-env:test";
 const SCRIPTED: &str = "kestrel-env-scripted:test";
 const CONFORMANCE: &str = "kestrel-env-conformance:test";
+const DEVELOPMENT: &str = "kestrel-dev:test";
 const PATIENCE: Duration = Duration::from_secs(30);
 
 pub fn built() -> &'static str {
@@ -80,6 +81,31 @@ pub fn with_the_adapter() -> &'static str {
     });
 
     CONFORMANCE
+}
+
+/// The development image, derived from the `kestrel-env` this suite builds rather than from
+/// whatever an operator last tagged `kestrel-env`.
+pub fn development() -> &'static str {
+    static BUILT: OnceLock<()> = OnceLock::new();
+
+    BUILT.get_or_init(|| {
+        let base = format!("KESTREL_ENV={}", built());
+        docker::completed(
+            &[
+                "build",
+                "--file",
+                "images/kestrel-dev/Dockerfile",
+                "--build-arg",
+                &base,
+                "--tag",
+                DEVELOPMENT,
+                ".",
+            ],
+            "building the development image",
+        );
+    });
+
+    DEVELOPMENT
 }
 
 /// The container behind an Environment a Run recorded.

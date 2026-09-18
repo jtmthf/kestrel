@@ -74,6 +74,28 @@ jobs:
       - name: Test the agent runtime the image ships
         run: cargo test --locked --package kestrel --test opencode -- --ignored --test-threads 1
 
+  development:
+    name: kestrel-dev (image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: jdx/mise-action@v4
+        with:
+          install_args: rust
+
+      - uses: Swatinem/rust-cache@v2
+
+      # kestrel_passes_its_own_checks compiles the workspace three times, so the scheduled
+      # Development image workflow runs it instead.
+      - name: Test the image
+        run: |
+          started=$(date +%s)
+          cargo test --locked --package kestrel --test development -- --ignored \
+            --skip kestrel_passes_its_own_checks
+          size=$(docker image inspect kestrel-dev:test --format '{{.Size}}')
+          echo "kestrel-dev: $((size / 1024 / 1024)) MiB, built and tested in $(($(date +%s) - started))s" >> "$GITHUB_STEP_SUMMARY"
+
   control-plane:
     name: kestrel (image)
     runs-on: ubuntu-latest
@@ -120,7 +142,7 @@ jobs:
   # The runner is amd64, so nothing else builds the arm64 half of the image: the release it
   # pins, the checksum it verifies, and the architecture it selects on.
   architectures:
-    name: kestrel-env (arm64)
+    name: images (arm64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -133,6 +155,11 @@ jobs:
         run: |
           docker buildx build --platform linux/arm64 --target opencode \
             --output type=cacheonly --file images/kestrel-env/Dockerfile .
+
+      - name: Build gh for arm64
+        run: |
+          docker buildx build --platform linux/arm64 --target gh \
+            --output type=cacheonly --file images/kestrel-dev/Dockerfile .
 
   # From a clean checkout with no build cache, so what is published is what the Dockerfile
   # yields on its own.
