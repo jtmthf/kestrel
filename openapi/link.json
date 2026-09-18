@@ -358,6 +358,9 @@
             "$ref": "#/components/schemas/Used"
           },
           {
+            "$ref": "#/components/schemas/CheckoutObserved"
+          },
+          {
             "$ref": "#/components/schemas/Finished"
           }
         ],
@@ -370,6 +373,7 @@
             "model": "#/components/schemas/Model",
             "said": "#/components/schemas/Said",
             "used": "#/components/schemas/Used",
+            "checkout": "#/components/schemas/CheckoutObserved",
             "finished": "#/components/schemas/Finished"
           }
         }
@@ -485,6 +489,112 @@
           "kind",
           "seq",
           "usage"
+        ]
+      },
+      "CheckoutObserved": {
+        "description": "What git says of each of the Workspace's repositories once the agent has stopped working in it, reported before the Run finishes. The control plane judges from it whether the Instance holds work that exists nowhere else; a Run that finishes without one leaves its Instance held.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "checkout"
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Observed"
+            }
+          },
+          "seq": {
+            "$ref": "#/components/schemas/Seq"
+          }
+        },
+        "required": [
+          "kind",
+          "seq",
+          "repositories"
+        ]
+      },
+      "Observed": {
+        "description": "One repository's checkout: counted from git when it could be read, and why not when it could not.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ObservedRead"
+          },
+          {
+            "$ref": "#/components/schemas/ObservedUnreadable"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "git",
+          "mapping": {
+            "read": "#/components/schemas/ObservedRead",
+            "unreadable": "#/components/schemas/ObservedUnreadable"
+          }
+        }
+      },
+      "ObservedRead": {
+        "type": "object",
+        "properties": {
+          "repository": {
+            "type": "string"
+          },
+          "git": {
+            "const": "read"
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch checked out, or null on a detached HEAD."
+          },
+          "untracked": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Files git neither tracks nor ignores."
+          },
+          "uncommitted": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Tracked paths changed and not committed, staged or not."
+          },
+          "stashes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unpushed": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Commits on any local branch or HEAD that no remote-tracking branch reaches."
+          }
+        },
+        "required": [
+          "repository",
+          "git",
+          "branch",
+          "untracked",
+          "uncommitted",
+          "stashes",
+          "unpushed"
+        ]
+      },
+      "ObservedUnreadable": {
+        "type": "object",
+        "properties": {
+          "repository": {
+            "type": "string"
+          },
+          "git": {
+            "const": "unreadable"
+          },
+          "because": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "git",
+          "because"
         ]
       },
       "Finished": {
@@ -651,6 +761,9 @@
           },
           {
             "$ref": "#/components/schemas/RunEnded"
+          },
+          {
+            "$ref": "#/components/schemas/InstanceReleased"
           }
         ],
         "discriminator": {
@@ -661,7 +774,8 @@
             "run_started": "#/components/schemas/RunStarted",
             "said": "#/components/schemas/Message",
             "messages": "#/components/schemas/Messages",
-            "run_ended": "#/components/schemas/RunEnded"
+            "run_ended": "#/components/schemas/RunEnded",
+            "instance_released": "#/components/schemas/InstanceReleased"
           }
         }
       },
@@ -793,6 +907,34 @@
           "kind",
           "run",
           "exit"
+        ]
+      },
+      "InstanceReleased": {
+        "description": "A person released the Session's Instance, destroying it and whatever it held that was never pushed.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "instance_released"
+          },
+          "participant": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "unpublished": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it held that existed nowhere else, as judged when it was released; null when it held nothing."
+          }
+        },
+        "required": [
+          "kind",
+          "participant",
+          "instance",
+          "unpublished"
         ]
       }
     }

@@ -40,6 +40,7 @@ CREATE TABLE session (
     base TEXT NOT NULL,
     branch TEXT NOT NULL,
     instance TEXT,
+    observed TEXT,
     state TEXT NOT NULL,
     opened_at TEXT NOT NULL
 ) STRICT;
