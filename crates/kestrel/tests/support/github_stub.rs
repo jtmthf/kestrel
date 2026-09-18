@@ -69,6 +69,29 @@ pub fn issue_event(id: i64, issue: i64, kind: &str, label: &str) -> serde_json::
     })
 }
 
+pub fn assigned(id: i64, issue: i64, assignee: &str, actor: &str) -> serde_json::Value {
+    let mut event = issue_event(id, issue, "assigned", "");
+    event["actor"]["login"] = actor.into();
+    event["assignee"] = serde_json::json!({ "login": assignee });
+    event.as_object_mut().expect("an event").remove("label");
+    event
+}
+
+pub fn issue(number: i64, labels: &[&str]) -> ScriptedResponse {
+    ScriptedResponse::ok(
+        serde_json::json!({
+            "number": number,
+            "title": format!("an issue numbered {number}"),
+            "html_url": format!("https://github.com/jtmthf/kestrel/issues/{number}"),
+            "labels": labels
+                .iter()
+                .map(|name| serde_json::json!({ "name": name }))
+                .collect::<Vec<_>>(),
+        })
+        .to_string(),
+    )
+}
+
 /// Labelled with `label` on an issue that already carries `carries` besides it.
 pub fn labelled_carrying(id: i64, issue: i64, label: &str, carries: &[&str]) -> serde_json::Value {
     let mut event = labelled(id, issue, label);

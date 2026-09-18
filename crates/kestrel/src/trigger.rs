@@ -13,7 +13,7 @@ use crate::domain::{
     Occurrence, Organization, RunId, SessionId, Templates, Trigger, TriggerId, TriggerState,
 };
 use crate::fanout::{self, Change};
-use crate::integration::github::EventData;
+use crate::integration::github::{self, EventData, Github};
 use crate::log::Entry;
 use crate::session;
 use crate::store::integration::Recorded;
@@ -25,6 +25,35 @@ use crate::store::{Store, Tx};
 const AT_A_TIME: usize = 32;
 
 pub const AGENT_LABEL: &str = "agent:";
+
+/// Fires only the Trigger it was dispatched to, never whatever else its source and subject match.
+pub const DISPATCHED: &str = "dev.kestrel.dispatched";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Asked<'a> {
+    pub instruction: Option<&'a str>,
+    pub agent: Option<&'a str>,
+}
+
+impl<'a> Asked<'a> {
+    pub fn by(event: &'a Event) -> Self {
+        EventData::new(&event.occurrence)
+            .command()
+            .map(|command| Asked {
+                instruction: command.instruction,
+                agent: command.agent,
+            })
+            .unwrap_or_default()
+    }
+}
+
+pub struct Dispatch<'a> {
+    pub organization: &'a str,
+    pub trigger: &'a str,
+    pub integration: &'a str,
+    pub issue: i64,
+    pub asked: Asked<'a>,
+}
 
 pub struct Declaration<'a> {
     pub organization: &'a str,
@@ -144,9 +173,18 @@ pub(crate) async fn allowed(
     Ok(allows)
 }
 
-/// The Trigger's own Agent, or the one an `agent:<name>` label on the work item chooses from
-/// those it allows: a label is data, so it never reaches an Agent a human did not name here.
-pub fn chosen<'t>(trigger: &'t Trigger, event: &Event) -> Result<&'t Agent> {
+/// Whatever chooses the Agent, it is one the Trigger allows, so no Event reaches an Agent a human did not name here.
+pub fn chosen<'t>(trigger: &'t Trigger, event: &Event, asked: Option<&str>) -> Result<&'t Agent> {
+    let allowed = || std::iter::once(&trigger.agent).chain(&trigger.allows);
+    if let Some(name) = asked {
+        return allowed().find(|agent| agent.name == name).ok_or_else(|| {
+            anyhow!(
+                "the trigger {} does not allow the agent {name} that was asked for",
+                trigger.name
+            )
+        });
+    }
+
     let data = EventData::new(&event.occurrence);
     let named: BTreeSet<&str> = data
         .labels()
@@ -155,15 +193,12 @@ pub fn chosen<'t>(trigger: &'t Trigger, event: &Event) -> Result<&'t Agent> {
 
     match named.into_iter().collect::<Vec<_>>().as_slice() {
         [] => Ok(&trigger.agent),
-        [name] => std::iter::once(&trigger.agent)
-            .chain(&trigger.allows)
-            .find(|agent| agent.name == *name)
-            .ok_or_else(|| {
-                anyhow!(
-                    "the label {AGENT_LABEL}{name} chooses an agent the trigger {} does not allow",
-                    trigger.name
-                )
-            }),
+        [name] => allowed().find(|agent| agent.name == *name).ok_or_else(|| {
+            anyhow!(
+                "the label {AGENT_LABEL}{name} chooses an agent the trigger {} does not allow",
+                trigger.name
+            )
+        }),
         several => bail!(
             "the labels {} each choose an agent, and the trigger {} will not guess which",
             several
@@ -268,7 +303,7 @@ async fn tested(
         return Ok(Tested {
             matches: true,
             rendered: render(trigger, &event, instruction),
-            agent: chosen_name(trigger, &event),
+            agent: chosen_name(trigger, &event, None),
             elapsing: Some(due),
         });
     };
@@ -282,16 +317,17 @@ async fn tested(
         );
     }
 
+    let asked = Asked::by(&event);
     Ok(Tested {
         matches: tx.triggers().matches(trigger, &event).await?,
-        rendered: render(trigger, &event, instruction),
-        agent: chosen_name(trigger, &event),
+        rendered: render(trigger, &event, instruction.or(asked.instruction)),
+        agent: chosen_name(trigger, &event, asked.agent),
         elapsing: None,
     })
 }
 
-fn chosen_name(trigger: &Trigger, event: &Event) -> Result<String> {
-    chosen(trigger, event).map(|agent| agent.name.clone())
+fn chosen_name(trigger: &Trigger, event: &Event, asked: Option<&str>) -> Result<String> {
+    chosen(trigger, event, asked).map(|agent| agent.name.clone())
 }
 
 pub fn render(trigger: &Trigger, event: &Event, instruction: Option<&str>) -> Result<Rendered> {
@@ -385,16 +421,66 @@ pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
 
     let mut fired = Vec::with_capacity(matched.len());
     for (trigger, event) in matched {
-        fired.push(firing(store, &trigger, &event).await?);
+        let tx = store.begin().await?;
+        fired.push(firing(tx, &trigger, &event, Asked::by(&event)).await?);
     }
     Ok(fired)
 }
 
+/// Fires one Trigger for an issue an operator names, whether or not its filter would match: the
+/// request is the authority, so the Event it mints is recorded only as what was asked and why.
+pub async fn dispatch(store: &Store, github: &Github, dispatch: Dispatch<'_>) -> Result<Fired> {
+    let (trigger, integration) = {
+        let mut tx = store.begin().await?;
+        let organization = tx.organizations().named(dispatch.organization).await?;
+        (
+            tx.triggers().named(&organization, dispatch.trigger).await?,
+            tx.integrations()
+                .named(&organization, dispatch.integration)
+                .await?,
+        )
+    };
+    let issue = github
+        .issue(&integration, dispatch.issue)
+        .await
+        .map_err(|refused| anyhow!("{refused}"))?;
+    let occurrence = github::dispatched(
+        integration.github()?,
+        DISPATCHED,
+        dispatch.issue,
+        serde_json::json!({
+            "trigger": trigger.name,
+            "instruction": dispatch.asked.instruction,
+            "agent": dispatch.asked.agent,
+            "issue": issue,
+        }),
+    );
+
+    let mut tx = store.begin().await?;
+    if let Recorded::Refused { because } = tx
+        .integrations()
+        .record_event(&integration, &occurrence)
+        .await?
+    {
+        bail!("the dispatch could not be recorded: {because}");
+    }
+    let event = tx
+        .integrations()
+        .recorded_event(&trigger.organization, &occurrence)
+        .await?;
+
+    firing(tx, &trigger, &event, dispatch.asked).await
+}
+
 /// An opening firing atomically commits its Session, first entry, Run and record, so a retry
 /// never opens its work twice.
-async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired> {
-    let rendered = render(trigger, event, None);
-    let mut tx = store.begin().await?;
+async fn firing(
+    mut tx: Tx<'_>,
+    trigger: &Trigger,
+    event: &Event,
+    asked: Asked<'_>,
+) -> Result<Fired> {
+    let rendered = render(trigger, event, asked.instruction);
 
     if let Some(because) = tx.triggers().disabled_because(trigger).await? {
         return failed(
@@ -415,6 +501,18 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
             .set_state(trigger, TriggerState::Disabled(DisableReason::FiringBudget))
             .await?;
         return failed(tx, trigger, event, because).await;
+    }
+
+    if event.occurrence.r#type == github::COMMENTED
+        && EventData::new(&event.occurrence).command().is_none()
+    {
+        return failed(
+            tx,
+            trigger,
+            event,
+            format!("the comment is not a {} command", github::MENTION),
+        )
+        .await;
     }
 
     let rendered = match rendered {
@@ -443,7 +541,7 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
         None
     };
 
-    let agent = match chosen(trigger, event) {
+    let agent = match chosen(trigger, event, asked.agent) {
         Ok(agent) => agent,
         Err(error) => return failed(tx, trigger, event, format!("{error:#}")).await,
     };
