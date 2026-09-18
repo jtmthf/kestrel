@@ -9,7 +9,7 @@ mod support;
 use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver};
-use kestrel::domain::{Exit, Run, RunId, Session};
+use kestrel::domain::{Exit, Run, RunId, Session, SessionId};
 use support::Harness;
 use support::image::{self, Container};
 use support::scripted_agent::{self, Script};
@@ -77,8 +77,44 @@ async fn ended(harness: &Harness, run: RunId) -> Run {
     harness.after_one_turn_within(run, PATIENCE).await
 }
 
+/// A stopped Run's exit is recorded before its supervisor has actually left (ADR-0024), so its
+/// container is given a moment to catch up before this looks for what it left behind.
+async fn without_its_processes(container: &Container) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+    loop {
+        let left = container.processes();
+        let clean =
+            !left.contains("kestrel-supervisor") && !left.contains("kestrel-scripted-agent");
+        if clean || tokio::time::Instant::now() >= deadline {
+            return left;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 async fn started(harness: &Harness, run: RunId) -> Run {
     until(harness, run, "started", |run| run.started_at.is_some()).await
+}
+
+/// A Run's exit is recorded as soon as it is decided, before its supervisor is confirmed gone;
+/// a session does not free its slot until that confirmation lands, which for a dead container
+/// can take a reconciliation pass rather than the commit that ended the Run (ADR-0002).
+async fn enqueue_when_free(harness: &Harness, session: SessionId) -> Run {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+
+    loop {
+        match harness.try_enqueue_run(session).await {
+            Ok(run) => return run,
+            Err(error) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the run should enqueue: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
 }
 
 /// The Run of ticket 06, dispatched at the driver the domain never names: the same script, the
@@ -126,7 +162,7 @@ async fn an_instance_is_a_container_that_outlives_its_run_but_not_its_supervisor
         "a run names the container it executed on"
     );
     let container = Container::named(instance);
-    let left = container.processes();
+    let left = without_its_processes(&container).await;
     assert!(
         !left.contains("kestrel-supervisor") && !left.contains("kestrel-scripted-agent"),
         "the run left processes on its instance: {left}"
@@ -208,7 +244,7 @@ async fn a_container_that_dies_mid_run_is_detected_and_the_next_run_starts_it_ag
         "a run whose container died still holds a lease"
     );
 
-    let next = harness.enqueue_run(session.id).await;
+    let next = enqueue_when_free(&harness, session.id).await;
     let next = started(&harness, next.id).await;
     assert_eq!(
         next.instance, ended.instance,
