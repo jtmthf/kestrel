@@ -344,6 +344,7 @@ pub struct Trigger {
     pub on_miss: Option<CorrelationMiss>,
     pub workspace: Workspace,
     pub agent: Agent,
+    pub allows: Vec<Agent>,
     pub state: TriggerState,
     pub disabled_because: Option<String>,
     pub firing_budget: FiringBudget,
@@ -395,6 +396,14 @@ impl Trigger {
             self.name, self.firing_budget.limit, self.firing_budget.window
         )
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Firing {
+    pub trigger: String,
+    pub outcome: String,
+    pub session: Option<SessionId>,
+    pub failure: Option<String>,
 }
 
 /// What kestrel calls a schedule elapsing.

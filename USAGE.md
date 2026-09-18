@@ -87,6 +87,20 @@ kestrel agent model builder --organization acme --model anthropic/claude-opus-4-
 Once a run has worked, kestrel knows what that runtime advertised, and refuses a model outside it
 where you declare it rather than where it would be dispatched.
 
+`--runtime` names the agent runtime: `opencode` unless you say otherwise, or `claude` or `codex`.
+The work role maps each name to the command an environment spawns and speaks ACP to, which by
+default is `opencode acp`, `claude-agent-acp` and `codex-acp`; the `kestrel-dev` image carries all
+three. Set `KESTREL_AGENT_RUNTIME` on the control plane, or pass `--agent-runtime NAME=COMMAND`
+repeatedly, to change the table. A run whose agent names a runtime missing from it fails and says
+which.
+
+```sh
+kestrel agent declare codex --organization acme --runtime codex
+```
+
+A session takes its agent's runtime and model when it opens and keeps them while it is open:
+redeclaring the agent, or changing its model, changes the sessions opened after that.
+
 `kestrel organization list`, `kestrel workspace list --organization acme` and
 `kestrel agent list --organization acme` show what you have declared.
 
@@ -118,6 +132,8 @@ session       01a07846-49fa-7dc0-a44b-183a63794ee3
 organization  acme
 workspace     kestrel
 agent         builder
+runtime       opencode
+model         -
 branch        kestrel/01a07846-49fa-7dc0-a44b-183a63794ee3
 base          main
 state         open
@@ -424,6 +440,23 @@ kestrel's work, so either setting opens a new Session continuing the most recent
 key no Session has held, `open` starts a new Session and `ignore` records the firing but starts no
 work. A comment that follows up a sealed Session feeds the open one holding its key, or opens a
 continuation that holds it.
+
+### Letting a label choose the agent
+
+A trigger starts its work with its `agent`, unless a label on the issue names another it `allows`:
+
+```yaml
+    agent: builder
+    allows: [codex, claude]
+```
+
+An issue labelled `agent:codex` when the trigger fires opens its session with `codex`. The label
+only chooses among agents the declaration names, so an issue cannot reach an agent you did not
+review. Two `agent:` labels naming different agents, or one naming an agent the trigger does not
+allow, open nothing: the firing fails, and `kestrel event show` prints why under `firings`.
+`kestrel trigger test` prints which agent a firing for an event would choose. A label only matters
+when a firing opens a session. Changing an issue's labels later does not change the agent of the
+session already working on it.
 
 ### One-off triggers
 

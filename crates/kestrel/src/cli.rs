@@ -14,7 +14,7 @@ use crate::domain::{CorrelationMiss, Direction, EventRecordId, SessionId};
 use crate::integration::github;
 use crate::log::Cursor;
 use crate::role::serve::Listen;
-use crate::role::work::Dispatch;
+use crate::role::work::{AgentRuntime, Dispatch};
 use crate::template::Template;
 
 const SUPERVISOR: &str = "kestrel-supervisor";
@@ -107,15 +107,17 @@ pub struct Cli {
     #[arg(long, env = "KESTREL_SUPERVISOR", global = true, value_name = "PATH")]
     supervisor: Option<PathBuf>,
 
-    /// The command a supervisor spawns as its Agent Runtime and speaks ACP to
+    /// The command a supervisor spawns for each Agent Runtime an Agent may name, as
+    /// NAME=COMMAND; repeat, or separate with commas, for many
     #[arg(
-        long,
+        long = "agent-runtime",
         env = "KESTREL_AGENT_RUNTIME",
         global = true,
-        value_name = "COMMAND",
-        default_value = "opencode acp"
+        value_name = "NAME=COMMAND",
+        value_delimiter = ',',
+        default_value = "opencode=opencode acp,claude=claude-agent-acp,codex=codex-acp"
     )]
-    agent_runtime: String,
+    agent_runtimes: Vec<AgentRuntime>,
 
     /// The ACP authentication method an Agent Runtime is logged in with, for one that requires
     /// being logged in before it will open a session
@@ -263,6 +265,10 @@ pub enum TriggerCommand {
         /// The Agent a firing starts work with
         #[arg(long)]
         agent: String,
+        /// Another Agent an `agent:<name>` label on the work item may choose instead; repeat
+        /// for many
+        #[arg(long = "allow", value_name = "AGENT")]
+        allows: Vec<String>,
     },
     /// Say whether a Trigger matches an Event already recorded, and what a firing for it
     /// would render, starting no work
@@ -658,7 +664,7 @@ impl Cli {
                     Driver::LocalExec(LocalExec::running(self.supervisor()?))
                 }
             },
-            runtime: self.agent_runtime.clone(),
+            runtimes: self.agent_runtimes.clone(),
             auth: self.agent_auth.clone(),
             max_active_runs: self.max_active_runs,
         })
@@ -807,6 +813,50 @@ mod tests {
             dispatch(&["--compute", "local-exec", "work"]).driver,
             Driver::LocalExec(_)
         ));
+    }
+
+    fn spawned(dispatch: &Dispatch) -> Vec<(&str, &str)> {
+        dispatch
+            .runtimes
+            .iter()
+            .map(|runtime| (runtime.name.as_str(), runtime.command.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn every_runtime_the_development_image_carries_is_spawned_unless_configuration_says_otherwise()
+    {
+        assert_eq!(
+            spawned(&dispatch(&[])),
+            [
+                ("opencode", "opencode acp"),
+                ("claude", "claude-agent-acp"),
+                ("codex", "codex-acp"),
+            ]
+        );
+        assert_eq!(
+            spawned(&dispatch(&[
+                "--agent-runtime",
+                "opencode=opencode acp --pure",
+                "--agent-runtime",
+                "codex=codex-acp,claude=claude-agent-acp"
+            ])),
+            [
+                ("opencode", "opencode acp --pure"),
+                ("codex", "codex-acp"),
+                ("claude", "claude-agent-acp"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_runtime_named_without_its_command_is_rejected() {
+        for given in ["opencode", "=opencode acp", "opencode="] {
+            assert!(
+                Cli::try_parse_from(["kestrel", "--agent-runtime", given]).is_err(),
+                "{given} was accepted"
+            );
+        }
     }
 
     #[test]

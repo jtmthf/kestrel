@@ -323,7 +323,7 @@ async fn the_second_run_starts_a_fresh_supervisor_on_the_same_instance_after_the
         .declare_workspace(&organization, "kestrel", &[], "main")
         .await;
     harness
-        .declare_agent(&organization, "builder", "scripted", None)
+        .declare_agent(&organization, "builder", "opencode", None)
         .await;
     harness
         .hold_provider_credential(&organization, PROVIDER_KEY, A_PROVIDER_KEY)

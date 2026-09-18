@@ -36,6 +36,7 @@ CREATE TABLE session (
     organization_id TEXT NOT NULL REFERENCES organization (id),
     workspace_id TEXT NOT NULL REFERENCES workspace (id),
     agent_id TEXT NOT NULL REFERENCES agent (id),
+    runtime TEXT NOT NULL,
     base TEXT NOT NULL,
     branch TEXT NOT NULL,
     instance TEXT,
