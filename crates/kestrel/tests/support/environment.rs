@@ -1,5 +1,5 @@
-//! A local-exec Environment as a test sees it: one a test scripts instead of the supervisor,
-//! and the process tree behind an Environment a Run recorded.
+//! A local-exec supervisor as a test sees it: one a test scripts instead of the real one, the
+//! process tree behind a supervisor a Run recorded, and the directory a local Instance is.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,8 +35,7 @@ impl Environment {
         &self.path
     }
 
-    /// What the script wrote beside itself, which outlives the Environment the way what it
-    /// wrote in its Workspace does not.
+    /// What the script wrote beside itself, where it outlives every Instance.
     pub fn wrote(&self, name: &str) -> String {
         fs::read_to_string(self._directory.path().join(name))
             .unwrap_or_else(|error| panic!("the environment wrote no {name}: {error}"))
@@ -44,13 +43,24 @@ impl Environment {
             .to_owned()
     }
 
-    pub fn named(environment: &str) -> Pid {
-        let (driver, pid) = environment
-            .split_once('/')
-            .unwrap_or_else(|| panic!("{environment} does not name a driver and an instance"));
-        assert_eq!(driver, "local-exec");
+    pub fn named(supervisor: &str) -> Pid {
+        let pid = supervisor
+            .strip_prefix("local-exec/")
+            .unwrap_or_else(|| panic!("{supervisor} is not a local supervisor"));
 
         Pid(pid.parse().unwrap_or_else(|_| panic!("{pid} is not a pid")))
+    }
+
+    pub fn process(pid: &str) -> Pid {
+        Pid(pid.parse().unwrap_or_else(|_| panic!("{pid} is not a pid")))
+    }
+
+    pub fn workspace_of(instance: &str) -> PathBuf {
+        let name = instance
+            .strip_prefix("local-exec/")
+            .unwrap_or_else(|| panic!("{instance} is not a local instance"));
+
+        std::env::temp_dir().join(name)
     }
 }
 
@@ -70,7 +80,7 @@ impl Pid {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        panic!("the environment {} was never destroyed", self.0);
+        panic!("the supervisor {} was never stopped", self.0);
     }
 
     #[cfg(unix)]

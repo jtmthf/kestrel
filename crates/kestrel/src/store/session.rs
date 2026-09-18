@@ -14,7 +14,7 @@ use crate::store::{agent, due, organization, timestamp, workspace};
 macro_rules! runs_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, organization_id, session_id, state, exit, exit_because, environment,
+            "SELECT id, organization_id, session_id, state, exit, exit_because, instance, supervisor,
                     enqueued_at, started_at, ended_at, lease_expires_at, connected_at,
                     supervisor_version, model, worked_model, context_used, context_size, cost_amount,
                     cost_currency
@@ -25,7 +25,7 @@ macro_rules! runs_where {
     };
 }
 
-/// What became of a report the link was handed: the next in the Environment's sequence, one
+/// What became of a report the link was handed: the next in the supervisor's sequence, one
 /// taken already — where a replay after an answer that never arrived lands — or one that
 /// skips a report the Run has yet to make, which would leave a gap nothing fills.
 pub enum Taken {
@@ -239,7 +239,7 @@ impl<'a> Sessions<'a> {
             "SELECT id
              FROM run
              WHERE session_id = ?
-               AND (state NOT IN (?, ?) OR environment_state = 'present')
+               AND (state NOT IN (?, ?) OR supervisor_state = 'present')
              ORDER BY enqueued_at, id
              LIMIT 1",
         )
@@ -290,7 +290,8 @@ impl<'a> Sessions<'a> {
             session: session.id,
             state: RunState::Queued,
             exit: None,
-            environment: None,
+            instance: None,
+            supervisor: None,
             model: model.map(str::to_owned),
             worked_model: None,
             enqueued_at: Timestamp::now(),
@@ -519,7 +520,7 @@ impl<'a> Sessions<'a> {
             .bind(run.id.to_string())
             .execute(&mut *self.connection)
             .await
-            .with_context(|| format!("recording the environment of run {} connected", run.id))?;
+            .with_context(|| format!("recording the supervisor of run {} connected", run.id))?;
 
         Ok(())
     }
@@ -554,50 +555,71 @@ impl<'a> Sessions<'a> {
         Ok(())
     }
 
-    pub async fn record_environment(&mut self, run: &Run, environment: &str) -> Result<()> {
-        sqlx::query(
-            "UPDATE run
-             SET environment = ?, environment_instance = ?, environment_state = 'present'
-             WHERE id = ?",
-        )
-        .bind(environment)
-        .bind(environment)
-        .bind(run.id.to_string())
-        .execute(&mut *self.connection)
-        .await
-        .with_context(|| format!("recording the environment run {} executes in", run.id))?;
+    pub async fn instance(&mut self, session: SessionId) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT instance FROM session WHERE id = ?")
+            .bind(session.to_string())
+            .fetch_one(&mut *self.connection)
+            .await
+            .with_context(|| format!("reading the instance of the session {session}"))?;
+
+        Ok(row.get("instance"))
+    }
+
+    /// `None` forgets an Instance that is gone, so the Session's next Run provisions another.
+    pub async fn record_instance(
+        &mut self,
+        session: SessionId,
+        instance: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query("UPDATE session SET instance = ? WHERE id = ?")
+            .bind(instance)
+            .bind(session.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("recording the instance of the session {session}"))?;
 
         Ok(())
     }
 
-    pub async fn record_environment_present(&mut self, run: &Run, environment: &str) -> Result<()> {
-        sqlx::query(
-            "UPDATE run
-             SET environment_state = 'present', environment_instance = ?
-             WHERE id = ?",
-        )
-        .bind(environment)
-        .bind(run.id.to_string())
-        .execute(&mut *self.connection)
-        .await
-        .with_context(|| format!("recording that run {} has an environment", run.id))?;
-
-        Ok(())
-    }
-
-    pub async fn record_environment_gone(&mut self, run: &Run) -> Result<()> {
-        sqlx::query("UPDATE run SET environment_state = 'gone' WHERE id = ?")
+    pub async fn record_run_instance(&mut self, run: &Run, instance: &str) -> Result<()> {
+        sqlx::query("UPDATE run SET instance = ? WHERE id = ?")
+            .bind(instance)
             .bind(run.id.to_string())
             .execute(&mut *self.connection)
             .await
-            .with_context(|| format!("recording that run {}'s environment is gone", run.id))?;
+            .with_context(|| format!("recording the instance run {} executes on", run.id))?;
 
         Ok(())
     }
 
-    pub async fn environment_is_gone(&mut self, run: &Run) -> Result<bool> {
+    pub async fn record_supervisor(&mut self, run: &Run, supervisor: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE run
+             SET supervisor = ?, supervisor_state = 'present'
+             WHERE id = ?",
+        )
+        .bind(supervisor)
+        .bind(run.id.to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("recording the supervisor of run {}", run.id))?;
+
+        Ok(())
+    }
+
+    pub async fn record_supervisor_gone(&mut self, run: &Run) -> Result<()> {
+        sqlx::query("UPDATE run SET supervisor_state = 'gone' WHERE id = ?")
+            .bind(run.id.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("recording that run {}'s supervisor is gone", run.id))?;
+
+        Ok(())
+    }
+
+    pub async fn supervisor_is_gone(&mut self, run: &Run) -> Result<bool> {
         let row = sqlx::query(
-            "SELECT environment_state != 'present' AS is_gone
+            "SELECT supervisor_state != 'present' AS is_gone
              FROM run
              WHERE id = ?",
         )
@@ -608,24 +630,24 @@ impl<'a> Sessions<'a> {
         Ok(row.get("is_gone"))
     }
 
-    pub async fn environments_to_reap(&mut self) -> Result<Vec<(Run, String)>> {
+    pub async fn supervisors_to_stop(&mut self) -> Result<Vec<(Run, String)>> {
         let rows = sqlx::query(
-            "SELECT id, environment_instance
+            "SELECT id, supervisor
              FROM run
-             WHERE state = ? AND environment_state = 'present'
+             WHERE state = ? AND supervisor_state = 'present'
              ORDER BY ended_at, id",
         )
         .bind(RunState::Ended.as_str())
         .fetch_all(&mut *self.connection)
         .await?;
 
-        let mut environments = Vec::with_capacity(rows.len());
+        let mut supervisors = Vec::with_capacity(rows.len());
         for row in rows {
             let run = self.run(row.get::<String, _>("id").parse()?).await?;
-            environments.push((run, row.get("environment_instance")));
+            supervisors.push((run, row.get("supervisor")));
         }
 
-        Ok(environments)
+        Ok(supervisors)
     }
 
     /// Only a Run that is active holds one, so a heartbeat arriving after its Run ended puts
@@ -655,7 +677,7 @@ impl<'a> Sessions<'a> {
         .collect()
     }
 
-    /// `false` when the Run had already started, so an Environment that reconnects and says
+    /// `false` when the Run had already started, so a supervisor that reconnects and says
     /// so again adds no second Transcript entry.
     pub async fn record_started(&mut self, run: &Run) -> Result<bool> {
         let started =
@@ -927,7 +949,8 @@ fn run(row: &SqliteRow) -> Result<Run> {
         exit: exit
             .map(|status| Exit::read(&status, row.get("exit_because")))
             .transpose()?,
-        environment: row.get("environment"),
+        instance: row.get("instance"),
+        supervisor: row.get("supervisor"),
         model: row.get("model"),
         worked_model: row.get("worked_model"),
         enqueued_at: row.get::<String, _>("enqueued_at").parse()?,

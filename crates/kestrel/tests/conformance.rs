@@ -20,7 +20,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use kestrel::compute::{Docker, Driver, Environment};
+use kestrel::compute::{Docker, Driver, Instance, Supervisor};
 use kestrel::domain::{Exit, Run, RunId, RunState, Session, Usage};
 use kestrel::link::credential::Secret;
 use support::Harness;
@@ -43,15 +43,16 @@ const BREATHE: Duration = Duration::from_secs(30);
 /// An ACP authentication method no agent advertises, because it is not one.
 const UNOFFERED_LOGIN: &str = "a-login-no-agent-offers";
 
-/// One conformance Run: the Environment executing it and what the supervisor in it says.
+/// One conformance Run: the Instance executing it and what the supervisor on it says.
 /// Provisioned through the `Compute` port rather than through the work role, because the
-/// gateway the agent is pointed at is this suite's and has to reach the Environment before the
+/// gateway the agent is pointed at is this suite's and has to reach the Instance before the
 /// turn starts.
 struct Driven {
     lineage: Lineage,
     run: Run,
     session: Session,
-    environment: Environment,
+    instance: Instance,
+    supervisor: Supervisor,
     diagnostics: Diagnostics,
 }
 
@@ -63,18 +64,19 @@ impl Driven {
     async fn logged_in_with(harness: &Harness, lineage: Lineage, model: &str, auth: &str) -> Self {
         let session = a_session(harness, lineage, model).await;
         let (run, credential) = harness.dispatch_run(session.id).await;
-        let (mut environment, mut diagnostics) =
+        let (mut instance, supervisor, mut diagnostics) =
             provisioned(harness, lineage, &session, run.id, &credential, auth);
 
         diagnostics.wait_until_it_says("reported connected").await;
-        lineage.configure(&mut environment);
+        lineage.configure(&mut instance);
         harness.start(&run).await;
 
         Self {
             lineage,
             run,
             session: harness.show_session(session.id).await,
-            environment,
+            instance,
+            supervisor,
             diagnostics,
         }
     }
@@ -89,7 +91,7 @@ impl Driven {
 
         loop {
             let killed = self
-                .environment
+                .instance
                 .exec(&[
                     "sh",
                     "-c",
@@ -130,14 +132,17 @@ impl Driven {
     }
 
     fn destroy(self) {
-        self.environment
+        self.supervisor
+            .stop()
+            .expect("the supervisor should be stopped");
+        self.instance
             .destroy()
-            .expect("the environment should be destroyed");
+            .expect("the instance should be destroyed");
     }
 }
 
 impl fmt::Display for Driven {
-    /// Everything a failure here needs to be legible: which agent, and what its Environment
+    /// Everything a failure here needs to be legible: which agent, and what its supervisor
     /// said while the Run was in flight.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -157,7 +162,7 @@ fn provisioned(
     run: RunId,
     credential: &Secret,
     auth: &str,
-) -> (Environment, Diagnostics) {
+) -> (Instance, Supervisor, Diagnostics) {
     let link = harness.link_from_an_environment();
     let run_id = run.to_string();
     let mut variables = vec![
@@ -183,14 +188,21 @@ fn provisioned(
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
-    let mut environment = Driver::Docker(Docker::provisioning_from(lineage.image()))
-        .provision(run, &borrowed)
-        .expect("the environment should provision");
-    let pipe = environment
+    let mut instance = Driver::Docker(Docker::provisioning_from(lineage.image()))
+        .provision(run)
+        .expect("the instance should provision");
+    let mut supervisor = instance
+        .supervise(&borrowed)
+        .expect("the supervisor should start");
+    let pipe = supervisor
         .take_stderr()
         .expect("the supervisor's diagnostics should be piped");
 
-    (environment, Diagnostics::pumped("the environment", pipe))
+    (
+        instance,
+        supervisor,
+        Diagnostics::pumped("the supervisor", pipe),
+    )
 }
 
 async fn a_session(harness: &Harness, lineage: Lineage, model: &str) -> Session {

@@ -1,9 +1,9 @@
-//! The Docker driver: an Environment as a container the daemon on this machine runs (ADR-0005).
+//! The Docker driver: an Instance as a container the daemon on this machine runs (ADR-0005).
 
 use std::io::{self, Write as _};
 use std::process::{Child, Command, Stdio};
 
-use super::{Environment, Exited, Provisioned, Streaming};
+use super::{Exited, Instance, Provisioned, Streaming, Supervising, Supervisor};
 use crate::domain::RunId;
 
 /// Where the image puts a Workspace, and so what every path an operation takes is relative to.
@@ -23,24 +23,20 @@ impl Docker {
         }
     }
 
-    /// What a control plane in a container beside the Environment is reached over, where the
+    /// What a control plane in a container beside the Instance is reached over, where the
     /// host's gateway reaches nothing.
     pub fn on_network(mut self, network: impl Into<String>) -> Self {
         self.network = Some(network.into());
         self
     }
 
-    pub(super) fn provision(
-        &self,
-        run: RunId,
-        variables: &[(&str, &str)],
-    ) -> io::Result<Environment> {
+    pub(super) fn provision(&self, run: RunId) -> io::Result<Instance> {
         let container = format!("kestrel-{run}");
         let mut created = vec![
             "create".to_owned(),
             "--name".to_owned(),
             container.clone(),
-            // The Environment dials out and nothing dials in (ADR-0002), so this is the only
+            // The Instance dials out and nothing dials in (ADR-0002), so this is the only
             // name the link is reachable by from inside.
             "--add-host".to_owned(),
             "host.docker.internal:host-gateway".to_owned(),
@@ -49,11 +45,9 @@ impl Docker {
             created.push("--network".to_owned());
             created.push(network.clone());
         }
-        for (key, value) in variables {
-            created.push("--env".to_owned());
-            created.push(format!("{key}={value}"));
-        }
-        created.push(self.image.clone());
+        // As the first process, the one thing stopping a supervisor leaves running and the
+        // one thing no process in the container can signal.
+        created.extend(["--entrypoint", "sleep", &self.image, "infinity"].map(str::to_owned));
         docker(&created.iter().map(String::as_str).collect::<Vec<_>>())?;
 
         // Started rather than attached, so that by the time this returns the container is
@@ -63,33 +57,36 @@ impl Docker {
             return Err(error);
         }
 
-        let mut logs = match Command::new("docker")
-            .args(["logs", "--follow", &container])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(logs) => logs,
-            Err(error) => {
-                let _ = removed(&container);
-                return Err(error);
-            }
+        Ok(in_container(container))
+    }
+
+    /// A container that stopped still holds its filesystem, so it is started again rather than
+    /// taken for gone.
+    pub(super) fn resume(&self, instance: &str) -> io::Result<Option<Instance>> {
+        let container = named(instance)?;
+        let running = match docker(&["inspect", "--format", "{{.State.Running}}", container]) {
+            Ok(running) => running,
+            Err(error) if gone(&error) => return Ok(None),
+            Err(error) => return Err(error),
         };
 
-        Ok(Environment {
-            name: format!("docker/{container}"),
-            stdout: logs.stdout.take(),
-            stderr: logs.stderr.take(),
-            provisioned: Box::new(Container { container, logs }),
-            destroyed: false,
-        })
+        if String::from_utf8_lossy(&running).trim() != "true" {
+            docker(&["start", container])?;
+        }
+
+        Ok(Some(in_container(container.to_owned())))
+    }
+}
+
+fn in_container(container: String) -> Instance {
+    Instance {
+        name: format!("docker/{container}"),
+        provisioned: Box::new(Container { container }),
     }
 }
 
 struct Container {
     container: String,
-    logs: Child,
 }
 
 impl Provisioned for Container {
@@ -141,47 +138,80 @@ impl Provisioned for Container {
         }
 
         Err(io::Error::other(format!(
-            "{path} could not be written in the environment: {}",
+            "{path} could not be written in the instance: {}",
             String::from_utf8_lossy(&written.stderr).trim()
         )))
     }
 
-    /// Asked of the daemon rather than of a client attached to it, so a container that died
-    /// while nothing was watching is still found to be gone.
-    fn status(&mut self) -> io::Result<Option<Exited>> {
-        let inspected = match docker(&[
-            "inspect",
-            "--format",
-            "{{.State.Running}} {{.State.ExitCode}}",
-            &self.container,
-        ]) {
-            Ok(inspected) => inspected,
-            Err(error) if gone(&error) => return Ok(Some(Exited::without_a_code())),
-            Err(error) => return Err(error),
-        };
-
-        let inspected = String::from_utf8_lossy(&inspected);
-        let (running, code) = inspected
-            .trim()
-            .split_once(' ')
-            .ok_or_else(|| io::Error::other(format!("docker inspect said {inspected:?}")))?;
-
-        if running == "true" {
-            return Ok(None);
+    /// Named rather than given on the command line, so a Run's credentials are in no process
+    /// listing on this machine and in nothing the container's configuration keeps.
+    fn supervise(&mut self, variables: &[(&str, &str)]) -> io::Result<Supervisor> {
+        let mut command = Command::new("docker");
+        command.args(["exec", "--workdir", WORKSPACE]);
+        for (key, value) in variables {
+            command.args(["--env", key]).env(key, value);
         }
+        let mut exec = command
+            .args([&self.container, "kestrel-supervisor"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
 
-        Ok(Some(match code.parse() {
-            Ok(code) => Exited::with(code),
-            Err(_) => Exited::without_a_code(),
-        }))
+        Ok(Supervisor {
+            name: format!("docker/{}", self.container),
+            stdout: exec.stdout.take(),
+            stderr: exec.stderr.take(),
+            supervising: Box::new(Exec {
+                container: self.container.clone(),
+                exec,
+            }),
+            stopped: false,
+        })
     }
 
     fn destroy(&mut self) -> io::Result<()> {
-        let _ = self.logs.kill();
-        let _ = self.logs.wait();
-
         removed(&self.container)
     }
+}
+
+/// The client `docker exec` leaves on this machine, which exits with the supervisor it runs.
+struct Exec {
+    container: String,
+    exec: Child,
+}
+
+impl Supervising for Exec {
+    fn status(&mut self) -> io::Result<Option<Exited>> {
+        Ok(self.exec.try_wait()?.map(Exited::from))
+    }
+
+    fn stop(&mut self) -> io::Result<()> {
+        let stopped = stopped(&self.container);
+        let _ = self.exec.kill();
+        let _ = self.exec.wait();
+
+        stopped
+    }
+}
+
+/// Killing the client leaves what it started running in the container, and an agent is free to
+/// start processes that leave the supervisor's group, so everything but the first process goes.
+fn stopped(container: &str) -> io::Result<()> {
+    match docker(&[
+        "exec",
+        container,
+        "sh",
+        "-c",
+        "kill -KILL -1 2>/dev/null; true",
+    ]) {
+        Err(error) if gone(&error) || error.to_string().contains("is not running") => Ok(()),
+        stopped => stopped.map(drop),
+    }
+}
+
+pub(super) fn stop_named(supervisor: &str) -> io::Result<()> {
+    stopped(named(supervisor)?)
 }
 
 fn removed(container: &str) -> io::Result<()> {
@@ -191,11 +221,14 @@ fn removed(container: &str) -> io::Result<()> {
     }
 }
 
-pub(super) fn destroy_named(environment: &str) -> io::Result<()> {
-    let container = environment
+pub(super) fn destroy_named(instance: &str) -> io::Result<()> {
+    removed(named(instance)?)
+}
+
+fn named(instance: &str) -> io::Result<&str> {
+    instance
         .strip_prefix("docker/")
-        .ok_or_else(|| io::Error::other(format!("{environment} is not a Docker environment")))?;
-    removed(container)
+        .ok_or_else(|| io::Error::other(format!("{instance} is not a Docker instance")))
 }
 
 fn docker(arguments: &[&str]) -> io::Result<Vec<u8>> {
@@ -215,6 +248,9 @@ fn docker(arguments: &[&str]) -> io::Result<Vec<u8>> {
     )))
 }
 
+/// `inspect` says "no such object" where every other command says "No such container".
 fn gone(error: &io::Error) -> bool {
-    error.to_string().contains("No such container")
+    let said = error.to_string().to_lowercase();
+
+    said.contains("no such container") || said.contains("no such object")
 }

@@ -12,15 +12,19 @@ pub use local_exec::LocalExec;
 
 use crate::domain::RunId;
 
-/// What a driver does once it has provisioned, and the whole of it. Pause, resume, a disk that
-/// outlives a Run and an inbound address each split the eight deployment targets, so no driver
-/// offers them and none may add them.
+/// What a driver does once it has provisioned, and the whole of it. An inbound address would
+/// split the eight deployment targets, so no driver offers one.
 pub trait Provisioned: Send {
     fn exec(&mut self, command: &[&str]) -> io::Result<Streaming>;
     fn read_file(&mut self, path: &str) -> io::Result<Vec<u8>>;
     fn write_file(&mut self, path: &str, contents: &[u8]) -> io::Result<()>;
-    fn status(&mut self) -> io::Result<Option<Exited>>;
+    fn supervise(&mut self, variables: &[(&str, &str)]) -> io::Result<Supervisor>;
     fn destroy(&mut self) -> io::Result<()>;
+}
+
+pub trait Supervising: Send {
+    fn status(&mut self) -> io::Result<Option<Exited>>;
+    fn stop(&mut self) -> io::Result<()>;
 }
 
 /// The sixth operation, and the only place either driver is named: which one executes a Run is
@@ -32,44 +36,50 @@ pub enum Driver {
 }
 
 impl Driver {
-    pub fn provision(&self, run: RunId, variables: &[(&str, &str)]) -> io::Result<Environment> {
+    pub fn provision(&self, run: RunId) -> io::Result<Instance> {
         match self {
-            Driver::Docker(docker) => docker.provision(run, variables),
-            Driver::LocalExec(local_exec) => local_exec.provision(run, variables),
+            Driver::Docker(docker) => docker.provision(run),
+            Driver::LocalExec(local_exec) => local_exec.provision(run),
         }
     }
 
-    pub fn destroy_named(&self, run: RunId, environment: &str) -> io::Result<()> {
+    /// `None` when the Instance is gone, and with it whatever it held.
+    pub fn resume(&self, instance: &str) -> io::Result<Option<Instance>> {
         match self {
-            Driver::Docker(_) => docker::destroy_named(environment),
-            Driver::LocalExec(_) => local_exec::destroy_named(run, environment),
+            Driver::Docker(docker) => docker.resume(instance),
+            Driver::LocalExec(local_exec) => local_exec.resume(instance),
+        }
+    }
+
+    pub fn destroy_named(&self, instance: &str) -> io::Result<()> {
+        match self {
+            Driver::Docker(_) => docker::destroy_named(instance),
+            Driver::LocalExec(local_exec) => local_exec.destroy_named(instance),
+        }
+    }
+
+    /// Stops a supervisor this process no longer holds, which a restart leaves behind.
+    pub fn stop_named(&self, supervisor: &str) -> io::Result<()> {
+        match self {
+            Driver::Docker(_) => docker::stop_named(supervisor),
+            Driver::LocalExec(_) => local_exec::stop_named(supervisor),
         }
     }
 }
 
-pub struct Environment {
+/// Outlives this handle: dropping one leaves the Instance where it is, for the next Run to resume.
+pub struct Instance {
     name: String,
-    stdout: Option<ChildStdout>,
-    stderr: Option<ChildStderr>,
     provisioned: Box<dyn Provisioned>,
-    destroyed: bool,
 }
 
-impl Environment {
-    /// `<driver>/<instance>`, which is what a Run records having executed in.
+impl Instance {
+    /// `<driver>/<instance>`, which is what a Run records having executed on.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.stdout.take()
-    }
-
-    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
-        self.stderr.take()
-    }
-
-    /// Relative to the Environment's Workspace, as every path either driver takes is.
+    /// Relative to the Instance's Workspace, as every path either driver takes is.
     pub fn exec(&mut self, command: &[&str]) -> io::Result<Streaming> {
         self.provisioned.exec(command)
     }
@@ -82,24 +92,56 @@ impl Environment {
         self.provisioned.write_file(path, contents)
     }
 
-    /// `None` while the Environment is still running.
-    pub fn status(&mut self) -> io::Result<Option<Exited>> {
-        self.provisioned.status()
+    /// Starts one Run's supervisor, which alone is handed that Run's credentials.
+    pub fn supervise(&mut self, variables: &[(&str, &str)]) -> io::Result<Supervisor> {
+        self.provisioned.supervise(variables)
     }
 
     pub fn destroy(mut self) -> io::Result<()> {
-        let destroyed = self.provisioned.destroy();
-        self.destroyed = true;
-
-        destroyed
+        self.provisioned.destroy()
     }
 }
 
-impl Drop for Environment {
-    /// A caller that panics before destroying must not leave an Environment behind either.
+pub struct Supervisor {
+    name: String,
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+    supervising: Box<dyn Supervising>,
+    stopped: bool,
+}
+
+impl Supervisor {
+    /// What `Driver::stop_named` stops it by once this handle is gone.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.stdout.take()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.stderr.take()
+    }
+
+    /// `None` while the supervisor is still running.
+    pub fn status(&mut self) -> io::Result<Option<Exited>> {
+        self.supervising.status()
+    }
+
+    /// Takes every process the Run started with it, so none is left for the next Run to find.
+    pub fn stop(mut self) -> io::Result<()> {
+        let stopped = self.supervising.stop();
+        self.stopped = true;
+
+        stopped
+    }
+}
+
+impl Drop for Supervisor {
     fn drop(&mut self) {
-        if !self.destroyed {
-            let _ = self.provisioned.destroy();
+        if !self.stopped {
+            let _ = self.supervising.stop();
         }
     }
 }

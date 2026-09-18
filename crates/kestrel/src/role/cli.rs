@@ -563,7 +563,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 println!(
                     "{}  {}  {}  {}",
                     run.id,
-                    run.environment.as_deref().unwrap_or("-"),
+                    run.instance.as_deref().unwrap_or("-"),
                     run.worked_model.as_deref().unwrap_or("-"),
                     run.exit
                         .map_or_else(|| run.state.to_string(), |exit| exit.to_string())

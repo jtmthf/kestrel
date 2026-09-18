@@ -122,7 +122,7 @@ async fn one_organizations_credential_does_not_reach_anothers_run() {
 }
 
 #[tokio::test]
-async fn a_run_whose_organization_holds_no_credential_fails_before_an_environment() {
+async fn a_run_whose_organization_holds_no_credential_fails_before_an_instance() {
     let harness = confiding().await;
     let session = a_session(&harness, "acme", None).await;
 
@@ -140,18 +140,18 @@ async fn a_run_whose_organization_holds_no_credential_fails_before_an_environmen
         "unhelpful exit status: {because}"
     );
     assert!(
-        ended.environment.is_none(),
-        "an environment was provisioned to find out what the control plane already knew"
+        ended.instance.is_none(),
+        "an instance was provisioned to find out what the control plane already knew"
     );
 
     harness.teardown().await;
 }
 
-/// The Environment is provisioned with what it needs to reach the link, and nothing a provider
-/// would accept: what carries the credential is the spawn inside it, one Run later.
+/// The supervisor starts with what it needs to reach the link, and nothing a provider would
+/// accept: what carries the credential is the spawn inside it, one step later.
 #[cfg(unix)]
 #[tokio::test]
-async fn nothing_an_environment_is_provisioned_with_carries_a_credential() {
+async fn nothing_a_supervisor_is_started_with_carries_a_credential() {
     let environment = Environment::executing(
         "env > \"$(dirname \"$0\")/variables\"\n\
          exit 3",
@@ -165,11 +165,11 @@ async fn nothing_an_environment_is_provisioned_with_carries_a_credential() {
     let provisioned = environment.wrote("variables");
     assert!(
         provisioned.contains("KESTREL_RUN="),
-        "the environment wrote down no variables to look through:\n{provisioned}"
+        "the supervisor wrote down no variables to look through:\n{provisioned}"
     );
     assert!(
         !provisioned.contains(A_PROVIDER_KEY) && !provisioned.contains(PROVIDER_KEY),
-        "the environment was provisioned with a provider credential:\n{provisioned}"
+        "the supervisor was started with a provider credential:\n{provisioned}"
     );
 
     harness.teardown().await;
@@ -221,8 +221,8 @@ async fn the_credentials_a_run_needs_reach_nobody_but_that_run() {
     harness.teardown().await;
 }
 
-/// A credential is invalidated when its Run ends, so a destroyed Environment holding one could
-/// not ask for the provider keys again even if it were still there to ask.
+/// A credential is invalidated when its Run ends, so the Session's next Run finds nothing on the
+/// Instance that could ask for the provider keys again.
 #[tokio::test]
 async fn a_run_that_has_ended_hands_out_no_credential() {
     let harness = Harness::boot().await;

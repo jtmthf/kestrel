@@ -117,10 +117,11 @@ Keep the identifier it prints — everything below takes it.
 
 The session fixes the workspace's repositories as they are now and declares a branch of its own,
 `kestrel/<session>`, so sessions opened side by side never work on one another's branch. Pass
-`--branch` to work on an existing branch instead. Before the agent starts, the supervisor in the
-environment clones each repository and checks that branch out, cutting it from the workspace's when
-the repository does not have it yet; a checkout that fails ends the run naming the repository and
-the branch. The control plane itself runs no git.
+`--branch` to work on an existing branch instead. Before the agent starts, the supervisor on the
+session's instance clones each repository and checks that branch out, cutting it from the
+workspace's when the repository does not have it yet; a checkout that fails ends the run naming the
+repository and the branch. A later run on the same instance finds the checkout exactly as the run
+before it left it, pushed or not. The control plane itself runs no git.
 
 ```sh
 kestrel session show 01a07846-49fa-7dc0-a44b-183a63794ee3
@@ -152,15 +153,17 @@ kestrel session transcript 01a07846-49fa-7dc0-a44b-183a63794ee3
 
 ## Enqueue a run
 
-A **run** is one execution of an agent runtime inside one environment. At most one is ever active in
-a session.
+A **run** is one execution of an agent runtime on its session's instance. At most one is ever active
+in a session.
 
 ```sh
 kestrel run enqueue --session 01a07846-49fa-7dc0-a44b-183a63794ee3
 ```
 
-Within seconds the control plane claims it, provisions a container, clones the workspace's
-repositories into it, and starts an agent runtime there which dials back over the link.
+Within seconds the control plane claims it, provisions a container for the session, and starts a
+supervisor in it that clones the workspace's repositories and spawns an agent runtime, dialling back
+over the link. The container is the session's **instance**: every later run in the session starts a
+supervisor of its own in the same one.
 
 The work role dispatches up to two runs at once by default. That conservative default leaves room on
 a laptop for two repository checkouts, supervisors, and agent runtimes. Set
@@ -175,20 +178,20 @@ kestrel run list --session 01a07846-49fa-7dc0-a44b-183a63794ee3
 01a07846-5d97-7230-9315-bfef2a644006  docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006  -  active
 ```
 
-The second column is the environment, and the third is the model the run is on, which it says once
-the turn is over. The environment is a real container, and the supervisor inside it says what it is
-doing:
+The second column is the instance, and the third is the model the run is on, which it says once
+the turn is over. The instance is a real container, and the run's supervisor in it says what it is
+doing in the control plane's log:
 
 ```sh
-docker logs -f kestrel-01a07846-5d97-7230-9315-bfef2a644006
+docker compose logs -f kestrel
 ```
 
 ```
-supervisor started
-link open
-reported connected
-instruction start 1
-reported started 1
+INFO kestrel::role::work: supervisor started run=01a07846-5d97-7230-9315-bfef2a644006
+INFO kestrel::role::work: link open run=01a07846-5d97-7230-9315-bfef2a644006
+INFO kestrel::role::work: reported connected run=01a07846-5d97-7230-9315-bfef2a644006
+INFO kestrel::role::work: instruction start 1 run=01a07846-5d97-7230-9315-bfef2a644006
+INFO kestrel::role::work: reported started 1 run=01a07846-5d97-7230-9315-bfef2a644006
 ```
 
 The agent is now working — reading the repository, running commands, taking turns. It has no task,
@@ -208,8 +211,8 @@ says plainly what the filter does not buy.
 
 ## Your sessions survive a restart
 
-A session is durable from the moment it is opened. An environment is disposable and survives
-nothing. Bring the whole stack down and back up to see both:
+A session is durable from the moment it is opened. A run in flight is not. Bring the whole stack
+down and back up to see both:
 
 ```sh
 docker compose down
@@ -223,8 +226,14 @@ kestrel session transcript 01a07846-49fa-7dc0-a44b-183a63794ee3
 3  2026-09-06T19:58:58.48925017Z  run ended  01a07846-5d97-7230-9315-bfef2a644006  failed: the control plane stopped while this run was in flight
 ```
 
-The session and its transcript are intact. The environment is gone, and the run that was executing
-in it ended with an explicit status rather than staying active forever.
+The session and its transcript are intact. The run that was executing ended with an explicit status
+rather than staying active forever, and its supervisor was stopped. The session's instance is still
+there, with the checkout as the run left it, for the session's next run.
+
+Nothing reaps an instance yet: it outlives its session's sealing too, until you remove its container
+yourself. If an instance is gone when a run needs it, that run fails and says that whatever the
+instance held that was never pushed is lost; the next run provisions a fresh instance and checks the
+session's branch out from the remote.
 
 `docker compose down --volumes` removes the named volume too, and with it every session, transcript
 and declaration on this machine. It is the only command here that destroys anything.
@@ -659,9 +668,9 @@ writing to it.
 ## Continue a session
 
 A new comment on the issue that opened a session posts that message to its transcript and enqueues
-another run in the same session. Each run gets a fresh environment. Before its agent starts, the
-supervisor pages the whole transcript into the runtime, so the new turn sees the brief, earlier
-runs, and the follow-up message.
+another run in the same session, on the same instance and checkout. Each run gets a fresh supervisor
+and agent runtime. Before its agent starts, the supervisor pages the whole transcript into the
+runtime, so the new turn sees the brief, earlier runs, and the follow-up message.
 
 If a run is active when the comment arrives, the message waits durably and one further run is
 enqueued when the active one ends. If the session has been sealed, the comment opens a new session

@@ -46,18 +46,18 @@ async fn a_session_naming(harness: &Harness, model: Option<&str>) -> Session {
     harness.open_session("acme", "kestrel", "builder").await
 }
 
-/// A Run the work role has provisioned an Environment for, and is therefore past reading its
-/// Agent's model.
+/// A Run the work role has started a supervisor for, and is therefore past reading its Agent's
+/// model.
 async fn in_flight(harness: &Harness, run: RunId) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        if harness.run(run).await.environment.is_some() {
+        if harness.run(run).await.supervisor.is_some() {
             return;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the run {run} never reached an environment"
+            "the run {run} never reached a supervisor"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

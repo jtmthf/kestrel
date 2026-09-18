@@ -243,7 +243,7 @@ async fn sweep(store: &Store) -> Result<Vec<(RunId, Exit)>> {
 
     for run in tx.sessions().expired_leases(Timestamp::now()).await? {
         let exit = Exit::Failed {
-            because: "the environment stopped holding the run's lease out, and it expired"
+            because: "the supervisor stopped holding the run's lease out, and it expired"
                 .to_owned(),
         };
         expired.push((run.id, work::ending(&mut tx, &run, exit).await?));

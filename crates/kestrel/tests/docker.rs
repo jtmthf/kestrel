@@ -111,22 +111,28 @@ async fn the_scripted_run_ends_the_same_way_in_a_container_as_it_does_in_a_proce
 
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
-async fn an_environment_is_a_container_from_the_image_and_no_container_survives_the_run() {
+async fn an_instance_is_a_container_that_outlives_its_run_but_not_its_supervisor() {
     let harness = working(Script::Speaks).await;
     let session = a_session(&harness).await;
 
     let run = harness.enqueue_run(session.id).await;
     let ended = ended(&harness, run.id).await;
 
-    let environment = ended.environment.as_deref().expect("an environment");
+    let instance = ended.instance.as_deref().expect("an instance");
     assert_eq!(
-        environment,
+        instance,
         format!("docker/kestrel-{}", run.id),
-        "a run names the container it executed in"
+        "a run names the container it executed on"
     );
-    Container::named(environment).is_gone().await;
+    let container = Container::named(instance);
+    let left = container.processes();
+    assert!(
+        !left.contains("kestrel-supervisor") && !left.contains("kestrel-scripted-agent"),
+        "the run left processes on its instance: {left}"
+    );
 
     harness.teardown().await;
+    container.is_gone().await;
 }
 
 #[tokio::test]
@@ -139,9 +145,9 @@ async fn a_workspaces_repositories_and_its_branch_are_in_the_container() {
     let container = Container::named(
         started(&harness, run.id)
             .await
-            .environment
+            .instance
             .as_deref()
-            .expect("an environment"),
+            .expect("an instance"),
     );
 
     let branch = container.exec(&[
@@ -166,11 +172,11 @@ async fn a_workspaces_repositories_and_its_branch_are_in_the_container() {
 }
 
 /// A container that dies takes the supervisor holding the Run's lease out with it, so the Run
-/// cannot go on; the work role attending it sees the container gone before the lease it stopped
+/// cannot go on; the work role attending it sees the supervisor gone before the lease it stopped
 /// holding out is due, and that is what ends it.
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
-async fn a_container_that_dies_mid_run_is_detected_and_no_container_survives_the_failure() {
+async fn a_container_that_dies_mid_run_is_detected_and_the_next_run_starts_it_again() {
     let harness = working(Script::Dawdles).await;
     let session = a_session(&harness).await;
 
@@ -178,9 +184,9 @@ async fn a_container_that_dies_mid_run_is_detected_and_no_container_survives_the
     let container = Container::named(
         started(&harness, run.id)
             .await
-            .environment
+            .instance
             .as_deref()
-            .expect("an environment"),
+            .expect("an instance"),
     );
 
     container.kill();
@@ -200,12 +206,19 @@ async fn a_container_that_dies_mid_run_is_detected_and_no_container_survives_the
         ended.lease_expires_at.is_none(),
         "a run whose container died still holds a lease"
     );
-    container.is_gone().await;
+
+    let next = harness.enqueue_run(session.id).await;
+    let next = started(&harness, next.id).await;
+    assert_eq!(
+        next.instance, ended.instance,
+        "a stopped container was taken for gone"
+    );
 
     harness.teardown().await;
+    container.is_gone().await;
 }
 
-/// The six operations against a real container, including the two nothing at 0.1 calls: a
+/// Every operation against a real container, including the ones no Run makes: a
 /// driver that implemented only what the work role happens to reach for would be a driver that
 /// has to grow to meet the contract later.
 #[tokio::test]
@@ -216,35 +229,51 @@ async fn every_operation_in_the_contract_works_against_a_container() {
     let (run, credential) = harness.dispatch_run(session.id).await;
 
     // Provisioned through the port rather than through the work role, so the operations no
-    // Run makes are exercised on the same Environment as the ones it does.
-    let mut environment = Driver::Docker(Docker::provisioning_from(image::built()))
-        .provision(
-            run.id,
-            &[
-                ("KESTREL_LINK", &harness.link_from_an_environment()),
-                ("KESTREL_RUN", &run.id.to_string()),
-                ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-                ("KESTREL_AGENT_RUNTIME", "opencode acp"),
-            ],
-        )
-        .expect("the environment should provision");
-    let container = Container::named(environment.name());
+    // Run makes are exercised on the same Instance as the ones it does.
+    let driver = Driver::Docker(Docker::provisioning_from(image::built()));
+    let mut instance = driver
+        .provision(run.id)
+        .expect("the instance should provision");
+    let container = Container::named(instance.name());
+    let mut supervisor = instance
+        .supervise(&[
+            ("KESTREL_LINK", &harness.link_from_an_environment()),
+            ("KESTREL_RUN", &run.id.to_string()),
+            ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
+            ("KESTREL_AGENT_RUNTIME", "opencode acp"),
+        ])
+        .expect("the supervisor should start");
 
     assert_eq!(
-        environment.status().expect("the status should read"),
+        supervisor.status().expect("the status should read"),
         None,
-        "a container that was just started has already ended"
+        "a supervisor that was just started has already ended"
+    );
+    driver
+        .stop_named(supervisor.name())
+        .expect("the supervisor should stop");
+    supervisor.stop().expect("the supervisor should stop");
+    assert!(
+        container
+            .exec(&["sh", "-c", "env | grep KESTREL_RUN_CREDENTIAL"])
+            .code
+            != 0,
+        "the run's credential outlived its supervisor"
     );
 
-    environment
+    let mut instance = driver
+        .resume(instance.name())
+        .expect("the instance should resume")
+        .expect("the instance should still be there");
+    instance
         .write_file("wrote/file", b"from outside the container")
         .expect("the file should write");
     assert_eq!(
-        environment.read_file("wrote/file").expect("a read"),
+        instance.read_file("wrote/file").expect("a read"),
         b"from outside the container"
     );
 
-    let listed = environment
+    let listed = instance
         .exec(&["ls", "wrote"])
         .expect("ls should exec")
         .finish()
@@ -252,8 +281,15 @@ async fn every_operation_in_the_contract_works_against_a_container() {
     assert!(listed.exited.success(), "ls said {listed:?}");
     assert_eq!(listed.out, "file");
 
-    environment.destroy().expect("the container should destroy");
+    let name = instance.name().to_owned();
+    instance.destroy().expect("the container should destroy");
     container.is_gone().await;
+    assert!(
+        driver
+            .resume(&name)
+            .expect("a gone container is not an error")
+            .is_none()
+    );
 
     harness.teardown().await;
 }

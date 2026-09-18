@@ -1,10 +1,10 @@
 //! The two agents the conformance suite is judged against, and everything about them that ACP
 //! does not carry: what each is spawned as, how each is logged in, which model each names, and
-//! what each needs written into its Environment before a turn.
+//! what each needs written into its Instance before a turn.
 //!
 //! This is the suite's setup, and the only place an agent has a name.
 
-use kestrel::compute::Environment;
+use kestrel::compute::Instance;
 use serde_json::json;
 
 /// The work every conformance Run is provisioned for. An agent reads it as the instructions
@@ -77,7 +77,7 @@ impl Lineage {
         }
     }
 
-    /// The image the Environment is provisioned from. The shipped one carries the native agent
+    /// The image the Instance is provisioned from. The shipped one carries the native agent
     /// and nothing else (ADR-0007), so the adapter is built into a copy of it.
     pub fn image(self) -> &'static str {
         match self {
@@ -95,7 +95,7 @@ impl Lineage {
     }
 
     /// The Provider Credentials the Organization holds for this agent. They reach the agent's
-    /// own process at the spawn, and never over ACP (ADR-0007) or into the Environment.
+    /// own process at the spawn, and never over ACP (ADR-0007) or into the Instance.
     pub fn credentials(self, key: &str) -> Vec<(String, String)> {
         let mut credentials = vec![(KEY.to_owned(), key.to_owned())];
 
@@ -107,7 +107,7 @@ impl Lineage {
     }
 
     /// Where the gateway is and how the agent behaves at one: configuration rather than
-    /// credentials, so the Environment is provisioned with it.
+    /// credentials, so the supervisor is started with it.
     pub fn variables(self) -> Vec<(String, String)> {
         match self {
             Lineage::Native => Vec::new(),
@@ -120,15 +120,15 @@ impl Lineage {
         }
     }
 
-    /// Written into the Environment before the Run is told to start. The Agent's model is not
+    /// Written into the Instance before the Run is told to start. The Agent's model is not
     /// among it: that reaches the runtime over ACP, which is the point of setting it.
-    pub fn configure(self, environment: &mut Environment) {
-        environment
+    pub fn configure(self, instance: &mut Instance) {
+        instance
             .write_file("AGENTS.md", AGENTS_MD.as_bytes())
             .expect("the work should reach the workspace");
 
         if self == Lineage::Native {
-            environment
+            instance
                 .write_file("opencode.json", opencode_config().as_bytes())
                 .expect("the agent runtime should be configured");
         }

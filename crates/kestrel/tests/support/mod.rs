@@ -989,22 +989,28 @@ impl Harness {
         pool.close().await;
     }
 
-    pub async fn environment_present(&self, run: &Run, environment: &str) {
-        work::environment_present(&self.store, run, environment)
+    pub async fn supervised(&self, run: &Run, supervisor: &str) {
+        work::supervised(&self.store, run, supervisor)
             .await
-            .expect("the environment should be recorded");
+            .expect("the supervisor should be recorded");
     }
 
-    pub async fn environments_to_reap(&self) -> Vec<(Run, String)> {
-        work::environments_to_reap(&self.store)
+    pub async fn supervisors_to_stop(&self) -> Vec<(Run, String)> {
+        work::supervisors_to_stop(&self.store)
             .await
-            .expect("ended environments should read")
+            .expect("ended runs' supervisors should read")
     }
 
-    pub async fn environment_gone(&self, run: &Run) {
-        work::environment_gone(&self.store, run)
+    pub async fn supervisor_gone(&self, run: &Run) {
+        work::supervisor_gone(&self.store, run)
             .await
-            .expect("the environment should be gone");
+            .expect("the supervisor should be gone");
+    }
+
+    pub async fn instance(&self, session: SessionId) -> Option<String> {
+        work::instance(&self.store, session)
+            .await
+            .expect("the session's instance should read")
     }
 
     pub async fn instruct(&self, run: &Run, instruction: Instruction) {
@@ -1088,6 +1094,7 @@ impl Harness {
     pub async fn teardown(self) -> Stopped {
         self.shutdown.cancel();
         let _ = self.roles.await;
+        destroy_instances(self.data_dir.path(), self.environment.as_ref()).await;
         drop(self.store);
 
         Stopped {
@@ -1095,6 +1102,28 @@ impl Harness {
             bound: self.bound,
             environment: self.environment,
         }
+    }
+}
+
+/// An Instance outlives every Run on it and nothing here seals a Session into releasing one,
+/// so a test's Instances go with the test.
+async fn destroy_instances(data_dir: &Path, provisions: Option<&Provisions>) {
+    let Some(provisions) = provisions else {
+        return;
+    };
+    let database = data_dir.join("kestrel.db");
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
+        .await
+        .expect("the database should open");
+    let instances: Vec<String> =
+        sqlx::query_scalar("SELECT DISTINCT instance FROM run WHERE instance IS NOT NULL")
+            .fetch_all(&pool)
+            .await
+            .expect("the instances should read");
+    pool.close().await;
+
+    for instance in instances {
+        let _ = provisions.driver.destroy_named(&instance);
     }
 }
 

@@ -135,19 +135,19 @@ async fn the_active_run_limit_queues_excess_work_and_releases_it_as_runs_end() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn stopping_with_several_runs_in_flight_ends_each_and_destroys_their_environments() {
+async fn stopping_with_several_runs_in_flight_ends_each_and_stops_their_supervisors() {
     let environment = Environment::executing("sleep 300");
     let harness = Harness::dispatching_up_to(environment.path(), "unused", 2).await;
     let first_session = a_session(&harness).await;
     let second_session = harness.open_session("acme", "kestrel", "builder").await;
     let first = harness.enqueue_run(first_session.id).await;
     let second = harness.enqueue_run(second_session.id).await;
-    let first = until(&harness, first.id, "reached an environment", |run| {
-        run.environment.is_some()
+    let first = until(&harness, first.id, "reached a supervisor", |run| {
+        run.supervisor.is_some()
     })
     .await;
-    let second = until(&harness, second.id, "reached an environment", |run| {
-        run.environment.is_some()
+    let second = until(&harness, second.id, "reached a supervisor", |run| {
+        run.supervisor.is_some()
     })
     .await;
 
@@ -157,14 +157,14 @@ async fn stopping_with_several_runs_in_flight_ends_each_and_destroys_their_envir
         let ended = stopped.run(run.id).await;
         assert_eq!(ended.state, RunState::Ended);
         assert!(matches!(ended.exit, Some(Exit::Failed { .. })));
-        Environment::named(run.environment.as_deref().expect("an environment"))
+        Environment::named(run.supervisor.as_deref().expect("a supervisor"))
             .is_gone()
             .await;
     }
 }
 
 #[tokio::test]
-async fn a_run_enqueued_is_claimed_dispatched_and_reaches_an_environment() {
+async fn a_run_enqueued_is_claimed_dispatched_and_reaches_an_instance() {
     let harness = Harness::dispatching(supervisor::binary()).await;
     let session = a_session(&harness).await;
 
@@ -174,16 +174,16 @@ async fn a_run_enqueued_is_claimed_dispatched_and_reaches_an_environment() {
 
     assert!(
         ended.connected.is_some(),
-        "the run ended without an environment ever reaching the link"
+        "the run ended without a supervisor ever reaching the link"
     );
-    assert!(ended.environment.is_some());
+    assert!(ended.instance.is_some());
     assert_eq!(ended.exit, Some(Exit::Succeeded));
 
     harness.teardown().await;
 }
 
 #[tokio::test]
-async fn a_run_that_reaches_an_environment_starts_and_ends_in_the_transcript() {
+async fn a_run_that_reaches_an_instance_starts_and_ends_in_the_transcript() {
     let harness = Harness::dispatching(supervisor::binary()).await;
     let session = a_session(&harness).await;
 
@@ -212,16 +212,22 @@ async fn a_run_that_reaches_an_environment_starts_and_ends_in_the_transcript() {
 }
 
 #[tokio::test]
-async fn the_environment_a_finished_run_executed_in_is_destroyed() {
+async fn a_finished_runs_supervisor_is_stopped_and_its_instance_kept_for_the_session() {
     let harness = Harness::dispatching(supervisor::binary()).await;
     let session = a_session(&harness).await;
 
     let run = harness.enqueue_run(session.id).await;
     let ended = ended(&harness, run.id).await;
 
-    Environment::named(ended.environment.as_deref().expect("an environment"))
+    Environment::named(ended.supervisor.as_deref().expect("a supervisor"))
         .is_gone()
         .await;
+    let instance = ended.instance.expect("an instance");
+    assert_eq!(harness.instance(session.id).await.as_ref(), Some(&instance));
+    assert!(
+        Environment::workspace_of(&instance).is_dir(),
+        "the instance went with the run"
+    );
 
     harness.teardown().await;
 }
@@ -341,6 +347,137 @@ async fn a_branch_the_remote_does_not_have_is_cut_from_the_workspaces() {
     harness.teardown().await;
 }
 
+/// Stands in for the Agent Runtime. On a checkout it has not been on before it leaves work only
+/// this Instance has, and a process behind it; on one it has, it notes what it finds.
+#[cfg(unix)]
+fn leaving_work_behind() -> Environment {
+    Environment::executing(&format!(
+        "here=\"$(dirname \"$0\")\"\n\
+         if [ -f kestrel/untracked ]; then\n\
+           {{ git -C kestrel log -1 --format=%s; git -C kestrel status --porcelain; \
+              cat kestrel/untracked; }} >> \"$here/found\"\n\
+         else\n\
+           echo fresh >> \"$here/found\"\n\
+           {{ echo committed > kestrel/committed\n\
+             git -C kestrel add committed\n\
+             git -C kestrel -c user.name=kestrel -c user.email=kestrel@example.com \
+               commit --message 'work only this instance has'\n\
+             echo uncommitted >> kestrel/README.md\n\
+             echo untracked > kestrel/untracked; }} >&2\n\
+           sleep 300 </dev/null >/dev/null 2>&1 &\n\
+           echo $! > \"$here/lingering\"\n\
+         fi\n\
+         exec {}",
+        scripted_agent::playing(Script::Speaks)
+    ))
+}
+
+/// The slot is held until the last Run's supervisor is stopped, a moment after the Run ends.
+async fn enqueued_once_free(harness: &Harness, session: &Session) -> Run {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+
+    loop {
+        match harness.try_enqueue_run(session.id).await {
+            Ok(run) => return run,
+            Err(error) => assert!(
+                tokio::time::Instant::now() < deadline,
+                "the session never took another run: {error}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_later_run_finds_the_checkout_exactly_as_the_run_before_it_left_it() {
+    let runtime = leaving_work_behind();
+    let harness = noted(&runtime, 1).await;
+    let session = a_session(&harness).await;
+
+    let first = harness.enqueue_run(session.id).await;
+    let first = ended(&harness, first.id).await;
+    let second = enqueued_once_free(&harness, &session).await;
+    let second = ended(&harness, second.id).await;
+
+    assert_eq!(first.exit, Some(Exit::Succeeded));
+    assert_eq!(second.exit, Some(Exit::Succeeded));
+    assert_eq!(first.instance, second.instance);
+    assert_eq!(
+        runtime.wrote("found"),
+        "fresh\n\
+         work only this instance has\n \
+         M README.md\n\
+         ?? untracked\n\
+         untracked"
+    );
+
+    harness.teardown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn each_run_has_a_supervisor_of_its_own_and_leaves_no_process_to_the_next() {
+    let runtime = leaving_work_behind();
+    let harness = noted(&runtime, 1).await;
+    let session = a_session(&harness).await;
+
+    let first = harness.enqueue_run(session.id).await;
+    let first = ended(&harness, first.id).await;
+    Environment::process(&runtime.wrote("lingering"))
+        .is_gone()
+        .await;
+    let first_supervisor = first.supervisor.expect("a supervisor");
+    Environment::named(&first_supervisor).is_gone().await;
+
+    let second = enqueued_once_free(&harness, &session).await;
+    let second = ended(&harness, second.id).await;
+
+    assert_eq!(first.instance, second.instance);
+    assert_ne!(Some(first_supervisor), second.supervisor);
+
+    harness.teardown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_whose_instance_is_gone_fails_saying_so_and_the_next_starts_from_the_remote() {
+    let runtime = leaving_work_behind();
+    let harness = noted(&runtime, 1).await;
+    let session = a_session(&harness).await;
+
+    let first = harness.enqueue_run(session.id).await;
+    let first = ended(&harness, first.id).await;
+    let lost = first.instance.clone().expect("an instance");
+    std::fs::remove_dir_all(Environment::workspace_of(&lost)).expect("the instance should go");
+
+    let second = enqueued_once_free(&harness, &session).await;
+    let second = ended(&harness, second.id).await;
+    let Some(Exit::Failed { because }) = &second.exit else {
+        panic!("the run ended {:?}, and its instance was gone", second.exit);
+    };
+    assert!(
+        because.contains(&lost)
+            && because.contains("never pushed")
+            && because.contains(&session.checkout.branch),
+        "the failure does not say what was lost: {because}"
+    );
+    assert_eq!(second.started_at, None);
+    assert_eq!(harness.instance(session.id).await, None);
+
+    let third = enqueued_once_free(&harness, &session).await;
+    let third = ended(&harness, third.id).await;
+    assert_eq!(third.exit, Some(Exit::Succeeded));
+    assert_ne!(third.instance.as_ref(), Some(&lost));
+    assert_eq!(
+        runtime.wrote("found"),
+        "fresh\nfresh",
+        "the run after a lost instance found work that was lost with it"
+    );
+
+    harness.teardown().await;
+}
+
 #[tokio::test]
 async fn a_checkout_that_fails_names_the_repository_and_branch_and_the_run_never_starts() {
     let harness = Harness::dispatching(supervisor::binary()).await;
@@ -394,7 +531,7 @@ async fn a_checkout_that_fails_names_the_repository_and_branch_and_the_run_never
 
 #[cfg(unix)]
 #[tokio::test]
-async fn an_environment_that_ends_without_saying_how_the_run_went_leaves_it_failed() {
+async fn a_supervisor_that_ends_without_saying_how_the_run_went_leaves_it_failed() {
     let environment = Environment::executing("exit 3");
     let harness = Harness::dispatching(environment.path()).await;
     let session = a_session(&harness).await;
@@ -404,7 +541,7 @@ async fn an_environment_that_ends_without_saying_how_the_run_went_leaves_it_fail
 
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
-            "the run ended {:?}, and its environment reported nothing",
+            "the run ended {:?}, and its supervisor reported nothing",
             ended.exit
         );
     };
@@ -412,7 +549,7 @@ async fn an_environment_that_ends_without_saying_how_the_run_went_leaves_it_fail
         because.contains("without reporting how the run went"),
         "unhelpful exit status: {because}"
     );
-    Environment::named(ended.environment.as_deref().expect("an environment"))
+    Environment::named(ended.supervisor.as_deref().expect("a supervisor"))
         .is_gone()
         .await;
 
@@ -420,7 +557,7 @@ async fn an_environment_that_ends_without_saying_how_the_run_went_leaves_it_fail
 }
 
 #[tokio::test]
-async fn an_environment_that_reports_its_run_failed_ends_it_failed() {
+async fn a_supervisor_that_reports_its_run_failed_ends_it_failed() {
     let harness = Harness::boot().await;
     let session = a_session(&harness).await;
     let (run, credential) = harness.dispatch_run(session.id).await;
@@ -466,15 +603,14 @@ async fn an_environment_that_reports_its_run_failed_ends_it_failed() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_run_still_in_flight_when_the_control_plane_stops_ends_and_its_environment_is_destroyed()
-{
+async fn a_run_still_in_flight_when_the_control_plane_stops_ends_and_its_supervisor_is_stopped() {
     let environment = Environment::executing("sleep 300");
     let harness = Harness::dispatching(environment.path()).await;
     let session = a_session(&harness).await;
 
     let run = harness.enqueue_run(session.id).await;
-    let in_flight = until(&harness, run.id, "reached an environment", |run| {
-        run.environment.is_some() && run.state == RunState::Active
+    let in_flight = until(&harness, run.id, "reached a supervisor", |run| {
+        run.supervisor.is_some() && run.state == RunState::Active
     })
     .await;
 
@@ -483,13 +619,13 @@ async fn a_run_still_in_flight_when_the_control_plane_stops_ends_and_its_environ
     let ended = stopped.run(run.id).await;
     assert_eq!(ended.state, RunState::Ended);
     assert!(matches!(ended.exit, Some(Exit::Failed { .. })));
-    Environment::named(in_flight.environment.as_deref().expect("an environment"))
+    Environment::named(in_flight.supervisor.as_deref().expect("a supervisor"))
         .is_gone()
         .await;
 }
 
 #[tokio::test]
-async fn a_run_whose_environment_cannot_be_provisioned_ends_rather_than_staying_queued() {
+async fn a_run_whose_supervisor_cannot_be_started_ends_rather_than_staying_queued() {
     let harness = Harness::dispatching(Path::new("/nowhere/kestrel-supervisor")).await;
     let session = a_session(&harness).await;
 
@@ -500,10 +636,10 @@ async fn a_run_whose_environment_cannot_be_provisioned_ends_rather_than_staying_
         panic!("the run ended {:?}, and nothing provisioned it", ended.exit);
     };
     assert!(
-        because.contains("could not be provisioned"),
+        because.contains("could not be started"),
         "unhelpful exit status: {because}"
     );
-    assert!(ended.environment.is_none());
+    assert!(ended.supervisor.is_none());
 
     harness.teardown().await;
 }

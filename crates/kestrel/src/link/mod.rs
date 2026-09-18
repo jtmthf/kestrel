@@ -193,7 +193,7 @@ async fn instructions(
 }
 
 /// The Provider Credentials of the Run's Organization, decrypted here and held nowhere else:
-/// an Environment asks as it spawns its Agent Runtime, and an idle one never asks.
+/// a supervisor asks as it spawns its Agent Runtime, and an idle one never asks.
 async fn credentials(
     State(control_plane): State<ControlPlane>,
     Path(run): Path<String>,

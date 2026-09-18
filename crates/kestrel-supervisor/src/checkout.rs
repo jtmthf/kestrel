@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Duration;
 
 use tokio::process::Command;
@@ -5,7 +6,8 @@ use tokio::process::Command;
 use crate::link::Checkout;
 
 /// Into the working directory the agent is then spawned in. A branch the remote does not have
-/// yet is cut from the base.
+/// yet is cut from the base, and a checkout an earlier Run on this Instance left is left as it
+/// is, with whatever it holds that the remote does not.
 pub async fn check_out(checkout: &Checkout) -> Result<(), String> {
     let Checkout {
         repositories,
@@ -15,6 +17,9 @@ pub async fn check_out(checkout: &Checkout) -> Result<(), String> {
 
     for repository in repositories {
         let directory = cloned_into(repository);
+        if Path::new(directory).join(".git").exists() {
+            continue;
+        }
         let failed = |why: String| {
             format!("{repository} could not be checked out on the branch {branch}: {why}")
         };
@@ -26,10 +31,11 @@ pub async fn check_out(checkout: &Checkout) -> Result<(), String> {
             && git(&["-C", directory, "checkout", branch, "--"])
                 .await
                 .is_err()
+            && let Err(why) = git(&["-C", directory, "checkout", "-b", branch]).await
         {
-            git(&["-C", directory, "checkout", "-b", branch])
-                .await
-                .map_err(failed)?;
+            // Or the next Run on this Instance would take a clone on the base for its branch.
+            let _ = std::fs::remove_dir_all(directory);
+            return Err(failed(why));
         }
     }
 

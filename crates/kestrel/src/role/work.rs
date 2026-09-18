@@ -1,3 +1,4 @@
+use std::io::{BufRead as _, BufReader, Read};
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::time::Duration;
@@ -8,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::cli::Role;
-use crate::compute::{Driver, Environment, Exited};
-use crate::domain::{Exit, Run, Session};
+use crate::compute::{Driver, Exited, Instance, Supervisor};
+use crate::domain::{Exit, Run, RunId, Session};
 use crate::link;
 use crate::provider;
 use crate::session;
@@ -68,7 +69,7 @@ impl Dispatch {
 
 /// What ended the attending, rather than how the Run went.
 enum Ended {
-    Environment(Exited),
+    Supervisor(Exited),
     TheRun(Exit),
     ControlPlane,
 }
@@ -110,7 +111,7 @@ async fn dispatching(
     let mut active = JoinSet::new();
 
     while !shutdown.is_cancelled() {
-        reap(store, &dispatch.driver).await?;
+        stop_left_behind(store, &dispatch.driver).await?;
         if active.len() < dispatch.max_active_runs.get()
             && let Some(claimed) = work::claim(store).await?
         {
@@ -169,53 +170,121 @@ async fn execute(
         }
     };
 
-    let environment = match dispatch.driver.provision(
-        run.id,
-        &[
-            ("KESTREL_LINK", dispatch.link.as_str()),
-            ("KESTREL_RUN", &run.id.to_string()),
-            ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-            ("KESTREL_AGENT_RUNTIME", command),
-            (
-                "KESTREL_AGENT_AUTH",
-                dispatch.auth.as_deref().unwrap_or_default(),
-            ),
-            (
-                "KESTREL_AGENT_MODEL",
-                run.model
-                    .as_deref()
-                    .or(session.agent.model.as_deref())
-                    .unwrap_or_default(),
-            ),
-        ],
-    ) {
-        Ok(environment) => environment,
+    let Some(mut instance) = instance(store, dispatch, &run, &session).await? else {
+        return Ok(());
+    };
+    work::executes_on(store, &run, instance.name()).await?;
+
+    let mut supervisor = match instance.supervise(&[
+        ("KESTREL_LINK", dispatch.link.as_str()),
+        ("KESTREL_RUN", &run.id.to_string()),
+        ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
+        ("KESTREL_AGENT_RUNTIME", command),
+        (
+            "KESTREL_AGENT_AUTH",
+            dispatch.auth.as_deref().unwrap_or_default(),
+        ),
+        (
+            "KESTREL_AGENT_MODEL",
+            run.model
+                .as_deref()
+                .or(session.agent.model.as_deref())
+                .unwrap_or_default(),
+        ),
+    ]) {
+        Ok(supervisor) => supervisor,
         Err(error) => {
             work::fail(
                 store,
                 &run,
-                &format!("the environment could not be provisioned: {error}"),
+                &format!(
+                    "the supervisor could not be started on the instance {}: {error}",
+                    instance.name()
+                ),
             )
             .await?;
             return Ok(());
         }
     };
-    work::environment_present(store, &run, environment.name()).await?;
+    work::supervised(store, &run, supervisor.name()).await?;
+    if let Some(out) = supervisor.take_stdout() {
+        relay(run.id, out);
+    }
+    if let Some(err) = supervisor.take_stderr() {
+        relay(run.id, err);
+    }
 
-    let exit = start(store, &run, environment, shutdown).await?;
+    let exit = start(store, &run, supervisor, shutdown).await?;
     info!(run = %run.id, %exit, "a run ended");
 
     Ok(())
 }
 
-async fn reap(store: &Store, driver: &Driver) -> Result<()> {
-    for (run, environment) in work::environments_to_reap(store).await? {
-        match driver.destroy_named(run.id, &environment) {
+/// The Session's own Instance, or a fresh one for a Session that has none. `None` once the Run
+/// has been ended for want of one.
+async fn instance(
+    store: &Store,
+    dispatch: &Dispatch,
+    run: &Run,
+    session: &Session,
+) -> Result<Option<Instance>> {
+    let Some(kept) = work::instance(store, session.id).await? else {
+        return match dispatch.driver.provision(run.id) {
+            Ok(instance) => Ok(Some(instance)),
+            Err(error) => {
+                work::fail(
+                    store,
+                    run,
+                    &format!("the instance could not be provisioned: {error}"),
+                )
+                .await?;
+                Ok(None)
+            }
+        };
+    };
+
+    match dispatch.driver.resume(&kept) {
+        Ok(Some(instance)) => Ok(Some(instance)),
+        Ok(None) => {
+            let because = format!(
+                "the instance {kept} this session's work was on is gone, and whatever it held \
+                 that was never pushed went with it; the session's next run starts on a fresh \
+                 instance from the branch {} as the remote has it",
+                session.checkout.branch
+            );
+            work::instance_lost(store, run, &because).await?;
+            Ok(None)
+        }
+        // Not forgotten: a daemon that cannot answer has not lost what the Instance holds.
+        Err(error) => {
+            work::fail(
+                store,
+                run,
+                &format!("the instance {kept} could not be resumed: {error}"),
+            )
+            .await?;
+            Ok(None)
+        }
+    }
+}
+
+/// A supervisor blocks once a pipe nobody reads is full, so what it says is read as it says it.
+fn relay(run: RunId, said: impl Read + Send + 'static) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(said).lines().map_while(Result::ok) {
+            info!(run = %run, "{line}");
+        }
+    });
+}
+
+async fn stop_left_behind(store: &Store, driver: &Driver) -> Result<()> {
+    for (run, supervisor) in work::supervisors_to_stop(store).await? {
+        match driver.stop_named(&supervisor) {
             Ok(()) => {
-                work::environment_gone(store, &run).await?;
+                work::supervisor_gone(store, &run).await?;
             }
             Err(error) => {
-                warn!(run = %run.id, %error, "an ended run's environment resisted being reaped");
+                warn!(run = %run.id, %error, "an ended run's supervisor resisted being stopped");
             }
         }
     }
@@ -225,7 +294,7 @@ async fn reap(store: &Store, driver: &Driver) -> Result<()> {
 
 /// An Agent Runtime reaches a model with a Provider Credential its Organization holds, or by
 /// an ACP login kestrel was configured with. A Run with neither fails here rather than inside
-/// an Environment provisioned to find that out.
+/// an Instance provisioned to find that out.
 async fn a_way_to_reach_a_model(
     store: &Store,
     dispatch: &Dispatch,
@@ -245,22 +314,19 @@ async fn a_way_to_reach_a_model(
 async fn start(
     store: &Store,
     run: &Run,
-    mut environment: Environment,
+    mut supervisor: Supervisor,
     shutdown: &CancellationToken,
 ) -> Result<Exit> {
-    let name = environment.name().to_owned();
-    work::provisioned(store, run, &name).await?;
     link::start(store, run).await?;
-    info!(run = %run.id, environment = name, "a run reached an environment");
+    info!(run = %run.id, supervisor = supervisor.name(), "a run's supervisor started");
 
-    let ended = attend(store, run, &mut environment, shutdown).await;
-    let was_already_gone = matches!(ended, Ok(Ended::Environment(_)));
+    let ended = attend(store, run, &mut supervisor, shutdown).await;
 
     let exit = match ended? {
         Ended::TheRun(exit) => exit,
-        Ended::Environment(exited) => {
+        Ended::Supervisor(exited) => {
             let unreported =
-                format!("the environment exited {exited} without reporting how the run went");
+                format!("the supervisor exited {exited} without reporting how the run went");
             work::fail(store, run, &unreported).await?
         }
         Ended::ControlPlane => {
@@ -273,42 +339,34 @@ async fn start(
         }
     };
 
-    let destroyed = destroy(run, environment);
-    if was_already_gone || destroyed {
-        work::environment_gone(store, run).await?;
+    match supervisor.stop() {
+        Ok(()) => {
+            work::supervisor_gone(store, run).await?;
+        }
+        Err(error) => warn!(run = %run.id, %error, "a supervisor resisted being stopped"),
     }
 
     Ok(exit)
 }
 
-fn destroy(run: &Run, environment: Environment) -> bool {
-    match environment.destroy() {
-        Ok(()) => true,
-        Err(error) => {
-            warn!(run = %run.id, %error, "an environment resisted being destroyed");
-            false
-        }
-    }
-}
-
-/// The Environment reports its own outcome over the link, so what this waits for is the
-/// Environment being gone. It stops for a Run that ended some other way too — a lease the
-/// Environment stopped holding out — because an Environment that outlives its Run would
-/// otherwise hold this role's one dispatch forever.
+/// The supervisor reports its own outcome over the link, so what this waits for is the
+/// supervisor being gone. It stops for a Run that ended some other way too — a lease the
+/// supervisor stopped holding out — because a supervisor that outlives its Run would otherwise
+/// hold this role's one dispatch forever.
 async fn attend(
     store: &Store,
     run: &Run,
-    environment: &mut Environment,
+    supervisor: &mut Supervisor,
     shutdown: &CancellationToken,
 ) -> Result<Ended> {
     loop {
-        match environment.status() {
-            Ok(Some(exited)) => return Ok(Ended::Environment(exited)),
+        match supervisor.status() {
+            Ok(Some(exited)) => return Ok(Ended::Supervisor(exited)),
             Ok(None) => {}
-            // A daemon that cannot answer is not an Environment that is gone. The Run's lease
+            // A daemon that cannot answer is not a supervisor that is gone. The Run's lease
             // ends it if this never clears.
             Err(error) => {
-                warn!(run = %run.id, %error, "an environment could not be asked how it is")
+                warn!(run = %run.id, %error, "a supervisor could not be asked how it is")
             }
         }
         if let Some(exit) = work::run(store, run.id).await?.exit {

@@ -14,19 +14,18 @@ file.
 **The filter is the driver's six operations, written out.** The
 [`Compute`](0005-six-ports-at-rung-one-are-named-boundaries.md) contract is provision, exec,
 read/write files, status and destroy, and the Docker driver performs each of them by executing
-`docker`. That is ten requests:
+`docker`. That is nine requests:
 
 | Method   | Path                             | What the driver is doing        |
 | -------- | -------------------------------- | ------------------------------- |
 | `HEAD`   | `/_ping`                         | the client negotiating a version |
 | `GET`    | `/_ping`                         | the same, on an older client    |
 | `POST`   | `/containers/create`             | provision                       |
-| `POST`   | `/containers/{id}/start`         | provision                       |
-| `GET`    | `/containers/{id}/logs`          | provision: the Environment's output |
-| `POST`   | `/containers/{id}/exec`          | exec, read a file, write a file |
+| `POST`   | `/containers/{id}/start`         | provision, and resuming a stopped Instance |
+| `POST`   | `/containers/{id}/exec`          | exec, read a file, write a file, start or stop a supervisor |
 | `POST`   | `/exec/{id}/start`               | the same                        |
 | `GET`    | `/exec/{id}/json`                | the same: how the command ended |
-| `GET`    | `/containers/{id}/json`          | status                          |
+| `GET`    | `/containers/{id}/json`          | resume: whether the Instance is still there |
 | `DELETE` | `/containers/{id}`               | destroy                         |
 
 Images, volumes, networks, builds, swarm, `/info`, `/events` and every write to a container that

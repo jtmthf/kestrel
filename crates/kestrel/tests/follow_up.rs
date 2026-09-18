@@ -129,7 +129,7 @@ async fn provisioned(harness: &Harness, run: RunId) -> Run {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
         let run = harness.run(run).await;
-        if run.environment.is_some() {
+        if run.supervisor.is_some() {
             return run;
         }
         assert!(tokio::time::Instant::now() < deadline);
@@ -247,9 +247,7 @@ async fn cleanup_left_by_a_stopped_worker_is_found_before_the_session_continues(
     let harness = Harness::boot().await;
     let session = a_session(&harness).await;
     let (active, _) = harness.dispatch_run(session.id).await;
-    harness
-        .environment_present(&active, "local-exec/2147483647")
-        .await;
+    harness.supervised(&active, "local-exec/2147483647").await;
     assert!(
         harness
             .post_while_busy(session.id, "operator", "continue after cleanup")
@@ -259,11 +257,11 @@ async fn cleanup_left_by_a_stopped_worker_is_found_before_the_session_continues(
 
     harness.complete_run(&active).await;
     assert_eq!(harness.runs(session.id).await.len(), 1);
-    let reapable = harness.environments_to_reap().await;
+    let reapable = harness.supervisors_to_stop().await;
     assert_eq!(reapable.len(), 1);
     assert_eq!(reapable[0].0.id, active.id);
 
-    harness.environment_gone(&active).await;
+    harness.supervisor_gone(&active).await;
     assert_eq!(harness.runs(session.id).await.len(), 2);
     harness.teardown().await;
 }
@@ -314,7 +312,7 @@ async fn a_cold_run_is_seeded_with_every_page_of_earlier_context() {
 }
 
 #[tokio::test]
-async fn the_second_run_uses_a_fresh_environment_after_the_first_is_gone() {
+async fn the_second_run_starts_a_fresh_supervisor_on_the_same_instance_after_the_first_is_gone() {
     let harness = Harness::dispatching_to(
         support::supervisor::binary(),
         &support::scripted_agent::playing(Script::Lingers),
@@ -344,17 +342,18 @@ async fn the_second_run_uses_a_fresh_environment_after_the_first_is_gone() {
 
     runs_within(&harness, session.id, 2, PATIENCE * 2).await;
     let first = ended(&harness, first.id).await;
-    let first_environment = first.environment.as_deref().expect("an environment");
-    support::environment::Environment::named(first_environment)
+    let first_supervisor = first.supervisor.as_deref().expect("a supervisor");
+    support::environment::Environment::named(first_supervisor)
         .is_gone()
         .await;
 
     let second = harness.runs(session.id).await[1].clone();
     let second = ended(&harness, second.id).await;
-    let second_environment = second.environment.as_deref().expect("an environment");
+    let second_supervisor = second.supervisor.as_deref().expect("a supervisor");
 
-    assert_ne!(first_environment, second_environment);
-    support::environment::Environment::named(second_environment)
+    assert_ne!(first_supervisor, second_supervisor);
+    assert_eq!(first.instance, second.instance);
+    support::environment::Environment::named(second_supervisor)
         .is_gone()
         .await;
 
