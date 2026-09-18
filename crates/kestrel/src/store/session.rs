@@ -7,6 +7,7 @@ use crate::domain::{
     Agent, Checkout, Connected, Cost, Event, Exit, Organization, Run, RunId, RunState, Session,
     SessionId, SessionState, Usage, Workspace,
 };
+use crate::instance::Observed;
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
 use crate::store::{agent, due, organization, timestamp, workspace};
@@ -32,6 +33,14 @@ pub enum Taken {
     Next,
     Again,
     Skipped,
+}
+
+/// A Session's Instance, and what its checkout was last observed to hold: `None` until a Run on it
+/// reports, and forgotten whenever another Run starts on it.
+pub struct Kept {
+    pub session: SessionId,
+    pub instance: String,
+    pub observed: Option<Vec<Observed>>,
 }
 
 pub struct PendingMessage {
@@ -571,12 +580,90 @@ impl<'a> Sessions<'a> {
         session: SessionId,
         instance: Option<&str>,
     ) -> Result<()> {
-        sqlx::query("UPDATE session SET instance = ? WHERE id = ?")
+        sqlx::query("UPDATE session SET instance = ?, observed = NULL WHERE id = ?")
             .bind(instance)
             .bind(session.to_string())
             .execute(&mut *self.connection)
             .await
             .with_context(|| format!("recording the instance of the session {session}"))?;
+
+        Ok(())
+    }
+
+    pub async fn record_observed(
+        &mut self,
+        session: SessionId,
+        observed: &[Observed],
+    ) -> Result<()> {
+        sqlx::query("UPDATE session SET observed = ? WHERE id = ? AND instance IS NOT NULL")
+            .bind(serde_json::to_string(observed)?)
+            .bind(session.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("recording what the session {session}'s checkout holds"))?;
+
+        Ok(())
+    }
+
+    pub async fn kept_instance(&mut self, session: SessionId) -> Result<Option<Kept>> {
+        sqlx::query(
+            "SELECT id, instance, observed FROM session WHERE id = ? AND instance IS NOT NULL",
+        )
+        .bind(session.to_string())
+        .fetch_optional(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading the instance of the session {session}"))?
+        .map(|row| kept(&row))
+        .transpose()
+    }
+
+    pub async fn kept_instances(&mut self, organization: &Organization) -> Result<Vec<Kept>> {
+        sqlx::query(
+            "SELECT id, instance, observed
+             FROM session
+             WHERE organization_id = ? AND instance IS NOT NULL
+             ORDER BY last_active_at, id",
+        )
+        .bind(organization.id.to_string())
+        .fetch_all(&mut *self.connection)
+        .await
+        .context("reading the instances sessions keep")?
+        .iter()
+        .map(kept)
+        .collect()
+    }
+
+    /// The Session lets go of its Instance at once, so no Run is handed one about to be destroyed.
+    pub async fn archive_instance(&mut self, session: &Session, instance: &str) -> Result<()> {
+        self.record_instance(session.id, None).await?;
+        sqlx::query(
+            "INSERT INTO instance_archive (instance, organization_id, session_id, queued_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(instance)
+        .bind(session.organization.id.to_string())
+        .bind(session.id.to_string())
+        .bind(Timestamp::now().to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("queueing the instance {instance} to be archived"))?;
+
+        Ok(())
+    }
+
+    pub async fn instances_to_archive(&mut self) -> Result<Vec<String>> {
+        sqlx::query_scalar("SELECT instance FROM instance_archive ORDER BY queued_at, instance")
+            .fetch_all(&mut *self.connection)
+            .await
+            .context("reading the instances waiting to be archived")
+    }
+
+    pub async fn instance_archived(&mut self, instance: &str) -> Result<()> {
+        sqlx::query("DELETE FROM instance_archive WHERE instance = ?")
+            .bind(instance)
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("recording the instance {instance} archived"))?;
 
         Ok(())
     }
@@ -965,6 +1052,17 @@ fn run(row: &SqliteRow) -> Result<Run> {
             None => None,
         },
         usage: usage(row),
+    })
+}
+
+fn kept(row: &SqliteRow) -> Result<Kept> {
+    Ok(Kept {
+        session: row.get::<String, _>("id").parse()?,
+        instance: row.get("instance"),
+        observed: row
+            .get::<Option<String>, _>("observed")
+            .map(|observed| serde_json::from_str(&observed))
+            .transpose()?,
     })
 }
 

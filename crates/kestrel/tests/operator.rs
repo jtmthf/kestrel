@@ -1331,6 +1331,11 @@ fn the_published_operator_document_describes_every_transcript_entry() {
             run: RunId::generate(),
             exit: Exit::Succeeded,
         },
+        Entry::InstanceReleased {
+            participant: "operator".to_owned(),
+            instance: "docker/kestrel-01999cf2".to_owned(),
+            unpublished: Some("https://github.com/acme/widgets has 1 untracked file".to_owned()),
+        },
     ];
 
     let mut kinds: Vec<String> = Vec::new();

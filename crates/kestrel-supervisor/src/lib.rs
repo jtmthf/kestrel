@@ -8,7 +8,7 @@ use std::io::{self, Write as _};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::link::{Exit, Instruction, Link, Report};
+use crate::link::{Checkout, Exit, Instruction, Link, Report};
 use crate::runtime::Runtime;
 
 const RECONNECT_AFTER: Duration = Duration::from_millis(250);
@@ -42,6 +42,7 @@ enum Attended {
 struct Attending {
     cursor: Option<String>,
     started: bool,
+    checkout: Option<Checkout>,
     prompt: Option<String>,
     worked: bool,
     taken: i64,
@@ -159,11 +160,15 @@ async fn attend(
             Err(because) => {
                 diagnostics.info(&because);
                 attending.worked = true;
+                attending.saying.push_back(Report::Checkout {
+                    repositories: checkout::observe(&checkout).await,
+                });
                 attending.saying.push_back(Report::Finished {
                     exit: Exit::Failed { because },
                 });
             }
         }
+        attending.checkout = Some(checkout);
     }
     say(link, attending, diagnostics).await?;
 
@@ -187,7 +192,13 @@ async fn attend(
         for subject in &worked.allowed {
             diagnostics.info(&format!("allowed once  {subject}"));
         }
-        attending.saying.extend(everything_left_to_say(worked));
+        let observed = match &attending.checkout {
+            Some(checkout) => Some(checkout::observe(checkout).await),
+            None => None,
+        };
+        attending
+            .saying
+            .extend(everything_left_to_say(worked, observed));
         attending.worked = true;
     }
     say(link, attending, diagnostics).await?;
@@ -228,7 +239,10 @@ async fn say(
     Ok(())
 }
 
-fn everything_left_to_say(worked: runtime::Worked) -> impl Iterator<Item = Report> {
+fn everything_left_to_say(
+    worked: runtime::Worked,
+    observed: Option<Vec<link::Observed>>,
+) -> impl Iterator<Item = Report> {
     worked
         .on
         .map(|on| Report::Model {
@@ -243,6 +257,7 @@ fn everything_left_to_say(worked: runtime::Worked) -> impl Iterator<Item = Repor
                 .map(|message| Report::Said { message }),
         )
         .chain(worked.usage.map(|usage| Report::Used { usage }))
+        .chain(observed.map(|repositories| Report::Checkout { repositories }))
         .chain(std::iter::once(Report::Finished { exit: worked.exit }))
 }
 

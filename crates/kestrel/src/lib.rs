@@ -7,6 +7,7 @@ pub mod fanout;
 pub mod filter;
 pub mod follow_up;
 pub mod hex;
+pub mod instance;
 pub mod integration;
 pub mod keyring;
 pub mod link;

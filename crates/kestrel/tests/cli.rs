@@ -805,6 +805,38 @@ fn a_session_seals_through_the_cli_only_once_no_run_is_in_flight() {
 }
 
 #[test]
+fn an_instance_is_shown_on_its_session_and_released_on_the_record() {
+    let kestrel = declared();
+    let session = opened(&kestrel);
+    kestrel.run(&["run", "enqueue", "--session", &session]);
+    dispatched(&kestrel, &session);
+
+    let instance = shown(&kestrel.run(&["session", "show", &session]))["instance"].clone();
+    assert_eq!(
+        kestrel.run(&["instance", "list", "--organization", "acme"]),
+        "",
+        "a checkout the remote can restore was held"
+    );
+
+    assert_eq!(kestrel.run(&["instance", "release", &session]), instance);
+
+    assert!(
+        !shown(&kestrel.run(&["session", "show", &session])).contains_key("instance"),
+        "a released instance is still the session's"
+    );
+    let transcript = kestrel.run(&["session", "transcript", &session]);
+    assert!(
+        transcript.ends_with(&format!("instance released  operator  {instance}")),
+        "the release is not on the record:\n{transcript}"
+    );
+    let refusal = refused(&kestrel, &["instance", "release", &session]);
+    assert!(
+        refusal.contains("no instance"),
+        "unhelpful refusal: {refusal}"
+    );
+}
+
+#[test]
 fn a_sealed_session_is_readable_and_takes_no_more_work() {
     let kestrel = declared();
     let session = opened(&kestrel);
