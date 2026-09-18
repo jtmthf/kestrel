@@ -78,7 +78,7 @@ pub struct Cli {
     #[arg(long, env = "KESTREL_DATA_DIR", global = true, value_name = "DIR")]
     data_dir: Option<PathBuf>,
 
-    /// Where the control plane listens for the link an Environment dials out to, and for webhooks
+    /// Where the control plane listens for the link a supervisor dials out to, and for webhooks
     #[arg(
         long,
         env = "KESTREL_LISTEN",
@@ -99,15 +99,15 @@ pub struct Cli {
     )]
     operator_listen: SocketAddr,
 
-    /// Where an Environment reaches the link, if not the address the control plane bound
+    /// Where a supervisor reaches the link, if not the address the control plane bound
     #[arg(long, env = "KESTREL_LINK", global = true, value_name = "URL")]
     link: Option<String>,
 
-    /// The supervisor an Environment runs, if not the one beside this binary
+    /// The supervisor each Run starts on its Instance, if not the one beside this binary
     #[arg(long, env = "KESTREL_SUPERVISOR", global = true, value_name = "PATH")]
     supervisor: Option<PathBuf>,
 
-    /// The command an Environment spawns as its Agent Runtime and speaks ACP to
+    /// The command a supervisor spawns as its Agent Runtime and speaks ACP to
     #[arg(
         long,
         env = "KESTREL_AGENT_RUNTIME",
@@ -122,7 +122,7 @@ pub struct Cli {
     #[arg(long, env = "KESTREL_AGENT_AUTH", global = true, value_name = "METHOD")]
     agent_auth: Option<String>,
 
-    /// The Compute driver a Run's Environment is provisioned by
+    /// The Compute driver a Session's Instance is provisioned by
     #[arg(
         long = "compute",
         env = "KESTREL_COMPUTE",
@@ -132,7 +132,7 @@ pub struct Cli {
     )]
     compute: ComputeDriver,
 
-    /// The image the Docker driver provisions an Environment from
+    /// The image the Docker driver provisions an Instance from
     #[arg(
         long,
         env = "KESTREL_IMAGE",
@@ -142,7 +142,7 @@ pub struct Cli {
     )]
     image: String,
 
-    /// The network an Environment joins, if not the daemon's default
+    /// The network an Instance joins, if not the daemon's default
     #[arg(long, env = "KESTREL_NETWORK", global = true, value_name = "NETWORK")]
     network: Option<String>,
 
@@ -167,7 +167,7 @@ pub enum ComputeDriver {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
-    /// Serve the link an Environment dials out to, the webhooks Events arrive by, and the
+    /// Serve the link a supervisor dials out to, the webhooks Events arrive by, and the
     /// operator boundary Clients reach
     Serve,
     /// Claim queued Runs and execute them
@@ -463,7 +463,7 @@ pub enum RunCommand {
         #[arg(long)]
         model: Option<String>,
     },
-    /// List every Run in a Session, with the Environment it executed in
+    /// List every Run in a Session, with the Instance it executed on
     List {
         #[arg(long)]
         session: SessionId,

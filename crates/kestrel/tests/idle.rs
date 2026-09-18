@@ -164,9 +164,9 @@ async fn a_session_with_messages_waiting_on_a_busy_run_never_seals() {
     let harness = Harness::boot().await;
     let session = a_session(&harness).await;
     let (run, _) = harness.dispatch_run(session.id).await;
-    // The Environment outlives the Run, so the messages it was too busy for are still
-    // waiting rather than having been handed to a Run of their own.
-    harness.environment_present(&run, "an environment").await;
+    // The supervisor outlives the Run, so the messages it was too busy for are still waiting
+    // rather than having been handed to a Run of their own.
+    harness.supervised(&run, "a supervisor").await;
     assert!(
         harness
             .post_while_busy(session.id, "jack", "one more thing")

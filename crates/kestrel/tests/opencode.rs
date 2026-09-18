@@ -11,7 +11,7 @@ mod support;
 
 use std::time::Duration;
 
-use kestrel::compute::{Docker, Driver, Environment};
+use kestrel::compute::{Docker, Driver, Instance, Supervisor};
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
 use kestrel::link::credential::Secret;
 use serde_json::json;
@@ -26,15 +26,16 @@ const PATIENCE: Duration = Duration::from_secs(180);
 
 const RUNTIME: &str = "opencode acp";
 /// The model the stub endpoint serves, named as the Agent Runtime advertises it: the provider
-/// this Environment is configured with, and the one model in it.
+/// this Instance is configured with, and the one model in it.
 const MODEL: &str = "kestrel-test/canned";
 
-/// A Run, the Environment executing it, and what the supervisor in it says. Provisioned through
+/// A Run, the Instance executing it, and what the supervisor on it says. Provisioned through
 /// the `Compute` port rather than through the work role, because the model the Agent Runtime is
 /// pointed at is this test's and has to reach the Workspace before the turn starts.
 struct Driven {
     run: Run,
-    environment: Environment,
+    instance: Instance,
+    supervisor: Supervisor,
     diagnostics: Diagnostics,
 }
 
@@ -42,7 +43,7 @@ impl Driven {
     async fn in_an_environment(harness: &Harness, model: &Model) -> Self {
         let session = a_session(harness).await;
         let (run, credential) = harness.dispatch_run(session.id).await;
-        let (environment, diagnostics) = provisioned(
+        let (instance, supervisor, diagnostics) = provisioned(
             harness,
             run.id,
             &credential,
@@ -51,7 +52,8 @@ impl Driven {
 
         let mut driven = Self {
             run,
-            environment,
+            instance,
+            supervisor,
             diagnostics,
         };
         driven
@@ -59,7 +61,7 @@ impl Driven {
             .wait_until_it_says("reported connected")
             .await;
         driven
-            .environment
+            .instance
             .write_file("opencode.json", configured_with(model).as_bytes())
             .expect("the agent runtime should be configured");
         harness.start(&driven.run).await;
@@ -71,7 +73,7 @@ impl Driven {
     /// keeps it. Matched from the front so the shell doing the matching is not itself a hit.
     fn kill_the_agent_runtime(&mut self) {
         let killed = self
-            .environment
+            .instance
             .exec(&[
                 "sh",
                 "-c",
@@ -90,9 +92,12 @@ impl Driven {
     }
 
     fn destroy(self) {
-        self.environment
+        self.supervisor
+            .stop()
+            .expect("the supervisor should be stopped");
+        self.instance
             .destroy()
-            .expect("the environment should be destroyed");
+            .expect("the instance should be destroyed");
     }
 }
 
@@ -101,24 +106,28 @@ fn provisioned(
     run: RunId,
     credential: &Secret,
     model: &str,
-) -> (Environment, Diagnostics) {
-    let mut environment = Driver::Docker(Docker::provisioning_from(image::built()))
-        .provision(
-            run,
-            &[
-                ("KESTREL_LINK", &harness.link_from_an_environment()),
-                ("KESTREL_RUN", &run.to_string()),
-                ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-                ("KESTREL_AGENT_RUNTIME", RUNTIME),
-                ("KESTREL_AGENT_MODEL", model),
-            ],
-        )
-        .expect("the environment should provision");
-    let pipe = environment
+) -> (Instance, Supervisor, Diagnostics) {
+    let mut instance = Driver::Docker(Docker::provisioning_from(image::built()))
+        .provision(run)
+        .expect("the instance should provision");
+    let mut supervisor = instance
+        .supervise(&[
+            ("KESTREL_LINK", &harness.link_from_an_environment()),
+            ("KESTREL_RUN", &run.to_string()),
+            ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
+            ("KESTREL_AGENT_RUNTIME", RUNTIME),
+            ("KESTREL_AGENT_MODEL", model),
+        ])
+        .expect("the supervisor should start");
+    let pipe = supervisor
         .take_stderr()
         .expect("the supervisor's diagnostics should be piped");
 
-    (environment, Diagnostics::pumped("the environment", pipe))
+    (
+        instance,
+        supervisor,
+        Diagnostics::pumped("the supervisor", pipe),
+    )
 }
 
 /// Every tool call is asked permission for, because a Policy that allows an operation outright
@@ -205,7 +214,7 @@ async fn a_run_drives_the_agent_runtime_through_a_turn_and_ends_with_an_exit_sta
     assert_eq!(
         ended.exit,
         Some(Exit::Succeeded),
-        "the environment said:\n{}",
+        "the supervisor said:\n{}",
         driven.diagnostics.everything_it_said()
     );
     assert!(
@@ -214,7 +223,7 @@ async fn a_run_drives_the_agent_runtime_through_a_turn_and_ends_with_an_exit_sta
     );
     assert!(
         driven.diagnostics.said(&format!("on the model {MODEL}")),
-        "the run never set the model its agent named. the environment said:\n{}",
+        "the run never set the model its agent named. the supervisor said:\n{}",
         driven.diagnostics.everything_it_said()
     );
 
@@ -244,7 +253,7 @@ async fn what_the_agent_says_reaches_the_transcript_and_what_it_does_inside_the_
             "said  builder  half of one message, and the other half".to_owned(),
             "said  builder  a second message".to_owned(),
         ],
-        "the environment said:\n{}",
+        "the supervisor said:\n{}",
         driven.diagnostics.everything_it_said()
     );
 

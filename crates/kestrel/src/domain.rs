@@ -464,7 +464,8 @@ pub struct Run {
     pub session: SessionId,
     pub state: RunState,
     pub exit: Option<Exit>,
-    pub environment: Option<String>,
+    pub instance: Option<String>,
+    pub supervisor: Option<String>,
     /// What this Run names, or none for its Agent's or Agent Runtime's default.
     pub model: Option<String>,
     /// What the Agent Runtime reported it worked on.

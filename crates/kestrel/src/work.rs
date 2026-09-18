@@ -14,12 +14,12 @@ use crate::store::{Store, Tx};
 
 const CREDENTIAL_LIFETIME: SignedDuration = SignedDuration::from_hours(12);
 
-/// An Environment cannot say it is alive while the control plane is not listening, so this
+/// A supervisor cannot say it is alive while the control plane is not listening, so this
 /// outlasts a restart under a live one by enough that an upgrade does not reap the Runs it
-/// was carrying; a dead Environment holds a Session's active-Run slot until it is up.
+/// was carrying; a dead supervisor holds a Session's active-Run slot until it is up.
 const LEASE: SignedDuration = SignedDuration::from_mins(2);
 
-/// The Secret is returned once, to be handed to the Environment at provision; `Store` keeps
+/// The Secret is returned once, to be handed to the Run's supervisor as it starts; `Store` keeps
 /// only its digest, so it cannot be recovered afterwards.
 pub struct Claimed {
     pub run: Run,
@@ -161,7 +161,7 @@ pub async fn report(
         match tx.sessions().take_report(run, seq).await? {
             Taken::Next => {}
             Taken::Again => {
-                debug!(run = %run.id, seq, "an environment reported something again");
+                debug!(run = %run.id, seq, "a supervisor reported something again");
                 return Ok(());
             }
             Taken::Skipped => return Err(ReportRefused::SkippedSequence(seq)),
@@ -171,13 +171,13 @@ pub async fn report(
     match report {
         Report::Connected { version } => {
             tx.sessions().record_connected(run, &version).await?;
-            info!(run = %run.id, version, "an environment reported itself connected");
+            info!(run = %run.id, version, "a supervisor reported itself connected");
         }
         Report::Heartbeat => {
             tx.sessions()
                 .hold_lease(run, Timestamp::now() + LEASE)
                 .await?;
-            debug!(run = %run.id, "an environment reported itself alive");
+            debug!(run = %run.id, "a supervisor reported itself alive");
         }
         Report::Started => {
             if tx.sessions().record_started(run).await? {
@@ -186,7 +186,7 @@ pub async fn report(
                     .append(&session, Entry::RunStarted { run: run.id })
                     .await?;
             }
-            info!(run = %run.id, "an environment reported its run started");
+            info!(run = %run.id, "a supervisor reported its run started");
         }
         Report::Model { model, offered } => {
             let session = tx.sessions().get(run.session).await?;
@@ -194,7 +194,7 @@ pub async fn report(
             tx.agents()
                 .record_models_advertised(session.organization.id, &session.agent.runtime, &offered)
                 .await?;
-            info!(run = %run.id, model, "an environment reported the model its agent is on");
+            info!(run = %run.id, model, "a supervisor reported the model its agent is on");
         }
         Report::Said { message } => {
             let session = tx.sessions().get(run.session).await?;
@@ -207,15 +207,15 @@ pub async fn report(
                     },
                 )
                 .await?;
-            info!(run = %run.id, "an environment reported what its agent said");
+            info!(run = %run.id, "a supervisor reported what its agent said");
         }
         Report::Used { usage } => {
-            info!(run = %run.id, %usage, "an environment reported what its agent used");
+            info!(run = %run.id, %usage, "a supervisor reported what its agent used");
             tx.sessions().record_usage(run, &usage).await?;
         }
         Report::Finished { exit } => {
             let stands = ending(&mut tx, run, exit).await?;
-            info!(run = %run.id, %stands, "an environment reported its run finished");
+            info!(run = %run.id, %stands, "a supervisor reported its run finished");
         }
     }
     tx.commit().await?;
@@ -223,29 +223,52 @@ pub async fn report(
     Ok(())
 }
 
-pub async fn provisioned(store: &Store, run: &Run, environment: &str) -> Result<()> {
-    let mut tx = store.begin().await?;
-    tx.sessions().record_environment(run, environment).await?;
-
-    tx.commit().await
+pub async fn instance(store: &Store, session: SessionId) -> Result<Option<String>> {
+    store.begin().await?.sessions().instance(session).await
 }
 
-pub async fn environment_present(store: &Store, run: &Run, environment: &str) -> Result<()> {
+pub async fn executes_on(store: &Store, run: &Run, instance: &str) -> Result<()> {
     let mut tx = store.begin().await?;
     tx.sessions()
-        .record_environment_present(run, environment)
+        .record_instance(run.session, Some(instance))
         .await?;
+    tx.sessions().record_run_instance(run, instance).await?;
 
     tx.commit().await
 }
 
-pub async fn environments_to_reap(store: &Store) -> Result<Vec<(Run, String)>> {
-    store.begin().await?.sessions().environments_to_reap().await
+/// Forgotten in the same breath as the Run fails, so no later Run is handed an Instance nothing
+/// can resume, and none is handed a fresh one before this Run says what was lost.
+pub async fn instance_lost(store: &Store, run: &Run, because: &str) -> Result<Exit> {
+    let mut tx = store.begin().await?;
+    tx.sessions().record_instance(run.session, None).await?;
+    let stands = ending(
+        &mut tx,
+        run,
+        Exit::Failed {
+            because: because.to_owned(),
+        },
+    )
+    .await?;
+    tx.commit().await?;
+
+    Ok(stands)
 }
 
-pub async fn environment_gone(store: &Store, run: &Run) -> Result<Option<Run>> {
+pub async fn supervised(store: &Store, run: &Run, supervisor: &str) -> Result<()> {
     let mut tx = store.begin().await?;
-    tx.sessions().record_environment_gone(run).await?;
+    tx.sessions().record_supervisor(run, supervisor).await?;
+
+    tx.commit().await
+}
+
+pub async fn supervisors_to_stop(store: &Store) -> Result<Vec<(Run, String)>> {
+    store.begin().await?.sessions().supervisors_to_stop().await
+}
+
+pub async fn supervisor_gone(store: &Store, run: &Run) -> Result<Option<Run>> {
+    let mut tx = store.begin().await?;
+    tx.sessions().record_supervisor_gone(run).await?;
     let continued = continue_pending(&mut tx, run.session).await?;
     tx.commit().await?;
 
@@ -275,7 +298,7 @@ async fn end(store: &Store, run: &Run, exit: Exit) -> Result<Exit> {
     Ok(stands)
 }
 
-/// A Run ends once. Whoever gets there first — the Environment reporting itself finished, the
+/// A Run ends once. Whoever gets there first — the supervisor reporting itself finished, the
 /// claimant finding it gone, `timer` finding its lease expired — decides the exit status, and
 /// what comes back is the one that stands.
 pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exit> {
@@ -295,7 +318,7 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
         if let Exit::Failed { .. } = exit {
             cascade_unreachable(tx, run.id).await?;
         }
-        if tx.sessions().environment_is_gone(run).await? {
+        if tx.sessions().supervisor_is_gone(run).await? {
             continue_pending(tx, run.session).await?;
         }
         exit

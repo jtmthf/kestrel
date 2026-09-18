@@ -226,7 +226,7 @@ async fn a_due_time_survives_a_control_plane_restart_and_fires_after_it() {
 }
 
 #[tokio::test]
-async fn an_environment_holds_its_runs_lease_out_for_the_life_of_the_run() {
+async fn a_supervisor_holds_its_runs_lease_out_for_the_life_of_the_run() {
     let harness = Harness::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Dawdles),
@@ -249,7 +249,7 @@ async fn an_environment_holds_its_runs_lease_out_for_the_life_of_the_run() {
     assert_eq!(
         harness.run(run.id).await.state,
         RunState::Active,
-        "a run whose environment is alive was swept anyway"
+        "a run whose supervisor is alive was swept anyway"
     );
 
     harness.teardown().await;
@@ -257,9 +257,9 @@ async fn an_environment_holds_its_runs_lease_out_for_the_life_of_the_run() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn an_environment_that_dies_mid_run_stops_holding_the_lease_out_and_the_run_ends_failed() {
-    // The Environment outlives the supervisor inside it, so what ends this Run is the lease
-    // rather than the work role noticing an Environment that is gone.
+async fn a_supervisor_that_dies_mid_run_stops_holding_the_lease_out_and_the_run_ends_failed() {
+    // The script outlives the supervisor it started, so what ends this Run is the lease rather
+    // than the work role noticing a supervisor that is gone.
     let environment = Environment::executing(&format!(
         "\"{}\" &\nsupervisor=$!\nsleep 3\nkill -9 $supervisor\nsleep 60",
         supervisor::binary().display()
@@ -274,12 +274,12 @@ async fn an_environment_that_dies_mid_run_stops_holding_the_lease_out_and_the_ru
 
     let working = until(&harness, run.id, "started", |run| run.started_at.is_some()).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
-    // The same lease the Environment above outlives: an Environment still alive holds one out
-    // well inside this, so what ends this Run is the supervisor inside it being gone.
+    // The same lease the script above outlives: a supervisor still alive holds one out well
+    // inside this, so what ends this Run is the supervisor being gone.
     harness.lease_until(&working, shortened()).await;
 
     swept(&harness, run.id).await;
-    Environment::named(working.environment.as_deref().expect("an environment"))
+    Environment::named(working.supervisor.as_deref().expect("a supervisor"))
         .is_gone()
         .await;
 

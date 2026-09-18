@@ -108,17 +108,33 @@ pub fn development() -> &'static str {
     DEVELOPMENT
 }
 
-/// The container behind an Environment a Run recorded.
+/// The container behind an Instance a Run recorded.
 pub struct Container(String);
 
 impl Container {
-    pub fn named(environment: &str) -> Self {
-        let (driver, container) = environment
+    pub fn named(instance: &str) -> Self {
+        let (driver, container) = instance
             .split_once('/')
-            .unwrap_or_else(|| panic!("{environment} does not name a driver and an instance"));
+            .unwrap_or_else(|| panic!("{instance} does not name a driver and an instance"));
         assert_eq!(driver, "docker");
 
         Self(container.to_owned())
+    }
+
+    /// Every command line running in the container. The image carries no `ps`, so they are
+    /// read where the kernel keeps them.
+    pub fn processes(&self) -> String {
+        self.exec(&[
+            "sh",
+            "-c",
+            r#"for p in /proc/[0-9]*; do tr '\0' ' ' < "$p/cmdline" 2>/dev/null; echo; done"#,
+        ])
+        .out
+    }
+
+    /// An Instance outlives its Session's Runs, so a test that provisions one removes it.
+    pub fn destroy(&self) {
+        docker::ran(&["rm", "--force", "--volumes", &self.0]);
     }
 
     pub fn exec(&self, command: &[&str]) -> Ran {

@@ -1,5 +1,5 @@
-//! The escape hatch that exists whether or not it is planned (ADR-0005), and the Environment
-//! the primary test seam provisions.
+//! The escape hatch that exists whether or not it is planned (ADR-0005), and the Instance the
+//! primary test seam provisions: a directory, and a supervisor process per Run inside it.
 
 use std::fs;
 use std::io;
@@ -9,7 +9,7 @@ use std::process::{Child, Command, Stdio};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 
-use super::{Environment, Exited, Provisioned, Streaming};
+use super::{Exited, Instance, Provisioned, Streaming, Supervising, Supervisor};
 use crate::domain::RunId;
 
 #[derive(Debug, Clone)]
@@ -24,102 +24,64 @@ impl LocalExec {
         }
     }
 
-    pub(super) fn provision(
-        &self,
-        run: RunId,
-        variables: &[(&str, &str)],
-    ) -> io::Result<Environment> {
-        let workspace = std::env::temp_dir().join(format!("kestrel-{run}"));
-        fs::create_dir_all(&workspace)?;
+    pub(super) fn provision(&self, run: RunId) -> io::Result<Instance> {
+        let name = format!("kestrel-{run}");
+        fs::create_dir_all(within(&name))?;
 
-        let mut command = Command::new(&self.supervisor);
-        command
-            .current_dir(&workspace)
-            .envs(variables.iter().copied())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        Ok(self.instance(name))
+    }
 
-        #[cfg(unix)]
-        {
-            // A fresh session makes this process its own process-group leader, so every
-            // child it forks inherits the same group and `killpg` reaches all of them.
-            #[allow(unsafe_code)]
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setsid() == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
+    pub(super) fn resume(&self, instance: &str) -> io::Result<Option<Instance>> {
+        let name = named(instance)?;
+        if !within(name).is_dir() {
+            return Ok(None);
         }
 
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                let _ = fs::remove_dir_all(&workspace);
-                return Err(error);
-            }
-        };
+        Ok(Some(self.instance(name.to_owned())))
+    }
 
-        let name = format!("local-exec/{}", child.id());
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        let process = Process {
-            #[cfg(unix)]
-            pgid: child.id() as i32,
-            child,
-            workspace,
-        };
+    pub(super) fn destroy_named(&self, instance: &str) -> io::Result<()> {
+        removed(&within(named(instance)?))
+    }
 
-        Ok(Environment {
-            name,
-            stdout,
-            stderr,
-            provisioned: Box::new(process),
-            destroyed: false,
-        })
+    fn instance(&self, name: String) -> Instance {
+        Instance {
+            provisioned: Box::new(Directory {
+                supervisor: self.supervisor.clone(),
+                workspace: within(&name),
+            }),
+            name: format!("local-exec/{name}"),
+        }
     }
 }
 
-struct Process {
-    child: Child,
-    #[cfg(unix)]
-    pgid: i32,
+fn within(name: &str) -> PathBuf {
+    std::env::temp_dir().join(name)
+}
+
+fn named(instance: &str) -> io::Result<&str> {
+    instance
+        .strip_prefix("local-exec/")
+        .filter(|name| !name.is_empty() && !name.contains(['/', '\\']) && *name != "..")
+        .ok_or_else(|| io::Error::other(format!("{instance} is not a local instance")))
+}
+
+struct Directory {
+    supervisor: PathBuf,
     workspace: PathBuf,
 }
 
-impl Process {
-    /// Kills every process in the tree, not only the one this Environment spawned directly.
-    fn kill_tree(&mut self) -> io::Result<()> {
-        #[cfg(unix)]
-        {
-            #[allow(unsafe_code)]
-            let killed = unsafe { libc::killpg(self.pgid, libc::SIGKILL) };
-            if killed == -1 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(error);
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        self.child.kill()?;
-
-        Ok(())
-    }
-
+impl Directory {
     fn at(&self, path: &str) -> PathBuf {
         self.workspace.join(path)
     }
 }
 
-impl Provisioned for Process {
+impl Provisioned for Directory {
     fn exec(&mut self, command: &[&str]) -> io::Result<Streaming> {
         let (program, arguments) = command
             .split_first()
-            .ok_or_else(|| io::Error::other("nothing to exec in the environment"))?;
+            .ok_or_else(|| io::Error::other("nothing to exec in the instance"))?;
 
         let child = Command::new(program)
             .args(arguments)
@@ -145,23 +107,90 @@ impl Provisioned for Process {
         fs::write(path, contents)
     }
 
-    fn status(&mut self) -> io::Result<Option<Exited>> {
-        Ok(self.child.try_wait()?.map(Exited::from))
+    fn supervise(&mut self, variables: &[(&str, &str)]) -> io::Result<Supervisor> {
+        let mut command = Command::new(&self.supervisor);
+        command
+            .current_dir(&self.workspace)
+            .envs(variables.iter().copied())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        #[cfg(unix)]
+        {
+            // A fresh session makes this process its own process-group leader, so every
+            // child it forks inherits the same group and `killpg` reaches all of them.
+            #[allow(unsafe_code)]
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let mut child = command.spawn()?;
+
+        Ok(Supervisor {
+            name: format!("local-exec/{}", child.id()),
+            stdout: child.stdout.take(),
+            stderr: child.stderr.take(),
+            supervising: Box::new(Process {
+                #[cfg(unix)]
+                pgid: child.id() as i32,
+                child,
+            }),
+            stopped: false,
+        })
     }
 
     fn destroy(&mut self) -> io::Result<()> {
-        // Darwin refuses to signal a group whose only member left is its unreaped leader, which
-        // is what `destroy_named` reaping it first leaves behind.
-        if let Err(error) = self.kill_tree() {
-            self.child.kill().map_err(|_| error)?;
-        }
-        self.child.wait()?;
-
         removed(&self.workspace)
     }
 }
 
-/// Nothing a Run wrote survives it (ADR-0005), so the Workspace goes with the Environment.
+struct Process {
+    child: Child,
+    #[cfg(unix)]
+    pgid: i32,
+}
+
+impl Supervising for Process {
+    fn status(&mut self) -> io::Result<Option<Exited>> {
+        Ok(self.child.try_wait()?.map(Exited::from))
+    }
+
+    fn stop(&mut self) -> io::Result<()> {
+        // Darwin refuses to signal a group whose only member left is its unreaped leader, which
+        // is what `stop_named` reaping it first leaves behind.
+        #[cfg(unix)]
+        if let Err(error) = killed(self.pgid) {
+            self.child.kill().map_err(|_| error)?;
+        }
+        #[cfg(not(unix))]
+        self.child.kill()?;
+
+        self.child.wait().map(drop)
+    }
+}
+
+/// Every process in the tree, not only the one the supervisor is.
+#[cfg(unix)]
+fn killed(pgid: i32) -> io::Result<()> {
+    #[allow(unsafe_code)]
+    let killed = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    if killed == -1 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error);
+        }
+    }
+
+    Ok(())
+}
+
 fn removed(workspace: &Path) -> io::Result<()> {
     match fs::remove_dir_all(workspace) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -169,26 +198,19 @@ fn removed(workspace: &Path) -> io::Result<()> {
     }
 }
 
-pub(super) fn destroy_named(run: RunId, environment: &str) -> io::Result<()> {
-    let pid: i32 = environment
+pub(super) fn stop_named(supervisor: &str) -> io::Result<()> {
+    let pid: i32 = supervisor
         .strip_prefix("local-exec/")
-        .ok_or_else(|| io::Error::other(format!("{environment} is not a local environment")))?
+        .ok_or_else(|| io::Error::other(format!("{supervisor} is not a local supervisor")))?
         .parse()
-        .map_err(|error| io::Error::other(format!("{environment} has no process id: {error}")))?;
+        .map_err(|error| io::Error::other(format!("{supervisor} has no process id: {error}")))?;
 
     #[cfg(unix)]
-    {
-        #[allow(unsafe_code)]
-        let killed = unsafe { libc::killpg(pid, libc::SIGKILL) };
-        if killed == -1 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(error);
-            }
-        }
-    }
+    killed(pid)?;
+    #[cfg(not(unix))]
+    let _ = pid;
 
-    removed(&std::env::temp_dir().join(format!("kestrel-{run}")))
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -199,6 +221,7 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use super::super::Driver;
     use super::*;
 
     fn process_exists(pid: i32) -> bool {
@@ -216,91 +239,132 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        panic!("pid {pid} is still alive 5s after its tree should have been destroyed");
+        panic!("pid {pid} is still alive 5s after its tree should have been stopped");
     }
 
-    fn provisioned(scripts: &TempDir, run: RunId, shell: &str) -> Environment {
-        let script = scripts.path().join("environment");
+    fn driver(scripts: &TempDir, shell: &str) -> Driver {
+        let script = scripts.path().join("supervisor");
         fs::write(&script, format!("#!/bin/sh\n{shell}\n")).expect("a script");
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
             .expect("an executable script");
 
-        LocalExec::running(&script)
-            .provision(run, &[])
-            .expect("the environment should provision")
+        Driver::LocalExec(LocalExec::running(&script))
+    }
+
+    fn provisioned(driver: &Driver) -> Instance {
+        driver
+            .provision(RunId::generate())
+            .expect("the instance should provision")
     }
 
     /// A shell that backgrounds a grandchild `sleep` and prints its pid, so the test can prove
-    /// the whole tree died rather than only the process this Environment holds onto directly.
-    fn a_tree_with_a_grandchild(scripts: &TempDir) -> (Environment, i32) {
-        let mut environment = provisioned(scripts, RunId::generate(), "sleep 30 & echo $!\nwait");
+    /// the whole tree died rather than only the process the supervisor handle holds directly.
+    fn a_tree_with_a_grandchild(instance: &mut Instance) -> (Supervisor, i32) {
+        let mut supervisor = instance
+            .supervise(&[])
+            .expect("the supervisor should start");
 
-        let stdout = environment.take_stdout().expect("stdout should be piped");
+        let stdout = supervisor.take_stdout().expect("stdout should be piped");
         let mut line = String::new();
         BufReader::new(stdout)
             .read_line(&mut line)
             .expect("the grandchild's pid should print");
         let grandchild: i32 = line.trim().parse().expect("a pid");
 
-        (environment, grandchild)
+        (supervisor, grandchild)
     }
 
     #[test]
-    fn destroying_an_environment_leaves_no_orphan_process_in_its_tree() {
+    fn stopping_a_supervisor_leaves_no_orphan_process_in_its_tree() {
         let scripts = TempDir::new().expect("a temporary directory");
-        let (environment, grandchild) = a_tree_with_a_grandchild(&scripts);
+        let driver = driver(&scripts, "sleep 30 & echo $!\nwait");
+        let mut instance = provisioned(&driver);
+        let (supervisor, grandchild) = a_tree_with_a_grandchild(&mut instance);
 
-        environment.destroy().expect("destroy should succeed");
+        supervisor.stop().expect("stop should succeed");
 
         eventually_gone(grandchild);
+        instance.destroy().expect("destroy should succeed");
     }
 
     #[test]
-    fn a_dropped_environment_leaves_no_orphan_process_even_without_explicit_destroy() {
+    fn a_dropped_supervisor_leaves_no_orphan_process_even_without_an_explicit_stop() {
         let scripts = TempDir::new().expect("a temporary directory");
+        let driver = driver(&scripts, "sleep 30 & echo $!\nwait");
+        let mut instance = provisioned(&driver);
         let grandchild = {
-            let (environment, grandchild) = a_tree_with_a_grandchild(&scripts);
-            drop(environment);
+            let (supervisor, grandchild) = a_tree_with_a_grandchild(&mut instance);
+            drop(supervisor);
             grandchild
         };
 
         eventually_gone(grandchild);
+        instance.destroy().expect("destroy should succeed");
     }
 
     #[test]
-    fn a_file_written_into_the_workspace_reads_back_and_is_gone_with_the_environment() {
+    fn a_supervisor_stopped_by_name_takes_its_tree_with_it() {
         let scripts = TempDir::new().expect("a temporary directory");
-        let run = RunId::generate();
-        let mut environment = provisioned(&scripts, run, "sleep 30");
+        let driver = driver(&scripts, "sleep 30 & echo $!\nwait");
+        let mut instance = provisioned(&driver);
+        let (supervisor, grandchild) = a_tree_with_a_grandchild(&mut instance);
 
-        environment
-            .write_file("kestrel/README.md", b"what an agent left behind")
-            .expect("the file should write");
+        driver
+            .stop_named(supervisor.name())
+            .expect("stop should succeed");
+
+        eventually_gone(grandchild);
+        drop(supervisor);
+        instance.destroy().expect("destroy should succeed");
+    }
+
+    #[test]
+    fn what_a_run_wrote_outlives_its_supervisor_and_goes_with_the_instance() {
+        let scripts = TempDir::new().expect("a temporary directory");
+        let driver = driver(&scripts, "echo what an agent left behind > left");
+        let mut instance = provisioned(&driver);
+        let name = instance.name().to_owned();
+
+        let mut supervisor = instance
+            .supervise(&[])
+            .expect("the supervisor should start");
+        while supervisor
+            .status()
+            .expect("the status should read")
+            .is_none()
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        supervisor.stop().expect("stop should succeed");
+
+        let mut resumed = driver
+            .resume(&name)
+            .expect("the instance should resume")
+            .expect("the instance should still be there");
         assert_eq!(
-            environment
-                .read_file("kestrel/README.md")
-                .expect("the file should read"),
-            b"what an agent left behind"
+            resumed.read_file("left").expect("the file should read"),
+            b"what an agent left behind\n"
         );
 
-        let workspace = std::env::temp_dir().join(format!("kestrel-{run}"));
-        assert!(workspace.exists());
-        environment.destroy().expect("destroy should succeed");
+        resumed.destroy().expect("destroy should succeed");
         assert!(
-            !workspace.exists(),
-            "the workspace outlived the environment it belonged to"
+            driver
+                .resume(&name)
+                .expect("a gone instance is not an error")
+                .is_none(),
+            "the instance outlived being destroyed"
         );
     }
 
     #[test]
     fn a_command_execs_in_the_workspace_and_streams_what_it_says() {
         let scripts = TempDir::new().expect("a temporary directory");
-        let mut environment = provisioned(&scripts, RunId::generate(), "sleep 30");
-        environment
+        let mut instance = provisioned(&driver(&scripts, "sleep 30"));
+        instance
             .write_file("read-me", b"in the workspace")
             .expect("the file should write");
 
-        let finished = environment
+        let finished = instance
             .exec(&["cat", "read-me"])
             .expect("cat should exec")
             .finish()
@@ -309,26 +373,30 @@ mod tests {
         assert!(finished.exited.success(), "cat said {finished:?}");
         assert_eq!(finished.out, "in the workspace");
 
-        environment.destroy().expect("destroy should succeed");
+        instance.destroy().expect("destroy should succeed");
     }
 
     #[test]
-    fn an_environment_that_is_still_running_has_no_status_and_one_that_ended_has_the_code() {
+    fn a_supervisor_that_is_still_running_has_no_status_and_one_that_ended_has_the_code() {
         let scripts = TempDir::new().expect("a temporary directory");
-        let mut environment = provisioned(&scripts, RunId::generate(), "exit 3");
+        let mut instance = provisioned(&driver(&scripts, "exit 3"));
+        let mut supervisor = instance
+            .supervise(&[])
+            .expect("the supervisor should start");
 
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            match environment.status().expect("the status should read") {
+            match supervisor.status().expect("the status should read") {
                 Some(exited) => {
                     assert_eq!(exited, Exited::with(3));
                     break;
                 }
-                None => assert!(Instant::now() < deadline, "the environment never exited"),
+                None => assert!(Instant::now() < deadline, "the supervisor never exited"),
             }
             std::thread::sleep(Duration::from_millis(20));
         }
 
-        environment.destroy().expect("destroy should succeed");
+        supervisor.stop().expect("stop should succeed");
+        instance.destroy().expect("destroy should succeed");
     }
 }

@@ -38,6 +38,7 @@ CREATE TABLE session (
     agent_id TEXT NOT NULL REFERENCES agent (id),
     base TEXT NOT NULL,
     branch TEXT NOT NULL,
+    instance TEXT,
     state TEXT NOT NULL,
     opened_at TEXT NOT NULL
 ) STRICT;

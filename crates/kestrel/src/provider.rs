@@ -64,7 +64,7 @@ pub async fn forget(store: &Store, organization: &str, variable: &str) -> Result
     tx.commit().await
 }
 
-/// Asked before an Environment is provisioned, so nothing is decrypted to answer it.
+/// Asked before an Instance is provisioned, so nothing is decrypted to answer it.
 pub async fn holds_any(store: &Store, organization: OrganizationId) -> Result<bool> {
     Ok(!store
         .begin()

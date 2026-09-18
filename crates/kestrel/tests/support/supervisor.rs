@@ -1,11 +1,11 @@
-//! The same artifact `kestrel-env` ships, in a local-exec Environment, dialling out over the
-//! same link an operator would.
+//! The same artifact `kestrel-env` ships, on a local-exec Instance, dialling out over the same
+//! link an operator would.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use kestrel::compute::{Driver, Environment, Exited, LocalExec};
+use kestrel::compute::{Driver, Exited, Instance, LocalExec, Supervisor as Supervising};
 use kestrel::domain::RunId;
 use kestrel::link::credential::Secret;
 
@@ -20,8 +20,13 @@ pub fn binary() -> &'static Path {
     BINARY.get_or_init(|| built::binary("kestrel-supervisor"))
 }
 
+fn driver() -> Driver {
+    Driver::LocalExec(LocalExec::running(binary()))
+}
+
 pub struct Supervisor {
-    environment: Environment,
+    instance: Instance,
+    supervising: Supervising,
     diagnostics: Diagnostics,
 }
 
@@ -47,25 +52,26 @@ impl Supervisor {
         model: &str,
     ) -> Self {
         let runtime = scripted_agent::playing(script);
-        let mut environment = Driver::LocalExec(LocalExec::running(binary()))
-            .provision(
-                run,
-                &[
-                    ("KESTREL_LINK", link),
-                    ("KESTREL_RUN", &run.to_string()),
-                    ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-                    ("KESTREL_AGENT_RUNTIME", &runtime),
-                    ("KESTREL_AGENT_MODEL", model),
-                ],
-            )
+        let mut instance = driver()
+            .provision(run)
+            .expect("the instance should provision");
+        let mut supervising = instance
+            .supervise(&[
+                ("KESTREL_LINK", link),
+                ("KESTREL_RUN", &run.to_string()),
+                ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
+                ("KESTREL_AGENT_RUNTIME", &runtime),
+                ("KESTREL_AGENT_MODEL", model),
+            ])
             .expect("the supervisor should spawn");
 
-        let pipe = environment
+        let pipe = supervising
             .take_stderr()
             .expect("the supervisor's diagnostics should be piped");
 
         Self {
-            environment,
+            instance,
+            supervising,
             diagnostics: Diagnostics::pumped("the supervisor", pipe),
         }
     }
@@ -79,7 +85,7 @@ impl Supervisor {
 
         loop {
             if let Some(exited) = self
-                .environment
+                .supervising
                 .status()
                 .expect("the supervisor should be waitable")
             {
@@ -104,11 +110,7 @@ impl Supervisor {
         self.diagnostics.everything_it_said()
     }
 
-    pub fn destroy(self) {
-        self.environment
-            .destroy()
-            .expect("the environment should be destroyed");
-    }
+    pub fn destroy(self) {}
 
     /// Signals nothing: a supervisor that reported itself finished is on its way out, and
     /// reaping it is the whole of the cleanup left.
@@ -117,11 +119,17 @@ impl Supervisor {
     }
 }
 
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        let _ = driver().destroy_named(self.instance.name());
+    }
+}
+
 impl Supervisor {
     pub async fn is_still_running(&mut self, after: Duration) -> bool {
         tokio::time::sleep(after).await;
 
-        self.environment
+        self.supervising
             .status()
             .expect("the supervisor should be waitable")
             .is_none()

@@ -221,36 +221,36 @@ fn an_operation_outside_the_filter_is_refused_and_the_refusal_says_what_it_was()
     );
 }
 
-/// Every request the driver makes goes through the filter, so a Run that reaches an
-/// Environment and leaves none behind is the whole list exercised. The Environment is
+/// Every request the driver makes goes through the filter, so a Run that reaches an Instance
+/// and leaves no supervisor behind is the whole list a Run makes exercised. The Instance is
 /// provisioned from this checkout's own image onto this checkout's own link network, so it
 /// can neither find another checkout's control plane nor be found by it.
 #[tokio::test]
 #[ignore = "builds images and brings a stack up"]
-async fn a_run_provisions_and_destroys_an_environment_through_the_filter() {
+async fn a_run_provisions_an_instance_and_stops_its_supervisor_through_the_filter() {
     let stack = Stack::up();
     let namespace = compose::namespace_for(&docker::repository());
     let session = a_session(&stack);
     let run = stack.ran(&["run", "enqueue", "--session", &session]);
 
-    let environment = compose::until("the run to reach an environment", || {
-        listed(&stack, &session, &run).environment
+    let instance = compose::until("the run to reach an instance", || {
+        listed(&stack, &session, &run).instance
     });
-    let container = Container::named(&environment);
-    assert_eq!(environment, format!("docker/kestrel-{run}"));
+    let container = Container::named(&instance);
+    assert_eq!(instance, format!("docker/kestrel-{run}"));
     assert!(
         container.networks().contains(&namespace.link),
-        "the environment is on {}, not the checkout's link network {}",
+        "the instance is on {}, not the checkout's link network {}",
         container.networks(),
         namespace.link
     );
     assert_eq!(container.image(), namespace.environment);
 
-    // The link an Environment dials is a container beside it rather than the host's gateway,
+    // The link a supervisor dials is a container beside it rather than the host's gateway,
     // so reaching it at all is the network the control plane put it on.
-    compose::until("the environment to reach the link", || {
-        container
-            .everything_it_said()
+    compose::until("the supervisor to reach the link", || {
+        stack
+            .everything_a_service_said("kestrel")
             .contains("link open")
             .then_some(())
     });
@@ -259,11 +259,16 @@ async fn a_run_provisions_and_destroys_an_environment_through_the_filter() {
     // plane stopping under it rather than anything the agent did.
     stack.comes_back();
 
-    container.is_gone().await;
     assert_eq!(
         listed(&stack, &session, &run).went,
         "failed: the control plane stopped while this run was in flight"
     );
+    let left = container.processes();
+    assert!(
+        !left.contains("kestrel-supervisor"),
+        "the run left its supervisor on its instance: {left}"
+    );
+    container.destroy();
 }
 
 #[test]
@@ -285,7 +290,7 @@ fn the_stack_comes_back_up_with_every_session_it_had() {
 }
 
 /// The commands `USAGE.md` walks a reader through, minus the two its neighbours already cover:
-/// `a_run_provisions_and_destroys_an_environment_through_the_filter` covers enqueueing a Run, and
+/// `a_run_provisions_an_instance_and_stops_its_supervisor_through_the_filter` covers enqueueing a Run, and
 /// `the_stack_comes_back_up_with_every_session_it_had` covers surviving a restart.
 #[test]
 #[ignore = "builds images and brings a stack up"]
@@ -365,23 +370,23 @@ fn a_session(stack: &Stack) -> String {
 }
 
 struct Listed {
-    environment: Option<String>,
+    instance: Option<String>,
     went: String,
 }
 
-/// A Run as `run list` shows it: the Environment it is in, and how it went.
+/// A Run as `run list` shows it: the Instance it is on, and how it went.
 fn listed(stack: &Stack, session: &str, run: &str) -> Listed {
     let listed = stack.ran(&["run", "list", "--session", session]);
     let line = listed
         .lines()
         .find(|line| line.starts_with(run))
         .unwrap_or_else(|| panic!("{run} is not among the session's runs:\n{listed}"));
-    let [_, environment, _model, went] = line.split("  ").collect::<Vec<_>>()[..] else {
+    let [_, instance, _model, went] = line.split("  ").collect::<Vec<_>>()[..] else {
         panic!("a run is listed as {line:?}");
     };
 
     Listed {
-        environment: (environment != "-").then(|| environment.to_owned()),
+        instance: (instance != "-").then(|| instance.to_owned()),
         went: went.to_owned(),
     }
 }
