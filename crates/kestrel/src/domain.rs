@@ -423,13 +423,21 @@ pub struct Templates {
     pub correlation: Option<Template>,
 }
 
+/// Fixed when the Session opens, so a Workspace redeclared later moves no Session already on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Checkout {
+    pub repositories: Vec<String>,
+    pub base: String,
+    pub branch: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Session {
     pub id: SessionId,
     pub organization: Organization,
     pub workspace: Workspace,
     pub agent: Agent,
-    pub branch: String,
+    pub checkout: Checkout,
     pub correlation: Option<String>,
     pub state: SessionState,
     pub opened_at: Timestamp,

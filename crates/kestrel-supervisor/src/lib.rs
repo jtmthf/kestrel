@@ -1,3 +1,4 @@
+pub mod checkout;
 pub mod link;
 pub mod permission;
 pub mod runtime;
@@ -7,7 +8,7 @@ use std::io::{self, Write as _};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::link::{Instruction, Link, Report};
+use crate::link::{Exit, Instruction, Link, Report};
 use crate::runtime::Runtime;
 
 const RECONNECT_AFTER: Duration = Duration::from_millis(250);
@@ -130,7 +131,7 @@ async fn attend(
     // Nothing is read off the stream once the Run has started: saying how it went is all that
     // is left, and a reconnection resumes at that rather than waiting to be told to start again.
     if !attending.started {
-        loop {
+        let checkout = loop {
             let Some(delivered) = instructions.next().await? else {
                 return Ok(Attended::LostTheLink);
             };
@@ -143,12 +144,22 @@ async fn attend(
 
             match delivered.instruction {
                 Instruction::Stop => return Ok(Attended::Stopped),
-                Instruction::Start => break,
+                Instruction::Start { checkout } => break checkout,
                 Instruction::Unrecognized => {}
             }
-        }
+        };
         attending.started = true;
-        attending.saying.push_back(Report::Started);
+
+        match checkout::check_out(&checkout).await {
+            Ok(()) => attending.saying.push_back(Report::Started),
+            Err(because) => {
+                diagnostics.info(&because);
+                attending.worked = true;
+                attending.saying.push_back(Report::Finished {
+                    exit: Exit::Failed { because },
+                });
+            }
+        }
     }
     say(link, attending, diagnostics).await?;
 

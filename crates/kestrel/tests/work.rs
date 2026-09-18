@@ -226,51 +226,105 @@ async fn the_environment_a_finished_run_executed_in_is_destroyed() {
     harness.teardown().await;
 }
 
-/// The Workspace is checked out into an Environment that is destroyed with its Run, so what
-/// proves it arrived is something inside the Environment reading it while the Run is in
-/// flight and writing down what it found. It waits on a file the checkout puts there last,
-/// because `git clone` makes the directory before it makes a repository of it.
+/// Stands in for the Agent Runtime, so what it finds is what the supervisor checked out
+/// before spawning one, and then hands over to the agent it stands in for.
+#[cfg(unix)]
+fn noting_the_checkout() -> Environment {
+    Environment::executing(&format!(
+        "echo \"$(git -C kestrel branch --show-current) $(cat kestrel/README.md)\" \
+           >> \"$(dirname \"$0\")/found\"\n\
+         exec {}",
+        scripted_agent::playing(Script::Speaks)
+    ))
+}
+
+#[cfg(unix)]
+async fn noted(runtime: &Environment, maximum: usize) -> Harness {
+    Harness::dispatching_up_to(
+        supervisor::binary(),
+        &format!("\"{}\"", runtime.path().display()),
+        maximum,
+    )
+    .await
+}
+
 #[cfg(unix)]
 #[tokio::test]
-async fn a_workspaces_repositories_and_its_branch_are_in_the_environment_before_the_run_starts() {
-    let environment = Environment::executing(
-        "found=$(dirname \"$0\")/found\n\
-         for _ in $(seq 1 300); do [ -f kestrel/README.md ] && break; sleep 0.1; done\n\
-         git -C kestrel rev-parse --abbrev-ref HEAD > \"$found\" 2>&1\n\
-         cat kestrel/README.md >> \"$found\" 2>&1\n\
-         exit 3",
-    );
-    let harness = Harness::dispatching(environment.path()).await;
+async fn a_session_declares_a_branch_of_its_own_and_the_run_starts_on_it() {
+    let runtime = noting_the_checkout();
+    let harness = noted(&runtime, 1).await;
     let session = a_session(&harness).await;
 
     let run = harness.enqueue_run(session.id).await;
-    ended(&harness, run.id).await;
+    let ended = ended(&harness, run.id).await;
 
+    assert_eq!(ended.exit, Some(Exit::Succeeded));
+    assert_eq!(session.checkout.branch, format!("kestrel/{}", session.id));
+    assert_eq!(session.checkout.base, repository::BRANCH);
     assert_eq!(
-        environment.wrote("found"),
-        "main\na workspace's repository",
-        "the workspace was not in the environment"
+        runtime.wrote("found"),
+        format!("{} a workspace's repository", session.checkout.branch),
+        "the agent did not start on its session's branch"
     );
 
     harness.teardown().await;
 }
 
-/// The branch is cut after the clone, so what is inside waits for it rather than for the
-/// clone's last file.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_run_checks_out_its_sessions_branch_cut_from_the_workspaces_when_the_remote_has_none() {
-    let environment = Environment::executing(
-        "found=$(dirname \"$0\")/found\n\
-         for _ in $(seq 1 300); do\n\
-           [ \"$(git -C kestrel rev-parse --abbrev-ref HEAD 2>/dev/null)\" = kestrel/issue-43 ] && break\n\
-           sleep 0.1\n\
-         done\n\
-         git -C kestrel rev-parse --abbrev-ref HEAD > \"$found\" 2>&1\n\
-         cat kestrel/README.md >> \"$found\" 2>&1\n\
-         exit 3",
+async fn parallel_sessions_work_on_distinct_branches() {
+    let runtime = noting_the_checkout();
+    let harness = noted(&runtime, 2).await;
+    let first = a_session(&harness).await;
+    let second = harness.open_session("acme", "kestrel", "builder").await;
+
+    let runs = [
+        harness.enqueue_run(first.id).await,
+        harness.enqueue_run(second.id).await,
+    ];
+    for run in runs {
+        ended(&harness, run.id).await;
+    }
+
+    assert_ne!(first.checkout.branch, second.checkout.branch);
+    let mut found: Vec<String> = runtime.wrote("found").lines().map(str::to_owned).collect();
+    found.sort();
+    let mut expected = vec![
+        format!("{} a workspace's repository", first.checkout.branch),
+        format!("{} a workspace's repository", second.checkout.branch),
+    ];
+    expected.sort();
+    assert_eq!(found, expected);
+
+    harness.teardown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_session_on_a_branch_its_operator_named_starts_on_that_branchs_work() {
+    let runtime = noting_the_checkout();
+    let harness = noted(&runtime, 1).await;
+    a_session(&harness).await;
+    let session = harness
+        .open_session_on("acme", "kestrel", "builder", repository::EXISTING_BRANCH)
+        .await;
+
+    let run = harness.enqueue_run(session.id).await;
+    ended(&harness, run.id).await;
+
+    assert_eq!(
+        runtime.wrote("found"),
+        format!("{} an existing branch's work", repository::EXISTING_BRANCH)
     );
-    let harness = Harness::dispatching(environment.path()).await;
+
+    harness.teardown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_branch_the_remote_does_not_have_is_cut_from_the_workspaces() {
+    let runtime = noting_the_checkout();
+    let harness = noted(&runtime, 1).await;
     a_session(&harness).await;
     let session = harness
         .open_session_on("acme", "kestrel", "builder", "kestrel/issue-43")
@@ -280,16 +334,15 @@ async fn a_run_checks_out_its_sessions_branch_cut_from_the_workspaces_when_the_r
     ended(&harness, run.id).await;
 
     assert_eq!(
-        environment.wrote("found"),
-        "kestrel/issue-43\na workspace's repository",
-        "the run did not work on its session's branch"
+        runtime.wrote("found"),
+        "kestrel/issue-43 a workspace's repository"
     );
 
     harness.teardown().await;
 }
 
 #[tokio::test]
-async fn a_workspace_that_cannot_be_checked_out_fails_the_run_rather_than_starting_it() {
+async fn a_checkout_that_fails_names_the_repository_and_branch_and_the_run_never_starts() {
     let harness = Harness::dispatching(supervisor::binary()).await;
     let organization = harness.declare_organization("acme").await;
     harness
@@ -328,12 +381,12 @@ async fn a_workspace_that_cannot_be_checked_out_fails_the_run_rather_than_starti
         );
     };
     assert!(
-        because.contains("could not be cloned"),
-        "unhelpful exit status: {because}"
+        because.contains(repository::url()) && because.contains(&session.checkout.branch),
+        "the failure names neither the repository nor the branch: {because}"
     );
-    assert!(
-        ended.environment.is_none(),
-        "a run that never started names the environment it was going to start in"
+    assert_eq!(
+        ended.started_at, None,
+        "a run that was never checked out started"
     );
 
     harness.teardown().await;

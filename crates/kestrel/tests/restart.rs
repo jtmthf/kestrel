@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
-use kestrel::link::Instruction;
 use kestrel::link::credential::Secret;
 use kestrel::work::{Report, Reported};
 use reqwest::StatusCode;
@@ -24,12 +23,7 @@ const LONG_ENOUGH_TO_BE_SURE: Duration = Duration::from_secs(1);
 async fn a_session(harness: &Harness) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
-            &organization,
-            "kestrel",
-            &["https://github.com/jtmthf/kestrel".to_owned()],
-            "main",
-        )
+        .declare_workspace(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
@@ -72,7 +66,7 @@ async fn working(harness: &Harness, session: &Session, script: Script) -> (Run, 
         Supervisor::provision_playing(&harness.link(), run.id, &credential, script);
 
     supervisor.wait_until_it_says("reported connected").await;
-    harness.instruct(&run, Instruction::Start).await;
+    harness.start(&run).await;
     supervisor.wait_until_it_says("reported started").await;
 
     (run, supervisor)

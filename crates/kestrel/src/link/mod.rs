@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::domain::{Run, RunId};
+use crate::domain::{Checkout, Run, RunId, Session};
 use crate::link::credential::Secret;
 use crate::log::{self, Cursor, Unreadable, Window};
 use crate::provider;
@@ -42,14 +42,14 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Instruction {
-    Start,
+    Start { checkout: Checkout },
     Stop,
 }
 
 impl Instruction {
     pub const fn kind(&self) -> &'static str {
         match self {
-            Instruction::Start => "start",
+            Instruction::Start { .. } => "start",
             Instruction::Stop => "stop",
         }
     }
@@ -106,15 +106,34 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .with_state(ControlPlane { store, shutdown })
 }
 
-/// Sealing needs every Run ended first, which is what makes this refusal unreachable.
+pub async fn start(store: &Store, run: &Run) -> Result<SentInstruction> {
+    sent(store, run, |session| Instruction::Start {
+        checkout: session.checkout.clone(),
+    })
+    .await
+}
+
 pub async fn instruct(
     store: &Store,
     run: &Run,
     instruction: Instruction,
 ) -> Result<SentInstruction> {
+    sent(store, run, |_| instruction).await
+}
+
+/// Sealing needs every Run ended first, which is what makes this refusal unreachable.
+async fn sent(
+    store: &Store,
+    run: &Run,
+    instruction: impl FnOnce(&Session) -> Instruction,
+) -> Result<SentInstruction> {
     let mut tx = store.begin().await?;
-    tx.sessions().get(run.session).await?.accepts("turn")?;
-    let sent = tx.sessions().send_instruction(run, instruction).await?;
+    let session = tx.sessions().get(run.session).await?;
+    session.accepts("turn")?;
+    let sent = tx
+        .sessions()
+        .send_instruction(run, instruction(&session))
+        .await?;
     tx.commit().await?;
 
     Ok(sent)

@@ -36,9 +36,18 @@ CREATE TABLE session (
     organization_id TEXT NOT NULL REFERENCES organization (id),
     workspace_id TEXT NOT NULL REFERENCES workspace (id),
     agent_id TEXT NOT NULL REFERENCES agent (id),
+    base TEXT NOT NULL,
     branch TEXT NOT NULL,
     state TEXT NOT NULL,
     opened_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE session_repository (
+    session_id TEXT NOT NULL REFERENCES session (id),
+    organization_id TEXT NOT NULL REFERENCES organization (id),
+    position INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    PRIMARY KEY (session_id, position)
 ) STRICT;
 
 CREATE TABLE transcript_entry (

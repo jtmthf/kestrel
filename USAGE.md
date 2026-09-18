@@ -56,8 +56,8 @@ An **organization** is the outermost boundary. Every record kestrel keeps belong
 kestrel organization declare acme
 ```
 
-A **workspace** is what a session's work happens against — repositories and the branch a session
-works on unless a trigger renders another. Repeat `--repository` to name more than one.
+A **workspace** is what a session's work happens against — repositories and the base branch each
+session's own branch is cut from. Repeat `--repository` to name more than one.
 
 ```sh
 kestrel workspace declare kestrel \
@@ -101,6 +101,13 @@ kestrel session open --organization acme --workspace kestrel --agent builder
 
 Keep the identifier it prints — everything below takes it.
 
+The session fixes the workspace's repositories as they are now and declares a branch of its own,
+`kestrel/<session>`, so sessions opened side by side never work on one another's branch. Pass
+`--branch` to work on an existing branch instead. Before the agent starts, the supervisor in the
+environment clones each repository and checks that branch out, cutting it from the workspace's when
+the repository does not have it yet; a checkout that fails ends the run naming the repository and
+the branch. The control plane itself runs no git.
+
 ```sh
 kestrel session show 01a07846-49fa-7dc0-a44b-183a63794ee3
 ```
@@ -110,7 +117,8 @@ session       01a07846-49fa-7dc0-a44b-183a63794ee3
 organization  acme
 workspace     kestrel
 agent         builder
-branch        main
+branch        kestrel/01a07846-49fa-7dc0-a44b-183a63794ee3
+base          main
 state         open
 opened        2026-09-06T19:51:07.514310886Z
 last active   2026-09-06T19:51:07.514310886Z
@@ -394,7 +402,7 @@ into `data` that leads nowhere matches nothing.
 
 The `brief`, the `branch` and the optional `correlation` are
 [minijinja](https://docs.rs/minijinja) templates over `event`, rendered from the event and never
-choosing anything the declaration names. Leave `branch` out and the branch is the workspace's.
+choosing anything the declaration names. Leave `branch` out and the session declares one of its own.
 Rendering is strict: a field the event does not have is an error, not an empty string, so a brief
 that says `on {{ event.data.pull_request.head.ref }}` over a labelled issue fails rather than
 rendering `on `. Ask first with `{% if event.data.pull_request is defined %}`. A template runs
@@ -452,8 +460,8 @@ kestrel session list --organization acme
 ```
 
 The last column is the event that started it. `kestrel session show` prints it beside the branch
-the trigger rendered, which the session works on for its whole life; a run cuts that branch from
-the workspace's when the repository does not have it yet. The rendered brief is the session's
+the trigger rendered, which the session works on for its whole life; the supervisor cuts that
+branch from the workspace's when the repository does not have it yet. The rendered brief is the session's
 first transcript entry:
 
 ```

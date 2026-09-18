@@ -182,7 +182,7 @@ mod tests {
                 organization: &organization,
                 workspace: &workspace,
                 agent: &agent,
-                branch: &workspace.branch,
+                branch: None,
                 correlation: None,
                 continues: None,
                 started_by: None,

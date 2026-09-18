@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
 use kestrel::domain::{Session, SessionState};
-use kestrel::link::Instruction;
 use kestrel::log::Window;
 use support::Harness;
 
@@ -214,10 +213,7 @@ async fn a_session_the_sweep_sealed_is_readable_refuses_work_and_is_never_reopen
         "a session the sweep sealed took a new run"
     );
     assert!(
-        harness
-            .try_instruct(&run, Instruction::Start)
-            .await
-            .is_err(),
+        harness.try_start(&run).await.is_err(),
         "a session the sweep sealed took a turn"
     );
     assert!(
