@@ -381,7 +381,10 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
             organization: &trigger.organization,
             workspace: &trigger.workspace,
             agent: &trigger.agent,
-            branch: rendered.branch.as_deref(),
+            branch: continues
+                .as_ref()
+                .map(|sealed| sealed.checkout.branch.as_str())
+                .or(rendered.branch.as_deref()),
             correlation: rendered.correlation.as_deref(),
             continues: continues.as_ref(),
             started_by: Some(event),

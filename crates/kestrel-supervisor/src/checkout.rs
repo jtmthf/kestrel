@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use tokio::process::Command;
 
 use crate::link::Checkout;
@@ -45,12 +47,17 @@ fn cloned_into(repository: &str) -> &str {
     name.strip_suffix(".git").unwrap_or(name)
 }
 
+const GIT_GIVES_UP_AFTER: Duration = Duration::from_secs(10 * 60);
+
 async fn git(arguments: &[&str]) -> Result<(), String> {
-    let ran = Command::new("git")
+    let running = Command::new("git")
         .args(arguments)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
+        .kill_on_drop(true)
+        .output();
+    let ran = tokio::time::timeout(GIT_GIVES_UP_AFTER, running)
         .await
+        .map_err(|_| format!("git did not finish within {GIT_GIVES_UP_AFTER:?}"))?
         .map_err(|error| format!("git could not be run: {error}"))?;
 
     if !ran.status.success() {

@@ -428,6 +428,7 @@ async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
         .expect("a new session should open after the seal");
 
     assert_eq!(continuation.continues, Some(sealed.id));
+    assert_eq!(continuation.checkout.branch, sealed.checkout.branch);
     assert_eq!(continuation.state, kestrel::domain::SessionState::Open);
 
     harness.teardown().await;

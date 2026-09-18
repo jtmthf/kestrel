@@ -467,6 +467,16 @@ async fn a_declaration_that_describes_nothing_declarable_is_refused() {
         &json!({ "name": "kestrel", "repositories": [], "branch": "main" }),
     )
     .await;
+    let (clashing, clash) = declared(
+        &harness,
+        &workspaces_of("acme"),
+        &json!({
+            "name": "kestrel",
+            "repositories": ["https://github.com/acme/api.git", "https://github.com/team/api"],
+            "branch": "main",
+        }),
+    )
+    .await;
 
     assert_eq!(malformed, StatusCode::BAD_REQUEST);
     assert_eq!(unnamed, StatusCode::UNPROCESSABLE_ENTITY);
@@ -477,6 +487,14 @@ async fn a_declaration_that_describes_nothing_declarable_is_refused() {
             .expect("a message")
             .contains("repository"),
         "{refusal}"
+    );
+    assert_eq!(clashing, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        clash["message"]
+            .as_str()
+            .expect("a message")
+            .contains("checked out into api"),
+        "{clash}"
     );
     assert!(listed(&harness, &workspaces_of("acme")).await.is_empty());
 
