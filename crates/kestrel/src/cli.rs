@@ -198,6 +198,9 @@ pub enum CliCommand {
     /// Enqueue and list Runs
     #[command(subcommand)]
     Run(RunCommand),
+    /// List the Instances held for work that exists nowhere else, and release them
+    #[command(subcommand)]
+    Instance(InstanceCommand),
     /// Register and list Integrations
     #[command(subcommand)]
     Integration(IntegrationCommand),
@@ -482,6 +485,22 @@ pub enum RunCommand {
     Stop {
         /// The Run's identifier
         run: RunId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum InstanceCommand {
+    /// List every Instance kept because it may hold the only copy of its Session's work, and why
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+    /// Destroy a Session's Instance, discarding whatever it holds that was never pushed
+    Release {
+        /// The Session whose Instance it is
+        session: SessionId,
+        #[arg(long, default_value = "operator")]
+        as_participant: String,
     },
 }
 

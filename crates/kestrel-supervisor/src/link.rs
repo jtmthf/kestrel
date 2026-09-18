@@ -65,6 +65,7 @@ pub enum Report {
     Said { message: String },
     Used { usage: Usage },
     Answered,
+    Checkout { repositories: Vec<Observed> },
     Finished { exit: Exit },
 }
 
@@ -78,9 +79,32 @@ impl Report {
             Report::Said { .. } => "said",
             Report::Used { .. } => "used",
             Report::Answered => "answered",
+            Report::Checkout { .. } => "checkout",
             Report::Finished { .. } => "finished",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Observed {
+    pub repository: String,
+    #[serde(flatten)]
+    pub git: Git,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "git", rename_all = "snake_case")]
+pub enum Git {
+    Read {
+        branch: Option<String>,
+        untracked: u64,
+        uncommitted: u64,
+        stashes: u64,
+        unpushed: u64,
+    },
+    Unreadable {
+        because: String,
+    },
 }
 
 /// A report as it goes on the wire: the seq is what lets the control plane take it once

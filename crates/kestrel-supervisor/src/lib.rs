@@ -8,7 +8,7 @@ use std::io::{self, Write as _};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::link::{Exit, Instruction, Link, Report};
+use crate::link::{Checkout, Exit, Instruction, Link, Report};
 use crate::runtime::{Conversation, Runtime};
 
 const RECONNECT_AFTER: Duration = Duration::from_millis(250);
@@ -42,6 +42,7 @@ enum Attended {
 struct Attending {
     cursor: Option<String>,
     started: bool,
+    checkout: Option<Checkout>,
     prompt: Option<String>,
     conversation: Option<Conversation>,
     finished: bool,
@@ -175,11 +176,15 @@ async fn attend(
                             Err(because) => {
                                 diagnostics.info(&because);
                                 attending.finished = true;
+                                attending.saying.push_back(Report::Checkout {
+                                    repositories: checkout::observe(&checkout).await,
+                                });
                                 attending.saying.push_back(Report::Finished {
                                     exit: Exit::Failed { because },
                                 });
                             }
                         }
+                        attending.checkout = Some(checkout);
                     }
                     Instruction::Prompt { prompt } => match &attending.conversation {
                         Some(conversation) => conversation.prompt(prompt),
@@ -199,7 +204,14 @@ async fn attend(
                     attending.finished = true;
                     attending.conversation = None;
                 }
-                attending.saying.extend(everything_left_to_say(worked));
+                // Reported after every turn, not only a finishing one: a Run waiting between
+                // turns may be stopped at any moment, and what it last observed is what decides
+                // whether its Instance is held.
+                let observed = match &attending.checkout {
+                    Some(checkout) => Some(checkout::observe(checkout).await),
+                    None => None,
+                };
+                attending.saying.extend(everything_left_to_say(worked, observed));
             }
         }
     }
@@ -266,7 +278,10 @@ async fn say(
     Ok(())
 }
 
-fn everything_left_to_say(worked: runtime::Worked) -> impl Iterator<Item = Report> {
+fn everything_left_to_say(
+    worked: runtime::Worked,
+    observed: Option<Vec<link::Observed>>,
+) -> impl Iterator<Item = Report> {
     worked
         .on
         .map(|on| Report::Model {
@@ -281,6 +296,7 @@ fn everything_left_to_say(worked: runtime::Worked) -> impl Iterator<Item = Repor
                 .map(|message| Report::Said { message }),
         )
         .chain(worked.usage.map(|usage| Report::Used { usage }))
+        .chain(observed.map(|repositories| Report::Checkout { repositories }))
         .chain(std::iter::once(match worked.failed {
             Some(because) => Report::Finished {
                 exit: Exit::Failed { because },

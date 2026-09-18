@@ -34,6 +34,7 @@ use kestrel::domain::{
     Agent, CorrelationMiss, Direction, Event, EventRecordId, Exit, Fires, Integration, Occurrence,
     Organization, Run, RunId, RunState, Session, SessionId, Templates, Trigger, Turn, Workspace,
 };
+use kestrel::instance;
 use kestrel::integration::{self, Connecting, Registration};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
@@ -790,6 +791,22 @@ impl Harness {
 
     pub async fn try_seal_session(&self, id: SessionId) -> anyhow::Result<Session> {
         session::seal(&self.store, id).await
+    }
+
+    pub async fn held_instances(&self, organization: &str) -> Vec<instance::Held> {
+        instance::held(&self.store, organization)
+            .await
+            .expect("the held instances should read")
+    }
+
+    pub async fn release_instance(&self, session: SessionId) -> String {
+        self.try_release_instance(session)
+            .await
+            .expect("the instance should release")
+    }
+
+    pub async fn try_release_instance(&self, session: SessionId) -> anyhow::Result<String> {
+        instance::release(&self.store, session, "operator").await
     }
 
     pub async fn continuations(&self, id: SessionId) -> Vec<SessionId> {

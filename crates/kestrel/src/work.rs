@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::domain::{Exit, Run, RunId, RunState, SessionId, Turn, Usage};
+use crate::instance::Observed;
 use crate::integration::outcome;
 use crate::link;
 use crate::link::credential::Secret;
@@ -37,6 +38,7 @@ pub enum Report {
     Said { message: String },
     Used { usage: Usage },
     Answered,
+    Checkout { repositories: Vec<Observed> },
     Finished { exit: Exit },
 }
 
@@ -49,6 +51,7 @@ impl Report {
             | Report::Said { .. }
             | Report::Used { .. }
             | Report::Answered
+            | Report::Checkout { .. }
             | Report::Finished { .. } => true,
         }
     }
@@ -224,6 +227,12 @@ pub async fn report(
                 prompt_pending(&mut tx, run).await?;
             }
             info!(run = %run.id, "a supervisor reported its agent answered a turn");
+        }
+        Report::Checkout { repositories } => {
+            tx.sessions()
+                .record_observed(run.session, &repositories)
+                .await?;
+            info!(run = %run.id, "a supervisor reported what its checkout holds");
         }
         Report::Finished { exit } => {
             let stands = ending(&mut tx, run, exit).await?;

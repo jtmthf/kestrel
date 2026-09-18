@@ -33,6 +33,11 @@ pub enum Entry {
         run: RunId,
         exit: Exit,
     },
+    InstanceReleased {
+        participant: String,
+        instance: String,
+        unpublished: Option<String>,
+    },
 }
 
 impl fmt::Display for Entry {
@@ -57,6 +62,17 @@ impl fmt::Display for Entry {
                     .join("  ")
             ),
             Entry::RunEnded { run, exit } => write!(f, "run ended  {run}  {exit}"),
+            Entry::InstanceReleased {
+                participant,
+                instance,
+                unpublished,
+            } => {
+                write!(f, "instance released  {participant}  {instance}")?;
+                match unpublished {
+                    Some(unpublished) => write!(f, "  discarding {unpublished}"),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }

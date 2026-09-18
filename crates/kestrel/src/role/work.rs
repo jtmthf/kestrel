@@ -12,6 +12,7 @@ use tracing::{info, warn};
 use crate::cli::Role;
 use crate::compute::{Driver, Exited, Instance, Supervisor};
 use crate::domain::{Exit, Run, RunId, Session};
+use crate::instance;
 use crate::link;
 use crate::provider;
 use crate::session;
@@ -114,6 +115,7 @@ async fn dispatching(
 
     while !shutdown.is_cancelled() {
         stop_left_behind(store, &dispatch.driver).await?;
+        archive(store, &dispatch.driver).await?;
         if active.len() < dispatch.max_active_runs.get()
             && let Some(claimed) = work::claim(store).await?
         {
@@ -294,6 +296,20 @@ async fn stop_left_behind(store: &Store, driver: &Driver) -> Result<()> {
             Err(error) => {
                 warn!(run = %run.id, %error, "an ended run's supervisor resisted being stopped");
             }
+        }
+    }
+
+    Ok(())
+}
+
+async fn archive(store: &Store, driver: &Driver) -> Result<()> {
+    for instance in instance::to_archive(store).await? {
+        match driver.destroy_named(&instance) {
+            Ok(()) => {
+                instance::archived(store, &instance).await?;
+                info!(instance, "an instance was archived");
+            }
+            Err(error) => warn!(instance, %error, "an instance resisted being archived"),
         }
     }
 

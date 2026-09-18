@@ -230,8 +230,8 @@ The session and its transcript are intact. The run that was executing ended with
 rather than staying active forever, and its supervisor was stopped. The session's instance is still
 there, with the checkout as the run left it, for the session's next run.
 
-Nothing reaps an instance yet: it outlives its session's sealing too, until you remove its container
-yourself. If an instance is gone when a run needs it, that run fails and says that whatever the
+The instance lives until the session seals, and longer if it may hold the only copy of some work;
+see [Sealing a session](#sealing-a-session). If an instance is gone when a run needs it, that run fails and says that whatever the
 instance held that was never pushed is lost; the next run provisions a fresh instance and checks the
 session's branch out from the remote.
 
@@ -278,7 +278,38 @@ Sealing ends a session without deleting it. A sealed session stays readable and 
 kestrel session seal 01a07846-49fa-7dc0-a44b-183a63794ee3
 ```
 
-It accepts no further runs:
+Sealing archives the session's instance: the work role destroys its container. It does so only when
+the last run on it reported a checkout that the remote can restore, with nothing untracked,
+uncommitted or stashed and no commit that no remote branch has. Output that git ignores, such as a
+`target/` directory, does not count. Anything else holds the instance, and the seal is refused. The run
+above was cut off before its supervisor could say what the checkout held, so this session is refused:
+
+```
+Error: the session 01a07846-49fa-7dc0-a44b-183a63794ee3's instance docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006 may hold the only copy of its work (no run reported what its checkout holds); publish it from a follow-up run, or release the instance to discard it
+```
+
+Every held instance is listed with its reason, and `kestrel session show` repeats the reason on a `held`
+line:
+
+```sh
+kestrel instance list --organization acme
+```
+
+```
+01a07846-49fa-7dc0-a44b-183a63794ee3  docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006  no run reported what its checkout holds
+```
+
+A reason read from git names the repository, the branch and what it found, such as
+`https://github.com/jtmthf/kestrel on kestrel/01a07846-… has 2 unpushed commits, 1 untracked file`.
+To keep that work, post a message asking the agent to push it. To discard it, release the instance.
+The release destroys the instance and is recorded in the session's transcript:
+
+```sh
+kestrel instance release 01a07846-49fa-7dc0-a44b-183a63794ee3
+kestrel session seal 01a07846-49fa-7dc0-a44b-183a63794ee3
+```
+
+A sealed session accepts no further runs:
 
 ```
 Error: the session 01a07846-49fa-7dc0-a44b-183a63794ee3 is sealed, and accepts no run
@@ -290,7 +321,8 @@ a turn, or still queued, refuses to seal until that turn is answered.
 A session seals itself too. `last active` moves when the session opens, when a run is enqueued into
 it, when one of its runs answers a turn, and when one ends; a session that has sat at the same
 `last active` for 24 hours with no turn in flight is sealed by kestrel, exactly as the command above
-would have.
+would have. A session whose instance is held stays open, however long it has been idle, until its
+work is pushed or its instance released.
 
 Work that would have continued it starts a new session that records the sealed one:
 

@@ -5,6 +5,7 @@ use crate::domain::{
     Event, Exit, Organization, Run, RunId, RunState, Session, SessionId, SessionState,
 };
 use crate::fanout::{self, Change};
+use crate::instance;
 use crate::link;
 use crate::log::{Cursor, Entry, Message, Page, Unreadable, Window};
 use crate::store::session::Opening;
@@ -73,6 +74,7 @@ pub async fn seal(store: &Store, id: SessionId) -> Result<Session> {
     if let Some(waiting) = waiting(&mut tx, &session).await? {
         work::stopping(&mut tx, &waiting, Exit::Succeeded).await?;
     }
+    instance::archive_on_seal(&mut tx, &session).await?;
 
     let sealed_at = tx.sessions().seal(&session).await?;
     tx.commit().await?;
@@ -104,7 +106,11 @@ async fn idle(store: &Store) -> Result<Vec<SessionId>> {
     let mut idle = Vec::new();
 
     for session in tx.sessions().idle(Timestamp::now() - IDLE).await? {
-        if in_flight(&mut tx, &session).await?.is_none() {
+        let holds_unpublished_work = match tx.sessions().kept_instance(session.id).await? {
+            Some(kept) => instance::unpublished(kept.observed.as_deref()).is_some(),
+            None => false,
+        };
+        if !holds_unpublished_work && in_flight(&mut tx, &session).await?.is_none() {
             idle.push(session.id);
         }
     }
@@ -114,7 +120,7 @@ async fn idle(store: &Store) -> Result<Vec<SessionId>> {
 
 /// What keeps a Session from sealing: a Run queued or mid-turn, or one that has ended while
 /// messages are still waiting on it. A Run between turns is not: sealing ends it (ADR-0024).
-async fn in_flight(tx: &mut Tx<'_>, session: &Session) -> Result<Option<RunId>> {
+pub(crate) async fn in_flight(tx: &mut Tx<'_>, session: &Session) -> Result<Option<RunId>> {
     let Some(holding) = tx.sessions().run_holding_the_slot(session).await? else {
         return Ok(None);
     };
