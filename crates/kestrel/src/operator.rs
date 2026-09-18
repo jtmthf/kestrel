@@ -516,7 +516,7 @@ async fn events(
         limited.limit.unwrap_or(EVENTS_LISTED),
     )
     .await?;
-    let mut records = Vec::with_capacity(events.len());
+    let mut records = Vec::new();
     for event in events {
         records.push(EventRecord::read(&control_plane.store, event).await?);
     }
