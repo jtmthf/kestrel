@@ -23,6 +23,8 @@ pub enum Script {
     Confides,
     /// Says whether both ends of a long earlier context reached its prompt.
     Recalls,
+    /// Says back exactly the prompt it was sent.
+    Echoes,
     /// Dies mid-turn without answering the prompt.
     Dies,
     /// Answers `initialize` with a protocol version it was not asked for.
@@ -47,6 +49,7 @@ impl Script {
             Script::Refuses => "refuses",
             Script::Confides => "confides",
             Script::Recalls => "recalls",
+            Script::Echoes => "echoes",
             Script::Dies => "dies",
             Script::Predates => "predates",
             Script::Demands => "demands",

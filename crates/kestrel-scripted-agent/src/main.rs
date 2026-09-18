@@ -116,17 +116,18 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |prompt: PromptRequest, responder, connection| {
-                let remembers = prompt.prompt.iter().any(|block| {
-                    matches!(
-                        block,
-                        ContentBlock::Text(text)
-                            if text.text.contains(FIRST_MEMORY) && text.text.contains(LAST_MEMORY)
-                    )
-                });
+                let prompted: String = prompt
+                    .prompt
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text(text) => Some(text.text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
                 // The turn asks the client a question of its own, so it cannot run inside the
                 // dispatch loop that would have to carry the answer.
                 connection.clone().spawn(async move {
-                    let stop = play(script, remembers, &connection).await?;
+                    let stop = play(script, &prompted, &connection).await?;
                     responder.respond(PromptResponse::new(stop))
                 })
             },
@@ -138,7 +139,7 @@ async fn main() -> Result<()> {
 
 async fn play(
     script: Script,
-    remembers: bool,
+    prompted: &str,
     connection: &ConnectionTo<Client>,
 ) -> Result<StopReason> {
     if script == Script::Dawdles {
@@ -152,11 +153,16 @@ async fn play(
         return Ok(StopReason::EndTurn);
     }
     if script == Script::Recalls {
+        let remembers = prompted.contains(FIRST_MEMORY) && prompted.contains(LAST_MEMORY);
         let message = match remembers {
             true => "I remember the whole earlier context",
             false => "I forgot part of the earlier context",
         };
         say(connection, "message-1", message)?;
+        return Ok(StopReason::EndTurn);
+    }
+    if script == Script::Echoes {
+        say(connection, "message-1", prompted)?;
         return Ok(StopReason::EndTurn);
     }
     if script == Script::Refuses {

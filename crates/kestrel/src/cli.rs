@@ -285,6 +285,10 @@ pub enum TriggerCommand {
         /// `-` for standard input
         #[arg(short = 'f', long = "file", value_name = "FILE", value_parser = Given::path)]
         file: Option<Given>,
+        /// The instruction a dispatch supplies, which the brief reads as `instruction`; `@FILE`
+        /// reads it from a file and `-` from standard input
+        #[arg(long, value_parser = Given::text)]
+        instruction: Option<Given>,
     },
     /// List every Trigger in an Organization, and what each matches
     List {

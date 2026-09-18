@@ -24,6 +24,7 @@ const SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
 pub enum Instruction {
     Start {
         checkout: Checkout,
+        prompt: Option<String>,
     },
     Stop,
     /// A control plane kestrel upgraded under a live Environment (ADR-0002) may send an

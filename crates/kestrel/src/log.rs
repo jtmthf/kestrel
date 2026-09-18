@@ -148,6 +148,31 @@ impl<'a> Log<'a> {
         })
     }
 
+    /// The Brief, if nobody has said anything since it: participants joining and Runs starting
+    /// are not something said.
+    pub async fn unfollowed_brief(&mut self, session: &Session) -> Result<Option<String>> {
+        let said = sqlx::query(
+            "SELECT body
+             FROM transcript_entry
+             WHERE session_id = ?
+               AND json_extract(body, '$.kind') NOT IN ('participant_joined', 'run_started')
+             ORDER BY seq
+             LIMIT 2",
+        )
+        .bind(session.id.to_string())
+        .fetch_all(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading the transcript of session {}", session.id))?;
+
+        let [only] = said.as_slice() else {
+            return Ok(None);
+        };
+        Ok(match serde_json::from_str(only.get("body"))? {
+            Entry::Brief { brief, .. } => Some(brief),
+            _ => None,
+        })
+    }
+
     pub async fn page(
         &mut self,
         session: &Session,

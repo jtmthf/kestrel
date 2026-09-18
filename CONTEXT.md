@@ -106,7 +106,8 @@ _Avoid_: match, activation, invocation, execution
 
 **Brief**:
 The instruction a session starts with, and its first transcript entry. A trigger renders it from a
-human-authored template over an event; an operator may supply it directly.
+human-authored template over an event and any instruction its dispatch supplied; an operator may
+supply it directly. It reaches the agent exactly as rendered.
 _Avoid_: prompt, task, instruction, request
 
 **Correlation**:

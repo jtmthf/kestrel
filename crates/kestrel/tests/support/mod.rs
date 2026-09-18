@@ -624,7 +624,7 @@ impl Harness {
         name: &str,
         event: EventRecordId,
     ) -> anyhow::Result<Tested> {
-        trigger::test(&self.store, organization, name, Some(event)).await
+        trigger::test(&self.store, organization, name, Some(event), None).await
     }
 
     pub async fn try_declare_scheduled_trigger(
@@ -664,7 +664,7 @@ impl Harness {
         organization: &str,
         name: &str,
     ) -> anyhow::Result<Tested> {
-        trigger::test(&self.store, organization, name, None).await
+        trigger::test(&self.store, organization, name, None, None).await
     }
 
     /// Stands in for the wheel reaching `at`, which a test cannot wait for.
@@ -687,7 +687,7 @@ impl Harness {
             .find(|declared| declared.name == name)
             .expect("the declaration file should declare the trigger");
 
-        trigger::test_declared(&self.store, organization, declared, Some(event))
+        trigger::test_declared(&self.store, organization, declared, Some(event), None)
             .await
             .expect("the declared trigger should test")
     }

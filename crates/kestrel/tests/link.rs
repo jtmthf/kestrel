@@ -501,6 +501,10 @@ fn the_published_openapi_document_describes_every_transcript_entry_the_link_serv
         Entry::ParticipantJoined {
             participant: "builder".to_owned(),
         },
+        Entry::Brief {
+            trigger: "ready".to_owned(),
+            brief: "/implement https://github.com/jtmthf/kestrel/issues/174".to_owned(),
+        },
         Entry::RunStarted {
             run: RunId::generate(),
         },

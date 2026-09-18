@@ -202,12 +202,13 @@ pub async fn test(
     organization: &str,
     name: &str,
     event: Option<EventRecordId>,
+    instruction: Option<&str>,
 ) -> Result<Tested> {
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
     let trigger = tx.triggers().named(&organization, name).await?;
 
-    tested(&mut tx, &trigger, event).await
+    tested(&mut tx, &trigger, event, instruction).await
 }
 
 pub async fn test_declared(
@@ -215,6 +216,7 @@ pub async fn test_declared(
     organization: &str,
     declared: &apply::Declared,
     event: Option<EventRecordId>,
+    instruction: Option<&str>,
 ) -> Result<Tested> {
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
@@ -238,13 +240,14 @@ pub async fn test_declared(
         declared_at: jiff::Timestamp::now(),
     };
 
-    tested(&mut tx, &trigger, event).await
+    tested(&mut tx, &trigger, event, instruction).await
 }
 
 async fn tested(
     tx: &mut Tx<'_>,
     trigger: &Trigger,
     event: Option<EventRecordId>,
+    instruction: Option<&str>,
 ) -> Result<Tested> {
     let Some(event) = event else {
         let due = tx.triggers().due_at(trigger).await?.with_context(|| {
@@ -264,7 +267,7 @@ async fn tested(
         };
         return Ok(Tested {
             matches: true,
-            rendered: render(trigger, &event),
+            rendered: render(trigger, &event, instruction),
             agent: chosen_name(trigger, &event),
             elapsing: Some(due),
         });
@@ -281,7 +284,7 @@ async fn tested(
 
     Ok(Tested {
         matches: tx.triggers().matches(trigger, &event).await?,
-        rendered: render(trigger, &event),
+        rendered: render(trigger, &event, instruction),
         agent: chosen_name(trigger, &event),
         elapsing: None,
     })
@@ -291,7 +294,7 @@ fn chosen_name(trigger: &Trigger, event: &Event) -> Result<String> {
     chosen(trigger, event).map(|agent| agent.name.clone())
 }
 
-pub fn render(trigger: &Trigger, event: &Event) -> Result<Rendered> {
+pub fn render(trigger: &Trigger, event: &Event, instruction: Option<&str>) -> Result<Rendered> {
     let unrenderable = |field: &str| {
         format!(
             "the trigger {} cannot render its {field} for the event {}",
@@ -304,7 +307,7 @@ pub fn render(trigger: &Trigger, event: &Event) -> Result<Rendered> {
     Ok(Rendered {
         brief: templates
             .brief
-            .render(occurrence)
+            .render_brief(occurrence, instruction)
             .with_context(|| unrenderable("brief"))?,
         branch: templates
             .branch
@@ -390,7 +393,7 @@ pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
 /// An opening firing atomically commits its Session, first entry, Run and record, so a retry
 /// never opens its work twice.
 async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired> {
-    let rendered = render(trigger, event);
+    let rendered = render(trigger, event, None);
     let mut tx = store.begin().await?;
 
     if let Some(because) = tx.triggers().disabled_because(trigger).await? {
