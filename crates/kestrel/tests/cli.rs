@@ -93,7 +93,11 @@ impl Kestrel {
             .env("KESTREL_SUPERVISOR", support::supervisor::binary())
             .env(
                 "KESTREL_AGENT_RUNTIME",
-                support::scripted_agent::playing(script),
+                format!(
+                    "{}={}",
+                    support::RUNTIME,
+                    support::scripted_agent::playing(script)
+                ),
             )
             .env("RUST_LOG", "info")
             .stdin(Stdio::null())

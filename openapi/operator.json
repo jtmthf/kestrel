@@ -1116,6 +1116,13 @@
           },
           "event": {
             "$ref": "#/components/schemas/CloudEvent"
+          },
+          "firings": {
+            "type": "array",
+            "description": "What each Trigger that matched it did, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/Firing"
+            }
           }
         },
         "required": [
@@ -1123,7 +1130,47 @@
           "organization",
           "integration",
           "recorded_at",
-          "event"
+          "event",
+          "firings"
+        ]
+      },
+      "Firing": {
+        "description": "One Trigger matching the Event, and what that match did.",
+        "type": "object",
+        "properties": {
+          "trigger": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "opened",
+              "fed",
+              "ignored",
+              "failed"
+            ]
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The Session it opened or fed."
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a failed firing started nothing, such as labels choosing two Agents."
+          }
+        },
+        "required": [
+          "trigger",
+          "outcome",
+          "session",
+          "failure"
         ]
       },
       "CloudEvent": {

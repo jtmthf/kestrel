@@ -326,7 +326,7 @@ async fn the_second_run_uses_a_fresh_environment_after_the_first_is_gone() {
         .declare_workspace(&organization, "kestrel", &[], "main")
         .await;
     harness
-        .declare_agent(&organization, "builder", "scripted", None)
+        .declare_agent(&organization, "builder", "opencode", None)
         .await;
     harness
         .hold_provider_credential(&organization, PROVIDER_KEY, A_PROVIDER_KEY)

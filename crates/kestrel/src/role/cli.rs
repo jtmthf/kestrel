@@ -153,6 +153,11 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!("organization  {}", session.organization.name);
             println!("workspace     {}", session.workspace.name);
             println!("agent         {}", session.agent.name);
+            println!("runtime       {}", session.agent.runtime);
+            println!(
+                "model         {}",
+                session.agent.model.as_deref().unwrap_or("-")
+            );
             println!("branch        {}", session.branch);
             if let Some(correlation) = &session.correlation {
                 println!("correlation   {correlation}");
@@ -297,6 +302,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             on_miss,
             workspace,
             agent,
+            allows,
         }) => {
             let fires = match (filter, every) {
                 (Some(filter), None) => {
@@ -326,6 +332,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                     on_miss: *on_miss,
                     workspace,
                     agent,
+                    allows,
                 },
             )
             .await?;
@@ -404,6 +411,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             }
 
             let rendered = tested.rendered?;
+            println!("agent         {}", tested.agent?);
             println!("branch        {}", rendered.branch);
             println!(
                 "correlation   {}",
@@ -429,6 +437,17 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!("fires         {}", trigger.fires);
             println!("workspace     {}", trigger.workspace.name);
             println!("agent         {}", trigger.agent.name);
+            if !trigger.allows.is_empty() {
+                println!(
+                    "allows        {}",
+                    trigger
+                        .allows
+                        .iter()
+                        .map(|agent| agent.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
             match &templates.branch {
                 Some(branch) => println!("branch        {branch}"),
                 None => println!(

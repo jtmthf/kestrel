@@ -69,6 +69,16 @@ pub fn issue_event(id: i64, issue: i64, kind: &str, label: &str) -> serde_json::
     })
 }
 
+/// Labelled with `label` on an issue that already carries `carries` besides it.
+pub fn labelled_carrying(id: i64, issue: i64, label: &str, carries: &[&str]) -> serde_json::Value {
+    let mut event = labelled(id, issue, label);
+    event["issue"]["labels"] = std::iter::once(label)
+        .chain(carries.iter().copied())
+        .map(|name| serde_json::json!({ "name": name }))
+        .collect();
+    event
+}
+
 /// One comment as GitHub reports it, and as it answers a newly posted one.
 pub fn comment(id: i64, body: &str) -> serde_json::Value {
     serde_json::json!({

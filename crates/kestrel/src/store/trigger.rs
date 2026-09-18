@@ -4,8 +4,8 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 use crate::domain::{
-    Agent, CorrelationMiss, DisableReason, Event, Fires, FiringBudget, Organization, Session,
-    Templates, Trigger, TriggerId, TriggerState, Workspace,
+    Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
+    Organization, Session, Templates, Trigger, TriggerId, TriggerState, Workspace,
 };
 use crate::filter::{Attribute, Filter};
 use crate::store::{agent, integration, organization, workspace};
@@ -44,6 +44,7 @@ impl<'a> Triggers<'a> {
         on_miss: Option<CorrelationMiss>,
         workspace: &Workspace,
         agent: &Agent,
+        allows: &[Agent],
         applied: bool,
     ) -> Result<Trigger> {
         let trigger = Trigger {
@@ -55,6 +56,7 @@ impl<'a> Triggers<'a> {
             on_miss,
             workspace: workspace.clone(),
             agent: agent.clone(),
+            allows: allows.to_vec(),
             state: TriggerState::Enabled,
             disabled_because: None,
             firing_budget: FiringBudget::default(),
@@ -96,12 +98,17 @@ impl<'a> Triggers<'a> {
         .execute(&mut *self.connection)
         .await
         .with_context(|| format!("declaring the trigger {name}"))?;
+        self.allow(&trigger, allows).await?;
 
         Ok(trigger)
     }
 
     /// Matches only what is recorded from now on, because the Events recorded under the old
     /// declaration were never judged against the new one.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a trigger is what it is declared with"
+    )]
     pub async fn redeclare(
         &mut self,
         trigger: &Trigger,
@@ -110,6 +117,7 @@ impl<'a> Triggers<'a> {
         on_miss: Option<CorrelationMiss>,
         workspace: &Workspace,
         agent: &Agent,
+        allows: &[Agent],
     ) -> Result<()> {
         let declared_at = Timestamp::now();
         let (filter, every, due_at) = match fires {
@@ -141,6 +149,37 @@ impl<'a> Triggers<'a> {
         .execute(&mut *self.connection)
         .await
         .with_context(|| format!("redeclaring the trigger {}", trigger.name))?;
+        self.allow(trigger, allows).await?;
+
+        Ok(())
+    }
+
+    async fn allow(&mut self, trigger: &Trigger, allows: &[Agent]) -> Result<()> {
+        sqlx::query("DELETE FROM trigger_agent WHERE trigger_id = ?")
+            .bind(trigger.id.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| {
+                format!("forgetting the agents the trigger {} allows", trigger.name)
+            })?;
+        for agent in allows {
+            sqlx::query(
+                "INSERT INTO trigger_agent (trigger_id, organization_id, agent_id)
+                 VALUES (?, ?, ?)
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(trigger.id.to_string())
+            .bind(trigger.organization.id.to_string())
+            .bind(agent.id.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| {
+                format!(
+                    "allowing the trigger {} the agent {}",
+                    trigger.name, agent.name
+                )
+            })?;
+        }
 
         Ok(())
     }
@@ -161,6 +200,7 @@ impl<'a> Triggers<'a> {
             .execute(&mut *self.connection)
             .await
             .with_context(|| format!("forgetting the firings of the trigger {}", trigger.name))?;
+        self.allow(trigger, &[]).await?;
         sqlx::query("DELETE FROM trigger WHERE id = ?")
             .bind(trigger.id.to_string())
             .execute(&mut *self.connection)
@@ -394,6 +434,33 @@ impl<'a> Triggers<'a> {
         Ok(matched)
     }
 
+    pub async fn firings_of(&mut self, event: EventRecordId) -> Result<Vec<Firing>> {
+        sqlx::query(
+            "SELECT trigger.name, firing.outcome, firing.session_id, firing.failure
+             FROM firing
+             JOIN trigger ON trigger.id = firing.trigger_id
+             WHERE firing.event_record_id = ?
+             ORDER BY firing.fired_at, trigger.name",
+        )
+        .bind(event.to_string())
+        .fetch_all(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading what the event {event} fired"))?
+        .iter()
+        .map(|row| {
+            Ok(Firing {
+                trigger: row.get("name"),
+                outcome: row.get("outcome"),
+                session: row
+                    .get::<Option<String>, _>("session_id")
+                    .map(|session| session.parse())
+                    .transpose()?,
+                failure: row.get("failure"),
+            })
+        })
+        .collect()
+    }
+
     pub async fn record_opened_firing(
         &mut self,
         trigger: &Trigger,
@@ -577,6 +644,26 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
         row.get::<String, _>("agent_id").parse()?,
     )
     .await?;
+    let mut allows = Vec::new();
+    for allowed in sqlx::query(
+        "SELECT agent.id FROM trigger_agent
+         JOIN agent ON agent.id = trigger_agent.agent_id
+         WHERE trigger_agent.trigger_id = ?
+         ORDER BY agent.name",
+    )
+    .bind(row.get::<String, _>("id"))
+    .fetch_all(&mut *connection)
+    .await?
+    {
+        allows.push(
+            agent::with_id(
+                connection,
+                &organization,
+                allowed.get::<String, _>("id").parse()?,
+            )
+            .await?,
+        );
+    }
 
     let state: TriggerState = row.get::<String, _>("state").parse()?;
 
@@ -609,6 +696,7 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
             .transpose()?,
         workspace,
         agent,
+        allows,
         state: state.clone(),
         disabled_because: None,
         firing_budget: FiringBudget::default(),

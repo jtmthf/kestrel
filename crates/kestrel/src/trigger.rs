@@ -1,16 +1,19 @@
 //! An Event supplies data and never authority (ADR-0013): the Agent and the Workspace a
 //! firing starts work with are named in the declaration a human applied, never in the Event.
 
-use anyhow::{Context as _, Result, bail};
+use std::collections::BTreeSet;
+
+use anyhow::{Context as _, Result, anyhow, bail};
 use jiff::Timestamp;
 
 pub mod apply;
 
 use crate::domain::{
-    CorrelationMiss, DisableReason, Event, EventRecordId, Fires, FiringBudget, Occurrence, RunId,
-    SessionId, Templates, Trigger, TriggerId, TriggerState,
+    Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
+    Occurrence, Organization, RunId, SessionId, Templates, Trigger, TriggerId, TriggerState,
 };
 use crate::fanout::{self, Change};
+use crate::integration::github::EventData;
 use crate::log::Entry;
 use crate::session;
 use crate::store::integration::Recorded;
@@ -21,6 +24,8 @@ use crate::store::{Store, Tx};
 /// matches at once.
 const AT_A_TIME: usize = 32;
 
+pub const AGENT_LABEL: &str = "agent:";
+
 pub struct Declaration<'a> {
     pub organization: &'a str,
     pub name: &'a str,
@@ -29,6 +34,7 @@ pub struct Declaration<'a> {
     pub on_miss: Option<CorrelationMiss>,
     pub workspace: &'a str,
     pub agent: &'a str,
+    pub allows: &'a [String],
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +72,7 @@ pub struct Rendered {
 pub struct Tested {
     pub matches: bool,
     pub rendered: Result<Rendered>,
+    pub agent: Result<String>,
     /// When the elapsing a test named no Event for is due.
     pub elapsing: Option<Timestamp>,
 }
@@ -104,6 +111,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
         .named(&organization, declaration.workspace)
         .await?;
     let agent = tx.agents().named(&organization, declaration.agent).await?;
+    let allows = allowed(&mut tx, &organization, declaration.allows).await?;
     let trigger = tx
         .triggers()
         .declare(
@@ -114,12 +122,62 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
             declaration.on_miss,
             &workspace,
             &agent,
+            &allows,
             false,
         )
         .await?;
     tx.commit().await?;
 
     Ok(trigger)
+}
+
+pub(crate) async fn allowed(
+    tx: &mut Tx<'_>,
+    organization: &Organization,
+    names: &[String],
+) -> Result<Vec<Agent>> {
+    let mut allows = Vec::with_capacity(names.len());
+    for name in names {
+        allows.push(tx.agents().named(organization, name).await?);
+    }
+
+    Ok(allows)
+}
+
+/// The Trigger's own Agent, or the one an `agent:<name>` label on the work item chooses from
+/// those it allows: a label is data, so it never reaches an Agent a human did not name here.
+pub fn chosen<'t>(trigger: &'t Trigger, event: &Event) -> Result<&'t Agent> {
+    let data = EventData::new(&event.occurrence);
+    let named: BTreeSet<&str> = data
+        .labels()
+        .filter_map(|label| label.strip_prefix(AGENT_LABEL))
+        .collect();
+
+    match named.into_iter().collect::<Vec<_>>().as_slice() {
+        [] => Ok(&trigger.agent),
+        [name] => std::iter::once(&trigger.agent)
+            .chain(&trigger.allows)
+            .find(|agent| agent.name == *name)
+            .ok_or_else(|| {
+                anyhow!(
+                    "the label {AGENT_LABEL}{name} chooses an agent the trigger {} does not allow",
+                    trigger.name
+                )
+            }),
+        several => bail!(
+            "the labels {} each choose an agent, and the trigger {} will not guess which",
+            several
+                .iter()
+                .map(|name| format!("{AGENT_LABEL}{name}"))
+                .collect::<Vec<_>>()
+                .join(" and "),
+            trigger.name
+        ),
+    }
+}
+
+pub async fn firings(store: &Store, event: EventRecordId) -> Result<Vec<Firing>> {
+    store.begin().await?.triggers().firings_of(event).await
 }
 
 pub async fn triggers(store: &Store, organization: &str) -> Result<Vec<Trigger>> {
@@ -167,6 +225,7 @@ pub async fn test_declared(
             .named(&organization, &declared.workspace)
             .await?,
         agent: tx.agents().named(&organization, &declared.agent).await?,
+        allows: allowed(&mut tx, &organization, &declared.allows).await?,
         organization,
         name: declared.name.clone(),
         fires: Fires::On(declared.filter.clone()),
@@ -206,6 +265,7 @@ async fn tested(
         return Ok(Tested {
             matches: true,
             rendered: render(trigger, &event),
+            agent: chosen_name(trigger, &event),
             elapsing: Some(due),
         });
     };
@@ -222,8 +282,13 @@ async fn tested(
     Ok(Tested {
         matches: tx.triggers().matches(trigger, &event).await?,
         rendered: render(trigger, &event),
+        agent: chosen_name(trigger, &event),
         elapsing: None,
     })
+}
+
+fn chosen_name(trigger: &Trigger, event: &Event) -> Result<String> {
+    chosen(trigger, event).map(|agent| agent.name.clone())
 }
 
 pub fn render(trigger: &Trigger, event: &Event) -> Result<Rendered> {
@@ -372,12 +437,16 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
         None
     };
 
+    let agent = match chosen(trigger, event) {
+        Ok(agent) => agent,
+        Err(error) => return failed(tx, trigger, event, format!("{error:#}")).await,
+    };
     let session = tx
         .sessions()
         .open(Opening {
             organization: &trigger.organization,
             workspace: &trigger.workspace,
-            agent: &trigger.agent,
+            agent,
             branch: &rendered.branch,
             correlation: rendered.correlation.as_deref(),
             continues: continues.as_ref(),
@@ -398,7 +467,7 @@ async fn firing(store: &Store, trigger: &Trigger, event: &Event) -> Result<Fired
         .append(
             &session,
             Entry::ParticipantJoined {
-                participant: trigger.agent.name.clone(),
+                participant: agent.name.clone(),
             },
         )
         .await?;

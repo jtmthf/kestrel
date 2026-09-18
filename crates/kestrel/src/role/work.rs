@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
@@ -24,12 +25,40 @@ const POLL: Duration = Duration::from_millis(100);
 pub struct Dispatch {
     pub link: String,
     pub driver: Driver,
-    pub runtime: String,
+    pub runtimes: Vec<AgentRuntime>,
     pub auth: Option<String>,
     pub max_active_runs: NonZeroUsize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRuntime {
+    pub name: String,
+    pub command: String,
+}
+
+impl FromStr for AgentRuntime {
+    type Err = anyhow::Error;
+
+    fn from_str(given: &str) -> Result<Self> {
+        match given.split_once('=') {
+            Some((name, command)) if !name.is_empty() && !command.trim().is_empty() => Ok(Self {
+                name: name.to_owned(),
+                command: command.to_owned(),
+            }),
+            _ => bail!("{given} is not NAME=COMMAND"),
+        }
+    }
+}
+
 impl Dispatch {
+    fn spawns(&self, runtime: &str) -> Result<&str> {
+        self.runtimes
+            .iter()
+            .find(|spawned| spawned.name == runtime)
+            .map(|spawned| spawned.command.as_str())
+            .with_context(|| format!("this work role spawns no agent runtime named {runtime}"))
+    }
+
     fn logs_the_agent_in(&self) -> bool {
         self.auth
             .as_deref()
@@ -132,6 +161,13 @@ async fn execute(
         work::fail(store, &run, &error.to_string()).await?;
         return Ok(());
     }
+    let command = match dispatch.spawns(&session.agent.runtime) {
+        Ok(command) => command,
+        Err(error) => {
+            work::fail(store, &run, &error.to_string()).await?;
+            return Ok(());
+        }
+    };
 
     let mut environment = match dispatch.driver.provision(
         run.id,
@@ -139,7 +175,7 @@ async fn execute(
             ("KESTREL_LINK", dispatch.link.as_str()),
             ("KESTREL_RUN", &run.id.to_string()),
             ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-            ("KESTREL_AGENT_RUNTIME", dispatch.runtime.as_str()),
+            ("KESTREL_AGENT_RUNTIME", command),
             (
                 "KESTREL_AGENT_AUTH",
                 dispatch.auth.as_deref().unwrap_or_default(),

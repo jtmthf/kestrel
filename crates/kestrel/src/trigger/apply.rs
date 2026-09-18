@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::domain::{CorrelationMiss, Fires, Templates, Trigger};
 use crate::filter::Filter;
 use crate::store::Store;
-use crate::trigger::check_miss;
+use crate::trigger::{allowed, check_miss};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declared {
@@ -16,6 +16,7 @@ pub struct Declared {
     pub on_miss: Option<CorrelationMiss>,
     pub workspace: String,
     pub agent: String,
+    pub allows: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +64,8 @@ struct Entry {
     on_miss: Option<String>,
     workspace: String,
     agent: String,
+    #[serde(default)]
+    allows: Vec<String>,
 }
 
 pub fn parse(text: &str) -> Result<Vec<Declared>> {
@@ -99,6 +102,7 @@ fn declared(name: &str, entry: Entry) -> Result<Declared> {
         on_miss,
         workspace: entry.workspace,
         agent: entry.agent,
+        allows: entry.allows,
     })
 }
 
@@ -121,6 +125,7 @@ pub async fn apply(
             .named(&organization, &declared.workspace)
             .await?;
         let agent = tx.agents().named(&organization, &declared.agent).await?;
+        let allows = allowed(&mut tx, &organization, &declared.allows).await?;
         let becomes = described(declared);
         let fires = Fires::On(declared.filter.clone());
 
@@ -137,6 +142,7 @@ pub async fn apply(
                     declared.on_miss,
                     &workspace,
                     &agent,
+                    &allows,
                     true,
                 )
                 .await?;
@@ -158,6 +164,7 @@ pub async fn apply(
                     declared.on_miss,
                     &workspace,
                     &agent,
+                    &allows,
                 )
                 .await?;
         } else if !trigger.applied {
@@ -212,7 +219,7 @@ pub async fn apply(
     })
 }
 
-type Described = [(&'static str, Option<String>); 7];
+type Described = [(&'static str, Option<String>); 8];
 
 fn described(declared: &Declared) -> Described {
     describe(
@@ -221,6 +228,7 @@ fn described(declared: &Declared) -> Described {
         declared.on_miss,
         &declared.workspace,
         &declared.agent,
+        &declared.allows,
     )
 }
 
@@ -231,6 +239,11 @@ fn described_trigger(trigger: &Trigger) -> Described {
         trigger.on_miss,
         &trigger.workspace.name,
         &trigger.agent.name,
+        &trigger
+            .allows
+            .iter()
+            .map(|agent| agent.name.clone())
+            .collect::<Vec<_>>(),
     )
 }
 
@@ -240,11 +253,17 @@ fn describe(
     on_miss: Option<CorrelationMiss>,
     workspace: &str,
     agent: &str,
+    allows: &[String],
 ) -> Described {
+    let mut allows = allows.to_vec();
+    allows.sort();
+    allows.dedup();
+
     [
         ("matches", Some(filter.to_string())),
         ("workspace", Some(workspace.to_owned())),
         ("agent", Some(agent.to_owned())),
+        ("allows", (!allows.is_empty()).then(|| allows.join(", "))),
         ("branch", templates.branch.as_ref().map(ToString::to_string)),
         (
             "correlation",

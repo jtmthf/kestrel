@@ -40,7 +40,7 @@ use kestrel::link::{self, Instruction};
 use kestrel::log::{Cursor, Entry, Page, TranscriptEntry, Unreadable, Window};
 use kestrel::provider::{self, Held};
 use kestrel::role::serve::Listen;
-use kestrel::role::work::Dispatch;
+use kestrel::role::work::{AgentRuntime, Dispatch};
 use kestrel::session;
 use kestrel::store::Store;
 use kestrel::store::session::Opening;
@@ -96,8 +96,21 @@ pub struct Harness {
 #[derive(Clone)]
 pub struct Provisions {
     driver: Driver,
-    runtime: String,
+    runtimes: Vec<AgentRuntime>,
     max_active_runs: NonZeroUsize,
+}
+
+/// The runtime an Agent names unless a test says otherwise, spawned as whatever the test plays.
+pub const RUNTIME: &str = "opencode";
+
+fn spawning(runtimes: &[(&str, &str)]) -> Vec<AgentRuntime> {
+    runtimes
+        .iter()
+        .map(|&(name, command)| AgentRuntime {
+            name: name.to_owned(),
+            command: command.to_owned(),
+        })
+        .collect()
 }
 
 /// Comes back on the address it was listening on, so what an Environment already dialled
@@ -143,9 +156,21 @@ impl Harness {
     }
 
     pub async fn dispatching_up_to(supervisor: &Path, runtime: &str, maximum: usize) -> Self {
+        Self::dispatching_runtimes_up_to(supervisor, &[(RUNTIME, runtime)], maximum).await
+    }
+
+    pub async fn dispatching_runtimes(supervisor: &Path, runtimes: &[(&str, &str)]) -> Self {
+        Self::dispatching_runtimes_up_to(supervisor, runtimes, 2).await
+    }
+
+    async fn dispatching_runtimes_up_to(
+        supervisor: &Path,
+        runtimes: &[(&str, &str)],
+        maximum: usize,
+    ) -> Self {
         Self::booted(Some(Provisions {
             driver: Driver::LocalExec(LocalExec::running(supervisor)),
-            runtime: runtime.to_owned(),
+            runtimes: spawning(runtimes),
             max_active_runs: NonZeroUsize::new(maximum).expect("at least one active run"),
         }))
         .await
@@ -162,7 +187,7 @@ impl Harness {
             },
             Some(Provisions {
                 driver: Driver::Docker(Docker::provisioning_from(image)),
-                runtime: runtime.to_owned(),
+                runtimes: spawning(&[(RUNTIME, runtime)]),
                 max_active_runs: NonZeroUsize::new(2).unwrap(),
             }),
         )
@@ -202,7 +227,7 @@ impl Harness {
                 Driver::LocalExec(_) => format!("http://{address}"),
             },
             driver: provisions.driver,
-            runtime: provisions.runtime,
+            runtimes: provisions.runtimes,
             auth: None,
             max_active_runs: provisions.max_active_runs,
         });
@@ -532,9 +557,44 @@ impl Harness {
                 on_miss,
                 workspace,
                 agent,
+                allows: &[],
             },
         )
         .await
+    }
+
+    /// Labelled `ready-for-agent` on the repository, starting its work with `agent` unless a
+    /// label chooses one of `allows`.
+    pub async fn declare_trigger_allowing(
+        &self,
+        organization: &str,
+        repository: &str,
+        agent: &str,
+        allows: &[&str],
+        correlation: Option<&str>,
+    ) -> Trigger {
+        trigger::declare(
+            &self.store,
+            Declaration {
+                organization,
+                name: "ready",
+                fires: &Fires::On(
+                    labelled_on(repository, "ready-for-agent")
+                        .parse()
+                        .expect("the filter should parse"),
+                ),
+                templates: &templates(BRIEF, None, correlation),
+                on_miss: correlation.map(|_| CorrelationMiss::Open),
+                workspace: "kestrel",
+                agent,
+                allows: &allows
+                    .iter()
+                    .map(|&name| name.to_owned())
+                    .collect::<Vec<_>>(),
+            },
+        )
+        .await
+        .expect("the trigger should declare")
     }
 
     pub async fn apply_triggers(&self, organization: &str, file: &str) -> Applied {
@@ -588,6 +648,7 @@ impl Harness {
                     .then_some(CorrelationMiss::Open),
                 workspace: "kestrel",
                 agent: "builder",
+                allows: &[],
             },
         )
         .await
