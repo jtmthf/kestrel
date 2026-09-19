@@ -976,6 +976,132 @@
         }
       }
     },
+    "/operator/organizations/{organization}/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "summary": "List every Session in an Organization.",
+        "parameters": [{
+          "name": "organization",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string" }
+        }],
+        "responses": {
+          "200": { "description": "Every Session, ordered by when it opened.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Session" } } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      },
+      "post": {
+        "operationId": "openSession",
+        "summary": "Open a Session.",
+        "parameters": [{
+          "name": "organization",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string" }
+        }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionDeclaration" } } } },
+        "responses": {
+          "201": { "description": "The opened Session.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Session" } } } },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/sessions/{session}": {
+      "get": {
+        "operationId": "showSession",
+        "summary": "Show a Session.",
+        "parameters": [{
+          "name": "session",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }],
+        "responses": {
+          "200": { "description": "The Session.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Session" } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/sessions/{session}/messages": {
+      "post": {
+        "operationId": "postToSession",
+        "summary": "Post to a Session.",
+        "parameters": [{
+          "name": "session",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionMessage" } } } },
+        "responses": {
+          "200": { "description": "The Run the message started or continued, or null when it was queued behind an active turn.", "content": { "application/json": { "schema": { "anyOf": [{ "$ref": "#/components/schemas/Run" }, { "type": "null" }] } } } },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/sessions/{session}/seal": {
+      "post": {
+        "operationId": "sealSession",
+        "summary": "Seal a Session.",
+        "parameters": [{
+          "name": "session",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }],
+        "responses": {
+          "200": { "description": "The sealed Session.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Session" } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/sessions/{session}/runs": {
+      "get": {
+        "operationId": "listRuns",
+        "summary": "List a Session's Runs.",
+        "parameters": [{
+          "name": "session",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }],
+        "responses": {
+          "200": { "description": "Every Run, ordered by when it was enqueued.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Run" } } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      },
+      "post": {
+        "operationId": "enqueueRun",
+        "summary": "Enqueue a Run in a Session.",
+        "parameters": [{
+          "name": "session",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RunDeclaration" } } } },
+        "responses": {
+          "201": { "description": "The queued Run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Run" } } } },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
     "/operator/sessions/{session}/transcript": {
       "get": {
         "operationId": "transcript",
@@ -1182,6 +1308,104 @@
           "runtime",
           "model"
         ]
+      },
+      "SessionDeclaration": {
+        "type": "object",
+        "properties": {
+          "workspace": { "type": "string", "minLength": 1 },
+          "agent": { "type": "string", "minLength": 1 },
+          "profile": { "type": ["string", "null"] },
+          "branch": { "type": ["string", "null"] },
+          "continues": { "type": ["string", "null"], "format": "uuid" }
+        },
+        "required": ["workspace", "agent"]
+      },
+      "SessionMessage": {
+        "type": "object",
+        "properties": {
+          "participant": { "type": "string", "default": "operator" },
+          "message": { "type": "string" }
+        },
+        "required": ["message"]
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "organization": { "type": "string" },
+          "workspace": { "type": "string" },
+          "agent": { "type": "string" },
+          "profile": { "type": ["string", "null"] },
+          "checkout": { "$ref": "#/components/schemas/Checkout" },
+          "correlation": { "type": ["string", "null"] },
+          "state": { "type": "string", "enum": ["open", "sealed"] },
+          "opened_at": { "type": "string", "format": "date-time" },
+          "last_active_at": { "type": "string", "format": "date-time" },
+          "sealed_at": { "type": ["string", "null"], "format": "date-time" },
+          "continues": { "type": ["string", "null"], "format": "uuid" },
+          "started_by": { "type": ["string", "null"], "format": "uuid" },
+          "continued_by": { "type": "array", "items": { "type": "string", "format": "uuid" } }
+        },
+        "required": ["id", "organization", "workspace", "agent", "profile", "checkout", "correlation", "state", "opened_at", "last_active_at", "sealed_at", "continues", "started_by", "continued_by"]
+      },
+      "Checkout": {
+        "type": "object",
+        "properties": {
+          "repositories": { "type": "array", "items": { "type": "string" } },
+          "base": { "type": "string" },
+          "branch": { "type": "string" }
+        },
+        "required": ["repositories", "base", "branch"]
+      },
+      "RunDeclaration": {
+        "type": "object",
+        "properties": {
+          "model": { "type": ["string", "null"] }
+        }
+      },
+      "Run": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "session": { "type": "string", "format": "uuid" },
+          "state": { "type": "string", "enum": ["queued", "active", "ended", "unreachable"] },
+          "exit": { "anyOf": [{ "$ref": "#/components/schemas/Exit" }, { "type": "null" }] },
+          "instance": { "type": ["string", "null"] },
+          "supervisor": { "type": ["string", "null"] },
+          "model": { "type": ["string", "null"] },
+          "worked_model": { "type": ["string", "null"] },
+          "enqueued_at": { "type": "string", "format": "date-time" },
+          "started_at": { "type": ["string", "null"], "format": "date-time" },
+          "ended_at": { "type": ["string", "null"], "format": "date-time" },
+          "lease_expires_at": { "type": ["string", "null"], "format": "date-time" },
+          "connected_at": { "type": ["string", "null"], "format": "date-time" },
+          "supervisor_version": { "type": ["string", "null"] },
+          "usage": { "anyOf": [{ "$ref": "#/components/schemas/Usage" }, { "type": "null" }] }
+        },
+        "required": ["id", "session", "state", "exit", "instance", "supervisor", "model", "worked_model", "enqueued_at", "started_at", "ended_at", "lease_expires_at", "connected_at", "supervisor_version", "usage"]
+      },
+      "Exit": {
+        "oneOf": [
+          { "type": "object", "properties": { "status": { "const": "succeeded" } }, "required": ["status"] },
+          { "type": "object", "properties": { "status": { "const": "failed" }, "because": { "type": "string" } }, "required": ["status", "because"] }
+        ]
+      },
+      "Usage": {
+        "type": "object",
+        "properties": {
+          "context_used": { "type": "integer", "minimum": 0 },
+          "context_size": { "type": "integer", "minimum": 0 },
+          "cost": { "anyOf": [{ "$ref": "#/components/schemas/Cost" }, { "type": "null" }] }
+        },
+        "required": ["context_used", "context_size", "cost"]
+      },
+      "Cost": {
+        "type": "object",
+        "properties": {
+          "amount": { "type": "number" },
+          "currency": { "type": "string" }
+        },
+        "required": ["amount", "currency"]
       },
       "ProviderCredentialSecret": {
         "type": "object",

@@ -284,6 +284,209 @@ async fn a_client_declares_and_lists_workspaces_and_agents() {
 }
 
 #[tokio::test]
+async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
+    let harness = Harness::boot().await;
+    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    succeeded(
+        &client(
+            &harness,
+            &[
+                "workspace",
+                "declare",
+                "kestrel",
+                "--organization",
+                "acme",
+                "--repository",
+                "https://github.com/jtmthf/kestrel",
+                "--branch",
+                "main",
+            ],
+        )
+        .await,
+    );
+    succeeded(
+        &client(
+            &harness,
+            &["agent", "declare", "builder", "--organization", "acme"],
+        )
+        .await,
+    );
+
+    let opened = succeeded(
+        &client(
+            &harness,
+            &[
+                "session",
+                "open",
+                "--organization",
+                "acme",
+                "--workspace",
+                "kestrel",
+                "--agent",
+                "builder",
+            ],
+        )
+        .await,
+    );
+    let session = opened[0]["id"].as_str().expect("a session id").to_owned();
+
+    let listed = succeeded(&client(&harness, &["session", "list", "--organization", "acme"]).await);
+    assert_eq!(listed, opened);
+    let shown = succeeded(&client(&harness, &["session", "show", &session]).await);
+    assert_eq!(shown, opened);
+
+    let posted = succeeded(
+        &client(
+            &harness,
+            &[
+                "session",
+                "post",
+                &session,
+                "start with the operator boundary",
+            ],
+        )
+        .await,
+    );
+    let run = posted[0]["id"].as_str().expect("a run id");
+    assert_eq!(posted[0]["session"], session);
+    assert_eq!(posted[0]["state"], "queued");
+    assert_eq!(
+        succeeded(&client(&harness, &["run", "list", "--session", &session]).await),
+        posted
+    );
+
+    let completed = harness
+        .claim_run()
+        .await
+        .expect("the posted run should wait for the worker");
+    assert_eq!(completed.run.id.to_string(), run);
+    harness.complete_run(&completed.run).await;
+    let sealed = succeeded(&client(&harness, &["session", "seal", &session]).await);
+    assert_eq!(sealed[0]["state"], "sealed");
+
+    let continued = succeeded(
+        &client(
+            &harness,
+            &[
+                "session",
+                "open",
+                "--organization",
+                "acme",
+                "--workspace",
+                "kestrel",
+                "--agent",
+                "builder",
+                "--continues",
+                &session,
+            ],
+        )
+        .await,
+    );
+    let continuing = continued[0]["id"].as_str().expect("a continuing session");
+    assert_eq!(continued[0]["continues"], session);
+    let enqueued = succeeded(
+        &client(
+            &harness,
+            &[
+                "run",
+                "enqueue",
+                "--session",
+                continuing,
+                "--model",
+                "claude-opus-5",
+            ],
+        )
+        .await,
+    );
+    assert_eq!(enqueued[0]["session"], continuing);
+    assert_eq!(enqueued[0]["model"], "claude-opus-5");
+    assert_eq!(
+        succeeded(&client(&harness, &["run", "list", "--session", continuing]).await),
+        enqueued
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn the_operator_documents_session_and_run_answers_and_refusals() {
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            "kestrel",
+            &["https://github.com/jtmthf/kestrel".to_owned()],
+            "main",
+        )
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+    let sessions = operator::SESSIONS.replace("{organization}", "acme");
+
+    let (status, _) = got(&harness, &sessions).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = declared(
+        &harness,
+        &sessions,
+        &json!({ "workspace": "nowhere", "agent": "builder" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, opened) = declared(
+        &harness,
+        &sessions,
+        &json!({ "workspace": "kestrel", "agent": "builder" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let session = opened["id"].as_str().expect("a session id");
+    let shown = operator::SESSION.replace("{session}", session);
+    let messages = operator::SESSION_MESSAGES.replace("{session}", session);
+    let runs = operator::RUNS.replace("{session}", session);
+
+    let (status, _) = got(&harness, &shown).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, posted) = declared(
+        &harness,
+        &messages,
+        &json!({ "message": "start with the operator boundary" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(posted["session"], session);
+    let (status, _) = got(&harness, &runs).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = declared(&harness, &runs, &json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let run = harness
+        .claim_run()
+        .await
+        .expect("the posted run should wait for the worker");
+    harness.complete_run(&run.run).await;
+    let seal = operator::SESSION_SEAL.replace("{session}", session);
+    let (status, _) = declared(&harness, &seal, &json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = declared(&harness, &seal, &json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = declared(
+        &harness,
+        &sessions,
+        &json!({ "workspace": "kestrel", "agent": "builder", "continues": session }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let nowhere = operator::SESSION.replace("{session}", "01a0a2d8-baf8-7c02-99fa-7280f174c14a");
+    let (status, _) = got(&harness, &nowhere).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
     let harness = Harness::boot().await;
     let workspace = json!({
@@ -1294,6 +1497,13 @@ fn the_published_operator_document_describes_the_boundary_the_control_plane_serv
         (operator::EVENT_REFUSAL, "delete"),
         (operator::EVENTS, "get"),
         (operator::EVENT, "get"),
+        (operator::SESSIONS, "get"),
+        (operator::SESSIONS, "post"),
+        (operator::SESSION, "get"),
+        (operator::SESSION_MESSAGES, "post"),
+        (operator::SESSION_SEAL, "post"),
+        (operator::RUNS, "get"),
+        (operator::RUNS, "post"),
         (operator::TRANSCRIPT, "get"),
     ];
     assert_eq!(
@@ -1412,6 +1622,14 @@ fn requires(document: &Value, schema: &Value, body: &Value) {
         Some(reference) => resolve(document, reference),
         None => schema,
     };
+    if let Some(options) = schema["anyOf"].as_array() {
+        let option = options
+            .iter()
+            .find(|option| (option["type"] == "null") == body.is_null())
+            .expect("the documented alternatives include the answer");
+        requires(document, option, body);
+        return;
+    }
     if schema["type"] == "array" {
         for item in body.as_array().expect("an array, as documented") {
             requires(document, &schema["items"], item);
