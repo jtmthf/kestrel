@@ -5,9 +5,10 @@ use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::domain::{Exit, Run, RunId, SessionId, Usage};
+use crate::domain::{Exit, Run, RunId, RunState, SessionId, Turn, Usage};
 use crate::instance::Observed;
 use crate::integration::outcome;
+use crate::link;
 use crate::link::credential::Secret;
 use crate::log::{Entry, Message};
 use crate::store::session::{PendingMessage, Taken};
@@ -36,6 +37,7 @@ pub enum Report {
     Model { model: String, offered: Vec<String> },
     Said { message: String },
     Used { usage: Usage },
+    Answered,
     Checkout { repositories: Vec<Observed> },
     Finished { exit: Exit },
 }
@@ -48,6 +50,7 @@ impl Report {
             | Report::Model { .. }
             | Report::Said { .. }
             | Report::Used { .. }
+            | Report::Answered
             | Report::Checkout { .. }
             | Report::Finished { .. } => true,
         }
@@ -216,6 +219,15 @@ pub async fn report(
             info!(run = %run.id, %usage, "a supervisor reported what its agent used");
             tx.sessions().record_usage(run, &usage).await?;
         }
+        Report::Answered => {
+            if tx.sessions().answer_turn(run).await? {
+                tx.sessions()
+                    .record_active(run.session, Timestamp::now())
+                    .await?;
+                prompt_pending(&mut tx, run).await?;
+            }
+            info!(run = %run.id, "a supervisor reported its agent answered a turn");
+        }
         Report::Checkout { repositories } => {
             tx.sessions()
                 .record_observed(run.session, &repositories)
@@ -282,6 +294,47 @@ pub async fn supervisor_gone(store: &Store, run: &Run) -> Result<Option<Run>> {
     tx.commit().await?;
 
     Ok(continued)
+}
+
+pub async fn is_waiting(store: &Store, run: &Run) -> Result<bool> {
+    store.begin().await?.sessions().is_waiting(run).await
+}
+
+pub async fn turns(store: &Store, run: RunId) -> Result<Vec<Turn>> {
+    store.begin().await?.sessions().turns(run).await
+}
+
+/// A Run between turns has done everything asked of it, so stopping it there is how it
+/// succeeds; stopping one mid-turn abandons what its agent was still doing.
+pub async fn stop(store: &Store, id: RunId) -> Result<Exit> {
+    let mut tx = store.begin().await?;
+    let run = tx.sessions().run(id).await?;
+    let exit = match run.state {
+        RunState::Ended | RunState::Unreachable => bail!("the run {id} has already ended"),
+        RunState::Queued => failed("it was stopped before it started"),
+        RunState::Active if tx.sessions().is_waiting(&run).await? => Exit::Succeeded,
+        RunState::Active => failed("it was stopped mid-turn, before its agent answered"),
+    };
+    let stands = stopping(&mut tx, &run, exit).await?;
+    tx.commit().await?;
+
+    Ok(stands)
+}
+
+/// Told as well as ended, so a supervisor leaves the link rather than dialling back in to be
+/// refused.
+pub(crate) async fn stopping(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exit> {
+    tx.sessions()
+        .send_instruction(run, link::Instruction::Stop)
+        .await?;
+
+    ending(tx, run, exit).await
+}
+
+fn failed(because: &str) -> Exit {
+    Exit::Failed {
+        because: because.to_owned(),
+    }
 }
 
 pub async fn complete(store: &Store, run: &Run) -> Result<Exit> {
@@ -376,21 +429,59 @@ async fn continue_pending(tx: &mut Tx<'_>, session: SessionId) -> Result<Option<
         return Ok(None);
     }
 
-    tx.log().append(&session, pending_entry(pending)).await?;
+    tx.log()
+        .append(
+            &session,
+            Entry::Messages {
+                messages: messages(pending),
+            },
+        )
+        .await?;
 
     Ok(Some(tx.sessions().enqueue_run(&session, None).await?))
 }
 
-fn pending_entry(pending: Vec<PendingMessage>) -> Entry {
-    Entry::Messages {
-        messages: pending
-            .into_iter()
-            .map(|pending| Message {
-                participant: pending.participant,
-                message: pending.body,
-            })
-            .collect(),
+/// What arrived during the turn just answered is the next one's prompt, in the same Run.
+async fn prompt_pending(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
+    if tx.sessions().run(run.id).await?.state != RunState::Active {
+        return Ok(());
     }
+    let session = tx.sessions().get(run.session).await?;
+    let pending = tx.sessions().take_pending_messages(&session).await?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let messages = messages(pending);
+    let prompt = follow_up(&messages);
+    tx.log()
+        .append(&session, Entry::Messages { messages })
+        .await?;
+
+    link::prompt(tx, run, prompt).await
+}
+
+/// A lone message reaches the agent as written, so a skill invocation it leads with is still
+/// recognised; several are attributed, so the agent can tell who asked for what.
+pub(crate) fn follow_up(messages: &[Message]) -> String {
+    match messages {
+        [only] => only.message.clone(),
+        several => several
+            .iter()
+            .map(|message| format!("{}: {}", message.participant, message.message))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    }
+}
+
+fn messages(pending: Vec<PendingMessage>) -> Vec<Message> {
+    pending
+        .into_iter()
+        .map(|pending| Message {
+            participant: pending.participant,
+            message: pending.body,
+        })
+        .collect()
 }
 
 #[cfg(test)]

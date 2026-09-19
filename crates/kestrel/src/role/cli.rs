@@ -579,15 +579,22 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 serde_json::to_string_pretty(&event.occurrence.data)?
             );
         }
+        CliCommand::Run(RunCommand::Stop { run }) => {
+            let exit = work::stop(&store, *run).await?;
+            println!("{run}  {exit}");
+        }
         CliCommand::Run(RunCommand::List { session }) => {
             for run in work::runs(&store, *session).await? {
+                let state = match &run.exit {
+                    Some(exit) => exit.to_string(),
+                    None if work::is_waiting(&store, &run).await? => "waiting".to_owned(),
+                    None => run.state.to_string(),
+                };
                 println!(
-                    "{}  {}  {}  {}",
+                    "{}  {}  {}  {state}",
                     run.id,
                     run.instance.as_deref().unwrap_or("-"),
                     run.worked_model.as_deref().unwrap_or("-"),
-                    run.exit
-                        .map_or_else(|| run.state.to_string(), |exit| exit.to_string())
                 );
             }
         }

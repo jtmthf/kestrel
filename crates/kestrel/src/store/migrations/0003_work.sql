@@ -9,3 +9,12 @@ ALTER TABLE run ADD COLUMN heartbeat_at TEXT;
 ALTER TABLE run ADD COLUMN instance TEXT;
 ALTER TABLE run ADD COLUMN exit TEXT;
 ALTER TABLE run ADD COLUMN exit_because TEXT;
+
+CREATE TABLE turn (
+    run_id TEXT NOT NULL REFERENCES run (id),
+    organization_id TEXT NOT NULL REFERENCES organization (id),
+    seq INTEGER NOT NULL,
+    prompted_at TEXT NOT NULL,
+    answered_at TEXT,
+    PRIMARY KEY (run_id, seq)
+) STRICT;

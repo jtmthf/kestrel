@@ -1,12 +1,16 @@
 use anyhow::{Result, bail};
 use jiff::{SignedDuration, Timestamp};
 
-use crate::domain::{Event, Organization, Run, RunId, RunState, Session, SessionId, SessionState};
+use crate::domain::{
+    Event, Exit, Organization, Run, RunId, RunState, Session, SessionId, SessionState,
+};
 use crate::fanout::{self, Change};
 use crate::instance;
-use crate::log::{Cursor, Entry, Page, Unreadable, Window};
+use crate::link;
+use crate::log::{Cursor, Entry, Message, Page, Unreadable, Window};
 use crate::store::session::Opening;
 use crate::store::{Store, Tx};
+use crate::work;
 
 /// Generous, because kestrel has no signal that a human is watching a Session: duration is
 /// standing in for presence.
@@ -67,6 +71,9 @@ pub async fn seal(store: &Store, id: SessionId) -> Result<Session> {
     if let Some(holding) = in_flight(&mut tx, &session).await? {
         bail!("the run {holding} is still in flight in the session {id}");
     }
+    if let Some(waiting) = waiting(&mut tx, &session).await? {
+        work::stopping(&mut tx, &waiting, Exit::Succeeded).await?;
+    }
     instance::archive_on_seal(&mut tx, &session).await?;
 
     let sealed_at = tx.sessions().seal(&session).await?;
@@ -111,16 +118,26 @@ async fn idle(store: &Store) -> Result<Vec<SessionId>> {
     Ok(idle)
 }
 
-/// What keeps a Session from sealing: a Run that has not ended, or one that has while
-/// messages are still waiting on it.
+/// What keeps a Session from sealing: a Run queued or mid-turn, or one that has ended while
+/// messages are still waiting on it. A Run between turns is not: sealing ends it (ADR-0024).
 pub(crate) async fn in_flight(tx: &mut Tx<'_>, session: &Session) -> Result<Option<RunId>> {
     let Some(holding) = tx.sessions().run_holding_the_slot(session).await? else {
         return Ok(None);
     };
-    let still_going = tx.sessions().run(holding).await?.state != RunState::Ended
+    let run = tx.sessions().run(holding).await?;
+    let still_going = (run.state != RunState::Ended && !tx.sessions().is_waiting(&run).await?)
         || tx.sessions().has_pending_messages(session).await?;
 
     Ok(still_going.then_some(holding))
+}
+
+async fn waiting(tx: &mut Tx<'_>, session: &Session) -> Result<Option<Run>> {
+    let Some(holding) = tx.sessions().run_holding_the_slot(session).await? else {
+        return Ok(None);
+    };
+    let run = tx.sessions().run(holding).await?;
+
+    Ok(tx.sessions().is_waiting(&run).await?.then_some(run))
 }
 
 pub async fn show(store: &Store, id: SessionId) -> Result<Session> {
@@ -172,9 +189,17 @@ pub(crate) async fn post_in(
 ) -> Result<Option<Run>> {
     session.accepts("message")?;
 
-    let holding = tx.sessions().run_holding_the_slot(session).await?;
-    if let Some(holding) = holding
-        && tx.sessions().run(holding).await?.state != RunState::Queued
+    let holding = match tx.sessions().run_holding_the_slot(session).await? {
+        Some(holding) => Some(tx.sessions().run(holding).await?),
+        None => None,
+    };
+    let waiting = match &holding {
+        Some(run) => tx.sessions().is_waiting(run).await?,
+        None => false,
+    };
+    if let Some(run) = &holding
+        && run.state != RunState::Queued
+        && !waiting
     {
         tx.sessions()
             .add_pending_message(session, participant, message)
@@ -182,17 +207,25 @@ pub(crate) async fn post_in(
         return Ok(None);
     }
 
+    let said = Message {
+        participant: participant.to_owned(),
+        message: message.to_owned(),
+    };
     tx.log()
         .append(
             session,
             Entry::Said {
-                participant: participant.to_owned(),
-                message: message.to_owned(),
+                participant: said.participant.clone(),
+                message: said.message.clone(),
             },
         )
         .await?;
 
     match holding {
+        Some(run) if waiting => {
+            link::prompt(tx, &run, work::follow_up(&[said])).await?;
+            Ok(Some(run))
+        }
         Some(_) => Ok(None),
         None => Ok(Some(tx.sessions().enqueue_run(session, None).await?)),
     }

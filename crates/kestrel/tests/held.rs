@@ -67,10 +67,16 @@ async fn dispatching_to(runtime: &Environment) -> Harness {
 }
 
 /// Ended, and with its supervisor gone, so nothing but what its checkout holds keeps its Session.
+/// A Run that answers rather than failing waits between turns until something stops it (ADR-0024),
+/// so this stops it itself once it has answered, the way a person or a seal would.
 async fn over(harness: &Harness, session: &Session) -> Run {
     let run = harness.enqueue_run(session.id).await;
-    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let answered = harness.answered(run.id, 1).await;
+    if answered.state != RunState::Ended {
+        harness.stop_run(run.id).await;
+    }
 
+    let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
         let ended = harness.run(run.id).await;
         if ended.state == RunState::Ended && harness.supervisors_to_stop().await.is_empty() {

@@ -66,8 +66,9 @@ async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -
     }
 }
 
+/// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
 async fn ended(harness: &Harness, run: RunId) -> Run {
-    until(harness, run, "ended", |run| run.state == RunState::Ended).await
+    harness.after_one_turn(run).await
 }
 
 #[tokio::test]
@@ -448,6 +449,9 @@ async fn a_run_whose_instance_is_gone_fails_saying_so_and_the_next_starts_from_t
 
     let first = harness.enqueue_run(session.id).await;
     let first = ended(&harness, first.id).await;
+    Environment::named(first.supervisor.as_deref().expect("a supervisor"))
+        .is_gone()
+        .await;
     let lost = first.instance.clone().expect("an instance");
     std::fs::remove_dir_all(Environment::workspace_of(&lost)).expect("the instance should go");
 
@@ -474,6 +478,9 @@ async fn a_run_whose_instance_is_gone_fails_saying_so_and_the_next_starts_from_t
         "fresh\nfresh",
         "the run after a lost instance found work that was lost with it"
     );
+    Environment::named(third.supervisor.as_deref().expect("a supervisor"))
+        .is_gone()
+        .await;
 
     harness.teardown().await;
 }

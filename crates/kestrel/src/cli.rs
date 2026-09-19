@@ -10,7 +10,7 @@ use directories::ProjectDirs;
 use jiff::SignedDuration;
 
 use crate::compute::{Docker, Driver, LocalExec};
-use crate::domain::{CorrelationMiss, Direction, EventRecordId, SessionId};
+use crate::domain::{CorrelationMiss, Direction, EventRecordId, RunId, SessionId};
 use crate::integration::github;
 use crate::log::Cursor;
 use crate::role::serve::Listen;
@@ -480,6 +480,11 @@ pub enum RunCommand {
     List {
         #[arg(long)]
         session: SessionId,
+    },
+    /// End a Run: it succeeds between turns, and fails mid-turn or before it started
+    Stop {
+        /// The Run's identifier
+        run: RunId,
     },
 }
 

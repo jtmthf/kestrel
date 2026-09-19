@@ -185,15 +185,33 @@ impl Kestrel {
     }
 }
 
+/// Signalled rather than killed, so the work role sees a stopped Run's supervisor off the link
+/// before it goes.
+fn terminated(mut kestrel: Child) {
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::kill(kestrel.id() as i32, libc::SIGTERM);
+    }
+    kestrel.wait().expect("kestrel should be waitable");
+}
+
 /// The one path a person actually takes: the work role running while a Run is worked.
 fn dispatched(kestrel: &Kestrel, session: &str) -> String {
-    let mut booted = kestrel.boot();
+    let booted = kestrel.boot();
     let deadline = Instant::now() + PATIENCE;
 
     let listed = loop {
         let listed = kestrel.run(&["run", "list", "--session", session]);
         if listed.contains("succeeded") || listed.contains("failed") {
             break listed;
+        }
+        // Answering a turn never ends a Run, so one waiting is stopped the way a person would.
+        if let Some(waiting) = listed.lines().find(|line| line.ends_with("  waiting")) {
+            let run = waiting
+                .split_whitespace()
+                .next()
+                .expect("a run's identifier");
+            kestrel.run(&["run", "stop", run]);
         }
         assert!(
             Instant::now() < deadline,
@@ -202,8 +220,7 @@ fn dispatched(kestrel: &Kestrel, session: &str) -> String {
         std::thread::sleep(Duration::from_millis(50));
     };
 
-    let _ = booted.kill();
-    booted.wait().expect("kestrel should be waitable");
+    terminated(booted);
 
     listed
 }
@@ -1188,7 +1205,7 @@ fn a_free_port() -> String {
 /// ADR-0002's definition of done for rung 0.1, out of process and against a real `SIGKILL`:
 /// nothing kestrel held in memory lands, and the Environment it provisioned outlives it.
 #[test]
-fn a_control_plane_killed_mid_run_comes_back_and_the_run_completes() {
+fn a_control_plane_killed_mid_turn_comes_back_and_the_turn_is_answered() {
     let kestrel = declared();
     let session = kestrel.run(&[
         "session",
@@ -1212,18 +1229,22 @@ fn a_control_plane_killed_mid_run_comes_back_and_the_run_completes() {
     killed.kill().expect("kestrel should be killable");
     killed.wait().expect("kestrel should be waitable");
 
-    let mut restarted = kestrel.booting(&listen, Script::Lingers);
-    let listed = kestrel.until(
+    let restarted = kestrel.booting(&listen, Script::Lingers);
+    kestrel.until(
         &["run", "list", "--session", &session],
-        |listed| listed.contains("succeeded") || listed.contains("failed"),
-        "ended",
+        |listed| listed.contains("waiting") || listed.contains("failed"),
+        "answered its turn",
     );
-    let _ = restarted.kill();
-    restarted.wait().expect("kestrel should be waitable");
+    kestrel.run(&["run", "stop", &run]);
+    let listed = kestrel.run(&["run", "list", "--session", &session]);
+    // The supervisor belongs to the control plane that was killed, so this one cannot wait it off
+    // the link on the way down; it leaves within a poll of the stop reaching it.
+    std::thread::sleep(Duration::from_secs(1));
+    terminated(restarted);
 
     assert!(
         listed.contains("succeeded"),
-        "the run did not complete after the restart:\n{listed}"
+        "the run's turn was not answered after the restart:\n{listed}"
     );
     assert_eq!(
         transcribed(&kestrel.run(&["session", "transcript", &session])),

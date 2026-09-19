@@ -25,6 +25,9 @@ pub enum Script {
     Recalls,
     /// Says back exactly the prompt it was sent.
     Echoes,
+    /// Says which turn of its one session each prompt is, and every prompt that came before it
+    /// there, which only a conversation that went on can know.
+    Converses,
     /// Dies mid-turn without answering the prompt.
     Dies,
     /// Answers `initialize` with a protocol version it was not asked for.
@@ -50,6 +53,7 @@ impl Script {
             Script::Confides => "confides",
             Script::Recalls => "recalls",
             Script::Echoes => "echoes",
+            Script::Converses => "converses",
             Script::Dies => "dies",
             Script::Predates => "predates",
             Script::Demands => "demands",
@@ -59,4 +63,9 @@ impl Script {
             Script::Lingers => "lingers",
         }
     }
+}
+
+/// What the `Converses` script says to the `turn`th prompt of its session, after `earlier`.
+pub fn conversed(turn: usize, earlier: &[String]) -> String {
+    format!("turn {turn}, after: {}", earlier.join(" | "))
 }

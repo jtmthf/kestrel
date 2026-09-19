@@ -24,7 +24,7 @@ use crate::link::credential::Secret;
 use crate::log::{self, Cursor, Unreadable, Window};
 use crate::provider;
 use crate::session;
-use crate::store::Store;
+use crate::store::{Store, Tx};
 use crate::work::{self, ReportRefused, Reported};
 
 pub const CREDENTIALS: &str = "/link/runs/{run}/credentials";
@@ -47,6 +47,9 @@ pub enum Instruction {
         #[serde(skip_serializing_if = "Option::is_none")]
         prompt: Option<String>,
     },
+    Prompt {
+        prompt: String,
+    },
     Stop,
 }
 
@@ -54,6 +57,7 @@ impl Instruction {
     pub const fn kind(&self) -> &'static str {
         match self {
             Instruction::Start { .. } => "start",
+            Instruction::Prompt { .. } => "prompt",
             Instruction::Stop => "stop",
         }
     }
@@ -127,9 +131,20 @@ pub async fn start(store: &Store, run: &Run) -> Result<SentInstruction> {
             },
         )
         .await?;
+    tx.sessions().prompt_turn(run).await?;
     tx.commit().await?;
 
     Ok(sent)
+}
+
+/// The next turn of a Run already between turns, in the same agent conversation (ADR-0024).
+pub(crate) async fn prompt(tx: &mut Tx<'_>, run: &Run, prompt: String) -> Result<()> {
+    tx.sessions()
+        .send_instruction(run, Instruction::Prompt { prompt })
+        .await?;
+    tx.sessions().prompt_turn(run).await?;
+
+    Ok(())
 }
 
 pub async fn instruct(

@@ -26,6 +26,10 @@ pub enum Instruction {
         checkout: Checkout,
         prompt: Option<String>,
     },
+    /// The next turn, in the conversation the Run's first one opened.
+    Prompt {
+        prompt: String,
+    },
     Stop,
     /// A control plane kestrel upgraded under a live Environment (ADR-0002) may send an
     /// instruction this supervisor predates; letting it past keeps the cursor moving.
@@ -37,6 +41,7 @@ impl Instruction {
     pub const fn kind(&self) -> &'static str {
         match self {
             Instruction::Start { .. } => "start",
+            Instruction::Prompt { .. } => "prompt",
             Instruction::Stop => "stop",
             Instruction::Unrecognized => "unrecognized",
         }
@@ -59,6 +64,7 @@ pub enum Report {
     Model { model: String, offered: Vec<String> },
     Said { message: String },
     Used { usage: Usage },
+    Answered,
     Checkout { repositories: Vec<Observed> },
     Finished { exit: Exit },
 }
@@ -72,6 +78,7 @@ impl Report {
             Report::Model { .. } => "model",
             Report::Said { .. } => "said",
             Report::Used { .. } => "used",
+            Report::Answered => "answered",
             Report::Checkout { .. } => "checkout",
             Report::Finished { .. } => "finished",
         }

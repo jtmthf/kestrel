@@ -12,7 +12,7 @@ mod support;
 use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver, Instance, Supervisor};
-use kestrel::domain::{Exit, Run, RunId, RunState, Session};
+use kestrel::domain::{Exit, Run, RunId, Session};
 use kestrel::link::credential::Secret;
 use serde_json::json;
 use support::Harness;
@@ -160,22 +160,9 @@ async fn a_session(harness: &Harness) -> Session {
     harness.open_session("acme", "kestrel", "builder").await
 }
 
+/// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
 async fn ended(harness: &Harness, run: RunId) -> Run {
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-
-    loop {
-        let run = harness.run(run).await;
-        if run.state == RunState::Ended {
-            return run;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the run {} is {} and never ended",
-            run.id,
-            run.state
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    harness.after_one_turn_within(run, PATIENCE).await
 }
 
 /// The supervisor says how it answered a permission request only once the turn is over, so

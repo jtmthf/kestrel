@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver, Instance, Supervisor};
-use kestrel::domain::{Exit, Run, RunId, RunState, Session, Usage};
+use kestrel::domain::{Exit, Run, RunId, Session, Usage};
 use kestrel::link::credential::Secret;
 use support::Harness;
 use support::diagnostics::Diagnostics;
@@ -222,22 +222,9 @@ async fn a_session(harness: &Harness, lineage: Lineage, model: &str) -> Session 
     harness.open_session("acme", "kestrel", "builder").await
 }
 
+/// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
 async fn ended(harness: &Harness, driven: &Driven) -> Run {
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-
-    loop {
-        let run = harness.run(driven.run.id).await;
-        if run.state == RunState::Ended {
-            return run;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the run {} is {} and never ended. {driven}",
-            run.id,
-            run.state
-        );
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    harness.after_one_turn_within(driven.run.id, PATIENCE).await
 }
 
 async fn transcript(harness: &Harness, session: &Session) -> Vec<String> {

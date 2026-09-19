@@ -63,24 +63,6 @@ async fn in_flight(harness: &Harness, run: RunId) {
     }
 }
 
-async fn ended(harness: &Harness, run: RunId) -> Run {
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-
-    loop {
-        let run = harness.run(run).await;
-        if run.state == RunState::Ended {
-            return run;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the run {} is {} and never ended",
-            run.id,
-            run.state
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
 async fn worked(script: Script) -> (Harness, Session, Run) {
     worked_naming(script, Some(OTHER_MODEL)).await
 }
@@ -90,7 +72,7 @@ async fn worked_naming(script: Script, model: Option<&str>) -> (Harness, Session
         Harness::dispatching_to(supervisor::binary(), &scripted_agent::playing(script)).await;
     let session = a_session_naming(&harness, model).await;
     let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let ended = harness.after_one_turn(run.id).await;
 
     (harness, session, ended)
 }
@@ -179,7 +161,8 @@ async fn a_permission_request_is_answered_and_the_round_trip_is_observable() {
     let mut supervisor = Supervisor::provision(&harness.link(), run.id, &credential);
     supervisor.wait_until_it_says("reported connected").await;
     harness.start(&run).await;
-    supervisor.wait_until_it_says("reported finished").await;
+    supervisor.wait_until_it_says("reported answered").await;
+    harness.stop_run(run.id).await;
 
     assert!(
         supervisor.said("allowed once  tool call call-1"),
@@ -187,7 +170,7 @@ async fn a_permission_request_is_answered_and_the_round_trip_is_observable() {
         supervisor.everything_it_said()
     );
     assert_eq!(
-        ended(&harness, run.id).await.exit,
+        harness.run(run.id).await.exit,
         Some(Exit::Succeeded),
         "the agent was not allowed to go on"
     );
@@ -290,9 +273,10 @@ async fn the_supervisor_sets_the_model_it_was_given() {
     );
     supervisor.wait_until_it_says("reported connected").await;
     harness.start(&run).await;
-    supervisor.wait_until_it_says("reported finished").await;
+    supervisor.wait_until_it_says("reported answered").await;
+    harness.stop_run(run.id).await;
 
-    let ended = ended(&harness, run.id).await;
+    let ended = harness.run(run.id).await;
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert_eq!(ended.worked_model.as_deref(), Some(OTHER_MODEL));
 
@@ -344,7 +328,7 @@ async fn two_runs_in_one_session_can_drive_different_models() {
     let built = harness
         .enqueue_run_naming(session.id, Some(OTHER_MODEL))
         .await;
-    let built = ended(&harness, built.id).await;
+    let built = harness.after_one_turn(built.id).await;
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let reviewed = loop {
         match harness
@@ -358,7 +342,7 @@ async fn two_runs_in_one_session_can_drive_different_models() {
             Err(error) => panic!("the session never took its next run: {error}"),
         }
     };
-    let reviewed = ended(&harness, reviewed.id).await;
+    let reviewed = harness.after_one_turn(reviewed.id).await;
 
     assert_eq!(built.model.as_deref(), Some(OTHER_MODEL));
     assert_eq!(reviewed.model.as_deref(), Some(DEFAULT_MODEL));
@@ -391,7 +375,7 @@ async fn changing_an_agents_model_leaves_a_run_already_in_flight_on_the_one_it_s
     );
 
     assert_eq!(
-        ended(&harness, run.id).await.worked_model.as_deref(),
+        harness.after_one_turn(run.id).await.worked_model.as_deref(),
         Some(OTHER_MODEL)
     );
 
@@ -412,7 +396,7 @@ async fn an_agent_that_lets_no_client_choose_a_model_fails_a_run_that_named_one(
     let run = harness
         .enqueue_run_naming(session.id, Some(OTHER_MODEL))
         .await;
-    let run = ended(&harness, run.id).await;
+    let run = harness.after_one_turn(run.id).await;
 
     assert_eq!(run.model.as_deref(), Some(OTHER_MODEL));
 

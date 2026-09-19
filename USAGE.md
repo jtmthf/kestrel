@@ -153,8 +153,8 @@ kestrel session transcript 01a07846-49fa-7dc0-a44b-183a63794ee3
 
 ## Enqueue a run
 
-A **run** is one execution of an agent runtime on its session's instance. At most one is ever active
-in a session.
+A **run** is one execution of an agent runtime on its session's instance: one conversation with it,
+over as many turns as the session gives it. At most one is ever open in a session.
 
 ```sh
 kestrel run enqueue --session 01a07846-49fa-7dc0-a44b-183a63794ee3
@@ -315,11 +315,14 @@ A sealed session accepts no further runs:
 Error: the session 01a07846-49fa-7dc0-a44b-183a63794ee3 is sealed, and accepts no run
 ```
 
+Sealing ends a run that is waiting between turns, and it succeeds. A session whose run is still in
+a turn, or still queued, refuses to seal until that turn is answered.
+
 A session seals itself too. `last active` moves when the session opens, when a run is enqueued into
-it, and when one of its runs ends; a session that has sat at the same `last active` for 24 hours with
-no run holding its slot is sealed by kestrel, exactly as the command above would have. A session whose
-instance is held stays open, however long it has been idle, until its work is pushed or its instance
-released.
+it, when one of its runs answers a turn, and when one ends; a session that has sat at the same
+`last active` for 24 hours with no turn in flight is sealed by kestrel, exactly as the command above
+would have. A session whose instance is held stays open, however long it has been idle, until its
+work is pushed or its instance released.
 
 Work that would have continued it starts a new session that records the sealed one:
 
@@ -676,7 +679,8 @@ Sweep the backlog for stale issues as of 2026-09-17T14:02:03.118Z
 ## The answer comes back to the issue
 
 An integration carries kestrel's requests outbound as well as events inbound, and the one you
-registered above declares both. So when the run ends, the issue that started it gets a comment:
+registered above declares both. So when the run ends — stopped, sealed or failed — the issue that
+started it gets a comment:
 
 ```
 **kestrel** — run succeeded
@@ -700,14 +704,30 @@ writing to it.
 
 ## Continue a session
 
-A new comment on the issue that opened a session posts that message to its transcript and enqueues
-another run in the same session, on the same instance and checkout. Each run gets a fresh supervisor
-and agent runtime. Before its agent starts, the supervisor pages the whole transcript into the
-runtime, so the new turn sees the brief, earlier runs, and the follow-up message.
+A run is one conversation with its agent, and answering a turn does not end it: nothing the agent
+says, and no pull request it opens, does. A new comment on the issue that opened a session posts
+that message to its transcript and sends it to the session's open run as its next turn, in the same
+agent conversation, on the same supervisor and instance.
 
-If a run is active when the comment arrives, the message waits durably and one further run is
-enqueued when the active one ends. If the session has been sealed, the comment opens a new session
-whose `continues` field names the sealed one, on the sealed session's branch.
+If the agent is still working on a turn when the comment arrives, the message waits durably. Every
+message that arrived during the turn becomes the next one, in the order they arrived, once the agent
+answers. If the session has been sealed, the comment opens a new session whose `continues` field
+names the sealed one, on the sealed session's branch.
+
+A run ends when you stop it, when its session seals, or when it fails:
+
+```sh
+kestrel run stop 01a07846-5d97-7230-9315-bfef2a644006
+```
+
+```
+01a07846-5d97-7230-9315-bfef2a644006  succeeded
+```
+
+A run stopped between turns succeeds; one stopped mid-turn, or before it started, fails. A comment on
+a session with no open run enqueues a new run in it, on the same instance and checkout, with a fresh
+supervisor and agent runtime. Before its agent starts, the supervisor pages the whole transcript into
+the runtime, so the new conversation sees the brief, earlier runs, and the follow-up message.
 
 An operator can post the same kind of message directly:
 
