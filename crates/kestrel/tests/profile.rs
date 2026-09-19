@@ -76,7 +76,9 @@ async fn worked(harness: &Harness, session: &Session) -> (Run, String) {
         // The Run ends in the database the moment it is told to stop; what its supervisor holds
         // of the profile is only gone once the supervisor itself has left.
         support::environment::Environment::named(
-            run.supervisor.as_deref().expect("a stopped run had a supervisor"),
+            run.supervisor
+                .as_deref()
+                .expect("a stopped run had a supervisor"),
         )
         .is_gone()
         .await;

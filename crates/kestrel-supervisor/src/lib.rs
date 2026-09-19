@@ -177,7 +177,8 @@ async fn attend(
             return Ok(Attended::Finished);
         }
         if attending.started && attending.conversation.is_none() {
-            attending.conversation = conversation(link, runtime, home, attending, diagnostics).await?;
+            attending.conversation =
+                conversation(link, runtime, home, attending, diagnostics).await?;
         }
 
         tokio::select! {
