@@ -1,19 +1,27 @@
 mod api;
+mod scope;
 mod sse;
 mod transcript;
 
 use std::io::Read as _;
 
 use anyhow::{Context as _, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::builder::NonEmptyStringValueParser;
+use clap::parser::ValueSource;
+use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 use reqwest::Url;
 use serde_json::{Value, json};
 
 use crate::api::ControlPlane;
+use crate::scope::{Derived, Scope, Scoping, Source};
+
+const BINARY: &str = "kestrel-client";
+const CONTROL_PLANE_VARIABLE: &str = "KESTREL_CONTROL_PLANE";
+const ORGANIZATION_VARIABLE: &str = "KESTREL_ORGANIZATION";
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "kestrel-client",
+    name = BINARY,
     version,
     about = "Reach a kestrel control plane over its operator boundary.",
     disable_help_subcommand = true
@@ -25,12 +33,25 @@ struct Client {
     /// The control plane's operator boundary
     #[arg(
         long,
-        env = "KESTREL_CONTROL_PLANE",
+        env = CONTROL_PLANE_VARIABLE,
         global = true,
         value_name = "URL",
+        value_parser = NonEmptyStringValueParser::new(),
         default_value = "http://127.0.0.1:7718"
     )]
     control_plane: String,
+
+    /// The Organization this invocation applies to; without it, a committed
+    /// .kestrel/organization between the working directory and its repository root, then the
+    /// only Organization
+    #[arg(
+        long,
+        env = ORGANIZATION_VARIABLE,
+        global = true,
+        value_name = "NAME",
+        value_parser = NonEmptyStringValueParser::new()
+    )]
+    organization: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -65,6 +86,35 @@ enum Command {
     /// Enqueue and list Runs
     #[command(subcommand)]
     Run(RunCommand),
+    /// Print the resolved scope, where each value came from, what exists in it, and what to
+    /// run next
+    Status,
+}
+
+impl Command {
+    fn scoped(&self) -> bool {
+        match self {
+            Command::Workspace(_)
+            | Command::Agent(_)
+            | Command::Credential(_)
+            | Command::Profile(_)
+            | Command::Integration(_)
+            | Command::Trigger(_)
+            | Command::Status => true,
+            Command::Organization(_) | Command::Run(_) => false,
+            Command::Event(event) => match event {
+                EventCommand::List { .. } => true,
+                EventCommand::Show { .. } => false,
+            },
+            Command::Session(session) => match session {
+                SessionCommand::Open { .. } | SessionCommand::List => true,
+                SessionCommand::Show { .. }
+                | SessionCommand::Post { .. }
+                | SessionCommand::Seal { .. }
+                | SessionCommand::Transcript { .. } => false,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -73,22 +123,13 @@ enum CredentialCommand {
     Set {
         /// The environment variable an Agent Runtime reads it from
         variable: String,
-        /// The Organization that holds it
-        #[arg(long)]
-        organization: String,
     },
-    /// List what an Organization holds, by the variable each is read from and never by value
-    List {
-        #[arg(long)]
-        organization: String,
-    },
-    /// Forget a Provider Credential an Organization holds
+    /// List what the Organization holds, by the variable each is read from and never by value
+    List,
+    /// Forget a Provider Credential the Organization holds
     Forget {
         /// The environment variable it is read from
         variable: String,
-        /// The Organization that holds it
-        #[arg(long)]
-        organization: String,
     },
 }
 
@@ -98,9 +139,6 @@ enum ProfileCommand {
     Declare {
         /// The name a Session or Trigger names it by
         name: String,
-        /// The Organization it is declared in
-        #[arg(long)]
-        organization: String,
         /// The person it belongs to, which never changes
         #[arg(long)]
         owner: String,
@@ -109,22 +147,15 @@ enum ProfileCommand {
     Set {
         /// The profile it is held in
         name: String,
-        #[arg(long)]
-        organization: String,
         #[command(flatten)]
         entry: ProfileEntry,
     },
-    /// List every profile in an Organization with what each holds, one JSON record a line
-    List {
-        #[arg(long)]
-        organization: String,
-    },
+    /// List every profile in the Organization with what each holds, one JSON record a line
+    List,
     /// Forget a login a profile holds
     Forget {
         /// The profile it is held in
         name: String,
-        #[arg(long)]
-        organization: String,
         #[command(flatten)]
         entry: ProfileEntry,
     },
@@ -144,7 +175,7 @@ struct ProfileEntry {
 
 impl ProfileEntry {
     fn path<'a>(&'a self, organization: &'a str, profile: &'a str) -> Vec<&'a str> {
-        let mut path = vec!["organizations", organization, "profiles", profile];
+        let mut path = vec!["organizations", &organization, "profiles", profile];
         match (&self.variable, &self.file) {
             (Some(variable), _) => path.extend(["variables", variable.as_str()]),
             (None, Some(file)) => path.extend(["files", file.as_str()]),
@@ -160,17 +191,10 @@ enum IntegrationCommand {
     /// Register an Integration
     #[command(subcommand)]
     Register(RegisterCommand),
-    /// List every Integration in an Organization, one JSON record a line
-    List {
-        #[arg(long)]
-        organization: String,
-    },
+    /// List every Integration in the Organization, one JSON record a line
+    List,
     /// Acknowledge the latest oversized Event refused by an Integration
-    AcknowledgeRefusal {
-        name: String,
-        #[arg(long)]
-        organization: String,
-    },
+    AcknowledgeRefusal { name: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -179,9 +203,6 @@ enum RegisterCommand {
     Github {
         /// The name it is referred to by
         name: String,
-        /// The Organization whose credential it holds
-        #[arg(long)]
-        organization: String,
         /// The repository it watches, as owner/name
         #[arg(long, value_name = "OWNER/NAME")]
         repository: String,
@@ -219,9 +240,6 @@ enum RegisterCommand {
     Webhook {
         /// The name it is referred to by
         name: String,
-        /// The Organization whose Events it records
-        #[arg(long)]
-        organization: String,
         /// The secret a sender presents as `Authorization: Bearer <secret>`
         #[arg(
             long,
@@ -235,10 +253,8 @@ enum RegisterCommand {
 
 #[derive(Debug, Subcommand)]
 enum EventCommand {
-    /// List the Events recorded for an Organization, most recent first, one JSON record a line
+    /// List the Events recorded for the Organization, most recent first, one JSON record a line
     List {
-        #[arg(long)]
-        organization: String,
         /// How many to list at most
         #[arg(long, default_value_t = 50)]
         limit: usize,
@@ -256,9 +272,6 @@ enum TriggerCommand {
     Declare {
         /// The name it is referred to by
         name: String,
-        /// The Organization it belongs to
-        #[arg(long)]
-        organization: String,
         /// The Events it matches: a CloudEvents filter as JSON
         #[arg(long, value_name = "JSON", required_unless_present = "every")]
         filter: Option<String>,
@@ -290,22 +303,13 @@ enum TriggerCommand {
         #[arg(long)]
         profile: Option<String>,
     },
-    /// List every Trigger in an Organization, one JSON record a line
-    List {
-        #[arg(long)]
-        organization: String,
-    },
+    /// List every Trigger in the Organization, one JSON record a line
+    List,
     /// Show a Trigger
-    Show {
-        name: String,
-        #[arg(long)]
-        organization: String,
-    },
+    Show { name: String },
     /// Say whether a Trigger matches an Event and what it would render, starting no work
     Test {
         name: String,
-        #[arg(long)]
-        organization: String,
         /// The Event's record; absent tests the next elapsing of a scheduled Trigger
         #[arg(long)]
         event: Option<String>,
@@ -314,17 +318,9 @@ enum TriggerCommand {
         instruction: Option<String>,
     },
     /// Stop a Trigger firing, without forgetting it
-    Disable {
-        name: String,
-        #[arg(long)]
-        organization: String,
-    },
+    Disable { name: String },
     /// Let a disabled Trigger fire again
-    Enable {
-        name: String,
-        #[arg(long)]
-        organization: String,
-    },
+    Enable { name: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -344,9 +340,6 @@ enum WorkspaceCommand {
     Declare {
         /// The name it is referred to by
         name: String,
-        /// The Organization it belongs to
-        #[arg(long)]
-        organization: String,
         /// A repository the work happens against; repeat for many
         #[arg(long = "repository", value_name = "URL", required = true)]
         repositories: Vec<String>,
@@ -354,11 +347,8 @@ enum WorkspaceCommand {
         #[arg(long)]
         branch: String,
     },
-    /// List every Workspace in an Organization, one JSON record a line
-    List {
-        #[arg(long)]
-        organization: String,
-    },
+    /// List every Workspace in the Organization, one JSON record a line
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -367,9 +357,6 @@ enum AgentCommand {
     Declare {
         /// The name it is referred to by
         name: String,
-        /// The Organization it belongs to
-        #[arg(long)]
-        organization: String,
         /// The Agent Runtime that drives it
         #[arg(long, default_value = "opencode")]
         runtime: String,
@@ -378,20 +365,14 @@ enum AgentCommand {
         #[arg(long)]
         model: Option<String>,
     },
-    /// List every Agent in an Organization, one JSON record a line
-    List {
-        #[arg(long)]
-        organization: String,
-    },
+    /// List every Agent in the Organization, one JSON record a line
+    List,
 }
 
 #[derive(Debug, Subcommand)]
 enum SessionCommand {
     /// Open a Session against a Workspace and an Agent
     Open {
-        /// The Organization it belongs to
-        #[arg(long)]
-        organization: String,
         /// The Workspace its work happens against
         #[arg(long)]
         workspace: String,
@@ -408,12 +389,8 @@ enum SessionCommand {
         #[arg(long, value_name = "SESSION")]
         continues: Option<String>,
     },
-    /// List every Session in an Organization
-    List {
-        /// The Organization the Sessions belong to
-        #[arg(long)]
-        organization: String,
-    },
+    /// List every Session in the Organization
+    List,
     /// Show a Session
     Show {
         /// The Session's identifier
@@ -469,13 +446,35 @@ enum RunCommand {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let client = Client::parse();
+    let matches = Client::command().get_matches();
+    let client = Client::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     let control_plane: Url = client
         .control_plane
         .parse()
         .with_context(|| format!("{} is no control-plane URL", client.control_plane))?;
+    let control_plane_source = match matches.value_source("control_plane") {
+        Some(ValueSource::CommandLine) => "--control-plane",
+        Some(ValueSource::EnvVariable) => CONTROL_PLANE_VARIABLE,
+        _ => "default",
+    };
 
     let api = ControlPlane::at(control_plane.clone());
+
+    let named = client.organization.map(|organization| Scope {
+        organization,
+        source: match matches.value_source("organization") {
+            Some(ValueSource::EnvVariable) => Source::Environment,
+            _ => Source::Flag,
+        },
+    });
+    if named
+        .as_ref()
+        .is_some_and(|scope| matches!(scope.source, Source::Flag))
+        && !client.command.scoped()
+    {
+        bail!("--organization scopes nothing here; this command names its record directly");
+    }
+    let scoping = Scoping::new(&api, named);
 
     match client.command {
         Command::Organization(OrganizationCommand::Declare { name }) => {
@@ -489,10 +488,10 @@ async fn main() -> Result<()> {
         }
         Command::Workspace(WorkspaceCommand::Declare {
             name,
-            organization,
             repositories,
             branch,
         }) => {
+            let organization = scoping.resolve().await?.organization;
             let declaration = json!({
                 "name": name,
                 "repositories": repositories,
@@ -506,7 +505,8 @@ async fn main() -> Result<()> {
                 .await?,
             );
         }
-        Command::Workspace(WorkspaceCommand::List { organization }) => {
+        Command::Workspace(WorkspaceCommand::List) => {
+            let organization = scoping.resolve().await?.organization;
             listed(
                 &api.get(&["organizations", &organization, "workspaces"])
                     .await?,
@@ -514,10 +514,10 @@ async fn main() -> Result<()> {
         }
         Command::Agent(AgentCommand::Declare {
             name,
-            organization,
             runtime,
             model,
         }) => {
+            let organization = scoping.resolve().await?.organization;
             let declaration = json!({
                 "name": name,
                 "runtime": runtime,
@@ -528,13 +528,12 @@ async fn main() -> Result<()> {
                     .await?,
             );
         }
-        Command::Agent(AgentCommand::List { organization }) => {
+        Command::Agent(AgentCommand::List) => {
+            let organization = scoping.resolve().await?.organization;
             listed(&api.get(&["organizations", &organization, "agents"]).await?);
         }
-        Command::Credential(CredentialCommand::Set {
-            variable,
-            organization,
-        }) => {
+        Command::Credential(CredentialCommand::Set { variable }) => {
+            let organization = scoping.resolve().await?.organization;
             let secret = json!({ "secret": read_the_secret()? });
             printed(
                 &api.put(
@@ -544,24 +543,20 @@ async fn main() -> Result<()> {
                 .await?,
             );
         }
-        Command::Credential(CredentialCommand::List { organization }) => {
+        Command::Credential(CredentialCommand::List) => {
+            let organization = scoping.resolve().await?.organization;
             listed(
                 &api.get(&["organizations", &organization, "credentials"])
                     .await?,
             );
         }
-        Command::Credential(CredentialCommand::Forget {
-            variable,
-            organization,
-        }) => {
+        Command::Credential(CredentialCommand::Forget { variable }) => {
+            let organization = scoping.resolve().await?.organization;
             api.delete(&["organizations", &organization, "credentials", &variable])
                 .await?;
         }
-        Command::Profile(ProfileCommand::Declare {
-            name,
-            organization,
-            owner,
-        }) => {
+        Command::Profile(ProfileCommand::Declare { name, owner }) => {
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.post(
                     &["organizations", &organization, "profiles"],
@@ -570,59 +565,46 @@ async fn main() -> Result<()> {
                 .await?,
             );
         }
-        Command::Profile(ProfileCommand::Set {
-            name,
-            organization,
-            entry,
-        }) => {
+        Command::Profile(ProfileCommand::Set { name, entry }) => {
+            let organization = scoping.resolve().await?.organization;
             let login = json!({ "secret": read_the_login(entry.file.is_some())? });
             printed(&api.put(&entry.path(&organization, &name), &login).await?);
         }
-        Command::Profile(ProfileCommand::List { organization }) => {
+        Command::Profile(ProfileCommand::List) => {
+            let organization = scoping.resolve().await?.organization;
             listed(
                 &api.get(&["organizations", &organization, "profiles"])
                     .await?,
             );
         }
-        Command::Profile(ProfileCommand::Forget {
-            name,
-            organization,
-            entry,
-        }) => {
+        Command::Profile(ProfileCommand::Forget { name, entry }) => {
+            let organization = scoping.resolve().await?.organization;
             api.delete(&entry.path(&organization, &name)).await?;
         }
         Command::Integration(IntegrationCommand::Register(register)) => {
-            let (organization, registration) = match register {
+            let organization = scoping.resolve().await?.organization;
+            let registration = match register {
                 RegisterCommand::Github {
                     name,
-                    organization,
                     repository,
                     token,
                     carries,
                     interval,
                     webhook_secret,
                     api,
-                } => (
-                    organization,
-                    json!({
-                        "kind": "github",
-                        "name": name,
-                        "repository": repository,
-                        "token": token,
-                        "carries": carries,
-                        "interval": interval,
-                        "webhook_secret": webhook_secret,
-                        "api": api,
-                    }),
-                ),
-                RegisterCommand::Webhook {
-                    name,
-                    organization,
-                    secret,
-                } => (
-                    organization,
-                    json!({ "kind": "webhook", "name": name, "secret": secret }),
-                ),
+                } => json!({
+                    "kind": "github",
+                    "name": name,
+                    "repository": repository,
+                    "token": token,
+                    "carries": carries,
+                    "interval": interval,
+                    "webhook_secret": webhook_secret,
+                    "api": api,
+                }),
+                RegisterCommand::Webhook { name, secret } => {
+                    json!({ "kind": "webhook", "name": name, "secret": secret })
+                }
             };
             printed(
                 &api.post(
@@ -632,13 +614,15 @@ async fn main() -> Result<()> {
                 .await?,
             );
         }
-        Command::Integration(IntegrationCommand::List { organization }) => {
+        Command::Integration(IntegrationCommand::List) => {
+            let organization = scoping.resolve().await?.organization;
             listed(
                 &api.get(&["organizations", &organization, "integrations"])
                     .await?,
             );
         }
-        Command::Integration(IntegrationCommand::AcknowledgeRefusal { name, organization }) => {
+        Command::Integration(IntegrationCommand::AcknowledgeRefusal { name }) => {
+            let organization = scoping.resolve().await?.organization;
             api.delete(&[
                 "organizations",
                 &organization,
@@ -648,10 +632,8 @@ async fn main() -> Result<()> {
             ])
             .await?;
         }
-        Command::Event(EventCommand::List {
-            organization,
-            limit,
-        }) => {
+        Command::Event(EventCommand::List { limit }) => {
+            let organization = scoping.resolve().await?.organization;
             listed(
                 &api.get_where(
                     &["organizations", &organization, "events"],
@@ -665,7 +647,6 @@ async fn main() -> Result<()> {
         }
         Command::Trigger(TriggerCommand::Declare {
             name,
-            organization,
             filter,
             every,
             brief,
@@ -677,6 +658,7 @@ async fn main() -> Result<()> {
             allows,
             profile,
         }) => {
+            let organization = scoping.resolve().await?.organization;
             let filter = filter
                 .map(|filter| {
                     serde_json::from_str::<Value>(&filter).context("a trigger filter is JSON")
@@ -707,13 +689,15 @@ async fn main() -> Result<()> {
                     .await?,
             );
         }
-        Command::Trigger(TriggerCommand::List { organization }) => {
+        Command::Trigger(TriggerCommand::List) => {
+            let organization = scoping.resolve().await?.organization;
             listed(
                 &api.get(&["organizations", &organization, "triggers"])
                     .await?,
             );
         }
-        Command::Trigger(TriggerCommand::Show { name, organization }) => {
+        Command::Trigger(TriggerCommand::Show { name }) => {
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.get(&["organizations", &organization, "triggers", &name])
                     .await?,
@@ -721,10 +705,10 @@ async fn main() -> Result<()> {
         }
         Command::Trigger(TriggerCommand::Test {
             name,
-            organization,
             event,
             instruction,
         }) => {
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.post(
                     &["organizations", &organization, "triggers", &name, "test"],
@@ -733,7 +717,8 @@ async fn main() -> Result<()> {
                 .await?,
             );
         }
-        Command::Trigger(TriggerCommand::Disable { name, organization }) => {
+        Command::Trigger(TriggerCommand::Disable { name }) => {
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.post(
                     &["organizations", &organization, "triggers", &name, "disable"],
@@ -742,7 +727,8 @@ async fn main() -> Result<()> {
                 .await?,
             );
         }
-        Command::Trigger(TriggerCommand::Enable { name, organization }) => {
+        Command::Trigger(TriggerCommand::Enable { name }) => {
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.post(
                     &["organizations", &organization, "triggers", &name, "enable"],
@@ -752,13 +738,13 @@ async fn main() -> Result<()> {
             );
         }
         Command::Session(SessionCommand::Open {
-            organization,
             workspace,
             agent,
             profile,
             branch,
             continues,
         }) => {
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.post(
                     &["organizations", &organization, "sessions"],
@@ -773,7 +759,8 @@ async fn main() -> Result<()> {
                 .await?,
             );
         }
-        Command::Session(SessionCommand::List { organization }) => {
+        Command::Session(SessionCommand::List) => {
+            let organization = scoping.resolve().await?.organization;
             listed(
                 &api.get(&["organizations", &organization, "sessions"])
                     .await?,
@@ -821,9 +808,103 @@ async fn main() -> Result<()> {
         Command::Run(RunCommand::List { session }) => {
             listed(&api.get(&["sessions", &session, "runs"]).await?);
         }
+        Command::Status => {
+            let location = json!({
+                "control_plane": client.control_plane,
+                "control_plane_source": control_plane_source,
+            });
+            status(&api, location, scoping.derive().await?).await?;
+        }
     }
 
     Ok(())
+}
+
+async fn status(api: &ControlPlane, location: Value, derived: Derived) -> Result<()> {
+    let scope = match derived {
+        Derived::Scope(scope) => scope,
+        Derived::Unnamed { existing } => {
+            let next = if existing.is_empty() {
+                format!("{BINARY} organization declare <name>")
+            } else {
+                format!("{BINARY} status --organization <name>")
+            };
+            printed(&merged(
+                location,
+                json!({
+                    "organization": null,
+                    "organization_source": null,
+                    "organizations": existing,
+                    "next": next,
+                }),
+            ));
+            return Ok(());
+        }
+    };
+
+    let organization = scope.organization.as_str();
+    let within = async |records| api.get(&["organizations", organization, records]).await;
+    let (workspaces, agents, triggers, sessions, integrations, credentials, profiles) = tokio::try_join!(
+        within("workspaces"),
+        within("agents"),
+        within("triggers"),
+        within("sessions"),
+        within("integrations"),
+        within("credentials"),
+        within("profiles"),
+    )?;
+    let workspace_names = names(&workspaces);
+    let agent_names = names(&agents);
+
+    printed(&merged(
+        location,
+        json!({
+            "organization": organization,
+            "organization_source": scope.source.to_string(),
+            "workspaces": count(&workspaces),
+            "agents": count(&agents),
+            "triggers": count(&triggers),
+            "sessions": count(&sessions),
+            "integrations": count(&integrations),
+            "credentials": count(&credentials),
+            "profiles": count(&profiles),
+            "next": next_command(&workspace_names, &agent_names),
+        }),
+    ));
+
+    Ok(())
+}
+
+fn merged(mut record: Value, more: Value) -> Value {
+    if let (Some(record), Value::Object(more)) = (record.as_object_mut(), more) {
+        record.extend(more);
+    }
+    record
+}
+
+fn count(records: &Value) -> usize {
+    records.as_array().map_or(0, Vec::len)
+}
+
+fn names(records: &Value) -> Vec<String> {
+    records
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|record| record["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+fn next_command(workspaces: &[String], agents: &[String]) -> String {
+    match (workspaces.first(), agents.first()) {
+        (Some(workspace), Some(agent)) => {
+            format!("{BINARY} session open --workspace {workspace} --agent {agent}")
+        }
+        (Some(_), None) => format!("{BINARY} agent declare <name>"),
+        (None, _) => {
+            format!("{BINARY} workspace declare <name> --repository <url> --branch <branch>")
+        }
+    }
 }
 
 fn printed(record: &Value) {

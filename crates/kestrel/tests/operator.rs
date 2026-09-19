@@ -70,19 +70,10 @@ async fn client(harness: &Harness, args: &[&str]) -> client::Finished {
 }
 
 async fn client_given(harness: &Harness, args: &[&str], input: Option<&str>) -> client::Finished {
-    let operator = harness.operator();
-    let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
-    let input = input.map(str::to_owned);
-
-    tokio::task::spawn_blocking(move || {
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        match input {
-            Some(input) => client::ran_given(&operator, &args, &input),
-            None => client::ran(&operator, &args),
-        }
-    })
-    .await
-    .expect("the client should run")
+    let invocation = input.map_or_else(client::Invocation::default, |input| {
+        client::Invocation::default().given(input)
+    });
+    client::ran_by(harness, args, invocation).await
 }
 
 fn succeeded(finished: &client::Finished) -> Vec<Value> {
