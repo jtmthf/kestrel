@@ -38,17 +38,46 @@ pub struct Finished {
 
 impl Client {
     pub fn spawn(control_plane: &str, args: &[&str]) -> Self {
-        Self::spawn_given(control_plane, args, None)
+        Self::spawn_with(control_plane, args, &[], None, None)
+    }
+
+    /// A Client whose invocation has an environment beyond the control-plane URL, and
+    /// optionally a committed directory binding in the directory it runs from.
+    pub fn spawn_configured(
+        control_plane: &str,
+        args: &[&str],
+        environment: &[(&str, &str)],
+        binding: Option<&str>,
+    ) -> Self {
+        Self::spawn_with(control_plane, args, environment, binding, None)
     }
 
     fn spawn_given(control_plane: &str, args: &[&str], input: Option<&str>) -> Self {
+        Self::spawn_with(control_plane, args, &[], None, input)
+    }
+
+    fn spawn_with(
+        control_plane: &str,
+        args: &[&str],
+        environment: &[(&str, &str)],
+        binding: Option<&str>,
+        input: Option<&str>,
+    ) -> Self {
         let home = TempDir::new().expect("a temporary home");
+        if let Some(organization) = binding {
+            let directory = home.path().join(".kestrel");
+            std::fs::create_dir_all(&directory).expect("a binding directory");
+            std::fs::write(directory.join("organization"), organization)
+                .expect("the binding should write");
+        }
+
         let mut child = Command::new(binary())
             .args(args)
             .current_dir(home.path())
             .env_clear()
             .env("HOME", home.path())
             .env("KESTREL_CONTROL_PLANE", control_plane)
+            .envs(environment.iter().copied())
             .stdin(if input.is_some() {
                 Stdio::piped()
             } else {
@@ -151,4 +180,14 @@ pub fn ran(control_plane: &str, args: &[&str]) -> Finished {
 
 pub fn ran_given(control_plane: &str, args: &[&str], input: &str) -> Finished {
     Client::spawn_given(control_plane, args, Some(input)).finish()
+}
+
+/// Runs with an environment and an optional committed binding, printing whatever it prints.
+pub fn ran_configured(
+    control_plane: &str,
+    args: &[&str],
+    environment: &[(&str, &str)],
+    binding: Option<&str>,
+) -> Finished {
+    Client::spawn_configured(control_plane, args, environment, binding).finish()
 }
