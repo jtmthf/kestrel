@@ -183,6 +183,16 @@ fn event_at(record: &str) -> String {
     operator::EVENT.replace("{record}", record)
 }
 
+fn triggers_of(organization: &str) -> String {
+    operator::TRIGGERS.replace("{organization}", organization)
+}
+
+fn trigger_at(organization: &str, trigger: &str) -> String {
+    operator::TRIGGER
+        .replace("{organization}", organization)
+        .replace("{trigger}", trigger)
+}
+
 fn failed(finished: &client::Finished) -> &str {
     assert!(
         !finished.status.success(),
@@ -404,6 +414,210 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         succeeded(&client(&harness, &["run", "list", "--session", continuing]).await),
         enqueued
     );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_client_manages_triggers_without_opening_a_database() {
+    let harness = Harness::boot().await;
+    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    succeeded(
+        &client(
+            &harness,
+            &[
+                "workspace",
+                "declare",
+                "kestrel",
+                "--organization",
+                "acme",
+                "--repository",
+                "https://github.com/jtmthf/kestrel",
+                "--branch",
+                "main",
+            ],
+        )
+        .await,
+    );
+    succeeded(
+        &client(
+            &harness,
+            &["agent", "declare", "builder", "--organization", "acme"],
+        )
+        .await,
+    );
+    let webhook = harness
+        .register_webhook("acme", "events", "a-shared-secret")
+        .await;
+    let response = reqwest::Client::new()
+        .post(format!("{}{}", harness.link(), webhook.webhook_path()))
+        .bearer_auth("a-shared-secret")
+        .header("content-type", "application/cloudevents+json")
+        .body(
+            json!({
+                "id": "retained",
+                "source": "urn:test",
+                "specversion": "1.0",
+                "type": "example",
+                "time": "2026-09-19T00:00:00Z",
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .expect("the webhook should answer");
+    assert!(response.status().is_success());
+    let retained = harness.events("acme").await[0].record_id.to_string();
+
+    let declaration = [
+        "trigger",
+        "declare",
+        "ready",
+        "--organization",
+        "acme",
+        "--filter",
+        r#"{"exact":{"type":"example"}}"#,
+        "--brief",
+        "Work {{ event.type }}",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ];
+    let declared = succeeded(&client(&harness, &declaration).await);
+    let trigger = declared[0]["id"].as_str().expect("a trigger id").to_owned();
+    assert_eq!(declared[0]["name"], "ready");
+    assert_eq!(declared[0]["state"], "enabled");
+
+    let listed = succeeded(&client(&harness, &["trigger", "list", "--organization", "acme"]).await);
+    assert_eq!(listed, declared);
+    assert_eq!(
+        succeeded(
+            &client(
+                &harness,
+                &["trigger", "show", "ready", "--organization", "acme"]
+            )
+            .await
+        ),
+        declared
+    );
+    assert_eq!(
+        succeeded(&client(&harness, &declaration).await)[0]["id"],
+        trigger
+    );
+
+    let changed = succeeded(
+        &client(
+            &harness,
+            &[
+                "trigger",
+                "declare",
+                "ready",
+                "--organization",
+                "acme",
+                "--filter",
+                r#"{"exact":{"type":"example"}}"#,
+                "--brief",
+                "Triage {{ event.type }}",
+                "--workspace",
+                "kestrel",
+                "--agent",
+                "builder",
+            ],
+        )
+        .await,
+    );
+    assert_eq!(changed[0]["id"], trigger);
+    assert_eq!(changed[0]["brief"], "Triage {{ event.type }}");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(harness.sessions("acme").await.is_empty());
+
+    let test = vec![
+        "trigger",
+        "test",
+        "ready",
+        "--organization",
+        "acme",
+        "--event",
+        &retained,
+    ];
+    let tested = succeeded(&client(&harness, &test).await);
+    assert_eq!(tested[0]["matches"], true);
+
+    let disabled = succeeded(
+        &client(
+            &harness,
+            &["trigger", "disable", "ready", "--organization", "acme"],
+        )
+        .await,
+    );
+    assert_eq!(disabled[0]["state"], "disabled:operator");
+    let enabled = succeeded(
+        &client(
+            &harness,
+            &["trigger", "enable", "ready", "--organization", "acme"],
+        )
+        .await,
+    );
+    assert_eq!(enabled[0]["state"], "enabled");
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn the_operator_documents_trigger_answers_and_refusals() {
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            "kestrel",
+            &["https://github.com/jtmthf/kestrel".to_owned()],
+            "main",
+        )
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+    let triggers = triggers_of("acme");
+    let declaration = json!({
+        "name": "sweep",
+        "every": "1h",
+        "brief": "Sweep {{ event.data.trigger }}",
+        "workspace": "kestrel",
+        "agent": "builder",
+    });
+
+    assert!(listed_nothing(&harness, &triggers).await);
+    let (status, trigger) = declared(&harness, &triggers, &declaration).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, repeated) = declared(&harness, &triggers, &declaration).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(repeated["id"], trigger["id"]);
+    let path = trigger_at("acme", "sweep");
+    let (status, _) = got(&harness, &path).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, tested) = declared(&harness, &format!("{path}/test"), &json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(tested["matches"], true);
+    let (status, _) = declared(&harness, &format!("{path}/disable"), &json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = declared(&harness, &format!("{path}/enable"), &json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = declared(
+        &harness,
+        &triggers,
+        &json!({
+            "name": "broken",
+            "filter": { "exact": { "type": "x" } },
+            "every": "1h",
+            "brief": "x",
+            "workspace": "kestrel",
+            "agent": "builder",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
     harness.teardown().await;
 }
@@ -1504,6 +1718,12 @@ fn the_published_operator_document_describes_the_boundary_the_control_plane_serv
         (operator::SESSION_SEAL, "post"),
         (operator::RUNS, "get"),
         (operator::RUNS, "post"),
+        (operator::TRIGGERS, "get"),
+        (operator::TRIGGERS, "post"),
+        (operator::TRIGGER, "get"),
+        (operator::TRIGGER_TEST, "post"),
+        (operator::TRIGGER_DISABLE, "post"),
+        (operator::TRIGGER_ENABLE, "post"),
         (operator::TRANSCRIPT, "get"),
     ];
     assert_eq!(

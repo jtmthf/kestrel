@@ -56,6 +56,9 @@ enum Command {
     /// Read the Events recorded for an Organization
     #[command(subcommand)]
     Event(EventCommand),
+    /// Declare, inspect, test and control Triggers
+    #[command(subcommand)]
+    Trigger(TriggerCommand),
     /// Read Sessions
     #[command(subcommand)]
     Session(SessionCommand),
@@ -244,6 +247,83 @@ enum EventCommand {
     Show {
         /// The Event's record identifier
         record: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TriggerCommand {
+    /// Declare a Trigger, or make the named one what this declaration describes
+    Declare {
+        /// The name it is referred to by
+        name: String,
+        /// The Organization it belongs to
+        #[arg(long)]
+        organization: String,
+        /// The Events it matches: a CloudEvents filter as JSON
+        #[arg(long, value_name = "JSON", required_unless_present = "every")]
+        filter: Option<String>,
+        /// Fire on a schedule in place of a filter
+        #[arg(long, value_name = "DURATION", conflicts_with = "filter")]
+        every: Option<String>,
+        /// The Brief a firing hands its Session, rendered over an Event
+        #[arg(long)]
+        brief: String,
+        /// The branch a firing's work happens on, rendered from the Event
+        #[arg(long)]
+        branch: Option<String>,
+        /// The key that finds an open Session for this work, rendered from the Event
+        #[arg(long)]
+        correlation: Option<String>,
+        /// What to do when correlation finds no open Session: open or ignore
+        #[arg(long, value_name = "OPEN|IGNORE")]
+        on_miss: Option<String>,
+        /// The Workspace a firing's work happens against
+        #[arg(long)]
+        workspace: String,
+        /// The Agent a firing starts work with
+        #[arg(long)]
+        agent: String,
+        /// Another Agent an agent:<name> label may choose instead; repeat for many
+        #[arg(long = "allow", value_name = "AGENT")]
+        allows: Vec<String>,
+        /// The Subscription Profile a firing's Runs use
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    /// List every Trigger in an Organization, one JSON record a line
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+    /// Show a Trigger
+    Show {
+        name: String,
+        #[arg(long)]
+        organization: String,
+    },
+    /// Say whether a Trigger matches an Event and what it would render, starting no work
+    Test {
+        name: String,
+        #[arg(long)]
+        organization: String,
+        /// The Event's record; absent tests the next elapsing of a scheduled Trigger
+        #[arg(long)]
+        event: Option<String>,
+        /// The instruction a dispatch supplies for the Brief to render
+        #[arg(long)]
+        instruction: Option<String>,
+    },
+    /// Stop a Trigger firing, without forgetting it
+    Disable {
+        name: String,
+        #[arg(long)]
+        organization: String,
+    },
+    /// Let a disabled Trigger fire again
+    Enable {
+        name: String,
+        #[arg(long)]
+        organization: String,
     },
 }
 
@@ -582,6 +662,94 @@ async fn main() -> Result<()> {
         }
         Command::Event(EventCommand::Show { record }) => {
             printed(&api.get(&["events", &record]).await?);
+        }
+        Command::Trigger(TriggerCommand::Declare {
+            name,
+            organization,
+            filter,
+            every,
+            brief,
+            branch,
+            correlation,
+            on_miss,
+            workspace,
+            agent,
+            allows,
+            profile,
+        }) => {
+            let filter = filter
+                .map(|filter| {
+                    serde_json::from_str::<Value>(&filter).context("a trigger filter is JSON")
+                })
+                .transpose()?;
+            let mut declaration = json!({
+                "name": name,
+                "brief": brief,
+                "branch": branch,
+                "correlation": correlation,
+                "on_miss": on_miss,
+                "workspace": workspace,
+                "agent": agent,
+                "allows": allows,
+                "profile": profile,
+            });
+            let declaration = declaration
+                .as_object_mut()
+                .expect("a trigger declaration is an object");
+            if let Some(filter) = filter {
+                declaration.insert("filter".to_owned(), filter);
+            }
+            if let Some(every) = every {
+                declaration.insert("every".to_owned(), Value::String(every));
+            }
+            printed(
+                &api.post(&["organizations", &organization, "triggers"], &declaration)
+                    .await?,
+            );
+        }
+        Command::Trigger(TriggerCommand::List { organization }) => {
+            listed(
+                &api.get(&["organizations", &organization, "triggers"])
+                    .await?,
+            );
+        }
+        Command::Trigger(TriggerCommand::Show { name, organization }) => {
+            printed(
+                &api.get(&["organizations", &organization, "triggers", &name])
+                    .await?,
+            );
+        }
+        Command::Trigger(TriggerCommand::Test {
+            name,
+            organization,
+            event,
+            instruction,
+        }) => {
+            printed(
+                &api.post(
+                    &["organizations", &organization, "triggers", &name, "test"],
+                    &json!({ "event": event, "instruction": instruction }),
+                )
+                .await?,
+            );
+        }
+        Command::Trigger(TriggerCommand::Disable { name, organization }) => {
+            printed(
+                &api.post(
+                    &["organizations", &organization, "triggers", &name, "disable"],
+                    &json!({}),
+                )
+                .await?,
+            );
+        }
+        Command::Trigger(TriggerCommand::Enable { name, organization }) => {
+            printed(
+                &api.post(
+                    &["organizations", &organization, "triggers", &name, "enable"],
+                    &json!({}),
+                )
+                .await?,
+            );
         }
         Command::Session(SessionCommand::Open {
             organization,

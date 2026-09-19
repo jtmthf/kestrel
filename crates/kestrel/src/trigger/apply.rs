@@ -174,6 +174,7 @@ pub async fn apply(
                     &agent,
                     &allows,
                     profile.as_ref(),
+                    true,
                 )
                 .await?;
         } else if !trigger.applied {
