@@ -86,13 +86,10 @@ async fn killed_mid_run() -> (Harness, Session, Run, Supervisor) {
 }
 
 #[tokio::test]
-async fn a_run_in_flight_when_the_control_plane_is_killed_completes_after_it_restarts() {
+async fn a_turn_in_flight_when_the_control_plane_is_killed_is_answered_after_it_restarts() {
     let (harness, _, run, supervisor) = killed_mid_run().await;
 
-    let ended = until(&harness, run.id, "ended", |run| {
-        run.state == RunState::Ended
-    })
-    .await;
+    let ended = harness.after_one_turn(run.id).await;
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert!(supervisor.finishes().await.success());
@@ -102,10 +99,7 @@ async fn a_run_in_flight_when_the_control_plane_is_killed_completes_after_it_res
 #[tokio::test]
 async fn the_transcript_of_a_run_that_outlived_a_restart_has_no_gap_and_no_duplicate() {
     let (harness, session, run, supervisor) = killed_mid_run().await;
-    until(&harness, run.id, "ended", |run| {
-        run.state == RunState::Ended
-    })
-    .await;
+    harness.after_one_turn(run.id).await;
 
     assert_eq!(
         transcript(&harness, &session).await,
@@ -141,6 +135,7 @@ async fn the_environment_comes_back_on_its_own_carrying_the_cursor_it_held() {
         harness.run(run.id).await.connected.is_some(),
         "the control plane that came back does not know an environment is on the link"
     );
+    harness.after_one_turn(run.id).await;
     assert!(supervisor.finishes().await.success());
     harness.teardown().await;
 }

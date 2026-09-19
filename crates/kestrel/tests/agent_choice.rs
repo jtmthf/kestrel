@@ -6,7 +6,7 @@ mod support;
 use std::time::Duration;
 
 use jiff::SignedDuration;
-use kestrel::domain::{Direction, Exit, Run, RunId, RunState, Session};
+use kestrel::domain::{Direction, Exit, Run, RunId, Session};
 use kestrel_scripted_agent::{DEFAULT_MODEL, OTHER_MODEL};
 use serde_json::Value;
 use support::github_stub::{self, GithubStub};
@@ -128,21 +128,9 @@ async fn refused(harness: &Harness) -> String {
     }
 }
 
+/// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
 async fn ended(harness: &Harness, run: RunId) -> Run {
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-
-    loop {
-        let run = harness.run(run).await;
-        if run.state == RunState::Ended {
-            return run;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the run {} never ended",
-            run.id
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    harness.after_one_turn(run).await
 }
 
 #[tokio::test]

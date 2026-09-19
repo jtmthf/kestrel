@@ -5,8 +5,9 @@ use sqlx::{Row, SqliteConnection};
 
 use crate::domain::{
     Agent, Checkout, Connected, Cost, Event, Exit, Organization, Run, RunId, RunState, Session,
-    SessionId, SessionState, Usage, Workspace,
+    SessionId, SessionState, Turn, Usage, Workspace,
 };
+use crate::instance::Observed;
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
 use crate::store::{agent, due, organization, timestamp, workspace};
@@ -32,6 +33,14 @@ pub enum Taken {
     Next,
     Again,
     Skipped,
+}
+
+/// A Session's Instance, and what its checkout was last observed to hold: `None` until a Run on it
+/// reports, and forgotten whenever another Run starts on it.
+pub struct Kept {
+    pub session: SessionId,
+    pub instance: String,
+    pub observed: Option<Vec<Observed>>,
 }
 
 pub struct PendingMessage {
@@ -571,12 +580,90 @@ impl<'a> Sessions<'a> {
         session: SessionId,
         instance: Option<&str>,
     ) -> Result<()> {
-        sqlx::query("UPDATE session SET instance = ? WHERE id = ?")
+        sqlx::query("UPDATE session SET instance = ?, observed = NULL WHERE id = ?")
             .bind(instance)
             .bind(session.to_string())
             .execute(&mut *self.connection)
             .await
             .with_context(|| format!("recording the instance of the session {session}"))?;
+
+        Ok(())
+    }
+
+    pub async fn record_observed(
+        &mut self,
+        session: SessionId,
+        observed: &[Observed],
+    ) -> Result<()> {
+        sqlx::query("UPDATE session SET observed = ? WHERE id = ? AND instance IS NOT NULL")
+            .bind(serde_json::to_string(observed)?)
+            .bind(session.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("recording what the session {session}'s checkout holds"))?;
+
+        Ok(())
+    }
+
+    pub async fn kept_instance(&mut self, session: SessionId) -> Result<Option<Kept>> {
+        sqlx::query(
+            "SELECT id, instance, observed FROM session WHERE id = ? AND instance IS NOT NULL",
+        )
+        .bind(session.to_string())
+        .fetch_optional(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading the instance of the session {session}"))?
+        .map(|row| kept(&row))
+        .transpose()
+    }
+
+    pub async fn kept_instances(&mut self, organization: &Organization) -> Result<Vec<Kept>> {
+        sqlx::query(
+            "SELECT id, instance, observed
+             FROM session
+             WHERE organization_id = ? AND instance IS NOT NULL
+             ORDER BY last_active_at, id",
+        )
+        .bind(organization.id.to_string())
+        .fetch_all(&mut *self.connection)
+        .await
+        .context("reading the instances sessions keep")?
+        .iter()
+        .map(kept)
+        .collect()
+    }
+
+    /// The Session lets go of its Instance at once, so no Run is handed one about to be destroyed.
+    pub async fn archive_instance(&mut self, session: &Session, instance: &str) -> Result<()> {
+        self.record_instance(session.id, None).await?;
+        sqlx::query(
+            "INSERT INTO instance_archive (instance, organization_id, session_id, queued_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(instance)
+        .bind(session.organization.id.to_string())
+        .bind(session.id.to_string())
+        .bind(Timestamp::now().to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("queueing the instance {instance} to be archived"))?;
+
+        Ok(())
+    }
+
+    pub async fn instances_to_archive(&mut self) -> Result<Vec<String>> {
+        sqlx::query_scalar("SELECT instance FROM instance_archive ORDER BY queued_at, instance")
+            .fetch_all(&mut *self.connection)
+            .await
+            .context("reading the instances waiting to be archived")
+    }
+
+    pub async fn instance_archived(&mut self, instance: &str) -> Result<()> {
+        sqlx::query("DELETE FROM instance_archive WHERE instance = ?")
+            .bind(instance)
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("recording the instance {instance} archived"))?;
 
         Ok(())
     }
@@ -860,6 +947,83 @@ impl<'a> Sessions<'a> {
         })
         .collect()
     }
+
+    pub async fn prompt_turn(&mut self, run: &Run) -> Result<i64> {
+        let prompted = sqlx::query(
+            "INSERT INTO turn (run_id, organization_id, seq, prompted_at)
+             VALUES (
+                 ?,
+                 ?,
+                 (SELECT COALESCE(MAX(seq), 0) + 1 FROM turn WHERE run_id = ?),
+                 ?
+             )
+             RETURNING seq",
+        )
+        .bind(run.id.to_string())
+        .bind(run.organization.to_string())
+        .bind(run.id.to_string())
+        .bind(Timestamp::now().to_string())
+        .fetch_one(&mut *self.connection)
+        .await
+        .with_context(|| format!("prompting a turn of the run {}", run.id))?;
+
+        Ok(prompted.get("seq"))
+    }
+
+    /// `false` when no turn was waiting on an answer, so an answer replayed after a reconnect
+    /// closes nothing twice.
+    pub async fn answer_turn(&mut self, run: &Run) -> Result<bool> {
+        let answered =
+            sqlx::query("UPDATE turn SET answered_at = ? WHERE run_id = ? AND answered_at IS NULL")
+                .bind(Timestamp::now().to_string())
+                .bind(run.id.to_string())
+                .execute(&mut *self.connection)
+                .await
+                .with_context(|| format!("answering the turn of the run {}", run.id))?;
+
+        Ok(answered.rows_affected() > 0)
+    }
+
+    pub async fn turns(&mut self, run: RunId) -> Result<Vec<Turn>> {
+        sqlx::query(
+            "SELECT seq, prompted_at, answered_at
+             FROM turn
+             WHERE run_id = ?
+             ORDER BY seq",
+        )
+        .bind(run.to_string())
+        .fetch_all(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading the turns of the run {run}"))?
+        .iter()
+        .map(|row| {
+            Ok(Turn {
+                seq: row.get("seq"),
+                prompted_at: row.get::<String, _>("prompted_at").parse()?,
+                answered_at: timestamp(row, "answered_at")?,
+            })
+        })
+        .collect()
+    }
+
+    /// Between turns: prompted at least once, and every prompt answered. A Run not yet
+    /// prompted is still getting to its first turn.
+    pub async fn is_waiting(&mut self, run: &Run) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS prompted, COUNT(answered_at) AS answered
+             FROM turn
+             WHERE run_id = ?",
+        )
+        .bind(run.id.to_string())
+        .fetch_one(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading whether the run {} is between turns", run.id))?;
+        let prompted: i64 = row.get("prompted");
+
+        Ok(run.state == RunState::Active
+            && prompted > 0
+            && prompted == row.get::<i64, _>("answered"))
+    }
 }
 
 pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Result<Session> {
@@ -965,6 +1129,17 @@ fn run(row: &SqliteRow) -> Result<Run> {
             None => None,
         },
         usage: usage(row),
+    })
+}
+
+fn kept(row: &SqliteRow) -> Result<Kept> {
+    Ok(Kept {
+        session: row.get::<String, _>("id").parse()?,
+        instance: row.get("instance"),
+        observed: row
+            .get::<Option<String>, _>("observed")
+            .map(|observed| serde_json::from_str(&observed))
+            .transpose()?,
     })
 }
 

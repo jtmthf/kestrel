@@ -5,7 +5,7 @@ mod support;
 
 use std::time::Duration;
 
-use kestrel::domain::{Exit, Run, RunId, RunState, Session};
+use kestrel::domain::{Exit, Run, RunId, Session};
 use kestrel_scripted_agent::{OTHER_MODEL, Script};
 use reqwest::StatusCode;
 use support::environment::Environment;
@@ -13,7 +13,6 @@ use support::link_client::Link;
 use support::supervisor::{self, Supervisor};
 use support::{A_PROVIDER_KEY, Harness, PROVIDER_KEY, repository, scripted_agent};
 
-const PATIENCE: Duration = Duration::from_secs(30);
 const LONG_ENOUGH_TO_BE_SURE: Duration = Duration::from_millis(500);
 
 async fn confiding() -> Harness {
@@ -49,22 +48,9 @@ async fn a_session(harness: &Harness, organization: &str, held: Option<&str>) ->
         .await
 }
 
+/// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
 async fn ended(harness: &Harness, run: RunId) -> Run {
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-
-    loop {
-        let run = harness.run(run).await;
-        if run.state == RunState::Ended {
-            return run;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the run {} is {} and never ended",
-            run.id,
-            run.state
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    harness.after_one_turn(run).await
 }
 
 async fn transcript(harness: &Harness, session: &Session) -> String {

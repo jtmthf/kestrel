@@ -1,6 +1,7 @@
 //! A canned sequence over real stdio JSON-RPC, so the main suite drives kestrel's ACP client
 //! over the wire rather than over a shim above it, with no network and no model spend.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -17,7 +18,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use clap::Parser;
 use kestrel_scripted_agent::{
-    CONFIDED, DEFAULT_MODEL, FIRST_MEMORY, LAST_MEMORY, OTHER_MODEL, Script,
+    CONFIDED, DEFAULT_MODEL, FIRST_MEMORY, LAST_MEMORY, OTHER_MODEL, Script, conversed,
 };
 
 const SESSION: &str = "scripted";
@@ -38,6 +39,7 @@ struct Cli {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let script = Cli::parse().script;
+    let prompted_so_far: Arc<Mutex<Vec<String>>> = Arc::default();
 
     Agent
         .builder()
@@ -116,6 +118,7 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |prompt: PromptRequest, responder, connection| {
+                let prompted_so_far = Arc::clone(&prompted_so_far);
                 let prompted: String = prompt
                     .prompt
                     .iter()
@@ -127,7 +130,15 @@ async fn main() -> Result<()> {
                 // The turn asks the client a question of its own, so it cannot run inside the
                 // dispatch loop that would have to carry the answer.
                 connection.clone().spawn(async move {
-                    let stop = play(script, &prompted, &connection).await?;
+                    let earlier = {
+                        let mut so_far = prompted_so_far
+                            .lock()
+                            .expect("what was prompted should not be poisoned");
+                        let earlier = so_far.clone();
+                        so_far.push(prompted.clone());
+                        earlier
+                    };
+                    let stop = play(script, &prompted, &earlier, &connection).await?;
                     responder.respond(PromptResponse::new(stop))
                 })
             },
@@ -140,6 +151,7 @@ async fn main() -> Result<()> {
 async fn play(
     script: Script,
     prompted: &str,
+    earlier: &[String],
     connection: &ConnectionTo<Client>,
 ) -> Result<StopReason> {
     if script == Script::Dawdles {
@@ -163,6 +175,14 @@ async fn play(
     }
     if script == Script::Echoes {
         say(connection, "message-1", prompted)?;
+        return Ok(StopReason::EndTurn);
+    }
+    if script == Script::Converses {
+        say(
+            connection,
+            "message-1",
+            &conversed(earlier.len() + 1, earlier),
+        )?;
         return Ok(StopReason::EndTurn);
     }
     if script == Script::Refuses {

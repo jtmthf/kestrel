@@ -57,6 +57,12 @@ which is a seventh capability by another route.
   branch pushed, nothing uncommitted, nothing untracked — from what the supervisor reports, never
   from an agent's assertion, which is the one thing a run that hallucinated a push will get wrong.
   See [ADR-0019](0019-kestrel-declares-the-branch-and-learns-the-pull-request.md).
+- **A seal waits for the work to be safe, and a person can discard it.** An operator's seal is
+  refused, not carried out around a held Instance. A sealed session takes no run, so nothing could
+  push its work afterwards. The only way past the gate is an explicit release, which destroys the
+  Instance and records in the transcript what it held. A run that ends without reporting its
+  checkout, because it failed or its supervisor died, holds its Instance as if the checkout were
+  dirty.
 - **The idle hint is gated on the same check.** An instance holding work that exists only inside it
   gets no hint, stays hot, and costs money. Suspension is not destruction, but the research says it
   is lossy in practice nearly everywhere it is documented, and the expensive case is the one that
