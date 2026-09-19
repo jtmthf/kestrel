@@ -13,6 +13,34 @@ This repo has no git remote configured yet. Until one pointing at `jtmthf/kestre
 - **Apply / remove labels**: `gh issue edit <number> --repo jtmthf/kestrel --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --repo jtmthf/kestrel --comment "..."`
 
+## Difficulty
+
+A ticket an agent will pick up carries exactly one `difficulty:` label: a spec, a `to-tickets` ticket, or a wayfinder AFK ticket. External PRs and HITL-only tickets do not. The five rungs and what each means are in `triage-labels.md`; this section is how they travel and what dispatch does with them.
+
+- **Assign at creation.** Publishing a ticket is where the rung is chosen: propose one and let the user confirm it. Apply it with `gh issue edit <number> --repo jtmthf/kestrel --add-label difficulty:<rung>`. A ticket that arrives carrying none is treated as `difficulty:moderate`, and dispatch names that assumption rather than letting it pass silently.
+- **Revise during triage.** When the work turns out harder or easier than it read, move it: `--remove-label` the old rung as you `--add-label` the new, so the ticket never carries two.
+- **Query by rung.** `gh issue list --repo jtmthf/kestrel --label difficulty:<rung>`.
+
+### Dispatching by difficulty
+
+The rung chooses a **tier of model**, not a model. Effort is a second, independent dial.
+
+| Rung | Model tier |
+| --- | --- |
+| `trivial` | the smallest, fastest model |
+| `easy` | a fast, cheap model |
+| `moderate` | a balanced model |
+| `hard` | a strong reasoning model |
+| `extreme` | the strongest reasoning model available |
+
+Effort is a per-model variant, named differently in every harness, and no rung derives it. Set it to the work in front of you: a well-specified but reasoning-heavy ticket can want a cheap model at its highest variant, and a broad, shallow one the strongest model at its lowest. You choose the model and the effort; no harness picks either from the ticket.
+
+Model names do not live in this document because the catalogs move. Read the live one from the harness you dispatch to:
+
+- **OpenCode** — `opencode models` lists `provider/model`; a variant is `provider/model#variant`.
+- **Codex** — `codex debug models` prints the catalog as JSON, each model with its reasoning levels, its default, and its capability prose.
+- **Claude Code** — no enumeration surface; the `/model` picker is the list, so choose the model before dispatch.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
