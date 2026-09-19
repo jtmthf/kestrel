@@ -59,6 +59,9 @@ enum Command {
     /// Read Sessions
     #[command(subcommand)]
     Session(SessionCommand),
+    /// Enqueue and list Runs
+    #[command(subcommand)]
+    Run(RunCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -304,6 +307,53 @@ enum AgentCommand {
 
 #[derive(Debug, Subcommand)]
 enum SessionCommand {
+    /// Open a Session against a Workspace and an Agent
+    Open {
+        /// The Organization it belongs to
+        #[arg(long)]
+        organization: String,
+        /// The Workspace its work happens against
+        #[arg(long)]
+        workspace: String,
+        /// The Agent that participates in it
+        #[arg(long)]
+        agent: String,
+        /// The Subscription Profile its Runs use
+        #[arg(long)]
+        profile: Option<String>,
+        /// The branch its work happens on
+        #[arg(long)]
+        branch: Option<String>,
+        /// The sealed Session this one carries on from
+        #[arg(long, value_name = "SESSION")]
+        continues: Option<String>,
+    },
+    /// List every Session in an Organization
+    List {
+        /// The Organization the Sessions belong to
+        #[arg(long)]
+        organization: String,
+    },
+    /// Show a Session
+    Show {
+        /// The Session's identifier
+        session: String,
+    },
+    /// Add a participant's message; starts a Run or queues its next Turn
+    Post {
+        /// The Session's identifier
+        session: String,
+        /// The participant saying the message
+        #[arg(long, default_value = "operator")]
+        as_participant: String,
+        /// What the participant says
+        message: String,
+    },
+    /// Seal a Session: readable ever after, and never reopened
+    Seal {
+        /// The Session's identifier
+        session: String,
+    },
     /// Read a Session's Transcript, one JSON entry a line, and the cursor a later read
     /// resumes from
     Transcript {
@@ -315,6 +365,25 @@ enum SessionCommand {
         /// Keep reading as entries are appended, until the Session is sealed
         #[arg(long)]
         follow: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RunCommand {
+    /// Enqueue a Run in a Session, for the work role to claim and dispatch
+    Enqueue {
+        /// The Session it executes on behalf of
+        #[arg(long)]
+        session: String,
+        /// The model it works with, or none for its Agent's or Agent Runtime's default
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// List every Run in a Session
+    List {
+        /// The Session the Runs execute on behalf of
+        #[arg(long)]
+        session: String,
     },
 }
 
@@ -514,6 +583,56 @@ async fn main() -> Result<()> {
         Command::Event(EventCommand::Show { record }) => {
             printed(&api.get(&["events", &record]).await?);
         }
+        Command::Session(SessionCommand::Open {
+            organization,
+            workspace,
+            agent,
+            profile,
+            branch,
+            continues,
+        }) => {
+            printed(
+                &api.post(
+                    &["organizations", &organization, "sessions"],
+                    &json!({
+                        "workspace": workspace,
+                        "agent": agent,
+                        "profile": profile,
+                        "branch": branch,
+                        "continues": continues,
+                    }),
+                )
+                .await?,
+            );
+        }
+        Command::Session(SessionCommand::List { organization }) => {
+            listed(
+                &api.get(&["organizations", &organization, "sessions"])
+                    .await?,
+            );
+        }
+        Command::Session(SessionCommand::Show { session }) => {
+            printed(&api.get(&["sessions", &session]).await?);
+        }
+        Command::Session(SessionCommand::Post {
+            session,
+            as_participant,
+            message,
+        }) => {
+            printed(
+                &api.post(
+                    &["sessions", &session, "messages"],
+                    &json!({ "participant": as_participant, "message": message }),
+                )
+                .await?,
+            );
+        }
+        Command::Session(SessionCommand::Seal { session }) => {
+            printed(
+                &api.post(&["sessions", &session, "seal"], &json!({}))
+                    .await?,
+            );
+        }
         Command::Session(SessionCommand::Transcript {
             session,
             cursor,
@@ -524,6 +643,15 @@ async fn main() -> Result<()> {
             if let Some(cursor) = read {
                 eprintln!("cursor  {cursor}");
             }
+        }
+        Command::Run(RunCommand::Enqueue { session, model }) => {
+            printed(
+                &api.post(&["sessions", &session, "runs"], &json!({ "model": model }))
+                    .await?,
+            );
+        }
+        Command::Run(RunCommand::List { session }) => {
+            listed(&api.get(&["sessions", &session, "runs"]).await?);
         }
     }
 

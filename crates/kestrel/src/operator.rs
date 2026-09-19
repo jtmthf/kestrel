@@ -8,7 +8,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, put};
+use axum::routing::{delete, get, post, put};
 use axum::{BoxError, Json, Router};
 use futures_core::Stream;
 use jiff::{SignedDuration, Timestamp};
@@ -20,7 +20,8 @@ use crate::agent::{self, NotOffered};
 use crate::declined::Declined;
 use crate::domain::{
     self, Agent, Connection, Direction, EventRecordId, EventRefusal, Firing, Integration,
-    Occurrence, Organization, SessionId, SessionState, SubscriptionProfile, Workspace,
+    Occurrence, Organization, Run, Session, SessionId, SessionState, SubscriptionProfile,
+    Workspace,
 };
 use crate::integration::{self, Connecting, Registration, github};
 use crate::log::{self, Cursor, Page, Unreadable, Window};
@@ -29,6 +30,7 @@ use crate::provider::{self, Held};
 use crate::store::organization::NoSuchOrganization;
 use crate::store::{Declared, Store};
 use crate::trigger;
+use crate::{session, work};
 
 pub const ORGANIZATIONS: &str = "/operator/organizations";
 pub const WORKSPACES: &str = "/operator/organizations/{organization}/workspaces";
@@ -46,6 +48,11 @@ pub const EVENT_REFUSAL: &str =
     "/operator/organizations/{organization}/integrations/{integration}/event-refusal";
 pub const EVENTS: &str = "/operator/organizations/{organization}/events";
 pub const EVENT: &str = "/operator/events/{record}";
+pub const SESSIONS: &str = "/operator/organizations/{organization}/sessions";
+pub const SESSION: &str = "/operator/sessions/{session}";
+pub const SESSION_MESSAGES: &str = "/operator/sessions/{session}/messages";
+pub const SESSION_SEAL: &str = "/operator/sessions/{session}/seal";
+pub const RUNS: &str = "/operator/sessions/{session}/runs";
 pub const TRANSCRIPT: &str = "/operator/sessions/{session}/transcript";
 
 const EVENTS_LISTED: usize = 50;
@@ -110,6 +117,11 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .route(EVENT_REFUSAL, delete(acknowledge_event_refusal))
         .route(EVENTS, get(events))
         .route(EVENT, get(event))
+        .route(SESSIONS, get(sessions).post(open_session))
+        .route(SESSION, get(show_session))
+        .route(SESSION_MESSAGES, post(post_to_session))
+        .route(SESSION_SEAL, post(seal_session))
+        .route(RUNS, get(runs).post(enqueue_run))
         .route(TRANSCRIPT, get(transcript))
         .with_state(ControlPlane { store, shutdown })
 }
@@ -133,6 +145,31 @@ struct AgentDeclaration {
     model: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct SessionDeclaration {
+    workspace: String,
+    agent: String,
+    profile: Option<String>,
+    branch: Option<String>,
+    continues: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SessionMessage {
+    #[serde(default = "default_operator_participant")]
+    participant: String,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct RunDeclaration {
+    model: Option<String>,
+}
+
+fn default_operator_participant() -> String {
+    "operator".to_owned()
+}
+
 #[derive(Serialize)]
 struct OrganizationRecord {
     id: String,
@@ -153,6 +190,43 @@ struct AgentRecord {
     name: String,
     runtime: String,
     model: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SessionRecord {
+    id: String,
+    organization: String,
+    workspace: String,
+    agent: String,
+    profile: Option<String>,
+    checkout: domain::Checkout,
+    correlation: Option<String>,
+    state: String,
+    opened_at: Timestamp,
+    last_active_at: Timestamp,
+    sealed_at: Option<Timestamp>,
+    continues: Option<String>,
+    started_by: Option<String>,
+    continued_by: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct RunRecord {
+    id: String,
+    session: String,
+    state: String,
+    exit: Option<domain::Exit>,
+    instance: Option<String>,
+    supervisor: Option<String>,
+    model: Option<String>,
+    worked_model: Option<String>,
+    enqueued_at: Timestamp,
+    started_at: Option<Timestamp>,
+    ended_at: Option<Timestamp>,
+    lease_expires_at: Option<Timestamp>,
+    connected_at: Option<Timestamp>,
+    supervisor_version: Option<String>,
+    usage: Option<domain::Usage>,
 }
 
 impl From<Organization> for OrganizationRecord {
@@ -182,6 +256,55 @@ impl From<Agent> for AgentRecord {
             name: agent.name,
             runtime: agent.runtime,
             model: agent.model,
+        }
+    }
+}
+
+impl SessionRecord {
+    async fn read(store: &Store, session: Session) -> Result<Self, Refused> {
+        let continued_by = session::continuations(store, session.id)
+            .await?
+            .into_iter()
+            .map(|session| session.to_string())
+            .collect();
+
+        Ok(Self {
+            id: session.id.to_string(),
+            organization: session.organization.name,
+            workspace: session.workspace.name,
+            agent: session.agent.name,
+            profile: session.profile.map(|profile| profile.name),
+            checkout: session.checkout,
+            correlation: session.correlation,
+            state: session.state.as_str().to_owned(),
+            opened_at: session.opened_at,
+            last_active_at: session.last_active_at,
+            sealed_at: session.sealed_at,
+            continues: session.continues.map(|session| session.to_string()),
+            started_by: session.started_by.map(|event| event.to_string()),
+            continued_by,
+        })
+    }
+}
+
+impl From<Run> for RunRecord {
+    fn from(run: Run) -> Self {
+        Self {
+            id: run.id.to_string(),
+            session: run.session.to_string(),
+            state: run.state.as_str().to_owned(),
+            exit: run.exit,
+            instance: run.instance,
+            supervisor: run.supervisor,
+            model: run.model,
+            worked_model: run.worked_model,
+            enqueued_at: run.enqueued_at,
+            started_at: run.started_at,
+            ended_at: run.ended_at,
+            lease_expires_at: run.lease_expires_at,
+            connected_at: run.connected.as_ref().map(|connected| connected.at),
+            supervisor_version: run.connected.map(|connected| connected.version),
+            usage: run.usage,
         }
     }
 }
@@ -687,6 +810,149 @@ async fn event(
     let event = integration::event(&control_plane.store, record).await?;
 
     Ok(Json(EventRecord::read(&control_plane.store, event).await?))
+}
+
+async fn sessions(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+) -> Result<Json<Vec<SessionRecord>>, Refused> {
+    let sessions = session::sessions(&control_plane.store, &organization).await?;
+    let mut records = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        records.push(SessionRecord::read(&control_plane.store, session).await?);
+    }
+
+    Ok(Json(records))
+}
+
+async fn open_session(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    declaration: Result<Json<SessionDeclaration>, JsonRejection>,
+) -> Result<(StatusCode, Json<SessionRecord>), Refused> {
+    let Json(declaration) = declaration?;
+    let continues = declaration
+        .continues
+        .as_deref()
+        .map(session_id)
+        .transpose()?;
+    let session = session::open(
+        &control_plane.store,
+        &organization,
+        &declaration.workspace,
+        &declaration.agent,
+        declaration.profile.as_deref(),
+        declaration.branch.as_deref(),
+        continues,
+    )
+    .await
+    .map_err(session_refusal)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(SessionRecord::read(&control_plane.store, session).await?),
+    ))
+}
+
+async fn show_session(
+    State(control_plane): State<ControlPlane>,
+    Path(id): Path<String>,
+) -> Result<Json<SessionRecord>, Refused> {
+    let session = session::show(&control_plane.store, session_id(&id)?)
+        .await
+        .map_err(session_refusal)?;
+
+    Ok(Json(
+        SessionRecord::read(&control_plane.store, session).await?,
+    ))
+}
+
+async fn post_to_session(
+    State(control_plane): State<ControlPlane>,
+    Path(id): Path<String>,
+    message: Result<Json<SessionMessage>, JsonRejection>,
+) -> Result<Json<Option<RunRecord>>, Refused> {
+    let Json(message) = message?;
+    let run = session::post(
+        &control_plane.store,
+        session_id(&id)?,
+        &message.participant,
+        &message.message,
+    )
+    .await
+    .map_err(session_refusal)?;
+
+    Ok(Json(run.map(Into::into)))
+}
+
+async fn seal_session(
+    State(control_plane): State<ControlPlane>,
+    Path(id): Path<String>,
+) -> Result<Json<SessionRecord>, Refused> {
+    let session = session::seal(&control_plane.store, session_id(&id)?)
+        .await
+        .map_err(session_refusal)?;
+
+    Ok(Json(
+        SessionRecord::read(&control_plane.store, session).await?,
+    ))
+}
+
+async fn runs(
+    State(control_plane): State<ControlPlane>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<RunRecord>>, Refused> {
+    let runs = work::runs(&control_plane.store, session_id(&id)?)
+        .await
+        .map_err(session_refusal)?;
+
+    Ok(Json(runs.into_iter().map(Into::into).collect()))
+}
+
+async fn enqueue_run(
+    State(control_plane): State<ControlPlane>,
+    Path(id): Path<String>,
+    declaration: Result<Json<RunDeclaration>, JsonRejection>,
+) -> Result<(StatusCode, Json<RunRecord>), Refused> {
+    let Json(declaration) = declaration?;
+    let run = work::enqueue(
+        &control_plane.store,
+        session_id(&id)?,
+        declaration.model.as_deref(),
+    )
+    .await
+    .map_err(session_refusal)?;
+
+    Ok((StatusCode::CREATED, Json(run.into())))
+}
+
+fn session_id(id: &str) -> Result<SessionId, Refused> {
+    id.parse()
+        .map_err(|_| Refused::NotFound(NO_SUCH_SESSION.to_owned()))
+}
+
+fn session_refusal(error: anyhow::Error) -> Refused {
+    let message = error.to_string();
+    if message.starts_with("no session ")
+        || message.starts_with("no workspace named ")
+        || message.starts_with("no agent named ")
+    {
+        return Refused::NotFound(message);
+    }
+    if message.contains("already has the run")
+        || message.contains("still in flight")
+        || message.contains("already sealed")
+    {
+        return Refused::Conflict(message);
+    }
+    if message.contains("is sealed")
+        || message.contains("is open, and work continues")
+        || message.contains("belongs to the organization")
+    {
+        return Refused::Unprocessable(message);
+    }
+
+    error.into()
 }
 
 fn sharing_a_directory(repositories: &[String]) -> Option<String> {
