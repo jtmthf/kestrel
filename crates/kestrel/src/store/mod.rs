@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod integration;
 pub mod organization;
+pub mod profile;
 pub mod session;
 pub mod trigger;
 pub mod workspace;
@@ -18,6 +19,7 @@ use crate::log::Log;
 use crate::store::agent::Agents;
 use crate::store::integration::Integrations;
 use crate::store::organization::Organizations;
+use crate::store::profile::Profiles;
 use crate::store::session::Sessions;
 use crate::store::trigger::Triggers;
 use crate::store::workspace::Workspaces;
@@ -81,6 +83,10 @@ impl Tx<'_> {
 
     pub fn organizations(&mut self) -> Organizations<'_> {
         Organizations::over(&mut self.transaction, self.keyring)
+    }
+
+    pub fn profiles(&mut self) -> Profiles<'_> {
+        Profiles::over(&mut self.transaction, self.keyring)
     }
 
     pub fn workspaces(&mut self) -> Workspaces<'_> {
@@ -182,6 +188,7 @@ mod tests {
                 organization: &organization,
                 workspace: &workspace,
                 agent: &agent,
+                profile: None,
                 branch: None,
                 correlation: None,
                 continues: None,

@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
 use jiff::SignedDuration;
 
@@ -157,6 +157,18 @@ pub struct Cli {
         default_value_t = DEFAULT_MAX_ACTIVE_RUNS
     )]
     max_active_runs: NonZeroUsize,
+
+    /// An Agent Runtime whose Runs on one Subscription Profile are dispatched one at a time,
+    /// because the login they share rotates as it refreshes; repeat, or separate with commas
+    #[arg(
+        long = "serialized-runtime",
+        env = "KESTREL_SERIALIZED_RUNTIME",
+        global = true,
+        value_name = "NAME",
+        value_delimiter = ',',
+        default_value = "codex"
+    )]
+    serialized_runtimes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -192,6 +204,9 @@ pub enum CliCommand {
     /// Hold and forget the Provider Credentials an Organization's Runs reach a model with
     #[command(subcommand)]
     Credential(CredentialCommand),
+    /// Declare Subscription Profiles, and hold and forget the logins in them
+    #[command(subcommand)]
+    Profile(ProfileCommand),
     /// Open and read Sessions
     #[command(subcommand)]
     Session(SessionCommand),
@@ -272,6 +287,10 @@ pub enum TriggerCommand {
         /// for many
         #[arg(long = "allow", value_name = "AGENT")]
         allows: Vec<String>,
+        /// The Subscription Profile a firing's Runs are spawned with, whose owner is
+        /// authorizing every one of them by naming it here
+        #[arg(long, value_name = "PROFILE")]
+        profile: Option<String>,
     },
     /// Say whether a Trigger matches an Event already recorded, and what a firing for it
     /// would render, starting no work
@@ -537,6 +556,9 @@ pub enum SessionCommand {
         /// The Agent that participates in it
         #[arg(long)]
         agent: String,
+        /// The Subscription Profile its Runs are spawned with, and no other
+        #[arg(long, value_name = "PROFILE")]
+        profile: Option<String>,
         /// An existing branch its work happens on; a branch of its own, cut from the
         /// Workspace's, when not given
         #[arg(long)]
@@ -603,6 +625,56 @@ pub enum CredentialCommand {
         #[arg(long)]
         organization: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ProfileCommand {
+    /// Declare a Subscription Profile: a person's login to a subscribed Agent Runtime
+    Declare {
+        /// The name a Session or Trigger names it by
+        name: String,
+        /// The Organization it is declared in
+        #[arg(long)]
+        organization: String,
+        /// The person it belongs to, which never changes
+        #[arg(long)]
+        owner: String,
+    },
+    /// Hold a login in a profile, read from standard input
+    Set {
+        /// The profile it is held in
+        name: String,
+        #[arg(long)]
+        organization: String,
+        #[command(flatten)]
+        entry: ProfileEntry,
+    },
+    /// List every profile in an Organization, with what each holds and never its contents
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+    /// Forget a login a profile holds
+    Forget {
+        /// The profile it is held in
+        name: String,
+        #[arg(long)]
+        organization: String,
+        #[command(flatten)]
+        entry: ProfileEntry,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+#[group(required = true, multiple = false)]
+pub struct ProfileEntry {
+    /// An environment variable the Agent Runtime is spawned with
+    #[arg(long, value_name = "NAME")]
+    pub variable: Option<String>,
+    /// A file beneath the agent's home, handed back after each Run so a refreshed login
+    /// persists
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -715,6 +787,12 @@ impl Cli {
             runtimes: self.agent_runtimes.clone(),
             auth: self.agent_auth.clone(),
             max_active_runs: self.max_active_runs,
+            serialized: self
+                .serialized_runtimes
+                .iter()
+                .filter(|runtime| !runtime.is_empty())
+                .cloned()
+                .collect(),
         })
     }
 

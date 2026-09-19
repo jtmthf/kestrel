@@ -1,10 +1,12 @@
 pub mod checkout;
 pub mod link;
+pub mod login;
 pub mod permission;
 pub mod runtime;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Write as _};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -47,6 +49,10 @@ struct Attending {
     conversation: Option<Conversation>,
     finished: bool,
     taken: i64,
+    /// Handed back before anything is said, because saying the Run finished ends it and with it
+    /// this Environment's right to hand anything back.
+    refreshed: BTreeMap<String, String>,
+    written: Option<login::Written>,
     saying: VecDeque<Report>,
 }
 
@@ -65,12 +71,13 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
         auth: set(variables, "KESTREL_AGENT_AUTH").map(str::to_owned),
         model: set(variables, "KESTREL_AGENT_MODEL").map(str::to_owned),
     };
+    let home = set(variables, "HOME").map(PathBuf::from);
     let link = Arc::new(link);
 
     // Nothing else reaches the link while a turn is being worked, so this Environment says it
     // is alive beside the work rather than between the steps of it.
     let alive = tokio::spawn(saying_it_is_alive(Arc::clone(&link)));
-    let status = attending(&link, &runtime, diagnostics).await;
+    let status = attending(&link, &runtime, home.as_deref(), diagnostics).await;
     alive.abort();
 
     status
@@ -85,9 +92,14 @@ async fn saying_it_is_alive(link: Arc<Link>) {
     }
 }
 
-async fn attending(link: &Link, runtime: &Runtime, diagnostics: &dyn Diagnostics) -> i32 {
+async fn attending(
+    link: &Link,
+    runtime: &Runtime,
+    home: Option<&Path>,
+    diagnostics: &dyn Diagnostics,
+) -> i32 {
     let mut attending = Attending::default();
-    let status = attended(link, runtime, &mut attending, diagnostics).await;
+    let status = attended(link, runtime, home, &mut attending, diagnostics).await;
     if let Some(conversation) = attending.conversation.take() {
         conversation.end().await;
     }
@@ -98,11 +110,12 @@ async fn attending(link: &Link, runtime: &Runtime, diagnostics: &dyn Diagnostics
 async fn attended(
     link: &Link,
     runtime: &Runtime,
+    home: Option<&Path>,
     attending: &mut Attending,
     diagnostics: &dyn Diagnostics,
 ) -> i32 {
     loop {
-        match attend(link, runtime, attending, diagnostics).await {
+        match attend(link, runtime, home, attending, diagnostics).await {
             Ok(Attended::Stopped) => {
                 diagnostics.info("supervisor stopped");
                 return 0;
@@ -126,6 +139,7 @@ async fn attended(
 async fn attend(
     link: &Link,
     runtime: &Runtime,
+    home: Option<&Path>,
     attending: &mut Attending,
     diagnostics: &dyn Diagnostics,
 ) -> Result<Attended, link::Error> {
@@ -145,13 +159,26 @@ async fn attend(
     diagnostics.info("reported connected");
 
     loop {
+        if !attending.refreshed.is_empty() {
+            link.refresh(&attending.refreshed).await?;
+            diagnostics.info(&format!(
+                "handed back {}",
+                attending
+                    .refreshed
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            attending.refreshed.clear();
+        }
         say(link, attending, diagnostics).await?;
         if attending.finished {
             return Ok(Attended::Finished);
         }
         if attending.started && attending.conversation.is_none() {
             attending.conversation =
-                Some(conversation(link, runtime, attending.prompt.as_deref(), diagnostics).await?);
+                conversation(link, runtime, home, attending, diagnostics).await?;
         }
 
         tokio::select! {
@@ -167,7 +194,15 @@ async fn attend(
                 ));
 
                 match delivered.instruction {
-                    Instruction::Stop => return Ok(Attended::Stopped),
+                    // Stopped is told after the run has already ended, its credential invalidated
+                    // with it, so whatever a turn last refreshed was already handed back before
+                    // this arrived; only the local copy is left to clean up.
+                    Instruction::Stop => {
+                        if let Some(written) = attending.written.take() {
+                            written.remove();
+                        }
+                        return Ok(Attended::Stopped);
+                    }
                     Instruction::Start { checkout, prompt } if !attending.started => {
                         attending.started = true;
                         attending.prompt = prompt;
@@ -200,9 +235,18 @@ async fn attend(
                 for subject in &worked.allowed {
                     diagnostics.info(&format!("allowed once  {subject}"));
                 }
+                // Handed back after every turn, not only a finishing one: a login the runtime
+                // rotates mid-conversation is refreshed while the run's credential still lets it
+                // through, not saved up for a Stop that arrives once that credential is gone.
+                if let Some(written) = &attending.written {
+                    attending.refreshed = written.refreshed();
+                }
                 if worked.failed.is_some() {
                     attending.finished = true;
                     attending.conversation = None;
+                    if let Some(written) = attending.written.take() {
+                        written.remove();
+                    }
                 }
                 // Reported after every turn, not only a finishing one: a Run waiting between
                 // turns may be stopped at any moment, and what it last observed is what decides
@@ -220,14 +264,16 @@ async fn attend(
 async fn conversation(
     link: &Link,
     runtime: &Runtime,
-    prompt: Option<&str>,
+    home: Option<&Path>,
+    attending: &mut Attending,
     diagnostics: &dyn Diagnostics,
-) -> Result<Conversation, link::Error> {
-    let prompt = match prompt {
-        Some(prompt) => prompt.to_owned(),
+) -> Result<Option<Conversation>, link::Error> {
+    let prompt = match attending.prompt.clone() {
+        Some(prompt) => prompt,
         None => runtime::prompt(&all_entries(link).await?),
     };
-    let provider = link.credentials().await?.variables;
+    let credentials = link.credentials().await?;
+    let provider = credentials.variables;
     if !provider.is_empty() {
         diagnostics.info(&format!(
             "carrying {} into the agent runtime",
@@ -235,7 +281,20 @@ async fn conversation(
         ));
     }
 
-    Ok(Conversation::open(runtime, provider, prompt))
+    match written(home, credentials.files, diagnostics) {
+        Ok(written) => {
+            attending.written = written;
+            Ok(Some(Conversation::open(runtime, provider, prompt)))
+        }
+        Err(because) => {
+            diagnostics.info(&because);
+            attending.finished = true;
+            attending.saying.push_back(Report::Finished {
+                exit: Exit::Failed { because },
+            });
+            Ok(None)
+        }
+    }
 }
 
 async fn turn(conversation: &mut Option<Conversation>) -> runtime::Worked {
@@ -243,6 +302,33 @@ async fn turn(conversation: &mut Option<Conversation>) -> runtime::Worked {
         Some(conversation) => conversation.turn().await,
         None => std::future::pending().await,
     }
+}
+
+fn written(
+    home: Option<&Path>,
+    files: BTreeMap<String, String>,
+    diagnostics: &dyn Diagnostics,
+) -> Result<Option<login::Written>, String> {
+    if files.is_empty() {
+        return Ok(None);
+    }
+    let Some(home) = home else {
+        return Err(
+            "the run's subscription profile holds files, and this environment has no home to \
+             put them in"
+                .to_owned(),
+        );
+    };
+
+    let written = login::write(home, files).map_err(|error| {
+        format!("the subscription profile's files could not be written: {error}")
+    })?;
+    diagnostics.info(&format!(
+        "writing {} beneath the agent's home",
+        written.paths().collect::<Vec<_>>().join(", ")
+    ));
+
+    Ok(Some(written))
 }
 
 async fn all_entries(link: &Link) -> Result<Vec<link::Entry>, link::Error> {

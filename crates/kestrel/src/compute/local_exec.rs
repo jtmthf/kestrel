@@ -27,6 +27,7 @@ impl LocalExec {
     pub(super) fn provision(&self, run: RunId) -> io::Result<Instance> {
         let name = format!("kestrel-{run}");
         fs::create_dir_all(within(&name))?;
+        fs::create_dir_all(home(&name))?;
 
         Ok(self.instance(name))
     }
@@ -41,7 +42,9 @@ impl LocalExec {
     }
 
     pub(super) fn destroy_named(&self, instance: &str) -> io::Result<()> {
-        removed(&within(named(instance)?))
+        let name = named(instance)?;
+        removed(&home(name))?;
+        removed(&within(name))
     }
 
     fn instance(&self, name: String) -> Instance {
@@ -49,6 +52,7 @@ impl LocalExec {
             provisioned: Box::new(Directory {
                 supervisor: self.supervisor.clone(),
                 workspace: within(&name),
+                home: home(&name),
             }),
             name: format!("local-exec/{name}"),
         }
@@ -57,6 +61,12 @@ impl LocalExec {
 
 fn within(name: &str) -> PathBuf {
     std::env::temp_dir().join(name)
+}
+
+/// The agent's home, apart from the operator's: a Subscription Profile's files are written
+/// beneath it and removed again, which in the operator's own home would take their login with it.
+fn home(name: &str) -> PathBuf {
+    within(&format!("{name}.home"))
 }
 
 fn named(instance: &str) -> io::Result<&str> {
@@ -69,6 +79,7 @@ fn named(instance: &str) -> io::Result<&str> {
 struct Directory {
     supervisor: PathBuf,
     workspace: PathBuf,
+    home: PathBuf,
 }
 
 impl Directory {
@@ -109,8 +120,10 @@ impl Provisioned for Directory {
 
     fn supervise(&mut self, variables: &[(&str, &str)]) -> io::Result<Supervisor> {
         let mut command = Command::new(&self.supervisor);
+        fs::create_dir_all(&self.home)?;
         command
             .current_dir(&self.workspace)
+            .env("HOME", &self.home)
             .envs(variables.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -147,6 +160,7 @@ impl Provisioned for Directory {
     }
 
     fn destroy(&mut self) -> io::Result<()> {
+        removed(&self.home)?;
         removed(&self.workspace)
     }
 }

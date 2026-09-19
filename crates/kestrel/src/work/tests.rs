@@ -27,11 +27,11 @@ impl Fixture {
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let session = session::open(&store, "acme", "kestrel", "builder", None, None)
+        let session = session::open(&store, "acme", "kestrel", "builder", None, None, None)
             .await
             .unwrap();
         enqueue(&store, session.id, None).await.unwrap();
-        let run = claim(&store).await.unwrap().unwrap().run;
+        let run = claim(&store, &[]).await.unwrap().unwrap().run;
 
         Self {
             store,

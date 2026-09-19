@@ -14,6 +14,7 @@ use crate::compute::{Driver, Exited, Instance, Supervisor};
 use crate::domain::{Exit, Run, RunId, Session};
 use crate::instance;
 use crate::link;
+use crate::profile;
 use crate::provider;
 use crate::session;
 use crate::store::Store;
@@ -32,6 +33,7 @@ pub struct Dispatch {
     pub runtimes: Vec<AgentRuntime>,
     pub auth: Option<String>,
     pub max_active_runs: NonZeroUsize,
+    pub serialized: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +119,7 @@ async fn dispatching(
         stop_left_behind(store, &dispatch.driver).await?;
         archive(store, &dispatch.driver).await?;
         if active.len() < dispatch.max_active_runs.get()
-            && let Some(claimed) = work::claim(store).await?
+            && let Some(claimed) = work::claim(store, &dispatch.serialized).await?
         {
             let store = store.clone();
             let dispatch = dispatch.clone();
@@ -316,14 +318,23 @@ async fn archive(store: &Store, driver: &Driver) -> Result<()> {
     Ok(())
 }
 
-/// An Agent Runtime reaches a model with a Provider Credential its Organization holds, or by
-/// an ACP login kestrel was configured with. A Run with neither fails here rather than inside
-/// an Instance provisioned to find that out.
+/// An Agent Runtime reaches a model with the Session's Subscription Profile, a Provider
+/// Credential its Organization holds, or an ACP login kestrel was configured with. A Run with
+/// none of them fails here rather than inside an Instance provisioned to find that out.
 async fn a_way_to_reach_a_model(
     store: &Store,
     dispatch: &Dispatch,
     session: &Session,
 ) -> Result<()> {
+    if let Some(named) = &session.profile {
+        if profile::holds_anything(store, named).await? {
+            return Ok(());
+        }
+        bail!(
+            "the subscription profile {} this session names holds no login",
+            named.name
+        );
+    }
     if dispatch.logs_the_agent_in() || provider::holds_any(store, session.organization.id).await? {
         return Ok(());
     }

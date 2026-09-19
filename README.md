@@ -21,7 +21,7 @@ the environment dials out to, authenticating as the run it is executing, and rec
 cursor when the control plane restarts under it. Beside the link, on a loopback listener of its
 own, the control plane serves the operator boundary in [`openapi/operator.json`](openapi/operator.json);
 `kestrel-client` declares and lists organizations, workspaces and agents over it, sets and forgets
-provider credentials, registers integrations and reads the events they record, and
+provider credentials and the subscription profiles a session names, registers integrations and reads the events they record, and
 `kestrel-client session transcript --follow` streams a session's transcript over it, all from outside
 the control plane's process. What stops a run short of useful work is that
 nothing carries a task to it: every run asks its agent the same fixed question, and nothing triggers

@@ -5,12 +5,12 @@ use sqlx::{Row, SqliteConnection};
 
 use crate::domain::{
     Agent, Checkout, Connected, Cost, Event, Exit, Organization, Run, RunId, RunState, Session,
-    SessionId, SessionState, Turn, Usage, Workspace,
+    SessionId, SessionState, SubscriptionProfile, Turn, Usage, Workspace,
 };
 use crate::instance::Observed;
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
-use crate::store::{agent, due, organization, timestamp, workspace};
+use crate::store::{agent, due, organization, profile, timestamp, workspace};
 
 macro_rules! runs_where {
     ($tail:literal) => {
@@ -52,6 +52,7 @@ pub struct Opening<'a> {
     pub organization: &'a Organization,
     pub workspace: &'a Workspace,
     pub agent: &'a Agent,
+    pub profile: Option<&'a SubscriptionProfile>,
     /// None declares the Session a branch of its own.
     pub branch: Option<&'a str>,
     pub correlation: Option<&'a str>,
@@ -76,6 +77,7 @@ impl<'a> Sessions<'a> {
             organization: opening.organization.clone(),
             workspace: opening.workspace.clone(),
             agent: opening.agent.clone(),
+            profile: opening.profile.cloned(),
             checkout: Checkout {
                 repositories: opening.workspace.repositories.clone(),
                 base: opening.workspace.branch.clone(),
@@ -94,9 +96,10 @@ impl<'a> Sessions<'a> {
 
         sqlx::query(
             "INSERT INTO session
-                 (id, organization_id, workspace_id, agent_id, runtime, model, base, branch,
-                  correlation, state, opened_at, last_active_at, continues, event_record_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (id, organization_id, workspace_id, agent_id, runtime, model,
+                  subscription_profile_id, base, branch, correlation, state, opened_at,
+                  last_active_at, continues, event_record_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.id.to_string())
         .bind(session.organization.id.to_string())
@@ -104,6 +107,12 @@ impl<'a> Sessions<'a> {
         .bind(session.agent.id.to_string())
         .bind(&session.agent.runtime)
         .bind(&session.agent.model)
+        .bind(
+            session
+                .profile
+                .as_ref()
+                .map(|profile| profile.id.to_string()),
+        )
         .bind(&session.checkout.base)
         .bind(&session.checkout.branch)
         .bind(&session.correlation)
@@ -464,7 +473,13 @@ impl<'a> Sessions<'a> {
     /// was queued when the statement began, and is active and holding its lease by the time
     /// anyone else looks. A Run with a blocker that has not ended successfully is removed
     /// from the ready order, never reordered around.
-    pub async fn claim_run(&mut self, lease_until: Timestamp) -> Result<Option<Run>> {
+    /// A Run on a `serialized` runtime waits while another Run on that runtime is active with
+    /// the same Subscription Profile, because two copies of one rotating login race to refresh it.
+    pub async fn claim_run(
+        &mut self,
+        lease_until: Timestamp,
+        serialized: &[String],
+    ) -> Result<Option<Run>> {
         let claimed = sqlx::query(
             "UPDATE run
              SET state = ?, claimed_at = ?, lease_expires_at = ?
@@ -479,6 +494,17 @@ impl<'a> Sessions<'a> {
                        WHERE d.run_id = r.id
                          AND NOT (b.state = ? AND b.exit IS ?)
                    )
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM session AS s
+                       JOIN session AS o
+                         ON o.subscription_profile_id = s.subscription_profile_id
+                        AND o.runtime = s.runtime
+                       JOIN run AS a ON a.session_id = o.id
+                       WHERE s.id = r.session_id
+                         AND s.runtime IN (SELECT value FROM json_each(?))
+                         AND a.state = ?
+                   )
                  ORDER BY r.enqueued_at, r.id
                  LIMIT 1
              )
@@ -490,6 +516,8 @@ impl<'a> Sessions<'a> {
         .bind(RunState::Queued.as_str())
         .bind(RunState::Ended.as_str())
         .bind(Exit::Succeeded.status())
+        .bind(serde_json::to_string(serialized)?)
+        .bind(RunState::Active.as_str())
         .fetch_optional(&mut *self.connection)
         .await
         .context("claiming a queued run")?;
@@ -1034,9 +1062,9 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
 
 async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option<Session>> {
     let Some(row) = sqlx::query(
-        "SELECT organization_id, workspace_id, agent_id, runtime, model, base, branch,
-                correlation, state, opened_at, last_active_at, sealed_at, continues,
-                event_record_id
+        "SELECT organization_id, workspace_id, agent_id, runtime, model, subscription_profile_id,
+                base, branch, correlation, state, opened_at, last_active_at, sealed_at,
+                continues, event_record_id
          FROM session
          WHERE id = ?",
     )
@@ -1066,6 +1094,10 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
         )
         .await?
     };
+    let profile = match row.get::<Option<String>, _>("subscription_profile_id") {
+        Some(id) => Some(profile::with_id(connection, id.parse()?).await?),
+        None => None,
+    };
     let repositories =
         sqlx::query("SELECT url FROM session_repository WHERE session_id = ? ORDER BY position")
             .bind(id.to_string())
@@ -1080,6 +1112,7 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
         organization,
         workspace,
         agent,
+        profile,
         checkout: Checkout {
             repositories,
             base: row.get("base"),

@@ -5,16 +5,17 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 use crate::domain::{
     Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
-    Organization, Session, Templates, Trigger, TriggerId, TriggerState, Workspace,
+    Organization, Session, SubscriptionProfile, Templates, Trigger, TriggerId, TriggerState,
+    Workspace,
 };
 use crate::filter::{Attribute, Filter};
-use crate::store::{agent, integration, organization, workspace};
+use crate::store::{agent, integration, organization, profile, workspace};
 
 macro_rules! triggers_where {
     ($tail:literal) => {
         concat!(
             "SELECT id, organization_id, name, filter, every_ms, due_at, brief, branch, correlation, on_miss, workspace_id,
-                    agent_id, state, applied, declared_at
+                    agent_id, subscription_profile_id, state, applied, declared_at
              FROM trigger
              WHERE ",
             $tail
@@ -45,6 +46,7 @@ impl<'a> Triggers<'a> {
         workspace: &Workspace,
         agent: &Agent,
         allows: &[Agent],
+        profile: Option<&SubscriptionProfile>,
         applied: bool,
     ) -> Result<Trigger> {
         let trigger = Trigger {
@@ -57,6 +59,7 @@ impl<'a> Triggers<'a> {
             workspace: workspace.clone(),
             agent: agent.clone(),
             allows: allows.to_vec(),
+            profile: profile.cloned(),
             state: TriggerState::Enabled,
             disabled_because: None,
             firing_budget: FiringBudget::default(),
@@ -76,8 +79,9 @@ impl<'a> Triggers<'a> {
         sqlx::query(
             "INSERT INTO trigger
                  (id, organization_id, name, filter, every_ms, due_at, brief, branch, correlation,
-                  on_miss, workspace_id, agent_id, state, applied, enabled_at, declared_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  on_miss, workspace_id, agent_id, subscription_profile_id, state, applied,
+                  enabled_at, declared_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
         .bind(organization.id.to_string())
@@ -91,6 +95,7 @@ impl<'a> Triggers<'a> {
         .bind(on_miss.map(CorrelationMiss::as_str))
         .bind(workspace.id.to_string())
         .bind(agent.id.to_string())
+        .bind(profile.map(|profile| profile.id.to_string()))
         .bind(trigger.state.as_str())
         .bind(applied)
         .bind(trigger.declared_at.to_string())
@@ -118,6 +123,7 @@ impl<'a> Triggers<'a> {
         workspace: &Workspace,
         agent: &Agent,
         allows: &[Agent],
+        profile: Option<&SubscriptionProfile>,
     ) -> Result<()> {
         let declared_at = Timestamp::now();
         let (filter, every, due_at) = match fires {
@@ -132,7 +138,8 @@ impl<'a> Triggers<'a> {
         sqlx::query(
             "UPDATE trigger
                 SET filter = ?, every_ms = ?, due_at = ?, brief = ?, branch = ?, correlation = ?,
-                    on_miss = ?, workspace_id = ?, agent_id = ?, applied = 1, declared_at = ?
+                    on_miss = ?, workspace_id = ?, agent_id = ?, subscription_profile_id = ?,
+                    applied = 1, declared_at = ?
               WHERE id = ?",
         )
         .bind(filter)
@@ -144,6 +151,7 @@ impl<'a> Triggers<'a> {
         .bind(on_miss.map(CorrelationMiss::as_str))
         .bind(workspace.id.to_string())
         .bind(agent.id.to_string())
+        .bind(profile.map(|profile| profile.id.to_string()))
         .bind(declared_at.to_string())
         .bind(trigger.id.to_string())
         .execute(&mut *self.connection)
@@ -668,6 +676,10 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
         );
     }
 
+    let profile = match row.get::<Option<String>, _>("subscription_profile_id") {
+        Some(id) => Some(profile::with_id(connection, id.parse()?).await?),
+        None => None,
+    };
     let state: TriggerState = row.get::<String, _>("state").parse()?;
 
     let trigger = Trigger {
@@ -700,6 +712,7 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
         workspace,
         agent,
         allows,
+        profile,
         state: state.clone(),
         disabled_because: None,
         firing_budget: FiringBudget::default(),

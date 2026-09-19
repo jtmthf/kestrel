@@ -7,6 +7,11 @@ use clap::ValueEnum;
 /// accident.
 pub const CONFIDED: &str = "SCRIPTED_";
 
+/// Where the `Refreshes` script keeps its login, beneath its home.
+pub const LOGIN: &str = ".scripted/login";
+/// What the `Refreshes` script appends to the login it found, standing in for a new token.
+pub const REFRESHED: &str = " refreshed";
+
 /// The two models the agent offers a client, the first of which it runs on unasked.
 pub const DEFAULT_MODEL: &str = "scripted-mini";
 pub const OTHER_MODEL: &str = "scripted-max";
@@ -21,6 +26,9 @@ pub enum Script {
     Refuses,
     /// Says which Provider Credentials reached its own process, and nothing else.
     Confides,
+    /// Says the login it found beneath its home, and rewrites it there as a runtime refreshing
+    /// one does.
+    Refreshes,
     /// Says whether both ends of a long earlier context reached its prompt.
     Recalls,
     /// Says back exactly the prompt it was sent.
@@ -51,6 +59,7 @@ impl Script {
             Script::Speaks => "speaks",
             Script::Refuses => "refuses",
             Script::Confides => "confides",
+            Script::Refreshes => "refreshes",
             Script::Recalls => "recalls",
             Script::Echoes => "echoes",
             Script::Converses => "converses",

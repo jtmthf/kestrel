@@ -124,9 +124,13 @@ pub async fn enqueue(store: &Store, session: SessionId, model: Option<&str>) -> 
 
 /// A queued Run is dispatched at most once: what this hands back is already active, so a
 /// second claimant asking at the same moment is handed something else, or nothing.
-pub async fn claim(store: &Store) -> Result<Option<Claimed>> {
+pub async fn claim(store: &Store, serialized: &[String]) -> Result<Option<Claimed>> {
     let mut tx = store.begin().await?;
-    let Some(run) = tx.sessions().claim_run(Timestamp::now() + LEASE).await? else {
+    let Some(run) = tx
+        .sessions()
+        .claim_run(Timestamp::now() + LEASE, serialized)
+        .await?
+    else {
         return Ok(None);
     };
 
