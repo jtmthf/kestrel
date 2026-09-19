@@ -6,7 +6,7 @@ Issues are tracked in GitHub (`jtmthf/kestrel`). See `docs/agents/issue-tracker.
 
 ### Triage labels
 
-Default five canonical labels (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
+Five canonical triage labels (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix) and a five-rung difficulty vocabulary. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
