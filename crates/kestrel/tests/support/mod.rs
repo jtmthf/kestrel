@@ -630,6 +630,27 @@ impl Harness {
         trigger::test(&self.store, organization, name, Some(event), None).await
     }
 
+    pub async fn dispatch(
+        &self,
+        organization: &str,
+        name: &str,
+        issue: i64,
+        asked: trigger::Asked<'_>,
+    ) -> anyhow::Result<trigger::Fired> {
+        trigger::dispatch(
+            &self.store,
+            &kestrel::integration::github::Github::dialling_out()?,
+            trigger::Dispatch {
+                organization,
+                trigger: name,
+                integration: "github",
+                issue,
+                asked,
+            },
+        )
+        .await
+    }
+
     pub async fn try_declare_scheduled_trigger(
         &self,
         organization: &str,
@@ -693,6 +714,12 @@ impl Harness {
         trigger::test_declared(&self.store, organization, declared, Some(event), None)
             .await
             .expect("the declared trigger should test")
+    }
+
+    pub async fn firings(&self, event: EventRecordId) -> Vec<kestrel::domain::Firing> {
+        trigger::firings(&self.store, event)
+            .await
+            .expect("the firings should read")
     }
 
     pub async fn triggers(&self, organization: &str) -> Vec<Trigger> {

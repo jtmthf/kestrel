@@ -361,6 +361,27 @@ impl<'a> Integrations<'a> {
         event_with_id(self.connection, id).await
     }
 
+    pub async fn recorded_event(
+        &mut self,
+        organization: &Organization,
+        occurrence: &Occurrence,
+    ) -> Result<Event> {
+        let row = sqlx::query(
+            "SELECT record_id, organization_id, integration_id, id, source, specversion, type,
+                    subject, time, data, recorded_at
+             FROM event
+             WHERE organization_id = ? AND source = ? AND id = ?",
+        )
+        .bind(organization.id.to_string())
+        .bind(&occurrence.source)
+        .bind(&occurrence.id)
+        .fetch_optional(&mut *self.connection)
+        .await?
+        .with_context(|| format!("no event {} on {}", occurrence.id, occurrence.source))?;
+
+        event(&row)
+    }
+
     pub async fn unfollowed(&mut self, r#type: &str, limit: usize) -> Result<Vec<Event>> {
         sqlx::query(
             "SELECT event.record_id, event.organization_id, event.integration_id, event.id,

@@ -11,6 +11,7 @@ use crate::cli::{
 use crate::domain::{Connection, Direction, Fires, Templates};
 use crate::filter::Filter;
 use crate::instance;
+use crate::integration::github::Github;
 use crate::integration::{self, Connecting, Registration};
 use crate::log::Window;
 use crate::provider;
@@ -462,6 +463,41 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             );
             println!();
             println!("{}", rendered.brief);
+        }
+        CliCommand::Trigger(TriggerCommand::Dispatch {
+            name,
+            organization,
+            integration,
+            issue,
+            instruction,
+            agent,
+        }) => {
+            let instruction = instruction.as_ref().map(Given::read).transpose()?;
+            let fired = trigger::dispatch(
+                &store,
+                &Github::dialling_out()?,
+                trigger::Dispatch {
+                    organization,
+                    trigger: name,
+                    integration,
+                    issue: *issue,
+                    asked: trigger::Asked {
+                        instruction: instruction.as_deref(),
+                        agent: agent.as_deref(),
+                    },
+                },
+            )
+            .await?;
+            match fired {
+                trigger::Fired::Opened { session, run, .. } => {
+                    println!("opened  {session}  {run}");
+                }
+                trigger::Fired::Fed { session, .. } => println!("fed     {session}"),
+                trigger::Fired::Ignored { correlation, .. } => {
+                    println!("ignored  no open session holds {correlation}");
+                }
+                trigger::Fired::Failed { because, .. } => bail!(because),
+            }
         }
         CliCommand::Trigger(TriggerCommand::Show { name, organization }) => {
             let trigger = trigger::show(&store, organization, name).await?;

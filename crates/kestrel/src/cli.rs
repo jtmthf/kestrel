@@ -293,6 +293,26 @@ pub enum TriggerCommand {
         #[arg(long, value_parser = Given::text)]
         instruction: Option<Given>,
     },
+    /// Start a Trigger's work on an issue now, whether or not its filter matches anything
+    Dispatch {
+        /// The name it is referred to by
+        name: String,
+        #[arg(long)]
+        organization: String,
+        /// The GitHub Integration the issue is read through, and its Outcome said back through
+        #[arg(long)]
+        integration: String,
+        /// The issue to work on
+        #[arg(long, value_name = "NUMBER")]
+        issue: i64,
+        /// The instruction the brief reads as `instruction`; `@FILE` reads it from a file and
+        /// `-` from standard input
+        #[arg(long, value_parser = Given::text)]
+        instruction: Option<Given>,
+        /// An Agent the Trigger allows, in place of the one it or a label would choose
+        #[arg(long)]
+        agent: Option<String>,
+    },
     /// List every Trigger in an Organization, and what each matches
     List {
         #[arg(long)]

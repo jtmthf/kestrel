@@ -123,11 +123,21 @@ impl Filter {
 /// and an Event that carries none, is a stranger's.
 const MEMBERS: &[&str] = &["OWNER", "MEMBER", "COLLABORATOR"];
 
+/// An assignee is who was acted on, so naming one is no guard.
+const ACTORS: &[&[&str]] = &[
+    &["actor", "login"],
+    &["user", "login"],
+    &["sender", "login"],
+    &["comment", "user", "login"],
+];
+
 impl Filter {
     /// Judged from the filter's shape alone, so it errs toward warning: only GitHub tells kestrel
     /// who an actor is, and only a comparison every match must pass can be trusted to decline one.
     pub fn admits_outsiders(&self) -> bool {
-        !(self.requires(&Filter::names_a_member) || self.requires(&Filter::excludes_github))
+        !(self.requires(&Filter::names_a_member)
+            || self.requires(&Filter::names_an_actor)
+            || self.requires(&Filter::excludes_github))
     }
 
     fn requires(&self, holds: &impl Fn(&Filter) -> bool) -> bool {
@@ -144,6 +154,14 @@ impl Filter {
             Filter::Exact(Attribute::Data(path), value)
                 if path.last().is_some_and(|key| key == "author_association")
                     && MEMBERS.contains(&value.as_str())
+        )
+    }
+
+    fn names_an_actor(&self) -> bool {
+        matches!(
+            self,
+            Filter::Exact(Attribute::Data(path), _)
+                if ACTORS.iter().any(|actor| path.iter().map(String::as_str).eq(actor.iter().copied()))
         )
     }
 
@@ -323,6 +341,19 @@ mod tests {
                 true,
             ),
             (r#"{"suffix": {"type": ".failed"}}"#, true),
+            (
+                r#"{"all": [
+                    {"exact": {"type": "com.github.issues.assigned"}},
+                    {"any": [
+                        {"exact": {"data.actor.login": "jtmthf"}},
+                        {"exact": {"data.sender.login": "jtmthf"}}
+                    ]}
+                ]}"#,
+                false,
+            ),
+            (r#"{"exact": {"data.comment.user.login": "jtmthf"}}"#, false),
+            (r#"{"exact": {"data.assignee.login": "kestrel-bot"}}"#, true),
+            (r#"{"prefix": {"data.user.login": "jt"}}"#, true),
         ] {
             let parsed: Filter = filter.parse().expect("the filter should parse");
             assert_eq!(parsed.admits_outsiders(), admits, "{filter}");
