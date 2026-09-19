@@ -19,6 +19,10 @@ pub const API: &str = "https://api.github.com";
 pub const LABELLED: &str = "com.github.issues.labeled";
 pub const COMMENTED: &str = "com.github.issue_comment.created";
 
+/// A comment that opens with it is a command to kestrel rather than a remark to the Session.
+pub const MENTION: &str = "@kestrel";
+const AGENT: &str = "agent=";
+
 /// Every outcome comment carries it, so kestrel never hears its own comment as a follow-up.
 pub const MARKER: &str = "<!-- kestrel run ";
 
@@ -256,6 +260,28 @@ impl Github {
             .find(|comment| comment.body.contains(marker)))
     }
 
+    pub async fn issue(
+        &self,
+        integration: &Integration,
+        number: i64,
+    ) -> Result<serde_json::Value, Refused> {
+        let github = integration.github().map_err(Refused::Failed)?;
+        let repository = repository(&github.repository).map_err(Refused::Failed)?;
+        let response = self
+            .request(
+                reqwest::Method::GET,
+                github,
+                &format!("repos/{repository}/issues/{number}"),
+            )
+            .send()
+            .await
+            .map_err(|error| {
+                Refused::Failed(anyhow!("{repository}#{number} could not be read: {error}"))
+            })?;
+
+        answered(response, &format!("{repository}#{number}")).await
+    }
+
     fn request(
         &self,
         method: reqwest::Method,
@@ -439,8 +465,36 @@ impl<'a> EventData<'a> {
             .and_then(serde_json::Value::as_str)
     }
 
-    pub fn message(&self) -> Option<&str> {
-        self.field(&["body"]).and_then(serde_json::Value::as_str)
+    pub fn message(&self) -> Option<&'a str> {
+        self.field(&["body"])
+            .or_else(|| self.field(&["comment", "body"]))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    /// Exactly what a filter's `prefix` on the body sees, so the two never disagree about a command.
+    pub fn command(&self) -> Option<Command<'a>> {
+        if self.occurrence.r#type != COMMENTED {
+            return None;
+        }
+        let rest = self.message()?.strip_prefix(MENTION)?;
+        if rest.starts_with(|character: char| !character.is_whitespace()) {
+            return None;
+        }
+
+        let rest = rest.trim_start();
+        let (agent, rest) = match rest.strip_prefix(AGENT) {
+            Some(named) => {
+                let end = named.find(char::is_whitespace).unwrap_or(named.len());
+                (Some(&named[..end]), named[end..].trim_start())
+            }
+            None => (None, rest),
+        };
+        let instruction = rest.trim_end();
+
+        Some(Command {
+            agent,
+            instruction: (!instruction.is_empty()).then_some(instruction),
+        })
     }
 
     pub fn subject_issue(&self) -> Option<i64> {
@@ -451,12 +505,36 @@ impl<'a> EventData<'a> {
             .and_then(|number| number.parse().ok())
     }
 
-    fn field(&self, path: &[&str]) -> Option<&serde_json::Value> {
+    fn field(&self, path: &[&str]) -> Option<&'a serde_json::Value> {
         let mut at = &self.occurrence.data;
         for part in path {
             at = at.get(*part)?;
         }
         Some(at)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Command<'a> {
+    pub agent: Option<&'a str>,
+    pub instruction: Option<&'a str>,
+}
+
+/// What an operator's dispatch of `issue` mints: about the issue, as anything GitHub said of it is.
+pub fn dispatched(
+    github: &GithubConnection,
+    r#type: &str,
+    issue: i64,
+    data: serde_json::Value,
+) -> Occurrence {
+    Occurrence {
+        id: uuid::Uuid::now_v7().to_string(),
+        source: source(github),
+        specversion: "1.0".to_owned(),
+        r#type: r#type.to_owned(),
+        subject: Some(format!("#{issue}")),
+        time: Timestamp::now(),
+        data,
     }
 }
 
@@ -675,6 +753,88 @@ mod tests {
             delivered(&watching(), "issue_comment", "d-3", payload)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    fn commented(body: &str) -> Occurrence {
+        comment_occurrence(
+            &serde_json::json!({
+                "id": 5,
+                "issue_url": "https://api.github.com/repos/jtmthf/kestrel/issues/43",
+                "created_at": "2026-09-01T12:00:00Z",
+                "user": { "login": "jtmthf" },
+                "body": body,
+            }),
+            &watching(),
+        )
+        .expect("a comment")
+    }
+
+    fn command(body: &str) -> Option<(Option<String>, Option<String>)> {
+        let occurrence = commented(body);
+        EventData::new(&occurrence).command().map(|command| {
+            (
+                command.agent.map(str::to_owned),
+                command.instruction.map(str::to_owned),
+            )
+        })
+    }
+
+    #[test]
+    fn a_comment_opening_with_the_mention_is_a_command() {
+        let some = |text: &str| Some(text.to_owned());
+
+        assert_eq!(command("@kestrel"), Some((None, None)));
+        assert_eq!(
+            command("@kestrel /implement\nthen open a PR\n"),
+            Some((None, some("/implement\nthen open a PR")))
+        );
+        assert_eq!(
+            command("@kestrel agent=codex $tdd the parser"),
+            Some((some("codex"), some("$tdd the parser")))
+        );
+        assert_eq!(
+            command("@kestrel agent=claude"),
+            Some((some("claude"), None))
+        );
+    }
+
+    #[test]
+    fn a_passing_mention_commands_nothing() {
+        assert_eq!(command("thanks @kestrel"), None);
+        assert_eq!(command("@kestrels are birds"), None);
+        assert_eq!(command("@kestrel-bot can you look?"), None);
+        assert_eq!(command(" @kestrel go"), None);
+        assert_eq!(command("@Kestrel go"), None);
+        assert_eq!(command("please add a test"), None);
+    }
+
+    #[test]
+    fn only_a_comment_can_be_a_command() {
+        let mut occurrence = commented("@kestrel /implement");
+        occurrence.r#type = LABELLED.to_owned();
+
+        assert_eq!(EventData::new(&occurrence).command(), None);
+    }
+
+    #[test]
+    fn a_delivered_comment_commands_as_a_polled_one_does() {
+        let payload = serde_json::json!({
+            "action": "created",
+            "comment": { "id": 99, "body": "@kestrel agent=codex go", "user": { "login": "jtmthf" } },
+            "issue": { "number": 43 },
+            "sender": { "login": "jtmthf" }
+        });
+        let occurrence = delivered(&watching(), "issue_comment", "d-5", payload)
+            .unwrap()
+            .expect("a comment is an event");
+
+        assert_eq!(
+            EventData::new(&occurrence).command(),
+            Some(Command {
+                agent: Some("codex"),
+                instruction: Some("go"),
+            })
         );
     }
 

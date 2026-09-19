@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::link::{Exit, Instruction, Link, Report};
-use crate::runtime::Runtime;
+use crate::link::{Checkout, Exit, Instruction, Link, Report};
+use crate::runtime::{Conversation, Runtime};
 
 const RECONNECT_AFTER: Duration = Duration::from_millis(250);
 /// Often enough that the control plane keeps its hold on this Environment through a handful
@@ -38,18 +38,21 @@ enum Attended {
     LostTheLink,
 }
 
-/// Held across a reconnect: the turn is worked once, and what is left to say about it is what
-/// the supervisor comes back to.
+/// Held across a reconnect: the conversation goes on whether or not the link does, and what
+/// is left to say about it is what the supervisor comes back to.
 #[derive(Default)]
 struct Attending {
     cursor: Option<String>,
     started: bool,
+    checkout: Option<Checkout>,
     prompt: Option<String>,
-    worked: bool,
+    conversation: Option<Conversation>,
+    finished: bool,
     taken: i64,
     /// Handed back before anything is said, because saying the Run finished ends it and with it
     /// this Environment's right to hand anything back.
     refreshed: BTreeMap<String, String>,
+    written: Option<login::Written>,
     saying: VecDeque<Report>,
 }
 
@@ -96,9 +99,23 @@ async fn attending(
     diagnostics: &dyn Diagnostics,
 ) -> i32 {
     let mut attending = Attending::default();
+    let status = attended(link, runtime, home, &mut attending, diagnostics).await;
+    if let Some(conversation) = attending.conversation.take() {
+        conversation.end().await;
+    }
 
+    status
+}
+
+async fn attended(
+    link: &Link,
+    runtime: &Runtime,
+    home: Option<&Path>,
+    attending: &mut Attending,
+    diagnostics: &dyn Diagnostics,
+) -> i32 {
     loop {
-        match attend(link, runtime, home, &mut attending, diagnostics).await {
+        match attend(link, runtime, home, attending, diagnostics).await {
             Ok(Attended::Stopped) => {
                 diagnostics.info("supervisor stopped");
                 return 0;
@@ -141,98 +158,149 @@ async fn attend(
     .await?;
     diagnostics.info("reported connected");
 
-    // Nothing is read off the stream once the Run has started: saying how it went is all that
-    // is left, and a reconnection resumes at that rather than waiting to be told to start again.
-    if !attending.started {
-        let checkout = loop {
-            let Some(delivered) = instructions.next().await? else {
-                return Ok(Attended::LostTheLink);
-            };
-            attending.cursor = Some(delivered.id.clone());
+    loop {
+        if !attending.refreshed.is_empty() {
+            link.refresh(&attending.refreshed).await?;
             diagnostics.info(&format!(
-                "instruction {} {}",
-                delivered.instruction.kind(),
-                delivered.id
+                "handed back {}",
+                attending
+                    .refreshed
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
+            attending.refreshed.clear();
+        }
+        say(link, attending, diagnostics).await?;
+        if attending.finished {
+            return Ok(Attended::Finished);
+        }
+        if attending.started && attending.conversation.is_none() {
+            attending.conversation = conversation(link, runtime, home, attending, diagnostics).await?;
+        }
 
-            match delivered.instruction {
-                Instruction::Stop => return Ok(Attended::Stopped),
-                Instruction::Start { checkout, prompt } => {
-                    attending.prompt = prompt;
-                    break checkout;
+        tokio::select! {
+            delivered = instructions.next() => {
+                let Some(delivered) = delivered? else {
+                    return Ok(Attended::LostTheLink);
+                };
+                attending.cursor = Some(delivered.id.clone());
+                diagnostics.info(&format!(
+                    "instruction {} {}",
+                    delivered.instruction.kind(),
+                    delivered.id
+                ));
+
+                match delivered.instruction {
+                    // Stopped is told after the run has already ended, its credential invalidated
+                    // with it, so whatever a turn last refreshed was already handed back before
+                    // this arrived; only the local copy is left to clean up.
+                    Instruction::Stop => {
+                        if let Some(written) = attending.written.take() {
+                            written.remove();
+                        }
+                        return Ok(Attended::Stopped);
+                    }
+                    Instruction::Start { checkout, prompt } if !attending.started => {
+                        attending.started = true;
+                        attending.prompt = prompt;
+                        match checkout::check_out(&checkout).await {
+                            Ok(()) => attending.saying.push_back(Report::Started),
+                            Err(because) => {
+                                diagnostics.info(&because);
+                                attending.finished = true;
+                                attending.saying.push_back(Report::Checkout {
+                                    repositories: checkout::observe(&checkout).await,
+                                });
+                                attending.saying.push_back(Report::Finished {
+                                    exit: Exit::Failed { because },
+                                });
+                            }
+                        }
+                        attending.checkout = Some(checkout);
+                    }
+                    Instruction::Prompt { prompt } => match &attending.conversation {
+                        Some(conversation) => conversation.prompt(prompt),
+                        None => diagnostics.info("prompted before the run started"),
+                    },
+                    Instruction::Start { .. } | Instruction::Unrecognized => {}
                 }
-                Instruction::Unrecognized => {}
             }
-        };
-        attending.started = true;
-
-        match checkout::check_out(&checkout).await {
-            Ok(()) => attending.saying.push_back(Report::Started),
-            Err(because) => {
-                diagnostics.info(&because);
-                attending.worked = true;
-                attending.saying.push_back(Report::Finished {
-                    exit: Exit::Failed { because },
-                });
-            }
-        }
-    }
-    say(link, attending, diagnostics).await?;
-
-    if !attending.worked {
-        let prompt = match attending.prompt.clone() {
-            Some(prompt) => prompt,
-            None => runtime::prompt(&all_entries(link).await?),
-        };
-        let credentials = link.credentials().await?;
-        let provider = credentials.variables;
-        if !provider.is_empty() {
-            diagnostics.info(&format!(
-                "carrying {} into the agent runtime",
-                provider.keys().cloned().collect::<Vec<_>>().join(", ")
-            ));
-        }
-
-        match written(home, credentials.files, diagnostics) {
-            Ok(written) => {
-                let worked = runtime::work(runtime, provider, &prompt).await;
+            worked = turn(&mut attending.conversation) => {
                 if let Some(on) = &worked.on {
                     diagnostics.info(&format!("on the model {}", on.model));
                 }
                 for subject in &worked.allowed {
                     diagnostics.info(&format!("allowed once  {subject}"));
                 }
-                if let Some(written) = written {
+                // Handed back after every turn, not only a finishing one: a login the runtime
+                // rotates mid-conversation is refreshed while the run's credential still lets it
+                // through, not saved up for a Stop that arrives once that credential is gone.
+                if let Some(written) = &attending.written {
                     attending.refreshed = written.refreshed();
-                    written.remove();
                 }
-                attending.saying.extend(everything_left_to_say(worked));
-            }
-            Err(because) => {
-                diagnostics.info(&because);
-                attending.saying.push_back(Report::Finished {
-                    exit: Exit::Failed { because },
-                });
+                if worked.failed.is_some() {
+                    attending.finished = true;
+                    attending.conversation = None;
+                    if let Some(written) = attending.written.take() {
+                        written.remove();
+                    }
+                }
+                // Reported after every turn, not only a finishing one: a Run waiting between
+                // turns may be stopped at any moment, and what it last observed is what decides
+                // whether its Instance is held.
+                let observed = match &attending.checkout {
+                    Some(checkout) => Some(checkout::observe(checkout).await),
+                    None => None,
+                };
+                attending.saying.extend(everything_left_to_say(worked, observed));
             }
         }
-        attending.worked = true;
     }
-    if !attending.refreshed.is_empty() {
-        link.refresh(&attending.refreshed).await?;
-        diagnostics.info(&format!(
-            "handed back {}",
-            attending
-                .refreshed
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-        attending.refreshed.clear();
-    }
-    say(link, attending, diagnostics).await?;
+}
 
-    Ok(Attended::Finished)
+async fn conversation(
+    link: &Link,
+    runtime: &Runtime,
+    home: Option<&Path>,
+    attending: &mut Attending,
+    diagnostics: &dyn Diagnostics,
+) -> Result<Option<Conversation>, link::Error> {
+    let prompt = match attending.prompt.clone() {
+        Some(prompt) => prompt,
+        None => runtime::prompt(&all_entries(link).await?),
+    };
+    let credentials = link.credentials().await?;
+    let provider = credentials.variables;
+    if !provider.is_empty() {
+        diagnostics.info(&format!(
+            "carrying {} into the agent runtime",
+            provider.keys().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    match written(home, credentials.files, diagnostics) {
+        Ok(written) => {
+            attending.written = written;
+            Ok(Some(Conversation::open(runtime, provider, prompt)))
+        }
+        Err(because) => {
+            diagnostics.info(&because);
+            attending.finished = true;
+            attending.saying.push_back(Report::Finished {
+                exit: Exit::Failed { because },
+            });
+            Ok(None)
+        }
+    }
+}
+
+async fn turn(conversation: &mut Option<Conversation>) -> runtime::Worked {
+    match conversation {
+        Some(conversation) => conversation.turn().await,
+        None => std::future::pending().await,
+    }
 }
 
 fn written(
@@ -295,7 +363,10 @@ async fn say(
     Ok(())
 }
 
-fn everything_left_to_say(worked: runtime::Worked) -> impl Iterator<Item = Report> {
+fn everything_left_to_say(
+    worked: runtime::Worked,
+    observed: Option<Vec<link::Observed>>,
+) -> impl Iterator<Item = Report> {
     worked
         .on
         .map(|on| Report::Model {
@@ -310,7 +381,13 @@ fn everything_left_to_say(worked: runtime::Worked) -> impl Iterator<Item = Repor
                 .map(|message| Report::Said { message }),
         )
         .chain(worked.usage.map(|usage| Report::Used { usage }))
-        .chain(std::iter::once(Report::Finished { exit: worked.exit }))
+        .chain(observed.map(|repositories| Report::Checkout { repositories }))
+        .chain(std::iter::once(match worked.failed {
+            Some(because) => Report::Finished {
+                exit: Exit::Failed { because },
+            },
+            None => Report::Answered,
+        }))
 }
 
 fn dialled(variables: &BTreeMap<String, String>) -> Option<Link> {

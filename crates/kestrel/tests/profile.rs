@@ -3,17 +3,13 @@
 
 mod support;
 
-use std::time::Duration;
-
-use kestrel::domain::{Exit, Run, RunId, RunState, Session};
+use kestrel::domain::{Exit, Run, RunState, Session};
 use kestrel::profile::Entry;
 use kestrel_scripted_agent::{LOGIN, REFRESHED, Script};
 use reqwest::StatusCode;
 use support::link_client::Link;
 use support::supervisor;
 use support::{A_PROVIDER_KEY, Harness, PROVIDER_KEY, SERIALIZED, repository, scripted_agent};
-
-const PATIENCE: Duration = Duration::from_secs(30);
 
 /// Confided by the scripted agent, because it carries the prefix `Confides` says out loud.
 const SUBSCRIPTION_KEY: &str = "SCRIPTED_SUBSCRIPTION_KEY";
@@ -58,24 +54,6 @@ fn login_file() -> Entry {
     Entry::file(LOGIN).expect("a file")
 }
 
-async fn ended(harness: &Harness, run: RunId) -> Run {
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-
-    loop {
-        let run = harness.run(run).await;
-        if run.state == RunState::Ended {
-            return run;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the run {} is {} and never ended",
-            run.id,
-            run.state
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
 async fn transcript(harness: &Harness, session: &Session) -> String {
     harness
         .transcript(session.id)
@@ -86,9 +64,23 @@ async fn transcript(harness: &Harness, session: &Session) -> String {
         .join("\n")
 }
 
+/// Only an explicit stop, a sealed Session, or a failure ends a Run (ADR-0024): a Run whose
+/// agent answered stays open between turns until this stops it, and one that already failed
+/// before an agent ever answered is left as it ended.
 async fn worked(harness: &Harness, session: &Session) -> (Run, String) {
     let run = harness.enqueue_run(session.id).await;
-    let run = ended(harness, run.id).await;
+    let mut run = harness.answered(run.id, 1).await;
+    if run.state != RunState::Ended {
+        harness.stop_run(run.id).await;
+        run = harness.run(run.id).await;
+        // The Run ends in the database the moment it is told to stop; what its supervisor holds
+        // of the profile is only gone once the supervisor itself has left.
+        support::environment::Environment::named(
+            run.supervisor.as_deref().expect("a stopped run had a supervisor"),
+        )
+        .is_gone()
+        .await;
+    }
 
     (run, transcript(harness, session).await)
 }

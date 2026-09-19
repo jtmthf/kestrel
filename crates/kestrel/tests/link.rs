@@ -338,6 +338,27 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
                 "cost": {"amount": 0.42, "currency": "USD"},
             },
         },
+        "answered": {"kind": "answered", "seq": 1},
+        "checkout": {
+            "kind": "checkout",
+            "seq": 1,
+            "repositories": [
+                {
+                    "repository": "https://github.com/acme/widgets",
+                    "git": "read",
+                    "branch": "kestrel/work",
+                    "untracked": 1,
+                    "uncommitted": 0,
+                    "stashes": 0,
+                    "unpushed": 2,
+                },
+                {
+                    "repository": "https://github.com/acme/gadgets",
+                    "git": "unreadable",
+                    "because": "there is no checkout at gadgets",
+                },
+            ],
+        },
         "finished": {"kind": "finished", "seq": 1, "exit": {"status": "succeeded"}},
     });
     assert_eq!(
@@ -522,6 +543,11 @@ fn the_published_openapi_document_describes_every_transcript_entry_the_link_serv
         Entry::RunEnded {
             run: RunId::generate(),
             exit: Exit::Succeeded,
+        },
+        Entry::InstanceReleased {
+            participant: "operator".to_owned(),
+            instance: "docker/kestrel-01999cf2".to_owned(),
+            unpublished: Some("https://github.com/acme/widgets has 1 untracked file".to_owned()),
         },
     ];
 

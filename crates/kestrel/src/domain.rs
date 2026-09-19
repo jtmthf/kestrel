@@ -498,6 +498,13 @@ pub struct Run {
     pub usage: Option<Usage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Turn {
+    pub seq: i64,
+    pub prompted_at: Timestamp,
+    pub answered_at: Option<Timestamp>,
+}
+
 /// What the Agent Runtime has spent on behalf of a Run, cumulative rather than per turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Usage {

@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use kestrel_supervisor::link::{
-    Error, Exit, INSTRUCTIONS, Instruction, Link, REPORTS, Report, Reported,
+    Error, Exit, Git, INSTRUCTIONS, Instruction, Link, Observed, REPORTS, Report, Reported,
 };
 
 #[derive(Debug, Clone)]
@@ -163,6 +163,29 @@ fn everything_it_reports() -> Vec<(Option<i64>, Report)> {
         (Some(1), Report::Started),
         (
             Some(2),
+            Report::Checkout {
+                repositories: vec![
+                    Observed {
+                        repository: "https://github.com/acme/widgets".to_owned(),
+                        git: Git::Read {
+                            branch: None,
+                            untracked: 1,
+                            uncommitted: 0,
+                            stashes: 0,
+                            unpushed: 2,
+                        },
+                    },
+                    Observed {
+                        repository: "https://github.com/acme/gadgets".to_owned(),
+                        git: Git::Unreadable {
+                            because: "there is no checkout at gadgets".to_owned(),
+                        },
+                    },
+                ],
+            },
+        ),
+        (
+            Some(3),
             Report::Finished {
                 exit: Exit::Succeeded,
             },
@@ -363,6 +386,7 @@ fn the_client_recognises_every_instruction_the_published_document_declares() {
                 "kind": kind,
                 "checkout": {"repositories": [], "base": "main", "branch": "main"},
             }),
+            "prompt" => serde_json::json!({"kind": kind, "prompt": "and the tests"}),
             _ => serde_json::json!({"kind": kind}),
         };
         let instruction: Instruction = serde_json::from_value(sent).expect("an instruction");

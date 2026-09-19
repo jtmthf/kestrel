@@ -153,8 +153,8 @@ kestrel session transcript 01a07846-49fa-7dc0-a44b-183a63794ee3
 
 ## Enqueue a run
 
-A **run** is one execution of an agent runtime on its session's instance. At most one is ever active
-in a session.
+A **run** is one execution of an agent runtime on its session's instance: one conversation with it,
+over as many turns as the session gives it. At most one is ever open in a session.
 
 ```sh
 kestrel run enqueue --session 01a07846-49fa-7dc0-a44b-183a63794ee3
@@ -275,8 +275,8 @@ The session and its transcript are intact. The run that was executing ended with
 rather than staying active forever, and its supervisor was stopped. The session's instance is still
 there, with the checkout as the run left it, for the session's next run.
 
-Nothing reaps an instance yet: it outlives its session's sealing too, until you remove its container
-yourself. If an instance is gone when a run needs it, that run fails and says that whatever the
+The instance lives until the session seals, and longer if it may hold the only copy of some work;
+see [Sealing a session](#sealing-a-session). If an instance is gone when a run needs it, that run fails and says that whatever the
 instance held that was never pushed is lost; the next run provisions a fresh instance and checks the
 session's branch out from the remote.
 
@@ -323,15 +323,51 @@ Sealing ends a session without deleting it. A sealed session stays readable and 
 kestrel session seal 01a07846-49fa-7dc0-a44b-183a63794ee3
 ```
 
-It accepts no further runs:
+Sealing archives the session's instance: the work role destroys its container. It does so only when
+the last run on it reported a checkout that the remote can restore, with nothing untracked,
+uncommitted or stashed and no commit that no remote branch has. Output that git ignores, such as a
+`target/` directory, does not count. Anything else holds the instance, and the seal is refused. The run
+above was cut off before its supervisor could say what the checkout held, so this session is refused:
+
+```
+Error: the session 01a07846-49fa-7dc0-a44b-183a63794ee3's instance docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006 may hold the only copy of its work (no run reported what its checkout holds); publish it from a follow-up run, or release the instance to discard it
+```
+
+Every held instance is listed with its reason, and `kestrel session show` repeats the reason on a `held`
+line:
+
+```sh
+kestrel instance list --organization acme
+```
+
+```
+01a07846-49fa-7dc0-a44b-183a63794ee3  docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006  no run reported what its checkout holds
+```
+
+A reason read from git names the repository, the branch and what it found, such as
+`https://github.com/jtmthf/kestrel on kestrel/01a07846-… has 2 unpushed commits, 1 untracked file`.
+To keep that work, post a message asking the agent to push it. To discard it, release the instance.
+The release destroys the instance and is recorded in the session's transcript:
+
+```sh
+kestrel instance release 01a07846-49fa-7dc0-a44b-183a63794ee3
+kestrel session seal 01a07846-49fa-7dc0-a44b-183a63794ee3
+```
+
+A sealed session accepts no further runs:
 
 ```
 Error: the session 01a07846-49fa-7dc0-a44b-183a63794ee3 is sealed, and accepts no run
 ```
 
+Sealing ends a run that is waiting between turns, and it succeeds. A session whose run is still in
+a turn, or still queued, refuses to seal until that turn is answered.
+
 A session seals itself too. `last active` moves when the session opens, when a run is enqueued into
-it, and when one of its runs ends; a session that has sat at the same `last active` for 24 hours with
-no run holding its slot is sealed by kestrel, exactly as the command above would have.
+it, when one of its runs answers a turn, and when one ends; a session that has sat at the same
+`last active` for 24 hours with no turn in flight is sealed by kestrel, exactly as the command above
+would have. A session whose instance is held stays open, however long it has been idle, until its
+work is pushed or its instance released.
 
 Work that would have continued it starts a new session that records the sealed one:
 
@@ -354,7 +390,7 @@ last active   2026-09-06T20:00:03.652235801Z
 continues     01a07846-49fa-7dc0-a44b-183a63794ee3
 ```
 
-## Let a label start the work
+## Hand kestrel an issue
 
 Every session above you opened by hand. A **trigger** is the standing rule that opens one for you:
 what it matches, and the agent and workspace it starts that work with.
@@ -411,28 +447,46 @@ kestrel event list --organization acme
 ```
 
 ```
-01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77  2026-09-07T14:01:58Z  jtmthf/kestrel  labeled  ready-for-agent  #44  0.1/21: The GitHub Trigger opens a Session from an Event
+01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77  2026-09-07T14:01:58Z  jtmthf/kestrel  commented  jtmthf  #44  0.1/21: The GitHub Trigger opens a Session from an Event
 ```
 
 Now the rule itself. A trigger decides what an agent does to a repository with your
 organization's credentials, so declare it in a file you keep in version control and review in a
-pull request, `.kestrel/triggers.yaml`:
+pull request. kestrel's own is `.kestrel/triggers.yaml`, and it starts work only when someone hands
+the work over on purpose: its maintainer opening a comment with `@kestrel`, or an operator
+dispatching an issue.
 
 ```yaml
 triggers:
-  ready:
+  delegated:
     filter:
       all:
         - exact: {source: "https://github.com/jtmthf/kestrel"}
-        - exact: {type: com.github.issues.labeled}
-        - exact: {data.label.name: ready-for-agent}
-        - exact: {data.issue.author_association: MEMBER}
+        - exact: {type: com.github.issue_comment.created}
+        - any:
+            - all:
+                - exact: {data.user.login: jtmthf}
+                - prefix: {data.body: "@kestrel"}
+            - all:
+                - exact: {data.comment.user.login: jtmthf}
+                - prefix: {data.comment.body: "@kestrel"}
     brief: |
-      Work {{ event.data.issue.html_url }}: {{ event.data.issue.title }}
-    branch: kestrel/issue-{{ event.data.issue.number }}
+      {% if instruction %}{{ instruction }}{% else %}/implement{% endif %} {{ event.source }}/issues/{{ event.subject | replace("#", "") }}
+
+      Read the issue and its comments with `gh issue view --comments` before you start.
+    branch: kestrel/issue-{{ event.subject | replace("#", "") }}
+    correlation: "{{ event.source }}{{ event.subject }}"
+    on_miss: open
     workspace: kestrel
     agent: builder
+    allows: [codex, claude]
 ```
+
+The filter names the one person allowed to start work, twice over: a poll reports a comment's author
+as `user`, while a webhook nests the comment. A label, `ready-for-agent` included, starts nothing: it
+says what state an issue is in, never that anyone handed it over. An ordinary comment starts nothing
+either, and neither does anything someone else says. Assigning an issue starts nothing: kestrel is
+meant to reach GitHub as an App, and GitHub does not let an issue be assigned to one.
 
 kestrel cannot read that file out of the repository for itself: reading it takes a checkout, a
 checkout takes a session, and a session takes a trigger. So you apply it, and kestrel prints the
@@ -443,17 +497,25 @@ kestrel trigger apply --organization acme -f .kestrel/triggers.yaml
 ```
 
 ```
-+ ready
++ delegated
     matches
-      + source = "https://github.com/jtmthf/kestrel" and type = "com.github.issues.labeled" and data.label.name = "ready-for-agent" and data.issue.author_association = "MEMBER"
+      + source = "https://github.com/jtmthf/kestrel" and type = "com.github.issue_comment.created" and ((data.user.login = "jtmthf" and data.body starts with "@kestrel") or (data.comment.user.login = "jtmthf" and data.comment.body starts with "@kestrel"))
     workspace
       + kestrel
     agent
       + builder
+    allows
+      + claude, codex
     branch
-      + kestrel/issue-{{ event.data.issue.number }}
+      + kestrel/issue-{{ event.subject | replace("#", "") }}
+    correlation
+      + {{ event.source }}{{ event.subject }}
+    on miss
+      + open
     brief
-      + Work {{ event.data.issue.html_url }}: {{ event.data.issue.title }}
+      + {% if instruction %}{{ instruction }}{% else %}/implement{% endif %} {{ event.source }}/issues/{{ event.subject | replace("#", "") }}
+      +
+      + Read the issue and its comments with `gh issue view --comments` before you start.
 ```
 
 The file is the whole of what applies: a trigger you change in it is changed, a trigger you take
@@ -483,8 +545,7 @@ A `correlation` requires `on_miss: open` or `on_miss: ignore`. A hit feeds the o
 holds the key; its configured Agent stays fixed. A key only a sealed Session held is still
 kestrel's work, so either setting opens a new Session continuing the most recently sealed one. For a
 key no Session has held, `open` starts a new Session and `ignore` records the firing but starts no
-work. A comment that follows up a sealed Session feeds the open one holding its key, or opens a
-continuation that holds it.
+work.
 
 ### Letting a label choose the agent
 
@@ -512,8 +573,9 @@ kestrel trigger declare ready \
   --organization acme \
   --filter '{"all": [
     {"exact": {"source": "https://github.com/jtmthf/kestrel"}},
-    {"exact": {"type": "com.github.issues.labeled"}},
-    {"exact": {"data.label.name": "ready-for-agent"}}
+    {"exact": {"type": "com.github.issue_comment.created"}},
+    {"exact": {"data.user.login": "jtmthf"}},
+    {"prefix": {"data.body": "@kestrel ready"}}
   ]}' \
   --brief @.kestrel/briefs/ready.md \
   --branch 'kestrel/issue-{{ event.data.issue.number }}' \
@@ -530,13 +592,14 @@ show` says which way each was declared.
 
 Both ways of declaring a trigger warn, by name, about one whose filter lets in events from people
 outside the organization — anything that does not require the `author_association` GitHub reports
-to be `OWNER`, `MEMBER` or `COLLABORATOR`, unless the filter rules out GitHub's events altogether.
+to be `OWNER`, `MEMBER` or `COLLABORATOR`, or name the one login allowed to act, unless the filter
+rules out GitHub's events altogether.
 Until `0.4` there is no policy beneath a run, so such a trigger is an unsupervised agent with your
 credentials on your repository, briefed by whatever a stranger wrote. Keep it if that is what you
 meant; the warning is there so that it was decided rather than discovered.
 
-Label an issue on that repository `ready-for-agent`, and within a poll interval there is a session
-open with a run queued behind it, which nobody asked for:
+Comment `@kestrel` on an issue in that repository, and within a poll interval there is a session
+open with a run queued behind it:
 
 ```sh
 kestrel session list --organization acme
@@ -552,7 +615,9 @@ branch from the workspace's when the repository does not have it yet. The render
 first transcript entry:
 
 ```
-1  2026-09-07T14:02:03.118Z  brief  ready  Work https://github.com/jtmthf/kestrel/issues/44: 0.1/21: The GitHub Trigger opens a Session from an Event
+1  2026-09-07T14:02:03.118Z  brief  delegated  /implement https://github.com/jtmthf/kestrel/issues/44
+
+Read the issue and its comments with `gh issue view --comments` before you start.
 2  2026-09-07T14:02:03.118Z  participant joined  builder
 ```
 
@@ -564,25 +629,55 @@ ask it to read the current issue and its comments itself, with `gh`, which the d
 carries. Once anything is said after the brief, the next prompt is the transcript as earlier
 context instead.
 
-A brief can also take an instruction supplied with a dispatch, rather than one written into the
-trigger. It is the template's `instruction` — `none` when the dispatch gave none — so the template
-decides whether it replaces the usual work or adds to it:
+A brief can also take an instruction supplied when the work is handed over, rather than one written
+into the trigger. It is the template's `instruction` — `none` when nobody gave one — so the template
+decides whether it replaces the usual work or adds to it, as the `{% if instruction %}` above does.
 
-```yaml
-    brief: |
-      {% if instruction %}{{ instruction }}{% else %}/implement{% endif %} {{ event.data.issue.html_url }}
+### Commanding kestrel from a comment
 
-      Read the issue and its comments with `gh issue view --comments` before you start.
+A comment that opens with `@kestrel` is a command. What follows the mention is its instruction, and
+an `agent=<name>` straight after the mention chooses the agent, from those the trigger allows, in
+place of the trigger's own or one an `agent:` label chooses:
+
 ```
+@kestrel agent=codex $tdd the date parser, then open a pull request
+```
+
+A mention anywhere but the start of a comment commands nothing. Whether a command starts work is the
+trigger's filter to say, so the one above obeys only `jtmthf`. A comment kestrel itself left carries
+its marker and is never heard as anything. On an issue whose session is open, the command feeds that
+session, as a label on it would; on one whose session has sealed, it opens a new session continuing
+the sealed one.
+
+### Dispatching an issue
+
+An operator can hand a trigger an issue directly, whether or not anything on GitHub would match it:
+
+```sh
+kestrel trigger dispatch delegated --organization acme --integration origin --issue 44 \
+  --instruction '/implement' --agent codex
+```
+
+```
+opened  01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04  01a07c31-6a11-7cc2-9d41-0b5b6a2b7f05
+```
+
+kestrel reads the issue through the integration, records a `dev.kestrel.dispatched` event whose
+`data.issue` is the issue as GitHub reports it, and fires only the trigger you named for it: no other
+trigger ever fires for a dispatch. From there it is a firing like any other, so a correlation feeds
+an open session rather than opening a second one, the firing budget still counts it, and the outcome
+goes back to the issue. `--instruction` is the brief's `instruction`, and `--agent` chooses among
+the agents the trigger allows. `--instruction` also takes `@FILE` and `-`.
 
 A brief, branch or correlation that cannot render fails the firing: nothing opens, the control
 plane logs why, and no later sweep tries that trigger on that event again. A correlation is held by
 the session it opened, and is unique among the organization's open sessions. Events arriving while
 that Session has an active Run wait together, then become one transcript entry and one next Run.
 
-A trigger fires at most once per event, so the same label arriving in two overlapping poll windows
-opens one session and not two. Taking the label off and putting it back is a new event, and starts
-new work.
+A trigger fires at most once per event, so the same command arriving in two overlapping poll
+windows opens one session and not two. A second command is a new event, and so is a second
+dispatch; with a correlation, either feeds the session already open for the issue rather than
+opening another.
 
 A trigger also fires only for events recorded after it was declared, so what kestrel already saw on
 the repository before you declared it opens nothing, however long that backlog is. That is why the
@@ -593,14 +688,15 @@ only what is recorded from then on, so widening a filter never reaches back for 
 one passed over.
 
 **The event chooses nothing.** The agent, the workspace and the model come from the declaration you
-applied; only the data comes from the event. Anyone who can label an issue on a public
-repository could otherwise pick which agent's credentials the run gets
+applied; only the data comes from the event. A label or an `agent=` in a command only chooses among
+agents the declaration allows. Anyone who can label an issue on a public repository could otherwise
+pick which agent's credentials the run gets
 ([ADR-0013](docs/adr/0013-an-event-supplies-data-never-authority.md)).
 
 `kestrel trigger list --organization acme` shows what each one matches, the way you would say it:
 
 ```
-01a07c30-9b2e-7f41-a8c3-5d0e1f2a3b4c  ready  enabled  kestrel  builder  source = "https://github.com/jtmthf/kestrel" and type = "com.github.issues.labeled" and data.label.name = "ready-for-agent" and data.issue.author_association = "MEMBER"
+01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel  builder  source = "https://github.com/jtmthf/kestrel" and type = "com.github.issue_comment.created" and ((data.user.login = "jtmthf" and data.body starts with "@kestrel") or (data.comment.user.login = "jtmthf" and data.comment.body starts with "@kestrel"))
 ```
 
 Before trusting a trigger with work, ask it about an event kestrel already recorded. A test starts
@@ -610,35 +706,39 @@ matches, then prints the branch, the correlation and the brief exactly as that e
 them:
 
 ```sh
-kestrel trigger test ready --organization acme --event 01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
+kestrel trigger test delegated --organization acme --event 01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
 ```
 
 ```
 matches
+agent         builder
 branch        kestrel/issue-44
-correlation   -
+correlation   https://github.com/jtmthf/kestrel#44
 
-Work https://github.com/jtmthf/kestrel/issues/44: 0.1/21: The GitHub Trigger opens a Session from an Event
+/implement https://github.com/jtmthf/kestrel/issues/44
+
+Read the issue and its comments with `gh issue view --comments` before you start.
 ```
 
 It renders even when the filter does not match, so a brief can be written against the event it is
 for before the filter is right. Add `-f .kestrel/triggers.yaml` to test the trigger as the file
 declares it, before you apply it, and `--instruction` to render the brief as a dispatch carrying
-that instruction would. A template that cannot render fails the test, naming the trigger,
+that instruction would. Tested against a command, it renders the command's own instruction and
+names the agent the command asks for. A template that cannot render fails the test, naming the trigger,
 the event, the line of the template that failed, and the variables it had to work with.
 
 An event several triggers match fires every one of them; no trigger is first, and matching one
 does not stop the next. Disabling stops one firing without forgetting what it was:
 
 ```sh
-kestrel trigger disable ready --organization acme
+kestrel trigger disable delegated --organization acme
 ```
 
 ```
 disabled
 ```
 
-`kestrel trigger enable ready --organization acme` puts it back.
+`kestrel trigger enable delegated --organization acme` puts it back.
 
 Each Trigger has a budget of ten firings per hour. The firing that would exceed it is recorded
 without opening a Session, and disables only that Trigger. `kestrel trigger show` names the reason;
@@ -688,7 +788,8 @@ Sweep the backlog for stale issues as of 2026-09-17T14:02:03.118Z
 ## The answer comes back to the issue
 
 An integration carries kestrel's requests outbound as well as events inbound, and the one you
-registered above declares both. So when the run ends, the issue that started it gets a comment:
+registered above declares both. So when the run ends — stopped, sealed or failed — the issue that
+started it gets a comment:
 
 ```
 **kestrel** — run succeeded
@@ -712,14 +813,31 @@ writing to it.
 
 ## Continue a session
 
-A new comment on the issue that opened a session posts that message to its transcript and enqueues
-another run in the same session, on the same instance and checkout. Each run gets a fresh supervisor
-and agent runtime. Before its agent starts, the supervisor pages the whole transcript into the
-runtime, so the new turn sees the brief, earlier runs, and the follow-up message.
+A run is one conversation with its agent, and answering a turn does not end it: nothing the agent
+says, and no pull request it opens, does. A new comment on the issue that opened a session posts
+that message to its transcript and sends it to the session's open run as its next turn, in the same
+agent conversation, on the same supervisor and instance.
 
-If a run is active when the comment arrives, the message waits durably and one further run is
-enqueued when the active one ends. If the session has been sealed, the comment opens a new session
-whose `continues` field names the sealed one, on the sealed session's branch.
+If the agent is still working on a turn when the comment arrives, the message waits durably. Every
+message that arrived during the turn becomes the next one, in the order they arrived, once the agent
+answers. A comment on an issue whose session has sealed starts nothing: only a command does, opening
+a new session whose `continues` field names the sealed one, on the sealed session's branch. A command
+is never also posted as a message.
+
+A run ends when you stop it, when its session seals, or when it fails:
+
+```sh
+kestrel run stop 01a07846-5d97-7230-9315-bfef2a644006
+```
+
+```
+01a07846-5d97-7230-9315-bfef2a644006  succeeded
+```
+
+A run stopped between turns succeeds; one stopped mid-turn, or before it started, fails. A comment on
+a session with no open run enqueues a new run in it, on the same instance and checkout, with a fresh
+supervisor and agent runtime. Before its agent starts, the supervisor pages the whole transcript into
+the runtime, so the new conversation sees the brief, earlier runs, and the follow-up message.
 
 An operator can post the same kind of message directly:
 

@@ -552,7 +552,10 @@ fn matching(query: &mut QueryBuilder<Sqlite>, trigger: &Trigger) {
     if matches!(trigger.fires, Fires::Every(_)) {
         query.push(" AND event.integration_id IS NULL");
     }
-    query.push(")");
+    query
+        .push(" AND event.type <> ")
+        .push_bind(crate::trigger::DISPATCHED)
+        .push(")");
 }
 
 /// Every comparison is coalesced to false, because an attribute an Event lacks is NULL and

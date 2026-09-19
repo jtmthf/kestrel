@@ -4,12 +4,14 @@ use anyhow::{Context as _, Result, bail};
 
 use crate::agent;
 use crate::cli::{
-    AgentCommand, CliCommand, CredentialCommand, EventCommand, Given, IntegrationCommand,
-    OrganizationCommand, ProfileCommand, ProfileEntry, RegisterCommand, RunCommand, SessionCommand,
-    TriggerCommand, WorkspaceCommand,
+    AgentCommand, CliCommand, CredentialCommand, EventCommand, Given, InstanceCommand,
+    IntegrationCommand, OrganizationCommand, ProfileCommand, ProfileEntry, RegisterCommand,
+    RunCommand, SessionCommand, TriggerCommand, WorkspaceCommand,
 };
 use crate::domain::{Connection, Direction, Fires, Templates};
 use crate::filter::Filter;
+use crate::instance;
+use crate::integration::github::Github;
 use crate::integration::{self, Connecting, Registration};
 use crate::log::Window;
 use crate::profile::{self, Entry, Kind};
@@ -210,6 +212,12 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             }
             println!("branch        {}", session.checkout.branch);
             println!("base          {}", session.checkout.base);
+            if let Some(kept) = work::instance(&store, session.id).await? {
+                println!("instance      {kept}");
+            }
+            if let Some(held) = instance::held_by(&store, session.id).await? {
+                println!("held          {}", held.because);
+            }
             if let Some(correlation) = &session.correlation {
                 println!("correlation   {correlation}");
             }
@@ -248,6 +256,20 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             if let Some(cursor) = page.cursor {
                 eprintln!("cursor  {cursor}");
             }
+        }
+        CliCommand::Instance(InstanceCommand::List { organization }) => {
+            for held in instance::held(&store, organization).await? {
+                println!("{}  {}  {}", held.session, held.instance, held.because);
+            }
+        }
+        CliCommand::Instance(InstanceCommand::Release {
+            session,
+            as_participant,
+        }) => {
+            println!(
+                "{}",
+                instance::release(&store, *session, as_participant).await?
+            );
         }
         CliCommand::Run(RunCommand::Enqueue { session, model }) => {
             let run = work::enqueue(&store, *session, model.as_deref()).await?;
@@ -485,6 +507,41 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             println!();
             println!("{}", rendered.brief);
         }
+        CliCommand::Trigger(TriggerCommand::Dispatch {
+            name,
+            organization,
+            integration,
+            issue,
+            instruction,
+            agent,
+        }) => {
+            let instruction = instruction.as_ref().map(Given::read).transpose()?;
+            let fired = trigger::dispatch(
+                &store,
+                &Github::dialling_out()?,
+                trigger::Dispatch {
+                    organization,
+                    trigger: name,
+                    integration,
+                    issue: *issue,
+                    asked: trigger::Asked {
+                        instruction: instruction.as_deref(),
+                        agent: agent.as_deref(),
+                    },
+                },
+            )
+            .await?;
+            match fired {
+                trigger::Fired::Opened { session, run, .. } => {
+                    println!("opened  {session}  {run}");
+                }
+                trigger::Fired::Fed { session, .. } => println!("fed     {session}"),
+                trigger::Fired::Ignored { correlation, .. } => {
+                    println!("ignored  no open session holds {correlation}");
+                }
+                trigger::Fired::Failed { because, .. } => bail!(because),
+            }
+        }
         CliCommand::Trigger(TriggerCommand::Show { name, organization }) => {
             let trigger = trigger::show(&store, organization, name).await?;
             let templates = &trigger.templates;
@@ -604,15 +661,22 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 serde_json::to_string_pretty(&event.occurrence.data)?
             );
         }
+        CliCommand::Run(RunCommand::Stop { run }) => {
+            let exit = work::stop(&store, *run).await?;
+            println!("{run}  {exit}");
+        }
         CliCommand::Run(RunCommand::List { session }) => {
             for run in work::runs(&store, *session).await? {
+                let state = match &run.exit {
+                    Some(exit) => exit.to_string(),
+                    None if work::is_waiting(&store, &run).await? => "waiting".to_owned(),
+                    None => run.state.to_string(),
+                };
                 println!(
-                    "{}  {}  {}  {}",
+                    "{}  {}  {}  {state}",
                     run.id,
                     run.instance.as_deref().unwrap_or("-"),
                     run.worked_model.as_deref().unwrap_or("-"),
-                    run.exit
-                        .map_or_else(|| run.state.to_string(), |exit| exit.to_string())
                 );
             }
         }

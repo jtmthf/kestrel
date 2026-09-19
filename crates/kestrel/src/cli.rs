@@ -10,7 +10,7 @@ use directories::ProjectDirs;
 use jiff::SignedDuration;
 
 use crate::compute::{Docker, Driver, LocalExec};
-use crate::domain::{CorrelationMiss, Direction, EventRecordId, SessionId};
+use crate::domain::{CorrelationMiss, Direction, EventRecordId, RunId, SessionId};
 use crate::integration::github;
 use crate::log::Cursor;
 use crate::role::serve::Listen;
@@ -213,6 +213,9 @@ pub enum CliCommand {
     /// Enqueue and list Runs
     #[command(subcommand)]
     Run(RunCommand),
+    /// List the Instances held for work that exists nowhere else, and release them
+    #[command(subcommand)]
+    Instance(InstanceCommand),
     /// Register and list Integrations
     #[command(subcommand)]
     Integration(IntegrationCommand),
@@ -308,6 +311,26 @@ pub enum TriggerCommand {
         /// reads it from a file and `-` from standard input
         #[arg(long, value_parser = Given::text)]
         instruction: Option<Given>,
+    },
+    /// Start a Trigger's work on an issue now, whether or not its filter matches anything
+    Dispatch {
+        /// The name it is referred to by
+        name: String,
+        #[arg(long)]
+        organization: String,
+        /// The GitHub Integration the issue is read through, and its Outcome said back through
+        #[arg(long)]
+        integration: String,
+        /// The issue to work on
+        #[arg(long, value_name = "NUMBER")]
+        issue: i64,
+        /// The instruction the brief reads as `instruction`; `@FILE` reads it from a file and
+        /// `-` from standard input
+        #[arg(long, value_parser = Given::text)]
+        instruction: Option<Given>,
+        /// An Agent the Trigger allows, in place of the one it or a label would choose
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// List every Trigger in an Organization, and what each matches
     List {
@@ -496,6 +519,27 @@ pub enum RunCommand {
     List {
         #[arg(long)]
         session: SessionId,
+    },
+    /// End a Run: it succeeds between turns, and fails mid-turn or before it started
+    Stop {
+        /// The Run's identifier
+        run: RunId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum InstanceCommand {
+    /// List every Instance kept because it may hold the only copy of its Session's work, and why
+    List {
+        #[arg(long)]
+        organization: String,
+    },
+    /// Destroy a Session's Instance, discarding whatever it holds that was never pushed
+    Release {
+        /// The Session whose Instance it is
+        session: SessionId,
+        #[arg(long, default_value = "operator")]
+        as_participant: String,
     },
 }
 

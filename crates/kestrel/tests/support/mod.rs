@@ -31,10 +31,11 @@ use jiff::{SignedDuration, Timestamp};
 use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
-    Agent, CorrelationMiss, Direction, Event, EventRecordId, Fires, Integration, Occurrence,
-    Organization, Run, RunId, Session, SessionId, SubscriptionProfile, Templates, Trigger,
-    Workspace,
+    Agent, CorrelationMiss, Direction, Event, EventRecordId, Exit, Fires, Integration, Occurrence,
+    Organization, Run, RunId, RunState, Session, SessionId, SubscriptionProfile, Templates,
+    Trigger, Turn, Workspace,
 };
+use kestrel::instance;
 use kestrel::integration::{self, Connecting, Registration};
 use kestrel::link::credential::Secret;
 use kestrel::link::{self, Instruction};
@@ -51,6 +52,8 @@ use kestrel::work::{self, Claimed};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Distinctive enough that a test can assert it is nowhere it should not be.
 pub const TOKEN: &str = "ghp_kestrel_should_never_say_this_out_loud";
@@ -634,6 +637,27 @@ impl Harness {
         trigger::test(&self.store, organization, name, Some(event), None).await
     }
 
+    pub async fn dispatch(
+        &self,
+        organization: &str,
+        name: &str,
+        issue: i64,
+        asked: trigger::Asked<'_>,
+    ) -> anyhow::Result<trigger::Fired> {
+        trigger::dispatch(
+            &self.store,
+            &kestrel::integration::github::Github::dialling_out()?,
+            trigger::Dispatch {
+                organization,
+                trigger: name,
+                integration: "github",
+                issue,
+                asked,
+            },
+        )
+        .await
+    }
+
     pub async fn try_declare_scheduled_trigger(
         &self,
         organization: &str,
@@ -698,6 +722,12 @@ impl Harness {
         trigger::test_declared(&self.store, organization, declared, Some(event), None)
             .await
             .expect("the declared trigger should test")
+    }
+
+    pub async fn firings(&self, event: EventRecordId) -> Vec<kestrel::domain::Firing> {
+        trigger::firings(&self.store, event)
+            .await
+            .expect("the firings should read")
     }
 
     pub async fn triggers(&self, organization: &str) -> Vec<Trigger> {
@@ -867,6 +897,22 @@ impl Harness {
         session::seal(&self.store, id).await
     }
 
+    pub async fn held_instances(&self, organization: &str) -> Vec<instance::Held> {
+        instance::held(&self.store, organization)
+            .await
+            .expect("the held instances should read")
+    }
+
+    pub async fn release_instance(&self, session: SessionId) -> String {
+        self.try_release_instance(session)
+            .await
+            .expect("the instance should release")
+    }
+
+    pub async fn try_release_instance(&self, session: SessionId) -> anyhow::Result<String> {
+        instance::release(&self.store, session, "operator").await
+    }
+
     pub async fn continuations(&self, id: SessionId) -> Vec<SessionId> {
         session::continuations(&self.store, id)
             .await
@@ -1033,6 +1079,71 @@ impl Harness {
         work::runs(&self.store, session)
             .await
             .expect("the runs should list")
+    }
+
+    pub async fn turns(&self, run: RunId) -> Vec<Turn> {
+        work::turns(&self.store, run)
+            .await
+            .expect("the run's turns should read")
+    }
+
+    pub async fn stop_run(&self, run: RunId) -> Exit {
+        self.try_stop_run(run).await.expect("the run should stop")
+    }
+
+    pub async fn try_stop_run(&self, run: RunId) -> anyhow::Result<Exit> {
+        work::stop(&self.store, run).await
+    }
+
+    pub async fn answered(&self, run: RunId, count: usize) -> Run {
+        self.answered_within(run, count, PATIENCE).await
+    }
+
+    /// Once `count` of the Run's turns are answered, or once it has ended short of them.
+    pub async fn answered_within(
+        &self,
+        run: RunId,
+        count: usize,
+        patience: std::time::Duration,
+    ) -> Run {
+        let deadline = tokio::time::Instant::now() + patience;
+
+        loop {
+            let answered = self
+                .turns(run)
+                .await
+                .iter()
+                .filter(|turn| turn.answered_at.is_some())
+                .count();
+            let run = self.run(run).await;
+            if answered >= count || run.state == RunState::Ended {
+                return run;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the run {} is {} with {answered} of {count} turns answered",
+                run.id,
+                run.state
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// A Run whose first turn is over has ended either way: by that turn, or stopped after it
+    /// the way an operator would, because answering never ends one (ADR-0024).
+    pub async fn after_one_turn(&self, run: RunId) -> Run {
+        self.after_one_turn_within(run, PATIENCE).await
+    }
+
+    pub async fn after_one_turn_within(&self, run: RunId, patience: std::time::Duration) -> Run {
+        let answered = self.answered_within(run, 1, patience).await;
+        if answered.state != RunState::Ended {
+            self.try_stop_run(run)
+                .await
+                .expect("a run between turns should stop");
+        }
+
+        self.run(run).await
     }
 
     pub async fn complete_run(&self, run: &Run) {
