@@ -19,16 +19,18 @@ use tracing::warn;
 use crate::agent::{self, NotOffered};
 use crate::declined::Declined;
 use crate::domain::{
-    self, Agent, Connection, Direction, EventRecordId, EventRefusal, Firing, Integration,
-    Occurrence, Organization, Run, Session, SessionId, SessionState, SubscriptionProfile,
-    Workspace,
+    self, Agent, Connection, CorrelationMiss, Direction, EventRecordId, EventRefusal, Fires,
+    Firing, Integration, Occurrence, Organization, Run, Session, SessionId, SessionState,
+    SubscriptionProfile, Templates, Trigger, Workspace,
 };
+use crate::filter::Filter;
 use crate::integration::{self, Connecting, Registration, github};
 use crate::log::{self, Cursor, Page, Unreadable, Window};
 use crate::profile::{self, Entry};
 use crate::provider::{self, Held};
 use crate::store::organization::NoSuchOrganization;
 use crate::store::{Declared, Store};
+use crate::template::Template;
 use crate::trigger;
 use crate::{session, work};
 
@@ -48,6 +50,12 @@ pub const EVENT_REFUSAL: &str =
     "/operator/organizations/{organization}/integrations/{integration}/event-refusal";
 pub const EVENTS: &str = "/operator/organizations/{organization}/events";
 pub const EVENT: &str = "/operator/events/{record}";
+pub const TRIGGERS: &str = "/operator/organizations/{organization}/triggers";
+pub const TRIGGER: &str = "/operator/organizations/{organization}/triggers/{trigger}";
+pub const TRIGGER_TEST: &str = "/operator/organizations/{organization}/triggers/{trigger}/test";
+pub const TRIGGER_DISABLE: &str =
+    "/operator/organizations/{organization}/triggers/{trigger}/disable";
+pub const TRIGGER_ENABLE: &str = "/operator/organizations/{organization}/triggers/{trigger}/enable";
 pub const SESSIONS: &str = "/operator/organizations/{organization}/sessions";
 pub const SESSION: &str = "/operator/sessions/{session}";
 pub const SESSION_MESSAGES: &str = "/operator/sessions/{session}/messages";
@@ -117,6 +125,11 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .route(EVENT_REFUSAL, delete(acknowledge_event_refusal))
         .route(EVENTS, get(events))
         .route(EVENT, get(event))
+        .route(TRIGGERS, get(triggers).post(declare_trigger))
+        .route(TRIGGER, get(show_trigger))
+        .route(TRIGGER_TEST, post(test_trigger))
+        .route(TRIGGER_DISABLE, post(disable_trigger))
+        .route(TRIGGER_ENABLE, post(enable_trigger))
         .route(SESSIONS, get(sessions).post(open_session))
         .route(SESSION, get(show_session))
         .route(SESSION_MESSAGES, post(post_to_session))
@@ -164,6 +177,28 @@ struct SessionMessage {
 #[derive(Deserialize)]
 struct RunDeclaration {
     model: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TriggerDeclaration {
+    name: String,
+    filter: Option<serde_json::Value>,
+    every: Option<String>,
+    brief: String,
+    branch: Option<String>,
+    correlation: Option<String>,
+    on_miss: Option<String>,
+    workspace: String,
+    agent: String,
+    #[serde(default)]
+    allows: Vec<String>,
+    profile: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TriggerTest {
+    event: Option<String>,
+    instruction: Option<String>,
 }
 
 fn default_operator_participant() -> String {
@@ -227,6 +262,36 @@ struct RunRecord {
     connected_at: Option<Timestamp>,
     supervisor_version: Option<String>,
     usage: Option<domain::Usage>,
+}
+
+#[derive(Serialize)]
+struct TriggerRecord {
+    id: String,
+    organization: String,
+    name: String,
+    state: String,
+    disabled_because: Option<String>,
+    filter: Option<serde_json::Value>,
+    every: Option<String>,
+    brief: String,
+    branch: Option<String>,
+    correlation: Option<String>,
+    on_miss: Option<String>,
+    workspace: String,
+    agent: String,
+    allows: Vec<String>,
+    profile: Option<String>,
+    declared_at: Timestamp,
+}
+
+#[derive(Serialize)]
+struct TriggerTestRecord {
+    matches: bool,
+    brief: String,
+    branch: Option<String>,
+    correlation: Option<String>,
+    agent: String,
+    elapsing: Option<Timestamp>,
 }
 
 impl From<Organization> for OrganizationRecord {
@@ -305,6 +370,37 @@ impl From<Run> for RunRecord {
             connected_at: run.connected.as_ref().map(|connected| connected.at),
             supervisor_version: run.connected.map(|connected| connected.version),
             usage: run.usage,
+        }
+    }
+}
+
+impl From<Trigger> for TriggerRecord {
+    fn from(trigger: Trigger) -> Self {
+        let (filter, every) = match trigger.fires {
+            Fires::On(filter) => (Some(filter.to_json()), None),
+            Fires::Every(every) => (None, Some(format!("{every:#}"))),
+        };
+
+        Self {
+            id: trigger.id.to_string(),
+            organization: trigger.organization.name,
+            name: trigger.name,
+            state: trigger.state.as_str().to_owned(),
+            disabled_because: trigger.disabled_because,
+            filter,
+            every,
+            brief: trigger.templates.brief.to_string(),
+            branch: trigger.templates.branch.map(|branch| branch.to_string()),
+            correlation: trigger
+                .templates
+                .correlation
+                .map(|correlation| correlation.to_string()),
+            on_miss: trigger.on_miss.map(|miss| miss.as_str().to_owned()),
+            workspace: trigger.workspace.name,
+            agent: trigger.agent.name,
+            allows: trigger.allows.into_iter().map(|agent| agent.name).collect(),
+            profile: trigger.profile.map(|profile| profile.name),
+            declared_at: trigger.declared_at,
         }
     }
 }
@@ -810,6 +906,192 @@ async fn event(
     let event = integration::event(&control_plane.store, record).await?;
 
     Ok(Json(EventRecord::read(&control_plane.store, event).await?))
+}
+
+async fn triggers(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+) -> Result<Json<Vec<TriggerRecord>>, Refused> {
+    let triggers = trigger::triggers(&control_plane.store, &organization)
+        .await
+        .map_err(trigger_refusal)?;
+
+    Ok(Json(triggers.into_iter().map(Into::into).collect()))
+}
+
+async fn declare_trigger(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    declaration: Result<Json<TriggerDeclaration>, JsonRejection>,
+) -> Result<(StatusCode, Json<TriggerRecord>), Refused> {
+    let Json(declaration) = declaration?;
+    named(&declaration.name)?;
+    let (fires, templates, on_miss) = parse_trigger_declaration(&declaration)?;
+    let created = !trigger::triggers(&control_plane.store, &organization)
+        .await
+        .map_err(trigger_refusal)?
+        .iter()
+        .any(|trigger| trigger.name == declaration.name);
+    let trigger = trigger::declare(
+        &control_plane.store,
+        trigger::Declaration {
+            organization: &organization,
+            name: &declaration.name,
+            fires: &fires,
+            templates: &templates,
+            on_miss,
+            workspace: &declaration.workspace,
+            agent: &declaration.agent,
+            allows: &declaration.allows,
+            profile: declaration.profile.as_deref(),
+        },
+    )
+    .await
+    .map_err(trigger_refusal)?;
+
+    Ok((
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(trigger.into()),
+    ))
+}
+
+async fn show_trigger(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, name)): Path<(String, String)>,
+) -> Result<Json<TriggerRecord>, Refused> {
+    let trigger = trigger::show(&control_plane.store, &organization, &name)
+        .await
+        .map_err(trigger_refusal)?;
+
+    Ok(Json(trigger.into()))
+}
+
+async fn test_trigger(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, name)): Path<(String, String)>,
+    tested: Result<Json<TriggerTest>, JsonRejection>,
+) -> Result<Json<TriggerTestRecord>, Refused> {
+    let Json(tested) = tested?;
+    let event = tested
+        .event
+        .as_deref()
+        .map(|event| {
+            event
+                .parse()
+                .map_err(|_| Refused::NotFound(format!("no event {event}")))
+        })
+        .transpose()?;
+    let tested = trigger::test(
+        &control_plane.store,
+        &organization,
+        &name,
+        event,
+        tested.instruction.as_deref(),
+    )
+    .await
+    .map_err(trigger_refusal)?;
+    let rendered = tested
+        .rendered
+        .map_err(|error| Refused::Unprocessable(error.to_string()))?;
+    let agent = tested
+        .agent
+        .map_err(|error| Refused::Unprocessable(error.to_string()))?;
+
+    Ok(Json(TriggerTestRecord {
+        matches: tested.matches,
+        brief: rendered.brief,
+        branch: rendered.branch,
+        correlation: rendered.correlation,
+        agent,
+        elapsing: tested.elapsing,
+    }))
+}
+
+async fn disable_trigger(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, name)): Path<(String, String)>,
+) -> Result<Json<TriggerRecord>, Refused> {
+    let trigger = trigger::disable(&control_plane.store, &organization, &name)
+        .await
+        .map_err(trigger_refusal)?;
+
+    Ok(Json(trigger.into()))
+}
+
+async fn enable_trigger(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, name)): Path<(String, String)>,
+) -> Result<Json<TriggerRecord>, Refused> {
+    let trigger = trigger::enable(&control_plane.store, &organization, &name)
+        .await
+        .map_err(trigger_refusal)?;
+
+    Ok(Json(trigger.into()))
+}
+
+fn parse_trigger_declaration(
+    declaration: &TriggerDeclaration,
+) -> Result<(Fires, Templates, Option<CorrelationMiss>), Refused> {
+    let fires = match (&declaration.filter, &declaration.every) {
+        (Some(filter), None) => Fires::On(
+            Filter::from_json(filter)
+                .map_err(|error| Refused::Unprocessable(format!("a trigger filter: {error}")))?,
+        ),
+        (None, Some(every)) => Fires::Every(every.parse().map_err(|error| {
+            Refused::Unprocessable(format!("a trigger schedule is a duration: {error}"))
+        })?),
+        _ => {
+            return Err(Refused::Unprocessable(
+                "a trigger declares a filter or a schedule, and not both".to_owned(),
+            ));
+        }
+    };
+    let templates = Templates {
+        brief: declaration
+            .brief
+            .parse::<Template>()
+            .map_err(|error| Refused::Unprocessable(format!("a trigger brief: {error}")))?,
+        branch: declaration
+            .branch
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|error| Refused::Unprocessable(format!("a trigger branch: {error}")))?,
+        correlation: declaration
+            .correlation
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|error| Refused::Unprocessable(format!("a trigger correlation: {error}")))?,
+    };
+    let on_miss = declaration
+        .on_miss
+        .as_deref()
+        .map(str::parse)
+        .transpose()
+        .map_err(|error| Refused::Unprocessable(format!("a trigger on_miss: {error}")))?;
+    trigger::check_miss(&templates, on_miss)
+        .map_err(|error| Refused::Unprocessable(error.to_string()))?;
+
+    Ok((fires, templates, on_miss))
+}
+
+fn trigger_refusal(error: anyhow::Error) -> Refused {
+    let message = error.to_string();
+    if message.starts_with("no organization ")
+        || message.starts_with("no workspace named ")
+        || message.starts_with("no agent named ")
+        || message.starts_with("no trigger named ")
+        || message.starts_with("no event ")
+    {
+        return Refused::NotFound(message);
+    }
+
+    Refused::Unprocessable(message)
 }
 
 async fn sessions(

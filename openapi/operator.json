@@ -1102,6 +1102,96 @@
         }
       }
     },
+    "/operator/organizations/{organization}/triggers": {
+      "get": {
+        "operationId": "listTriggers",
+        "summary": "List every Trigger in an Organization.",
+        "parameters": [{ "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Every Trigger, ordered by name.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Trigger" } } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      },
+      "post": {
+        "operationId": "declareTrigger",
+        "summary": "Declare a Trigger.",
+        "description": "Desired state: a Trigger by this name keeps its identity and takes on this declaration. Events recorded before a changed declaration never fire it.",
+        "parameters": [{ "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TriggerDeclaration" } } } },
+        "responses": {
+          "200": { "description": "The existing Trigger, converged on this declaration.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trigger" } } } },
+          "201": { "description": "The newly declared Trigger.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trigger" } } } },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/triggers/{trigger}": {
+      "get": {
+        "operationId": "showTrigger",
+        "summary": "Show a Trigger.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "trigger", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "The named Trigger.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trigger" } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/triggers/{trigger}/test": {
+      "post": {
+        "operationId": "testTrigger",
+        "summary": "Test a Trigger without starting work.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "trigger", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TriggerTest" } } } },
+        "responses": {
+          "200": { "description": "Whether it matches and what a firing would render.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TriggerTestResult" } } } },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/triggers/{trigger}/disable": {
+      "post": {
+        "operationId": "disableTrigger",
+        "summary": "Disable a Trigger.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "trigger", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "The disabled Trigger.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trigger" } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/triggers/{trigger}/enable": {
+      "post": {
+        "operationId": "enableTrigger",
+        "summary": "Enable a Trigger.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "trigger", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "The enabled Trigger.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trigger" } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
     "/operator/sessions/{session}/transcript": {
       "get": {
         "operationId": "transcript",
@@ -1308,6 +1398,68 @@
           "runtime",
           "model"
         ]
+      },
+      "TriggerDeclaration": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "filter": { "type": "object", "description": "A CloudEvents filter of exact, prefix, suffix, all, any, or not." },
+          "every": { "type": "string", "description": "A duration such as `1h`, in place of a filter." },
+          "brief": { "type": "string", "minLength": 1 },
+          "branch": { "type": ["string", "null"] },
+          "correlation": { "type": ["string", "null"] },
+          "on_miss": { "type": ["string", "null"], "enum": ["open", "ignore", null] },
+          "workspace": { "type": "string", "minLength": 1 },
+          "agent": { "type": "string", "minLength": 1 },
+          "allows": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "profile": { "type": ["string", "null"] }
+        },
+        "required": ["name", "brief", "workspace", "agent"],
+        "oneOf": [
+          { "required": ["filter"], "not": { "required": ["every"] } },
+          { "required": ["every"], "not": { "required": ["filter"] } }
+        ]
+      },
+      "Trigger": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "organization": { "type": "string" },
+          "name": { "type": "string" },
+          "state": { "type": "string", "enum": ["enabled", "disabled:operator", "disabled:firing-budget"] },
+          "disabled_because": { "type": ["string", "null"] },
+          "filter": { "type": ["object", "null"] },
+          "every": { "type": ["string", "null"] },
+          "brief": { "type": "string" },
+          "branch": { "type": ["string", "null"] },
+          "correlation": { "type": ["string", "null"] },
+          "on_miss": { "type": ["string", "null"], "enum": ["open", "ignore", null] },
+          "workspace": { "type": "string" },
+          "agent": { "type": "string" },
+          "allows": { "type": "array", "items": { "type": "string" } },
+          "profile": { "type": ["string", "null"] },
+          "declared_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "organization", "name", "state", "disabled_because", "filter", "every", "brief", "branch", "correlation", "on_miss", "workspace", "agent", "allows", "profile", "declared_at"]
+      },
+      "TriggerTest": {
+        "type": "object",
+        "properties": {
+          "event": { "type": ["string", "null"], "format": "uuid" },
+          "instruction": { "type": ["string", "null"] }
+        }
+      },
+      "TriggerTestResult": {
+        "type": "object",
+        "properties": {
+          "matches": { "type": "boolean" },
+          "brief": { "type": "string" },
+          "branch": { "type": ["string", "null"] },
+          "correlation": { "type": ["string", "null"] },
+          "agent": { "type": "string" },
+          "elapsing": { "type": ["string", "null"], "format": "date-time" }
+        },
+        "required": ["matches", "brief", "branch", "correlation", "agent", "elapsing"]
       },
       "SessionDeclaration": {
         "type": "object",

@@ -146,24 +146,98 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
         Some(profile) => Some(tx.profiles().named(&organization, profile).await?),
         None => None,
     };
-    let trigger = tx
+    let existing = tx
         .triggers()
-        .declare(
-            &organization,
-            declaration.name,
-            declaration.fires,
-            declaration.templates,
-            declaration.on_miss,
-            &workspace,
-            &agent,
-            &allows,
-            profile.as_ref(),
-            false,
-        )
-        .await?;
+        .all(&organization)
+        .await?
+        .into_iter()
+        .find(|trigger| trigger.name == declaration.name);
+    let trigger = match existing {
+        Some(trigger)
+            if same_declaration(
+                &trigger,
+                declaration.fires,
+                declaration.templates,
+                declaration.on_miss,
+                &workspace,
+                &agent,
+                &allows,
+                profile.as_ref(),
+                false,
+            ) =>
+        {
+            trigger
+        }
+        Some(trigger) => {
+            tx.triggers()
+                .redeclare(
+                    &trigger,
+                    declaration.fires,
+                    declaration.templates,
+                    declaration.on_miss,
+                    &workspace,
+                    &agent,
+                    &allows,
+                    profile.as_ref(),
+                    false,
+                )
+                .await?
+        }
+        None => {
+            tx.triggers()
+                .declare(
+                    &organization,
+                    declaration.name,
+                    declaration.fires,
+                    declaration.templates,
+                    declaration.on_miss,
+                    &workspace,
+                    &agent,
+                    &allows,
+                    profile.as_ref(),
+                    false,
+                )
+                .await?
+        }
+    };
     tx.commit().await?;
 
     Ok(trigger)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a trigger is what it is declared with"
+)]
+fn same_declaration(
+    trigger: &Trigger,
+    fires: &Fires,
+    templates: &Templates,
+    on_miss: Option<CorrelationMiss>,
+    workspace: &crate::domain::Workspace,
+    agent: &Agent,
+    allows: &[Agent],
+    profile: Option<&crate::domain::SubscriptionProfile>,
+    applied: bool,
+) -> bool {
+    let names = |agents: &[Agent]| {
+        let mut names = agents
+            .iter()
+            .map(|agent| agent.name.clone())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names.dedup();
+        names
+    };
+
+    trigger.fires == *fires
+        && trigger.templates == *templates
+        && trigger.on_miss == on_miss
+        && trigger.workspace.id == workspace.id
+        && trigger.agent.id == agent.id
+        && names(&trigger.allows) == names(allows)
+        && trigger.profile.as_ref().map(|profile| profile.id) == profile.map(|profile| profile.id)
+        && trigger.applied == applied
 }
 
 pub(crate) async fn allowed(

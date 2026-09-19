@@ -124,7 +124,8 @@ impl<'a> Triggers<'a> {
         agent: &Agent,
         allows: &[Agent],
         profile: Option<&SubscriptionProfile>,
-    ) -> Result<()> {
+        applied: bool,
+    ) -> Result<Trigger> {
         let declared_at = Timestamp::now();
         let (filter, every, due_at) = match fires {
             Fires::On(filter) => (Some(filter.to_json().to_string()), None, None),
@@ -139,7 +140,7 @@ impl<'a> Triggers<'a> {
             "UPDATE trigger
                 SET filter = ?, every_ms = ?, due_at = ?, brief = ?, branch = ?, correlation = ?,
                     on_miss = ?, workspace_id = ?, agent_id = ?, subscription_profile_id = ?,
-                    applied = 1, declared_at = ?
+                    applied = ?, declared_at = ?
               WHERE id = ?",
         )
         .bind(filter)
@@ -152,6 +153,7 @@ impl<'a> Triggers<'a> {
         .bind(workspace.id.to_string())
         .bind(agent.id.to_string())
         .bind(profile.map(|profile| profile.id.to_string()))
+        .bind(applied)
         .bind(declared_at.to_string())
         .bind(trigger.id.to_string())
         .execute(&mut *self.connection)
@@ -159,7 +161,18 @@ impl<'a> Triggers<'a> {
         .with_context(|| format!("redeclaring the trigger {}", trigger.name))?;
         self.allow(trigger, allows).await?;
 
-        Ok(())
+        Ok(Trigger {
+            fires: fires.clone(),
+            templates: templates.clone(),
+            on_miss,
+            workspace: workspace.clone(),
+            agent: agent.clone(),
+            allows: allows.to_vec(),
+            profile: profile.cloned(),
+            applied,
+            declared_at,
+            ..trigger.clone()
+        })
     }
 
     async fn allow(&mut self, trigger: &Trigger, allows: &[Agent]) -> Result<()> {
