@@ -1,107 +1,124 @@
-//! Organization scope is derived fresh for every invocation and never stored (ADR-0016).
+//! Scope is derived for every invocation and never stored (ADR-0016).
 
-use std::path::PathBuf;
+use std::fmt;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 
 use crate::api::ControlPlane;
+use crate::{BINARY, ORGANIZATION_VARIABLE, names};
 
-/// The environment variable that names the Organization when no flag does.
-pub const ORGANIZATION: &str = "KESTREL_ORGANIZATION";
-
-/// A committed binding in the working directory, so the scope is reviewed in a pull request
-/// rather than remembered in a hidden profile.
 const BINDING: &str = ".kestrel/organization";
 
-/// The Organization this invocation applies to, and where it came from.
 pub struct Scope {
     pub organization: String,
-    /// The flag, environment variable, or committed binding that named it — or the fact that
-    /// it was the only Organization there was.
-    pub source: String,
-    /// The committed binding read, when one was.
-    pub binding: Option<PathBuf>,
+    pub source: Source,
 }
 
-/// Resolves the invocation's Organization in the fixed order the flag, the environment, a
-/// committed binding, then the only Organization. The control plane is reached only for the
-/// last step, and only to ask what exists.
-pub async fn resolve(api: &ControlPlane, given: Option<&str>) -> Result<Scope> {
-    if let Some(given) = given {
-        let organization = given.trim();
-        if organization.is_empty() {
-            bail!("--organization names no Organization");
+pub enum Source {
+    Flag,
+    Environment,
+    Binding(PathBuf),
+    OnlyOrganization,
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Source::Flag => formatter.write_str("--organization"),
+            Source::Environment => formatter.write_str(ORGANIZATION_VARIABLE),
+            Source::Binding(binding) => write!(formatter, "{}", binding.display()),
+            Source::OnlyOrganization => formatter.write_str("only organization"),
+        }
+    }
+}
+
+pub enum Derived {
+    Scope(Scope),
+    Unnamed { existing: Vec<String> },
+}
+
+pub struct Scoping<'a> {
+    api: &'a ControlPlane,
+    named: Option<Scope>,
+}
+
+impl<'a> Scoping<'a> {
+    pub fn new(api: &'a ControlPlane, named: Option<Scope>) -> Self {
+        Self { api, named }
+    }
+
+    pub async fn resolve(self) -> Result<Scope> {
+        match self.derive().await? {
+            Derived::Scope(scope) => Ok(scope),
+            Derived::Unnamed { existing } if existing.is_empty() => bail!(
+                "no Organization is in scope and none exists; declare one with \
+                 `{BINARY} organization declare <name>`"
+            ),
+            Derived::Unnamed { existing } => bail!(
+                "no Organization is in scope and {} exist: {}; pass --organization <name>",
+                existing.len(),
+                existing.join(", ")
+            ),
+        }
+    }
+
+    pub async fn derive(self) -> Result<Derived> {
+        if let Some(scope) = self.named {
+            return Ok(Derived::Scope(scope));
+        }
+        if let Some(scope) = bound()? {
+            return Ok(Derived::Scope(scope));
         }
 
-        return Ok(Scope {
-            organization: organization.to_owned(),
-            source: "--organization".to_owned(),
-            binding: None,
-        });
-    }
-    if let Some(organization) = environment() {
-        return Ok(Scope {
-            organization,
-            source: ORGANIZATION.to_owned(),
-            binding: None,
-        });
-    }
-    if let Some((binding, organization)) = committed()? {
-        return Ok(Scope {
-            source: binding.display().to_string(),
-            organization,
-            binding: Some(binding),
-        });
-    }
+        let mut existing = names(&self.api.get(&["organizations"]).await?);
+        if existing.len() == 1 {
+            return Ok(Derived::Scope(Scope {
+                organization: existing.remove(0),
+                source: Source::OnlyOrganization,
+            }));
+        }
 
-    let listed = api.get(&["organizations"]).await?;
-    let names: Vec<&str> = listed
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|organization| organization["name"].as_str())
-        .collect();
-
-    match names.as_slice() {
-        [] => bail!(
-            "no Organization is in scope and none exists; declare one with \
-             `kestrel-client organization declare <name>`"
-        ),
-        [organization] => Ok(Scope {
-            organization: (*organization).to_owned(),
-            source: "only organization".to_owned(),
-            binding: None,
-        }),
-        _ => bail!(
-            "no Organization is in scope and {} exist: {}; pass --organization <name>",
-            names.len(),
-            names.join(", ")
-        ),
+        Ok(Derived::Unnamed { existing })
     }
 }
 
-fn environment() -> Option<String> {
-    std::env::var(ORGANIZATION)
-        .ok()
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty())
-}
-
-/// A committed binding in the working directory itself.
-fn committed() -> Result<Option<(PathBuf, String)>> {
-    let binding = std::env::current_dir()
-        .context("the working directory")?
-        .join(BINDING);
-    if !binding.is_file() {
+fn bound() -> Result<Option<Scope>> {
+    let working = std::env::current_dir().context("reading the working directory")?;
+    let Some(binding) = binding_for(&working) else {
         return Ok(None);
-    }
+    };
 
     let organization = std::fs::read_to_string(&binding)
-        .with_context(|| format!("reading {}", binding.display()))?;
-    let organization = organization.trim().to_owned();
+        .with_context(|| format!("reading {}", binding.display()))?
+        .trim()
+        .to_owned();
     if organization.is_empty() {
         bail!("{} binds no Organization", binding.display());
     }
 
-    Ok(Some((binding, organization)))
+    Ok(Some(Scope {
+        organization,
+        source: Source::Binding(binding),
+    }))
+}
+
+// The search stops at the repository root, so a binding in a home directory never becomes a
+// remembered current Organization.
+fn binding_for(working: &Path) -> Option<PathBuf> {
+    let root = working
+        .ancestors()
+        .find(|directory| directory.join(".git").exists());
+
+    for directory in working.ancestors() {
+        let binding = directory.join(BINDING);
+        if binding.is_file() {
+            return Some(binding);
+        }
+        if root.is_none_or(|root| directory == root) {
+            break;
+        }
+    }
+
+    None
 }

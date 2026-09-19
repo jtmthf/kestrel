@@ -2,23 +2,7 @@ mod support;
 
 use serde_json::Value;
 use support::Harness;
-use support::client::{self, Finished};
-
-fn records(finished: &Finished) -> Vec<Value> {
-    assert!(
-        finished.status.success(),
-        "the client failed:\n{}",
-        finished.err
-    );
-    finished
-        .out
-        .iter()
-        .map(|line| {
-            serde_json::from_str(line)
-                .unwrap_or_else(|error| panic!("{line} is not a record: {error}"))
-        })
-        .collect()
-}
+use support::client::{Finished, Invocation, ran_by};
 
 fn names(records: &[Value]) -> Vec<&str> {
     records
@@ -27,30 +11,19 @@ fn names(records: &[Value]) -> Vec<&str> {
         .collect()
 }
 
-async fn ran(
-    harness: &Harness,
-    args: &[&str],
-    environment: &[(&str, &str)],
-    binding: Option<&str>,
-) -> Finished {
-    let operator = harness.operator();
-    let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
-    let environment: Vec<(String, String)> = environment
-        .iter()
-        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-        .collect();
-    let binding = binding.map(str::to_owned);
+fn bound_to(organization: &str) -> Invocation {
+    Invocation::default().file(".kestrel/organization", organization)
+}
 
-    tokio::task::spawn_blocking(move || {
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let environment: Vec<(&str, &str)> = environment
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str()))
-            .collect();
-        client::ran_configured(&operator, &args, &environment, binding.as_deref())
-    })
-    .await
-    .expect("the client should run")
+fn refused(finished: &Finished, naming: &[&str]) {
+    assert!(!finished.status.success(), "the client did not refuse");
+    for named in naming {
+        assert!(
+            finished.err.contains(named),
+            "the refusal does not name {named}:\n{}",
+            finished.err
+        );
+    }
 }
 
 /// Two Organizations, each holding a Workspace a listing can tell apart.
@@ -73,15 +46,14 @@ async fn two_organizations() -> Harness {
 async fn the_flag_names_the_scope_ahead_of_the_environment_and_a_binding() {
     let harness = two_organizations().await;
 
-    let listed = ran(
+    let listed = ran_by(
         &harness,
         &["workspace", "list", "--organization", "acme"],
-        &[("KESTREL_ORGANIZATION", "globex")],
-        Some("globex"),
+        bound_to("globex").env("KESTREL_ORGANIZATION", "globex"),
     )
     .await;
 
-    assert_eq!(names(&records(&listed)), ["for-acme"]);
+    assert_eq!(names(&listed.records()), ["for-acme"]);
     harness.teardown().await;
 }
 
@@ -89,15 +61,14 @@ async fn the_flag_names_the_scope_ahead_of_the_environment_and_a_binding() {
 async fn the_environment_names_the_scope_ahead_of_a_binding() {
     let harness = two_organizations().await;
 
-    let listed = ran(
+    let listed = ran_by(
         &harness,
         &["workspace", "list"],
-        &[("KESTREL_ORGANIZATION", "globex")],
-        Some("acme"),
+        bound_to("acme").env("KESTREL_ORGANIZATION", "globex"),
     )
     .await;
 
-    assert_eq!(names(&records(&listed)), ["for-globex"]);
+    assert_eq!(names(&listed.records()), ["for-globex"]);
     harness.teardown().await;
 }
 
@@ -105,9 +76,43 @@ async fn the_environment_names_the_scope_ahead_of_a_binding() {
 async fn a_committed_binding_names_the_scope_from_the_working_directory() {
     let harness = two_organizations().await;
 
-    let listed = ran(&harness, &["workspace", "list"], &[], Some("acme")).await;
+    let listed = ran_by(&harness, &["workspace", "list"], bound_to("acme")).await;
 
-    assert_eq!(names(&records(&listed)), ["for-acme"]);
+    assert_eq!(names(&listed.records()), ["for-acme"]);
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_committed_binding_names_the_scope_from_anywhere_in_its_repository() {
+    let harness = two_organizations().await;
+
+    let listed = ran_by(
+        &harness,
+        &["workspace", "list"],
+        bound_to("acme")
+            .file(".git/HEAD", "ref: refs/heads/main\n")
+            .within("crates/kestrel"),
+    )
+    .await;
+
+    assert_eq!(names(&listed.records()), ["for-acme"]);
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_binding_above_the_repository_is_no_remembered_scope() {
+    let harness = two_organizations().await;
+
+    let listed = ran_by(
+        &harness,
+        &["workspace", "list"],
+        bound_to("acme")
+            .file("kestrel/.git/HEAD", "ref: refs/heads/main\n")
+            .within("kestrel/crates"),
+    )
+    .await;
+
+    refused(&listed, &["--organization", "acme", "globex"]);
     harness.teardown().await;
 }
 
@@ -124,9 +129,9 @@ async fn the_only_organization_is_the_scope_when_nothing_names_one() {
         )
         .await;
 
-    let listed = ran(&harness, &["workspace", "list"], &[], None).await;
+    let listed = ran_by(&harness, &["workspace", "list"], Invocation::default()).await;
 
-    assert_eq!(names(&records(&listed)), ["kestrel"]);
+    assert_eq!(names(&listed.records()), ["kestrel"]);
     harness.teardown().await;
 }
 
@@ -134,7 +139,7 @@ async fn the_only_organization_is_the_scope_when_nothing_names_one() {
 async fn two_organizations_make_an_unqualified_command_fail_before_writing_anything() {
     let harness = two_organizations().await;
 
-    let refused = ran(
+    let declared = ran_by(
         &harness,
         &[
             "workspace",
@@ -145,22 +150,11 @@ async fn two_organizations_make_an_unqualified_command_fail_before_writing_anyth
             "--branch",
             "main",
         ],
-        &[],
-        None,
+        Invocation::default(),
     )
     .await;
 
-    assert!(!refused.status.success());
-    assert!(
-        refused.err.contains("--organization"),
-        "the refusal does not say what would fix it:\n{}",
-        refused.err
-    );
-    assert!(
-        refused.err.contains("acme") && refused.err.contains("globex"),
-        "the refusal does not name what exists:\n{}",
-        refused.err
-    );
+    refused(&declared, &["--organization", "acme", "globex"]);
     let mut held = Vec::new();
     for organization in harness.organizations().await {
         held.extend(
@@ -177,39 +171,55 @@ async fn two_organizations_make_an_unqualified_command_fail_before_writing_anyth
 }
 
 #[tokio::test]
-async fn no_organization_at_all_names_the_command_that_makes_one() {
-    let harness = Harness::boot().await;
+async fn every_scoped_listing_refuses_to_guess_between_two_organizations() {
+    let harness = two_organizations().await;
 
-    let refused = ran(&harness, &["workspace", "list"], &[], None).await;
-
-    assert!(!refused.status.success());
-    assert!(
-        refused.err.contains("organization declare"),
-        "the refusal does not name the command that fixes it:\n{}",
-        refused.err
-    );
+    for noun in [
+        "workspace",
+        "agent",
+        "credential",
+        "profile",
+        "integration",
+        "event",
+        "trigger",
+        "session",
+    ] {
+        let listed = ran_by(&harness, &[noun, "list"], Invocation::default()).await;
+        refused(&listed, &["--organization", "acme", "globex"]);
+    }
     harness.teardown().await;
 }
 
 #[tokio::test]
-async fn an_empty_flag_is_refused_rather_than_falling_through_to_another_scope() {
+async fn no_organization_at_all_names_the_command_that_makes_one() {
+    let harness = Harness::boot().await;
+
+    let listed = ran_by(&harness, &["workspace", "list"], Invocation::default()).await;
+
+    refused(&listed, &["organization declare"]);
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn an_empty_name_is_refused_rather_than_falling_through_to_another_scope() {
     let harness = Harness::boot().await;
     harness.declare_organization("acme").await;
 
-    let refused = ran(
+    let flagged = ran_by(
         &harness,
         &["workspace", "list", "--organization", ""],
-        &[("KESTREL_ORGANIZATION", "acme")],
-        Some("acme"),
+        bound_to("acme").env("KESTREL_ORGANIZATION", "acme"),
+    )
+    .await;
+    let exported = ran_by(
+        &harness,
+        &["workspace", "list"],
+        bound_to("acme").env("KESTREL_ORGANIZATION", ""),
     )
     .await;
 
-    assert!(!refused.status.success());
-    assert!(
-        refused.err.contains("organization"),
-        "the refusal does not name what is empty:\n{}",
-        refused.err
-    );
+    refused(&flagged, &["--organization"]);
+    refused(&exported, &["--organization"]);
     harness.teardown().await;
 }
 
@@ -229,14 +239,19 @@ async fn status_prints_every_resolved_value_its_source_what_exists_and_what_to_r
         .declare_agent(&acme, "builder", "opencode", None)
         .await;
 
-    let reported = records(&ran(&harness, &["status", "--organization", "acme"], &[], None).await);
+    let reported = ran_by(
+        &harness,
+        &["status", "--organization", "acme"],
+        Invocation::default(),
+    )
+    .await
+    .records();
 
     assert_eq!(reported.len(), 1);
     assert_eq!(reported[0]["control_plane"], harness.operator());
     assert_eq!(reported[0]["control_plane_source"], "KESTREL_CONTROL_PLANE");
     assert_eq!(reported[0]["organization"], "acme");
     assert_eq!(reported[0]["organization_source"], "--organization");
-    assert_eq!(reported[0]["binding"], Value::Null);
     assert_eq!(reported[0]["workspaces"], 1);
     assert_eq!(reported[0]["agents"], 1);
     assert_eq!(reported[0]["triggers"], 0);
@@ -256,57 +271,105 @@ async fn status_names_the_environment_and_the_binding_when_each_is_the_source() 
     let harness = Harness::boot().await;
     harness.declare_organization("acme").await;
 
-    let environment = records(
-        &ran(
-            &harness,
-            &["status"],
-            &[("KESTREL_ORGANIZATION", "acme")],
-            None,
-        )
-        .await,
-    );
-    let binding = records(&ran(&harness, &["status"], &[], Some("acme")).await);
-    let only = records(&ran(&harness, &["status"], &[], None).await);
+    let environment = ran_by(
+        &harness,
+        &["status"],
+        Invocation::default().env("KESTREL_ORGANIZATION", "acme"),
+    )
+    .await
+    .records();
+    let binding = ran_by(&harness, &["status"], bound_to("acme"))
+        .await
+        .records();
+    let only = ran_by(&harness, &["status"], Invocation::default())
+        .await
+        .records();
 
     assert_eq!(
         environment[0]["organization_source"],
         "KESTREL_ORGANIZATION"
     );
-    assert_eq!(
-        binding[0]["organization_source"], binding[0]["binding"],
-        "the source of a bound scope is the binding it was read from"
-    );
     assert!(
-        binding[0]["binding"]
+        binding[0]["organization_source"]
             .as_str()
             .expect("a bound path")
             .ends_with(".kestrel/organization"),
         "{}",
-        binding[0]["binding"]
+        binding[0]["organization_source"]
     );
     assert_eq!(only[0]["organization_source"], "only organization");
     harness.teardown().await;
 }
 
 #[tokio::test]
-async fn an_unscoped_read_still_addresses_the_control_plane_without_a_scope() {
+async fn status_explains_an_unresolved_scope_instead_of_failing() {
     let harness = two_organizations().await;
 
-    // Nothing resolves scope for a command that names a record directly, so two Organizations
-    // are not ambiguous where there is nothing to scope.
-    let shown = ran(
+    let reported = ran_by(&harness, &["status"], Invocation::default())
+        .await
+        .records();
+
+    assert_eq!(reported[0]["control_plane"], harness.operator());
+    assert_eq!(reported[0]["organization"], Value::Null);
+    assert_eq!(reported[0]["organization_source"], Value::Null);
+    assert_eq!(
+        reported[0]["organizations"],
+        serde_json::json!(["acme", "globex"])
+    );
+    assert_eq!(
+        reported[0]["next"],
+        "kestrel-client status --organization <name>"
+    );
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_command_naming_its_record_needs_no_scope() {
+    let harness = two_organizations().await;
+
+    let shown = ran_by(
         &harness,
         &["session", "show", "01a0a2d8-baf8-7c02-99fa-7280f174c14a"],
-        &[],
-        None,
+        Invocation::default(),
     )
     .await;
-    let event = ran(&harness, &["event", "show", "yesterday"], &[], None).await;
+    let event = ran_by(
+        &harness,
+        &["event", "show", "yesterday"],
+        Invocation::default(),
+    )
+    .await;
 
-    assert!(!shown.status.success());
-    assert!(shown.err.contains("no session"), "{}", shown.err);
-    assert!(!event.status.success());
-    assert!(event.err.contains("no event yesterday"), "{}", event.err);
+    refused(&shown, &["no session"]);
+    refused(&event, &["no event yesterday"]);
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_command_naming_its_record_refuses_a_flag_it_would_ignore() {
+    let harness = two_organizations().await;
+
+    let flagged = ran_by(
+        &harness,
+        &[
+            "session",
+            "seal",
+            "01a0a2d8-baf8-7c02-99fa-7280f174c14a",
+            "--organization",
+            "globex",
+        ],
+        Invocation::default(),
+    )
+    .await;
+    let exported = ran_by(
+        &harness,
+        &["session", "show", "01a0a2d8-baf8-7c02-99fa-7280f174c14a"],
+        Invocation::default().env("KESTREL_ORGANIZATION", "globex"),
+    )
+    .await;
+
+    refused(&flagged, &["--organization scopes nothing"]);
+    refused(&exported, &["no session"]);
     harness.teardown().await;
 }
 
@@ -315,14 +378,23 @@ async fn the_client_keeps_no_current_context_and_switches_none() {
     let harness = Harness::boot().await;
     let acme = harness.declare_organization("acme").await;
 
-    let switched = ran(&harness, &["context", "use", "acme"], &[], None).await;
-    let configured = ran(&harness, &["config", "use-context", "acme"], &[], None).await;
-    let status = ran(&harness, &["status", "--organization", "acme"], &[], None).await;
-    let reported = records(&status);
+    let switched = ran_by(&harness, &["context", "use", "acme"], Invocation::default()).await;
+    let configured = ran_by(
+        &harness,
+        &["config", "use-context", "acme"],
+        Invocation::default(),
+    )
+    .await;
+    let status = ran_by(
+        &harness,
+        &["status", "--organization", "acme"],
+        Invocation::default(),
+    )
+    .await;
 
     assert!(!switched.status.success());
     assert!(!configured.status.success());
-    assert_eq!(reported[0]["organization"], "acme");
+    assert_eq!(status.records()[0]["organization"], "acme");
     assert_eq!(
         harness.organizations().await[0].id,
         acme.id,

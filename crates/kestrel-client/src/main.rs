@@ -6,19 +6,22 @@ mod transcript;
 use std::io::Read as _;
 
 use anyhow::{Context as _, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::builder::NonEmptyStringValueParser;
+use clap::parser::ValueSource;
+use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 use reqwest::Url;
 use serde_json::{Value, json};
 
 use crate::api::ControlPlane;
+use crate::scope::{Derived, Scope, Scoping, Source};
 
-const NAME: &str = "kestrel-client";
-const CONTROL_PLANE: &str = "KESTREL_CONTROL_PLANE";
-const DEFAULT_CONTROL_PLANE: &str = "http://127.0.0.1:7718";
+const BINARY: &str = "kestrel-client";
+const CONTROL_PLANE_VARIABLE: &str = "KESTREL_CONTROL_PLANE";
+const ORGANIZATION_VARIABLE: &str = "KESTREL_ORGANIZATION";
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "kestrel-client",
+    name = BINARY,
     version,
     about = "Reach a kestrel control plane over its operator boundary.",
     disable_help_subcommand = true
@@ -28,13 +31,26 @@ struct Client {
     command: Command,
 
     /// The control plane's operator boundary
-    #[arg(long, global = true, value_name = "URL")]
-    control_plane: Option<String>,
+    #[arg(
+        long,
+        env = CONTROL_PLANE_VARIABLE,
+        global = true,
+        value_name = "URL",
+        value_parser = NonEmptyStringValueParser::new(),
+        default_value = "http://127.0.0.1:7718"
+    )]
+    control_plane: String,
 
-    /// The Organization this invocation applies to; without it, KESTREL_ORGANIZATION, a
-    /// committed .kestrel/organization in the working directory, then the only Organization
-    /// are tried in order
-    #[arg(long, global = true, value_name = "NAME")]
+    /// The Organization this invocation applies to; without it, a committed
+    /// .kestrel/organization between the working directory and its repository root, then the
+    /// only Organization
+    #[arg(
+        long,
+        env = ORGANIZATION_VARIABLE,
+        global = true,
+        value_name = "NAME",
+        value_parser = NonEmptyStringValueParser::new()
+    )]
     organization: Option<String>,
 }
 
@@ -76,21 +92,28 @@ enum Command {
 }
 
 impl Command {
-    /// Whether this command's operation is scoped to an Organization, and so resolves the
-    /// invocation's scope before it asks the control plane anything.
     fn scoped(&self) -> bool {
-        !matches!(
-            self,
-            Command::Organization(_)
-                | Command::Event(EventCommand::Show { .. })
-                | Command::Session(
-                    SessionCommand::Show { .. }
-                        | SessionCommand::Post { .. }
-                        | SessionCommand::Seal { .. }
-                        | SessionCommand::Transcript { .. },
-                )
-                | Command::Run(_)
-        )
+        match self {
+            Command::Workspace(_)
+            | Command::Agent(_)
+            | Command::Credential(_)
+            | Command::Profile(_)
+            | Command::Integration(_)
+            | Command::Trigger(_)
+            | Command::Status => true,
+            Command::Organization(_) | Command::Run(_) => false,
+            Command::Event(event) => match event {
+                EventCommand::List { .. } => true,
+                EventCommand::Show { .. } => false,
+            },
+            Command::Session(session) => match session {
+                SessionCommand::Open { .. } | SessionCommand::List => true,
+                SessionCommand::Show { .. }
+                | SessionCommand::Post { .. }
+                | SessionCommand::Seal { .. }
+                | SessionCommand::Transcript { .. } => false,
+            },
+        }
     }
 }
 
@@ -152,7 +175,7 @@ struct ProfileEntry {
 
 impl ProfileEntry {
     fn path<'a>(&'a self, organization: &'a str, profile: &'a str) -> Vec<&'a str> {
-        let mut path = vec!["organizations", organization, "profiles", profile];
+        let mut path = vec!["organizations", &organization, "profiles", profile];
         match (&self.variable, &self.file) {
             (Some(variable), _) => path.extend(["variables", variable.as_str()]),
             (None, Some(file)) => path.extend(["files", file.as_str()]),
@@ -423,27 +446,35 @@ enum RunCommand {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    let client = Client::parse();
-    let (control_plane_text, control_plane_source) =
-        control_plane(client.control_plane.as_deref())?;
-    let control_plane: Url = control_plane_text
+    let matches = Client::command().get_matches();
+    let client = Client::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    let control_plane: Url = client
+        .control_plane
         .parse()
-        .with_context(|| format!("{control_plane_text} is no control-plane URL"))?;
+        .with_context(|| format!("{} is no control-plane URL", client.control_plane))?;
+    let control_plane_source = match matches.value_source("control_plane") {
+        Some(ValueSource::CommandLine) => "--control-plane",
+        Some(ValueSource::EnvVariable) => CONTROL_PLANE_VARIABLE,
+        _ => "default",
+    };
 
     let api = ControlPlane::at(control_plane.clone());
 
-    let scope = if client.command.scoped() {
-        Some(scope::resolve(&api, client.organization.as_deref()).await?)
-    } else {
-        None
-    };
-    let organization = || {
-        scope
-            .as_ref()
-            .expect("a scoped command resolved its scope")
-            .organization
-            .as_str()
-    };
+    let named = client.organization.map(|organization| Scope {
+        organization,
+        source: match matches.value_source("organization") {
+            Some(ValueSource::EnvVariable) => Source::Environment,
+            _ => Source::Flag,
+        },
+    });
+    if named
+        .as_ref()
+        .is_some_and(|scope| matches!(scope.source, Source::Flag))
+        && !client.command.scoped()
+    {
+        bail!("--organization scopes nothing here; this command names its record directly");
+    }
+    let scoping = Scoping::new(&api, named);
 
     match client.command {
         Command::Organization(OrganizationCommand::Declare { name }) => {
@@ -460,21 +491,24 @@ async fn main() -> Result<()> {
             repositories,
             branch,
         }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             let declaration = json!({
                 "name": name,
                 "repositories": repositories,
                 "branch": branch,
             });
             printed(
-                &api.post(&["organizations", organization, "workspaces"], &declaration)
-                    .await?,
+                &api.post(
+                    &["organizations", &organization, "workspaces"],
+                    &declaration,
+                )
+                .await?,
             );
         }
         Command::Workspace(WorkspaceCommand::List) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             listed(
-                &api.get(&["organizations", organization, "workspaces"])
+                &api.get(&["organizations", &organization, "workspaces"])
                     .await?,
             );
         }
@@ -483,72 +517,72 @@ async fn main() -> Result<()> {
             runtime,
             model,
         }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             let declaration = json!({
                 "name": name,
                 "runtime": runtime,
                 "model": model,
             });
             printed(
-                &api.post(&["organizations", organization, "agents"], &declaration)
+                &api.post(&["organizations", &organization, "agents"], &declaration)
                     .await?,
             );
         }
         Command::Agent(AgentCommand::List) => {
-            let organization = organization();
-            listed(&api.get(&["organizations", organization, "agents"]).await?);
+            let organization = scoping.resolve().await?.organization;
+            listed(&api.get(&["organizations", &organization, "agents"]).await?);
         }
         Command::Credential(CredentialCommand::Set { variable }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             let secret = json!({ "secret": read_the_secret()? });
             printed(
                 &api.put(
-                    &["organizations", organization, "credentials", &variable],
+                    &["organizations", &organization, "credentials", &variable],
                     &secret,
                 )
                 .await?,
             );
         }
         Command::Credential(CredentialCommand::List) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             listed(
-                &api.get(&["organizations", organization, "credentials"])
+                &api.get(&["organizations", &organization, "credentials"])
                     .await?,
             );
         }
         Command::Credential(CredentialCommand::Forget { variable }) => {
-            let organization = organization();
-            api.delete(&["organizations", organization, "credentials", &variable])
+            let organization = scoping.resolve().await?.organization;
+            api.delete(&["organizations", &organization, "credentials", &variable])
                 .await?;
         }
         Command::Profile(ProfileCommand::Declare { name, owner }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.post(
-                    &["organizations", organization, "profiles"],
+                    &["organizations", &organization, "profiles"],
                     &json!({ "name": name, "owner": owner }),
                 )
                 .await?,
             );
         }
         Command::Profile(ProfileCommand::Set { name, entry }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             let login = json!({ "secret": read_the_login(entry.file.is_some())? });
-            printed(&api.put(&entry.path(organization, &name), &login).await?);
+            printed(&api.put(&entry.path(&organization, &name), &login).await?);
         }
         Command::Profile(ProfileCommand::List) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             listed(
-                &api.get(&["organizations", organization, "profiles"])
+                &api.get(&["organizations", &organization, "profiles"])
                     .await?,
             );
         }
         Command::Profile(ProfileCommand::Forget { name, entry }) => {
-            let organization = organization();
-            api.delete(&entry.path(organization, &name)).await?;
+            let organization = scoping.resolve().await?.organization;
+            api.delete(&entry.path(&organization, &name)).await?;
         }
         Command::Integration(IntegrationCommand::Register(register)) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             let registration = match register {
                 RegisterCommand::Github {
                     name,
@@ -574,24 +608,24 @@ async fn main() -> Result<()> {
             };
             printed(
                 &api.post(
-                    &["organizations", organization, "integrations"],
+                    &["organizations", &organization, "integrations"],
                     &registration,
                 )
                 .await?,
             );
         }
         Command::Integration(IntegrationCommand::List) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             listed(
-                &api.get(&["organizations", organization, "integrations"])
+                &api.get(&["organizations", &organization, "integrations"])
                     .await?,
             );
         }
         Command::Integration(IntegrationCommand::AcknowledgeRefusal { name }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             api.delete(&[
                 "organizations",
-                organization,
+                &organization,
                 "integrations",
                 &name,
                 "event-refusal",
@@ -599,10 +633,10 @@ async fn main() -> Result<()> {
             .await?;
         }
         Command::Event(EventCommand::List { limit }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             listed(
                 &api.get_where(
-                    &["organizations", organization, "events"],
+                    &["organizations", &organization, "events"],
                     &[("limit", &limit.to_string())],
                 )
                 .await?,
@@ -624,7 +658,7 @@ async fn main() -> Result<()> {
             allows,
             profile,
         }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             let filter = filter
                 .map(|filter| {
                     serde_json::from_str::<Value>(&filter).context("a trigger filter is JSON")
@@ -651,21 +685,21 @@ async fn main() -> Result<()> {
                 declaration.insert("every".to_owned(), Value::String(every));
             }
             printed(
-                &api.post(&["organizations", organization, "triggers"], &declaration)
+                &api.post(&["organizations", &organization, "triggers"], &declaration)
                     .await?,
             );
         }
         Command::Trigger(TriggerCommand::List) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             listed(
-                &api.get(&["organizations", organization, "triggers"])
+                &api.get(&["organizations", &organization, "triggers"])
                     .await?,
             );
         }
         Command::Trigger(TriggerCommand::Show { name }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             printed(
-                &api.get(&["organizations", organization, "triggers", &name])
+                &api.get(&["organizations", &organization, "triggers", &name])
                     .await?,
             );
         }
@@ -674,30 +708,30 @@ async fn main() -> Result<()> {
             event,
             instruction,
         }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.post(
-                    &["organizations", organization, "triggers", &name, "test"],
+                    &["organizations", &organization, "triggers", &name, "test"],
                     &json!({ "event": event, "instruction": instruction }),
                 )
                 .await?,
             );
         }
         Command::Trigger(TriggerCommand::Disable { name }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.post(
-                    &["organizations", organization, "triggers", &name, "disable"],
+                    &["organizations", &organization, "triggers", &name, "disable"],
                     &json!({}),
                 )
                 .await?,
             );
         }
         Command::Trigger(TriggerCommand::Enable { name }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.post(
-                    &["organizations", organization, "triggers", &name, "enable"],
+                    &["organizations", &organization, "triggers", &name, "enable"],
                     &json!({}),
                 )
                 .await?,
@@ -710,10 +744,10 @@ async fn main() -> Result<()> {
             branch,
             continues,
         }) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             printed(
                 &api.post(
-                    &["organizations", organization, "sessions"],
+                    &["organizations", &organization, "sessions"],
                     &json!({
                         "workspace": workspace,
                         "agent": agent,
@@ -726,9 +760,9 @@ async fn main() -> Result<()> {
             );
         }
         Command::Session(SessionCommand::List) => {
-            let organization = organization();
+            let organization = scoping.resolve().await?.organization;
             listed(
-                &api.get(&["organizations", organization, "sessions"])
+                &api.get(&["organizations", &organization, "sessions"])
                     .await?,
             );
         }
@@ -775,84 +809,81 @@ async fn main() -> Result<()> {
             listed(&api.get(&["sessions", &session, "runs"]).await?);
         }
         Command::Status => {
-            let scope = scope.as_ref().expect("a scoped command resolved its scope");
-            status(&api, &control_plane_text, control_plane_source, scope).await?;
+            let location = json!({
+                "control_plane": client.control_plane,
+                "control_plane_source": control_plane_source,
+            });
+            status(&api, location, scoping.derive().await?).await?;
         }
     }
 
     Ok(())
 }
 
-/// The address to reach, and whether it came from the flag, the environment, or the default.
-fn control_plane(given: Option<&str>) -> Result<(String, &'static str)> {
-    if let Some(given) = given {
-        let url = given.trim();
-        if url.is_empty() {
-            bail!("--control-plane names no URL");
+async fn status(api: &ControlPlane, location: Value, derived: Derived) -> Result<()> {
+    let scope = match derived {
+        Derived::Scope(scope) => scope,
+        Derived::Unnamed { existing } => {
+            let next = if existing.is_empty() {
+                format!("{BINARY} organization declare <name>")
+            } else {
+                format!("{BINARY} status --organization <name>")
+            };
+            printed(&merged(
+                location,
+                json!({
+                    "organization": null,
+                    "organization_source": null,
+                    "organizations": existing,
+                    "next": next,
+                }),
+            ));
+            return Ok(());
         }
+    };
 
-        return Ok((url.to_owned(), "--control-plane"));
-    }
-    if let Some(url) = std::env::var(CONTROL_PLANE)
-        .ok()
-        .map(|url| url.trim().to_owned())
-        .filter(|url| !url.is_empty())
-    {
-        return Ok((url, CONTROL_PLANE));
-    }
-
-    Ok((DEFAULT_CONTROL_PLANE.to_owned(), "default"))
-}
-
-/// Every resolved value, where it came from, what exists in the scope, and the next command
-/// worth running.
-async fn status(
-    api: &ControlPlane,
-    control_plane: &str,
-    control_plane_source: &str,
-    scope: &scope::Scope,
-) -> Result<()> {
     let organization = scope.organization.as_str();
-    let workspaces = api
-        .get(&["organizations", organization, "workspaces"])
-        .await?;
-    let agents = api.get(&["organizations", organization, "agents"]).await?;
-    let triggers = api
-        .get(&["organizations", organization, "triggers"])
-        .await?;
-    let sessions = api
-        .get(&["organizations", organization, "sessions"])
-        .await?;
-    let integrations = api
-        .get(&["organizations", organization, "integrations"])
-        .await?;
-    let credentials = api
-        .get(&["organizations", organization, "credentials"])
-        .await?;
-    let profiles = api
-        .get(&["organizations", organization, "profiles"])
-        .await?;
-
+    let within = async |records| api.get(&["organizations", organization, records]).await;
+    let (workspaces, agents, triggers, sessions, integrations, credentials, profiles) = tokio::try_join!(
+        within("workspaces"),
+        within("agents"),
+        within("triggers"),
+        within("sessions"),
+        within("integrations"),
+        within("credentials"),
+        within("profiles"),
+    )?;
     let workspace_names = names(&workspaces);
     let agent_names = names(&agents);
 
-    printed(&json!({
-        "control_plane": control_plane,
-        "control_plane_source": control_plane_source,
-        "organization": &scope.organization,
-        "organization_source": &scope.source,
-        "binding": scope.binding.as_ref().map(|path| path.display().to_string()),
-        "workspaces": workspace_names.len(),
-        "agents": agent_names.len(),
-        "triggers": names(&triggers).len(),
-        "sessions": sessions.as_array().map_or(0, Vec::len),
-        "integrations": names(&integrations).len(),
-        "credentials": credentials.as_array().map_or(0, Vec::len),
-        "profiles": profiles.as_array().map_or(0, Vec::len),
-        "next": next_command(&workspace_names, &agent_names),
-    }));
+    printed(&merged(
+        location,
+        json!({
+            "organization": organization,
+            "organization_source": scope.source.to_string(),
+            "workspaces": count(&workspaces),
+            "agents": count(&agents),
+            "triggers": count(&triggers),
+            "sessions": count(&sessions),
+            "integrations": count(&integrations),
+            "credentials": count(&credentials),
+            "profiles": count(&profiles),
+            "next": next_command(&workspace_names, &agent_names),
+        }),
+    ));
 
     Ok(())
+}
+
+fn merged(mut record: Value, more: Value) -> Value {
+    if let (Some(record), Value::Object(more)) = (record.as_object_mut(), more) {
+        record.extend(more);
+    }
+    record
+}
+
+fn count(records: &Value) -> usize {
+    records.as_array().map_or(0, Vec::len)
 }
 
 fn names(records: &Value) -> Vec<String> {
@@ -867,10 +898,12 @@ fn names(records: &Value) -> Vec<String> {
 fn next_command(workspaces: &[String], agents: &[String]) -> String {
     match (workspaces.first(), agents.first()) {
         (Some(workspace), Some(agent)) => {
-            format!("{NAME} session open --workspace {workspace} --agent {agent}")
+            format!("{BINARY} session open --workspace {workspace} --agent {agent}")
         }
-        (Some(_), None) => format!("{NAME} agent declare <name>"),
-        (None, _) => format!("{NAME} workspace declare <name> --repository <url> --branch main"),
+        (Some(_), None) => format!("{BINARY} agent declare <name>"),
+        (None, _) => {
+            format!("{BINARY} workspace declare <name> --repository <url> --branch <branch>")
+        }
     }
 }
 
