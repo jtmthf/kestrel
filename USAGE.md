@@ -598,6 +598,51 @@ Until `0.4` there is no policy beneath a run, so such a trigger is an unsupervis
 credentials on your repository, briefed by whatever a stranger wrote. Keep it if that is what you
 meant; the warning is there so that it was decided rather than discovered.
 
+**The image a run needs to open a pull request.** The image a run executes in is `kestrel-env`
+unless you say otherwise, and it carries only the supervisor, opencode and git. It has no `gh`, so
+an agent working inside it cannot open a pull request however plainly the brief asks it to; the
+outcome comment would arrive without one.
+
+[`kestrel-dev`](images/kestrel-dev/README.md) is the image this repository ships for work that has to
+touch GitHub. It derives from `kestrel-env` and adds `gh`, Rust, and the Claude Code and Codex agent
+runtimes. Build it, then point the control plane at it with a gitignored `compose.override.yaml`,
+which Compose merges automatically:
+
+```sh
+docker compose build kestrel-env
+docker build --file images/kestrel-dev/Dockerfile --tag kestrel-dev .
+```
+
+```yaml
+services:
+  kestrel:
+    environment:
+      KESTREL_IMAGE: kestrel-dev
+```
+
+```sh
+docker compose up -d
+```
+
+`KESTREL_IMAGE` names the image the Docker driver provisions an Instance from. It is not
+`KESTREL_ENV_IMAGE`, which is the tag Compose builds the base image under, so pointing that at
+`kestrel-dev` would only relabel the image Compose rebuilds. The named volume survives the recreate,
+so every declaration and session above is still there.
+
+`gh` reads its token from its own environment, so a run needs one there. Name the credential for that
+variable and hand it the token `gh` already holds:
+
+```sh
+gh auth token | docker compose exec -T kestrel kestrel credential set GH_TOKEN --organization acme
+```
+
+`-T` lets the token reach the command through the alias's `docker compose exec`, and the secret
+travels on standard input rather than in an argument. `GH_TOKEN` is not a name kestrel treats
+specially: it is simply the variable `gh` already looks for, and kestrel hands it to the agent's
+process the way it hands over a Provider Credential
+([ADR-0010](docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md)). The token needs
+`repo` scope to open a pull request.
+
 Comment `@kestrel` on an issue in that repository, and within a poll interval there is a session
 open with a run queued behind it:
 
@@ -625,8 +670,7 @@ The agent's first prompt is that brief, character for character, and nothing els
 wrap it, summarise it or read skill syntax in it, so a brief that leads with your harness's own
 invocation — `/implement` for Claude Code, `$tdd` for Codex — reaches the harness where it looks for
 one. Copying the issue's body into the brief would hand the agent a snapshot; give it the link and
-ask it to read the current issue and its comments itself, with `gh`, which the development image
-carries. Once anything is said after the brief, the next prompt is the transcript as earlier
+ask it to read the current issue and its comments itself, with `gh`, which `kestrel-dev` carries. Once anything is said after the brief, the next prompt is the transcript as earlier
 context instead.
 
 A brief can also take an instruction supplied when the work is handed over, rather than one written
@@ -799,7 +843,8 @@ started it gets a comment:
 Session `01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04` · run `01a07c33-2f88-7a05-bb31-58c0d9e4d7f0`
 ```
 
-The quoted part is the last thing the agent said. kestrel reasons about no git and never learns
+The quoted part is the last thing the agent said. The pull request is the agent's own, opened with the
+`gh` its run carries and the `GH_TOKEN` set above; kestrel reasons about no git and never learns
 which pull request was opened — if there is a link there, it is there because the agent named it.
 A run that failed gets a comment too, saying so and saying why.
 
