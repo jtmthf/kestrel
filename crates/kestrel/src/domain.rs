@@ -453,6 +453,7 @@ pub struct Checkout {
 #[derive(Debug, Clone)]
 pub struct Session {
     pub id: SessionId,
+    pub name: String,
     pub organization: Organization,
     pub workspace: Workspace,
     pub agent: Agent,
@@ -480,6 +481,7 @@ impl Session {
 #[derive(Debug, Clone)]
 pub struct Run {
     pub id: RunId,
+    pub name: String,
     pub organization: OrganizationId,
     pub session: SessionId,
     pub state: RunState,

@@ -1,11 +1,13 @@
 CREATE TABLE run (
     id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
     organization_id TEXT NOT NULL REFERENCES organization (id),
     session_id TEXT NOT NULL REFERENCES session (id),
     started_at TEXT NOT NULL,
     ended_at TEXT,
     connected_at TEXT,
-    supervisor_version TEXT
+    supervisor_version TEXT,
+    UNIQUE (organization_id, name)
 ) STRICT;
 
 CREATE TABLE run_credential (

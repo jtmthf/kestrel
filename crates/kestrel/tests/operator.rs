@@ -1,5 +1,6 @@
 mod support;
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -63,6 +64,19 @@ fn records(lines: &[String]) -> Vec<Value> {
                 .unwrap_or_else(|error| panic!("{line} is not a record: {error}"))
         })
         .collect()
+}
+
+fn generated_name(record: &Value) -> &str {
+    let name = record["name"].as_str().expect("a generated name");
+    let mut words = name.split('-');
+    let adjective = words.next().expect("an adjective");
+    let noun = words.next().expect("a noun");
+    let suffix = words.next().expect("a generated suffix");
+    assert!(!adjective.is_empty(), "a name has an adjective");
+    assert!(!noun.is_empty(), "a name has a noun");
+    assert_eq!(suffix.len(), 8, "a name has an eight-letter suffix");
+    assert!(words.next().is_none(), "a name has no extra words");
+    name
 }
 
 async fn client(harness: &Harness, args: &[&str]) -> client::Finished {
@@ -330,11 +344,13 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         .await,
     );
     let session = opened[0]["id"].as_str().expect("a session id").to_owned();
+    let session_name = generated_name(&opened[0]).to_owned();
 
     let listed = succeeded(&client(&harness, &["session", "list", "--organization", "acme"]).await);
     assert_eq!(listed, opened);
     let shown = succeeded(&client(&harness, &["session", "show", &session]).await);
     assert_eq!(shown, opened);
+    assert_eq!(shown[0]["name"], session_name);
 
     let posted = succeeded(
         &client(
@@ -349,6 +365,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         .await,
     );
     let run = posted[0]["id"].as_str().expect("a run id");
+    let first_run_name = generated_name(&posted[0]).to_owned();
     assert_eq!(posted[0]["session"], session);
     assert_eq!(posted[0]["state"], "queued");
     assert_eq!(
@@ -384,6 +401,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         .await,
     );
     let continuing = continued[0]["id"].as_str().expect("a continuing session");
+    assert_ne!(generated_name(&continued[0]), session_name);
     assert_eq!(continued[0]["continues"], session);
     let enqueued = succeeded(
         &client(
@@ -399,12 +417,42 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         )
         .await,
     );
+    assert_ne!(generated_name(&enqueued[0]), first_run_name);
     assert_eq!(enqueued[0]["session"], continuing);
     assert_eq!(enqueued[0]["model"], "claude-opus-5");
     assert_eq!(
         succeeded(&client(&harness, &["run", "list", "--session", continuing]).await),
         enqueued
     );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn session_and_run_names_remain_unique_when_creation_retries_collisions() {
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            "kestrel",
+            &["https://github.com/jtmthf/kestrel".to_owned()],
+            "main",
+        )
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+
+    let mut session_names = HashSet::new();
+    let mut run_names = HashSet::new();
+    for _ in 0..100 {
+        let session = harness.open_session("acme", "kestrel", "builder").await;
+        assert!(session_names.insert(session.name));
+
+        let run = harness.enqueue_run(session.id).await;
+        assert!(run_names.insert(run.name));
+    }
 
     harness.teardown().await;
 }

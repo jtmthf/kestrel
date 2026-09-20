@@ -15,7 +15,7 @@ use crate::store::{agent, due, organization, profile, timestamp, workspace};
 macro_rules! runs_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, organization_id, session_id, state, exit, exit_because, instance, supervisor,
+            "SELECT id, name, organization_id, session_id, state, exit, exit_because, instance, supervisor,
                     enqueued_at, started_at, ended_at, lease_expires_at, connected_at,
                     supervisor_version, model, worked_model, context_used, context_size, cost_amount,
                     cost_currency
@@ -72,58 +72,67 @@ impl<'a> Sessions<'a> {
     pub async fn open(&mut self, opening: Opening<'_>) -> Result<Session> {
         let opened_at = Timestamp::now();
         let id = SessionId::generate();
-        let session = Session {
-            id,
-            organization: opening.organization.clone(),
-            workspace: opening.workspace.clone(),
-            agent: opening.agent.clone(),
-            profile: opening.profile.cloned(),
-            checkout: Checkout {
-                repositories: opening.workspace.repositories.clone(),
-                base: opening.workspace.branch.clone(),
-                branch: opening
-                    .branch
-                    .map_or_else(|| format!("kestrel/{id}"), ToOwned::to_owned),
-            },
-            correlation: opening.correlation.map(ToOwned::to_owned),
-            state: SessionState::Open,
-            opened_at,
-            last_active_at: opened_at,
-            sealed_at: None,
-            continues: opening.continues.map(|sealed| sealed.id),
-            started_by: opening.started_by.map(|event| event.record_id),
-        };
+        let session = loop {
+            let session = Session {
+                id,
+                name: generated_name(),
+                organization: opening.organization.clone(),
+                workspace: opening.workspace.clone(),
+                agent: opening.agent.clone(),
+                profile: opening.profile.cloned(),
+                checkout: Checkout {
+                    repositories: opening.workspace.repositories.clone(),
+                    base: opening.workspace.branch.clone(),
+                    branch: opening
+                        .branch
+                        .map_or_else(|| format!("kestrel/{id}"), ToOwned::to_owned),
+                },
+                correlation: opening.correlation.map(ToOwned::to_owned),
+                state: SessionState::Open,
+                opened_at,
+                last_active_at: opened_at,
+                sealed_at: None,
+                continues: opening.continues.map(|sealed| sealed.id),
+                started_by: opening.started_by.map(|event| event.record_id),
+            };
 
-        sqlx::query(
-            "INSERT INTO session
-                 (id, organization_id, workspace_id, agent_id, runtime, model,
-                  subscription_profile_id, base, branch, correlation, state, opened_at,
-                  last_active_at, continues, event_record_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(session.id.to_string())
-        .bind(session.organization.id.to_string())
-        .bind(session.workspace.id.to_string())
-        .bind(session.agent.id.to_string())
-        .bind(&session.agent.runtime)
-        .bind(&session.agent.model)
-        .bind(
-            session
-                .profile
-                .as_ref()
-                .map(|profile| profile.id.to_string()),
-        )
-        .bind(&session.checkout.base)
-        .bind(&session.checkout.branch)
-        .bind(&session.correlation)
-        .bind(session.state.as_str())
-        .bind(session.opened_at.to_string())
-        .bind(due(session.last_active_at))
-        .bind(session.continues.map(|sealed| sealed.to_string()))
-        .bind(session.started_by.map(|event| event.to_string()))
-        .execute(&mut *self.connection)
-        .await
-        .context("opening a session")?;
+            let inserted = sqlx::query(
+                "INSERT INTO session
+                     (id, name, organization_id, workspace_id, agent_id, runtime, model,
+                      subscription_profile_id, base, branch, correlation, state, opened_at,
+                      last_active_at, continues, event_record_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (organization_id, name) DO NOTHING",
+            )
+            .bind(session.id.to_string())
+            .bind(&session.name)
+            .bind(session.organization.id.to_string())
+            .bind(session.workspace.id.to_string())
+            .bind(session.agent.id.to_string())
+            .bind(&session.agent.runtime)
+            .bind(&session.agent.model)
+            .bind(
+                session
+                    .profile
+                    .as_ref()
+                    .map(|profile| profile.id.to_string()),
+            )
+            .bind(&session.checkout.base)
+            .bind(&session.checkout.branch)
+            .bind(&session.correlation)
+            .bind(session.state.as_str())
+            .bind(session.opened_at.to_string())
+            .bind(due(session.last_active_at))
+            .bind(session.continues.map(|sealed| sealed.to_string()))
+            .bind(session.started_by.map(|event| event.to_string()))
+            .execute(&mut *self.connection)
+            .await
+            .context("opening a session")?;
+
+            if inserted.rows_affected() == 1 {
+                break session;
+            }
+        };
 
         for (position, url) in session.checkout.repositories.iter().enumerate() {
             sqlx::query(
@@ -302,37 +311,46 @@ impl<'a> Sessions<'a> {
     }
 
     pub async fn enqueue_run(&mut self, session: &Session, model: Option<&str>) -> Result<Run> {
-        let run = Run {
-            id: RunId::generate(),
-            organization: session.organization.id,
-            session: session.id,
-            state: RunState::Queued,
-            exit: None,
-            instance: None,
-            supervisor: None,
-            model: model.map(str::to_owned),
-            worked_model: None,
-            enqueued_at: Timestamp::now(),
-            started_at: None,
-            ended_at: None,
-            lease_expires_at: None,
-            connected: None,
-            usage: None,
-        };
+        let run = loop {
+            let run = Run {
+                id: RunId::generate(),
+                name: generated_name(),
+                organization: session.organization.id,
+                session: session.id,
+                state: RunState::Queued,
+                exit: None,
+                instance: None,
+                supervisor: None,
+                model: model.map(str::to_owned),
+                worked_model: None,
+                enqueued_at: Timestamp::now(),
+                started_at: None,
+                ended_at: None,
+                lease_expires_at: None,
+                connected: None,
+                usage: None,
+            };
 
-        sqlx::query(
-            "INSERT INTO run (id, organization_id, session_id, state, model, enqueued_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(run.id.to_string())
-        .bind(run.organization.to_string())
-        .bind(run.session.to_string())
-        .bind(run.state.as_str())
-        .bind(&run.model)
-        .bind(run.enqueued_at.to_string())
-        .execute(&mut *self.connection)
-        .await
-        .with_context(|| format!("enqueueing a run in the session {}", session.id))?;
+            let inserted = sqlx::query(
+                "INSERT INTO run (id, name, organization_id, session_id, state, model, enqueued_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (organization_id, name) DO NOTHING",
+            )
+            .bind(run.id.to_string())
+            .bind(&run.name)
+            .bind(run.organization.to_string())
+            .bind(run.session.to_string())
+            .bind(run.state.as_str())
+            .bind(&run.model)
+            .bind(run.enqueued_at.to_string())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("enqueueing a run in the session {}", session.id))?;
+
+            if inserted.rows_affected() == 1 {
+                break run;
+            }
+        };
 
         self.record_active(session.id, run.enqueued_at).await?;
 
@@ -1062,7 +1080,7 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
 
 async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option<Session>> {
     let Some(row) = sqlx::query(
-        "SELECT organization_id, workspace_id, agent_id, runtime, model, subscription_profile_id,
+        "SELECT name, organization_id, workspace_id, agent_id, runtime, model, subscription_profile_id,
                 base, branch, correlation, state, opened_at, last_active_at, sealed_at,
                 continues, event_record_id
          FROM session
@@ -1109,6 +1127,7 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
 
     Ok(Some(Session {
         id,
+        name: row.get("name"),
         organization,
         workspace,
         agent,
@@ -1140,6 +1159,7 @@ fn run(row: &SqliteRow) -> Result<Run> {
 
     Ok(Run {
         id: row.get::<String, _>("id").parse()?,
+        name: row.get("name"),
         organization: row.get::<String, _>("organization_id").parse()?,
         session: row.get::<String, _>("session_id").parse()?,
         state: row.get::<String, _>("state").parse()?,
@@ -1163,6 +1183,33 @@ fn run(row: &SqliteRow) -> Result<Run> {
         },
         usage: usage(row),
     })
+}
+
+fn generated_name() -> String {
+    const ADJECTIVES: &[&str] = &[
+        "agile", "amber", "brisk", "bright", "calm", "clever", "coral", "crisp", "daring", "eager",
+        "ember", "fable", "gentle", "golden", "grand", "happy", "hidden", "jolly", "keen", "kind",
+        "lively", "lucky", "merry", "mighty", "nimble", "noble", "plucky", "proud", "quick",
+        "quiet", "rapid", "silver",
+    ];
+    const NOUNS: &[&str] = &[
+        "badger", "beacon", "cedar", "comet", "falcon", "fern", "fox", "harbor", "heron",
+        "juniper", "kite", "lantern", "maple", "meadow", "otter", "owl", "pebble", "pioneer",
+        "raven", "river", "robin", "sailor", "sparrow", "summit", "thistle", "valley", "willow",
+        "wren", "yarrow", "zephyr", "acorn", "brook",
+    ];
+
+    let mut bytes = [0; 10];
+    getrandom::fill(&mut bytes).expect("the operating system should have entropy to spare");
+    let suffix: String = bytes[2..]
+        .iter()
+        .map(|byte| char::from(b'a' + byte % 26))
+        .collect();
+    format!(
+        "{}-{}-{suffix}",
+        ADJECTIVES[usize::from(bytes[0]) % ADJECTIVES.len()],
+        NOUNS[usize::from(bytes[1]) % NOUNS.len()]
+    )
 }
 
 fn kept(row: &SqliteRow) -> Result<Kept> {
