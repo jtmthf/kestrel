@@ -230,6 +230,7 @@ struct AgentRecord {
 #[derive(Serialize)]
 struct SessionRecord {
     id: String,
+    name: String,
     organization: String,
     workspace: String,
     agent: String,
@@ -248,6 +249,7 @@ struct SessionRecord {
 #[derive(Serialize)]
 struct RunRecord {
     id: String,
+    name: String,
     session: String,
     state: String,
     exit: Option<domain::Exit>,
@@ -335,6 +337,7 @@ impl SessionRecord {
 
         Ok(Self {
             id: session.id.to_string(),
+            name: session.name,
             organization: session.organization.name,
             workspace: session.workspace.name,
             agent: session.agent.name,
@@ -356,6 +359,7 @@ impl From<Run> for RunRecord {
     fn from(run: Run) -> Self {
         Self {
             id: run.id.to_string(),
+            name: run.name,
             session: run.session.to_string(),
             state: run.state.as_str().to_owned(),
             exit: run.exit,

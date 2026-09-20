@@ -1484,6 +1484,7 @@
         "type": "object",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "pattern": "^[a-z]+-[a-z]+-[a-z]{8}$" },
           "organization": { "type": "string" },
           "workspace": { "type": "string" },
           "agent": { "type": "string" },
@@ -1498,7 +1499,7 @@
           "started_by": { "type": ["string", "null"], "format": "uuid" },
           "continued_by": { "type": "array", "items": { "type": "string", "format": "uuid" } }
         },
-        "required": ["id", "organization", "workspace", "agent", "profile", "checkout", "correlation", "state", "opened_at", "last_active_at", "sealed_at", "continues", "started_by", "continued_by"]
+        "required": ["id", "name", "organization", "workspace", "agent", "profile", "checkout", "correlation", "state", "opened_at", "last_active_at", "sealed_at", "continues", "started_by", "continued_by"]
       },
       "Checkout": {
         "type": "object",
@@ -1519,6 +1520,7 @@
         "type": "object",
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string", "pattern": "^[a-z]+-[a-z]+-[a-z]{8}$" },
           "session": { "type": "string", "format": "uuid" },
           "state": { "type": "string", "enum": ["queued", "active", "ended", "unreachable"] },
           "exit": { "anyOf": [{ "$ref": "#/components/schemas/Exit" }, { "type": "null" }] },
@@ -1534,7 +1536,7 @@
           "supervisor_version": { "type": ["string", "null"] },
           "usage": { "anyOf": [{ "$ref": "#/components/schemas/Usage" }, { "type": "null" }] }
         },
-        "required": ["id", "session", "state", "exit", "instance", "supervisor", "model", "worked_model", "enqueued_at", "started_at", "ended_at", "lease_expires_at", "connected_at", "supervisor_version", "usage"]
+        "required": ["id", "name", "session", "state", "exit", "instance", "supervisor", "model", "worked_model", "enqueued_at", "started_at", "ended_at", "lease_expires_at", "connected_at", "supervisor_version", "usage"]
       },
       "Exit": {
         "oneOf": [

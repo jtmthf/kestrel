@@ -162,6 +162,7 @@ mod tests {
 
         Session {
             id: SessionId::generate(),
+            name: "bright-falcon".to_owned(),
             workspace: Workspace {
                 id: WorkspaceId::generate(),
                 organization: organization.id,
@@ -196,6 +197,7 @@ mod tests {
     fn a_run(session: &Session) -> Run {
         Run {
             id: RunId::generate(),
+            name: "quiet-river".to_owned(),
             organization: session.organization.id,
             session: session.id,
             state: RunState::Ended,
