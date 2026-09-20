@@ -1,9 +1,11 @@
 mod api;
+mod output;
 mod scope;
 mod sse;
 mod transcript;
+mod view;
 
-use std::io::Read as _;
+use std::io::{IsTerminal as _, Read as _};
 
 use anyhow::{Context as _, Result, bail};
 use clap::builder::NonEmptyStringValueParser;
@@ -13,6 +15,7 @@ use reqwest::Url;
 use serde_json::{Value, json};
 
 use crate::api::ControlPlane;
+use crate::output::{Presentation, show};
 use crate::scope::{Derived, Scope, Scoping, Source};
 
 const BINARY: &str = "kestrel-client";
@@ -52,6 +55,11 @@ struct Client {
         value_parser = NonEmptyStringValueParser::new()
     )]
     organization: Option<String>,
+
+    /// Emit these fields and no others, as JSON, one record a line; without it a terminal
+    /// gets the presentation chosen for the command and anything else gets it tab-delimited
+    #[arg(long, global = true, value_name = "FIELDS")]
+    json: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -459,6 +467,7 @@ async fn main() -> Result<()> {
     };
 
     let api = ControlPlane::at(control_plane.clone());
+    let presentation = Presentation::chosen(client.json.as_deref())?;
 
     let named = client.organization.map(|organization| Scope {
         organization,
@@ -478,13 +487,19 @@ async fn main() -> Result<()> {
 
     match client.command {
         Command::Organization(OrganizationCommand::Declare { name }) => {
-            printed(
+            show(
+                &presentation,
+                &view::DECLARED,
                 &api.post(&["organizations"], &json!({ "name": name }))
                     .await?,
-            );
+            )?;
         }
         Command::Organization(OrganizationCommand::List) => {
-            listed(&api.get(&["organizations"]).await?);
+            show(
+                &presentation,
+                &view::ORGANIZATIONS,
+                &api.get(&["organizations"]).await?,
+            )?;
         }
         Command::Workspace(WorkspaceCommand::Declare {
             name,
@@ -497,20 +512,24 @@ async fn main() -> Result<()> {
                 "repositories": repositories,
                 "branch": branch,
             });
-            printed(
+            show(
+                &presentation,
+                &view::DECLARED,
                 &api.post(
                     &["organizations", &organization, "workspaces"],
                     &declaration,
                 )
                 .await?,
-            );
+            )?;
         }
         Command::Workspace(WorkspaceCommand::List) => {
             let organization = scoping.resolve().await?.organization;
-            listed(
+            show(
+                &presentation,
+                &view::WORKSPACES,
                 &api.get(&["organizations", &organization, "workspaces"])
                     .await?,
-            );
+            )?;
         }
         Command::Agent(AgentCommand::Declare {
             name,
@@ -523,32 +542,42 @@ async fn main() -> Result<()> {
                 "runtime": runtime,
                 "model": model,
             });
-            printed(
+            show(
+                &presentation,
+                &view::DECLARED,
                 &api.post(&["organizations", &organization, "agents"], &declaration)
                     .await?,
-            );
+            )?;
         }
         Command::Agent(AgentCommand::List) => {
             let organization = scoping.resolve().await?.organization;
-            listed(&api.get(&["organizations", &organization, "agents"]).await?);
+            show(
+                &presentation,
+                &view::AGENTS,
+                &api.get(&["organizations", &organization, "agents"]).await?,
+            )?;
         }
         Command::Credential(CredentialCommand::Set { variable }) => {
             let organization = scoping.resolve().await?.organization;
             let secret = json!({ "secret": read_the_secret()? });
-            printed(
+            show(
+                &presentation,
+                &view::CREDENTIAL,
                 &api.put(
                     &["organizations", &organization, "credentials", &variable],
                     &secret,
                 )
                 .await?,
-            );
+            )?;
         }
         Command::Credential(CredentialCommand::List) => {
             let organization = scoping.resolve().await?.organization;
-            listed(
+            show(
+                &presentation,
+                &view::CREDENTIALS,
                 &api.get(&["organizations", &organization, "credentials"])
                     .await?,
-            );
+            )?;
         }
         Command::Credential(CredentialCommand::Forget { variable }) => {
             let organization = scoping.resolve().await?.organization;
@@ -557,25 +586,33 @@ async fn main() -> Result<()> {
         }
         Command::Profile(ProfileCommand::Declare { name, owner }) => {
             let organization = scoping.resolve().await?.organization;
-            printed(
+            show(
+                &presentation,
+                &view::DECLARED,
                 &api.post(
                     &["organizations", &organization, "profiles"],
                     &json!({ "name": name, "owner": owner }),
                 )
                 .await?,
-            );
+            )?;
         }
         Command::Profile(ProfileCommand::Set { name, entry }) => {
             let organization = scoping.resolve().await?.organization;
             let login = json!({ "secret": read_the_login(entry.file.is_some())? });
-            printed(&api.put(&entry.path(&organization, &name), &login).await?);
+            show(
+                &presentation,
+                &view::LOGIN,
+                &api.put(&entry.path(&organization, &name), &login).await?,
+            )?;
         }
         Command::Profile(ProfileCommand::List) => {
             let organization = scoping.resolve().await?.organization;
-            listed(
+            show(
+                &presentation,
+                &view::PROFILES,
                 &api.get(&["organizations", &organization, "profiles"])
                     .await?,
-            );
+            )?;
         }
         Command::Profile(ProfileCommand::Forget { name, entry }) => {
             let organization = scoping.resolve().await?.organization;
@@ -606,20 +643,24 @@ async fn main() -> Result<()> {
                     json!({ "kind": "webhook", "name": name, "secret": secret })
                 }
             };
-            printed(
+            show(
+                &presentation,
+                &view::DECLARED,
                 &api.post(
                     &["organizations", &organization, "integrations"],
                     &registration,
                 )
                 .await?,
-            );
+            )?;
         }
         Command::Integration(IntegrationCommand::List) => {
             let organization = scoping.resolve().await?.organization;
-            listed(
+            show(
+                &presentation,
+                &view::INTEGRATIONS,
                 &api.get(&["organizations", &organization, "integrations"])
                     .await?,
-            );
+            )?;
         }
         Command::Integration(IntegrationCommand::AcknowledgeRefusal { name }) => {
             let organization = scoping.resolve().await?.organization;
@@ -634,16 +675,22 @@ async fn main() -> Result<()> {
         }
         Command::Event(EventCommand::List { limit }) => {
             let organization = scoping.resolve().await?.organization;
-            listed(
+            show(
+                &presentation,
+                &view::EVENTS,
                 &api.get_where(
                     &["organizations", &organization, "events"],
                     &[("limit", &limit.to_string())],
                 )
                 .await?,
-            );
+            )?;
         }
         Command::Event(EventCommand::Show { record }) => {
-            printed(&api.get(&["events", &record]).await?);
+            show(
+                &presentation,
+                &view::EVENT,
+                &api.get(&["events", &record]).await?,
+            )?;
         }
         Command::Trigger(TriggerCommand::Declare {
             name,
@@ -684,24 +731,30 @@ async fn main() -> Result<()> {
             if let Some(every) = every {
                 declaration.insert("every".to_owned(), Value::String(every));
             }
-            printed(
+            show(
+                &presentation,
+                &view::DECLARED,
                 &api.post(&["organizations", &organization, "triggers"], &declaration)
                     .await?,
-            );
+            )?;
         }
         Command::Trigger(TriggerCommand::List) => {
             let organization = scoping.resolve().await?.organization;
-            listed(
+            show(
+                &presentation,
+                &view::TRIGGERS,
                 &api.get(&["organizations", &organization, "triggers"])
                     .await?,
-            );
+            )?;
         }
         Command::Trigger(TriggerCommand::Show { name }) => {
             let organization = scoping.resolve().await?.organization;
-            printed(
+            show(
+                &presentation,
+                &view::TRIGGER,
                 &api.get(&["organizations", &organization, "triggers", &name])
                     .await?,
-            );
+            )?;
         }
         Command::Trigger(TriggerCommand::Test {
             name,
@@ -709,33 +762,39 @@ async fn main() -> Result<()> {
             instruction,
         }) => {
             let organization = scoping.resolve().await?.organization;
-            printed(
+            show(
+                &presentation,
+                &view::TRIGGER_TEST,
                 &api.post(
                     &["organizations", &organization, "triggers", &name, "test"],
                     &json!({ "event": event, "instruction": instruction }),
                 )
                 .await?,
-            );
+            )?;
         }
         Command::Trigger(TriggerCommand::Disable { name }) => {
             let organization = scoping.resolve().await?.organization;
-            printed(
+            show(
+                &presentation,
+                &view::TRIGGER_STATE,
                 &api.post(
                     &["organizations", &organization, "triggers", &name, "disable"],
                     &json!({}),
                 )
                 .await?,
-            );
+            )?;
         }
         Command::Trigger(TriggerCommand::Enable { name }) => {
             let organization = scoping.resolve().await?.organization;
-            printed(
+            show(
+                &presentation,
+                &view::TRIGGER_STATE,
                 &api.post(
                     &["organizations", &organization, "triggers", &name, "enable"],
                     &json!({}),
                 )
                 .await?,
-            );
+            )?;
         }
         Command::Session(SessionCommand::Open {
             workspace,
@@ -745,7 +804,9 @@ async fn main() -> Result<()> {
             continues,
         }) => {
             let organization = scoping.resolve().await?.organization;
-            printed(
+            show(
+                &presentation,
+                &view::DECLARED,
                 &api.post(
                     &["organizations", &organization, "sessions"],
                     &json!({
@@ -757,70 +818,93 @@ async fn main() -> Result<()> {
                     }),
                 )
                 .await?,
-            );
+            )?;
         }
         Command::Session(SessionCommand::List) => {
             let organization = scoping.resolve().await?.organization;
-            listed(
+            show(
+                &presentation,
+                &view::SESSIONS,
                 &api.get(&["organizations", &organization, "sessions"])
                     .await?,
-            );
+            )?;
         }
         Command::Session(SessionCommand::Show { session }) => {
-            printed(&api.get(&["sessions", &session]).await?);
+            show(
+                &presentation,
+                &view::SESSION,
+                &api.get(&["sessions", &session]).await?,
+            )?;
         }
         Command::Session(SessionCommand::Post {
             session,
             as_participant,
             message,
         }) => {
-            printed(
-                &api.post(
+            let answer = api
+                .post(
                     &["sessions", &session, "messages"],
                     &json!({ "participant": as_participant, "message": message }),
                 )
-                .await?,
-            );
+                .await?;
+            if answer.is_null() {
+                eprintln!("queued as the next turn of the run already in flight");
+            }
+            show(&presentation, &view::DECLARED, &answer)?;
         }
         Command::Session(SessionCommand::Seal { session }) => {
-            printed(
+            show(
+                &presentation,
+                &view::DECLARED,
                 &api.post(&["sessions", &session, "seal"], &json!({}))
                     .await?,
-            );
+            )?;
         }
         Command::Session(SessionCommand::Transcript {
             session,
             cursor,
             follow,
         }) => {
-            let read = transcript::read(&control_plane, &session, cursor, follow).await?;
+            let read =
+                transcript::read(&control_plane, &session, cursor, follow, &presentation).await?;
             // Beside the Transcript rather than in it, so stdout carries entries and nothing else.
             if let Some(cursor) = read {
                 eprintln!("cursor  {cursor}");
             }
         }
         Command::Run(RunCommand::Enqueue { session, model }) => {
-            printed(
+            show(
+                &presentation,
+                &view::DECLARED,
                 &api.post(&["sessions", &session, "runs"], &json!({ "model": model }))
                     .await?,
-            );
+            )?;
         }
         Command::Run(RunCommand::List { session }) => {
-            listed(&api.get(&["sessions", &session, "runs"]).await?);
+            show(
+                &presentation,
+                &view::RUNS,
+                &api.get(&["sessions", &session, "runs"]).await?,
+            )?;
         }
         Command::Status => {
             let location = json!({
                 "control_plane": client.control_plane,
                 "control_plane_source": control_plane_source,
             });
-            status(&api, location, scoping.derive().await?).await?;
+            status(&api, &presentation, location, scoping.derive().await?).await?;
         }
     }
 
     Ok(())
 }
 
-async fn status(api: &ControlPlane, location: Value, derived: Derived) -> Result<()> {
+async fn status(
+    api: &ControlPlane,
+    presentation: &Presentation,
+    location: Value,
+    derived: Derived,
+) -> Result<()> {
     let scope = match derived {
         Derived::Scope(scope) => scope,
         Derived::Unnamed { existing } => {
@@ -829,15 +913,19 @@ async fn status(api: &ControlPlane, location: Value, derived: Derived) -> Result
             } else {
                 format!("{BINARY} status --organization <name>")
             };
-            printed(&merged(
-                location,
-                json!({
-                    "organization": null,
-                    "organization_source": null,
-                    "organizations": existing,
-                    "next": next,
-                }),
-            ));
+            show(
+                presentation,
+                &view::UNRESOLVED,
+                &merged(
+                    location,
+                    json!({
+                        "organization": null,
+                        "organization_source": null,
+                        "organizations": existing,
+                        "next": next,
+                    }),
+                ),
+            )?;
             return Ok(());
         }
     };
@@ -856,21 +944,25 @@ async fn status(api: &ControlPlane, location: Value, derived: Derived) -> Result
     let workspace_names = names(&workspaces);
     let agent_names = names(&agents);
 
-    printed(&merged(
-        location,
-        json!({
-            "organization": organization,
-            "organization_source": scope.source.to_string(),
-            "workspaces": count(&workspaces),
-            "agents": count(&agents),
-            "triggers": count(&triggers),
-            "sessions": count(&sessions),
-            "integrations": count(&integrations),
-            "credentials": count(&credentials),
-            "profiles": count(&profiles),
-            "next": next_command(&workspace_names, &agent_names),
-        }),
-    ));
+    show(
+        presentation,
+        &view::STATUS,
+        &merged(
+            location,
+            json!({
+                "organization": organization,
+                "organization_source": scope.source.to_string(),
+                "workspaces": count(&workspaces),
+                "agents": count(&agents),
+                "triggers": count(&triggers),
+                "sessions": count(&sessions),
+                "integrations": count(&integrations),
+                "credentials": count(&credentials),
+                "profiles": count(&profiles),
+                "next": next_command(&workspace_names, &agent_names),
+            }),
+        ),
+    )?;
 
     Ok(())
 }
@@ -907,20 +999,9 @@ fn next_command(workspaces: &[String], agents: &[String]) -> String {
     }
 }
 
-fn printed(record: &Value) {
-    println!("{record}");
-}
-
-fn listed(records: &Value) {
-    for record in records.as_array().into_iter().flatten() {
-        printed(record);
-    }
-}
-
 /// A file is held exactly as it was read, because it is written back exactly as it was held.
 fn read_the_login(file: bool) -> Result<String> {
-    let mut read = String::new();
-    std::io::stdin().read_to_string(&mut read)?;
+    let read = read_standard_input("a login")?;
 
     if read.trim().is_empty() {
         bail!("a login is read from standard input, and nothing was on it");
@@ -932,13 +1013,27 @@ fn read_the_login(file: bool) -> Result<String> {
 /// Off standard input rather than out of an argument, so a provider's key is never in a shell
 /// history or in what `ps` shows of this process.
 fn read_the_secret() -> Result<String> {
-    let mut read = String::new();
-    std::io::stdin().read_to_string(&mut read)?;
-    let secret = read.trim();
+    let secret = read_standard_input("a provider credential")?
+        .trim()
+        .to_owned();
 
     if secret.is_empty() {
         bail!("a provider credential is read from standard input, and nothing was on it");
     }
 
-    Ok(secret.to_owned())
+    Ok(secret)
+}
+
+/// The asking happens only where someone is there to read it: a pipe is read in silence, so
+/// nothing driving the Client can block on a prompt it cannot see.
+fn read_standard_input(what: &str) -> Result<String> {
+    let mut stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        eprintln!("reading {what} from standard input; end it with ctrl-d");
+    }
+
+    let mut read = String::new();
+    stdin.read_to_string(&mut read)?;
+
+    Ok(read)
 }

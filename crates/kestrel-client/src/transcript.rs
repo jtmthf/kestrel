@@ -4,8 +4,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow, bail};
 use reqwest::{Client, Url, header};
 use serde::Deserialize;
+use serde_json::Value;
 
+use crate::output::Presentation;
 use crate::sse::Events;
+use crate::view;
 
 /// How long a stream may stay unreachable before the read gives up on it.
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -35,6 +38,7 @@ pub async fn read(
     session: &str,
     from: Option<String>,
     follow: bool,
+    presentation: &Presentation,
 ) -> Result<Option<String>> {
     let client = Client::new();
     let url = transcript(control_plane, session, follow)?;
@@ -42,7 +46,7 @@ pub async fn read(
     let mut heard = Instant::now();
 
     loop {
-        match streamed(&client, &url, &mut cursor, &mut heard).await {
+        match streamed(&client, &url, &mut cursor, &mut heard, presentation).await {
             Ok(()) => return Ok(cursor),
             Err(Cut::Refused(why)) => bail!("the control plane refused the read: {why}"),
             Err(Cut::Failed(error)) => return Err(error),
@@ -59,6 +63,7 @@ async fn streamed(
     url: &Url,
     cursor: &mut Option<String>,
     heard: &mut Instant,
+    presentation: &Presentation,
 ) -> Result<(), Cut> {
     let mut request = client
         .get(url.clone())
@@ -87,7 +92,8 @@ async fn streamed(
         *heard = Instant::now();
         match event.name.as_deref() {
             Some("entry") => {
-                writeln!(stdout, "{}", event.data)
+                let entry = presented(&event.data, presentation).map_err(Cut::Failed)?;
+                writeln!(stdout, "{entry}")
                     .and_then(|()| stdout.flush())
                     .map_err(|error| {
                         Cut::Failed(anyhow!(error).context("writing the transcript"))
@@ -100,6 +106,12 @@ async fn streamed(
     }
 
     Err(Cut::Lost(anyhow!("the stream closed before it ended")))
+}
+
+fn presented(data: &str, presentation: &Presentation) -> Result<String> {
+    let entry: Value = serde_json::from_str(data).context("reading a transcript entry")?;
+
+    crate::output::line(presentation, &view::ENTRIES, &entry)
 }
 
 fn transcript(control_plane: &Url, session: &str, follow: bool) -> Result<Url> {

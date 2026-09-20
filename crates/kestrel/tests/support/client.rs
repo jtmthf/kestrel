@@ -1,11 +1,13 @@
 //! `kestrel-client` as an operator runs it: its own process, handed a control-plane URL and
 //! nothing else, in a home and a working directory holding no database.
 
+use std::fs::File;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::os::fd::FromRawFd as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -237,4 +239,107 @@ pub async fn ran_by(harness: &Harness, args: &[&str], invocation: Invocation) ->
     })
     .await
     .expect("the client should run")
+}
+
+/// What a Client shows someone watching: stdout and stderr as a terminal interleaves them,
+/// on a terminal exactly this many columns wide.
+pub struct Shown {
+    pub status: ExitStatus,
+    pub said: String,
+}
+
+impl Shown {
+    pub fn lines(&self) -> Vec<&str> {
+        self.said.lines().collect()
+    }
+}
+
+/// A pty rather than a pipe, because what the Client decides is exactly what it finds there.
+pub fn ran_on_a_terminal(control_plane: &str, args: &[&str], columns: u16, typed: &str) -> Shown {
+    let home = TempDir::new().expect("a temporary home");
+    let (controller, device) = a_terminal(columns);
+    let mut child = {
+        let mut command = Command::new(binary());
+        command
+            .args(args)
+            .current_dir(home.path())
+            .env_clear()
+            .env("HOME", home.path())
+            .env("KESTREL_CONTROL_PLANE", control_plane)
+            .stdin(Stdio::from(
+                device.try_clone().expect("the device should clone"),
+            ))
+            .stdout(Stdio::from(
+                device.try_clone().expect("the device should clone"),
+            ))
+            .stderr(Stdio::from(device));
+        command.spawn().expect("the client should spawn")
+    };
+
+    let mut typing = controller.try_clone().expect("the controller should clone");
+    typing
+        .write_all(typed.as_bytes())
+        .expect("the typing should reach the client");
+    let said = thread::spawn(move || read_until_hangup(controller));
+    let status = child.wait().expect("the client should be waited on");
+
+    Shown {
+        status,
+        said: said
+            .join()
+            .expect("the terminal should drain")
+            .replace('\r', ""),
+    }
+}
+
+fn a_terminal(columns: u16) -> (File, File) {
+    // `ptsname` answers one buffer for the whole process, so two tests opening a terminal at
+    // once would otherwise be handed the same device name.
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    let _in_turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+
+    #[allow(unsafe_code)]
+    let (controller, device) = unsafe {
+        let controller = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        assert!(controller >= 0, "a pseudo-terminal would not open");
+        assert_eq!(libc::grantpt(controller), 0, "the device would not grant");
+        assert_eq!(libc::unlockpt(controller), 0, "the device would not unlock");
+
+        let name = libc::ptsname(controller);
+        assert!(!name.is_null(), "the device has no name");
+        let device = libc::open(name, libc::O_RDWR | libc::O_NOCTTY);
+        assert!(device >= 0, "the device would not open");
+
+        let size = libc::winsize {
+            ws_row: 24,
+            ws_col: columns,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(
+            libc::ioctl(controller, libc::TIOCSWINSZ as _, &raw const size),
+            0,
+            "the terminal would not take a width"
+        );
+
+        (File::from_raw_fd(controller), File::from_raw_fd(device))
+    };
+
+    (controller, device)
+}
+
+/// The last device closing reads as an error on Linux and as an end on macOS, and both of
+/// them are the Client having exited.
+fn read_until_hangup(mut controller: File) -> String {
+    let mut said = Vec::new();
+    let mut buffer = [0; 4096];
+
+    loop {
+        match controller.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => said.extend_from_slice(&buffer[..read]),
+        }
+    }
+
+    String::from_utf8_lossy(&said).into_owned()
 }
