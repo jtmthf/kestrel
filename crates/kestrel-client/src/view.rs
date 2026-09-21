@@ -119,6 +119,25 @@ pub const RUNS: View = View::Rows(&[
     "instance",
     "worked_model",
 ]);
+pub const RUN: View = View::Detail(&[
+    "id",
+    "name",
+    "session",
+    "state",
+    "exit.status",
+    "exit.because",
+    "instance",
+    "supervisor",
+    "model",
+    "worked_model",
+    "enqueued_at",
+    "started_at",
+    "ended_at",
+    "lease_expires_at",
+    "connected_at",
+    "supervisor_version",
+    "usage",
+]);
 pub const STATUS: View = View::Detail(&[
     "control_plane",
     "control_plane_source",

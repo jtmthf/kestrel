@@ -151,6 +151,13 @@ pub async fn run(store: &Store, id: RunId) -> Result<Run> {
     store.begin().await?.sessions().run(id).await
 }
 
+pub async fn resolve_run(store: &Store, organization: &str, reference: &str) -> Result<Run> {
+    let mut tx = store.begin().await?;
+    let organization = tx.organizations().named(organization).await?;
+
+    tx.sessions().resolved_run(&organization, reference).await
+}
+
 pub async fn runs(store: &Store, session: SessionId) -> Result<Vec<Run>> {
     let mut tx = store.begin().await?;
     let session = tx.sessions().get(session).await?;

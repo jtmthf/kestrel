@@ -875,6 +875,7 @@ impl Harness {
         agent: &str,
         continues: Option<SessionId>,
     ) -> anyhow::Result<Session> {
+        let continues = continues.map(|sealed| sealed.to_string());
         session::open(
             &self.store,
             organization,
@@ -882,7 +883,7 @@ impl Harness {
             agent,
             None,
             None,
-            continues,
+            continues.as_deref(),
         )
         .await
     }

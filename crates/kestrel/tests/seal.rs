@@ -377,8 +377,10 @@ async fn a_sealed_session_in_another_organization_is_not_continued() {
         .expect_err("a session in another organization is not continued");
 
     assert!(
-        refusal.to_string().contains("acme"),
-        "the refusal does not name the organization the sealed session belongs to: {refusal}"
+        refusal
+            .to_string()
+            .contains("no session in the organization globex matches"),
+        "the refusal is not scoped to the organization the invocation named: {refusal}"
     );
 
     harness.teardown().await;

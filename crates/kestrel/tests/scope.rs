@@ -351,12 +351,6 @@ async fn status_explains_an_unresolved_scope_instead_of_failing() {
 async fn a_command_naming_its_record_needs_no_scope() {
     let harness = two_organizations().await;
 
-    let shown = ran_by(
-        &harness,
-        &["session", "show", "01a0a2d8-baf8-7c02-99fa-7280f174c14a"],
-        Invocation::default(),
-    )
-    .await;
     let event = ran_by(
         &harness,
         &["event", "show", "yesterday"],
@@ -364,8 +358,24 @@ async fn a_command_naming_its_record_needs_no_scope() {
     )
     .await;
 
-    refused(&shown, &["no session"]);
     refused(&event, &["no event yesterday"]);
+    harness.teardown().await;
+}
+
+/// A Session reference is resolved inside the scope the invocation named, so it cannot be
+/// reached without one, unlike an Event's record which stands alone.
+#[tokio::test]
+async fn a_session_reference_refuses_to_guess_between_two_organizations() {
+    let harness = two_organizations().await;
+
+    let shown = ran_by(
+        &harness,
+        &["session", "show", "01a0a2d8-baf8-7c02-99fa-7280f174c14a"],
+        Invocation::default(),
+    )
+    .await;
+
+    refused(&shown, &["--organization", "acme", "globex"]);
     harness.teardown().await;
 }
 
@@ -375,25 +385,19 @@ async fn a_command_naming_its_record_refuses_a_flag_it_would_ignore() {
 
     let flagged = ran_by(
         &harness,
-        &[
-            "session",
-            "seal",
-            "01a0a2d8-baf8-7c02-99fa-7280f174c14a",
-            "--organization",
-            "globex",
-        ],
+        &["event", "show", "yesterday", "--organization", "globex"],
         Invocation::default(),
     )
     .await;
     let exported = ran_by(
         &harness,
-        &["session", "show", "01a0a2d8-baf8-7c02-99fa-7280f174c14a"],
+        &["event", "show", "yesterday"],
         Invocation::default().env("KESTREL_ORGANIZATION", "globex"),
     )
     .await;
 
     refused(&flagged, &["--organization scopes nothing"]);
-    refused(&exported, &["no session"]);
+    refused(&exported, &["no event yesterday"]);
     harness.teardown().await;
 }
 

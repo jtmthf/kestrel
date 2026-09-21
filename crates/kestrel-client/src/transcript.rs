@@ -35,13 +35,14 @@ impl From<reqwest::Error> for Cut {
 /// printed whenever it is cut off. Returns the cursor the read ended at.
 pub async fn read(
     control_plane: &Url,
+    organization: &str,
     session: &str,
     from: Option<String>,
     follow: bool,
     presentation: &Presentation,
 ) -> Result<Option<String>> {
     let client = Client::new();
-    let url = transcript(control_plane, session, follow)?;
+    let url = transcript(control_plane, organization, session, follow)?;
     let mut cursor = from;
     let mut heard = Instant::now();
 
@@ -114,13 +115,20 @@ fn presented(data: &str, presentation: &Presentation) -> Result<String> {
     crate::output::line(presentation, &view::ENTRIES, &entry)
 }
 
-fn transcript(control_plane: &Url, session: &str, follow: bool) -> Result<Url> {
+fn transcript(control_plane: &Url, organization: &str, session: &str, follow: bool) -> Result<Url> {
     let mut url = control_plane.clone();
     url.path_segments_mut()
         .map_err(|()| anyhow!("{control_plane} cannot be a base for a path"))
         .context("addressing the transcript")?
         .pop_if_empty()
-        .extend(["operator", "sessions", session, "transcript"]);
+        .extend([
+            "operator",
+            "organizations",
+            organization,
+            "sessions",
+            session,
+            "transcript",
+        ]);
     url.query_pairs_mut()
         .append_pair("follow", if follow { "true" } else { "false" });
 

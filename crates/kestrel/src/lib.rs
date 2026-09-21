@@ -15,6 +15,7 @@ pub mod log;
 pub mod operator;
 pub mod profile;
 pub mod provider;
+pub mod reference;
 pub mod role;
 pub mod session;
 pub mod shutdown;

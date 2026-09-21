@@ -1011,33 +1011,32 @@
         }
       }
     },
-    "/operator/sessions/{session}": {
+    "/operator/organizations/{organization}/sessions/{session}": {
       "get": {
         "operationId": "showSession",
         "summary": "Show a Session.",
-        "parameters": [{
-          "name": "session",
-          "in": "path",
-          "required": true,
-          "schema": { "type": "string", "format": "uuid" }
-        }],
+        "description": "A Session is named by its generated name, its identifier, any unambiguous prefix of its identifier, or `latest` for the most recent in the Organization.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "session", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
         "responses": {
           "200": { "description": "The Session.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Session" } } } },
           "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
           "503": { "$ref": "#/components/responses/Refused" }
         }
       }
     },
-    "/operator/sessions/{session}/messages": {
+    "/operator/organizations/{organization}/sessions/{session}/messages": {
       "post": {
         "operationId": "postToSession",
         "summary": "Post to a Session.",
-        "parameters": [{
-          "name": "session",
-          "in": "path",
-          "required": true,
-          "schema": { "type": "string", "format": "uuid" }
-        }],
+        "description": "A Session is named by its generated name, its identifier, any unambiguous prefix of its identifier, or `latest` for the most recent in the Organization.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "session", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SessionMessage" } } } },
         "responses": {
           "200": { "description": "The Run the message started or continued, or null when it was queued behind an active turn.", "content": { "application/json": { "schema": { "anyOf": [{ "$ref": "#/components/schemas/Run" }, { "type": "null" }] } } } },
@@ -1048,55 +1047,71 @@
         }
       }
     },
-    "/operator/sessions/{session}/seal": {
+    "/operator/organizations/{organization}/sessions/{session}/seal": {
       "post": {
         "operationId": "sealSession",
         "summary": "Seal a Session.",
-        "parameters": [{
-          "name": "session",
-          "in": "path",
-          "required": true,
-          "schema": { "type": "string", "format": "uuid" }
-        }],
+        "description": "A Session is named by its generated name, its identifier, any unambiguous prefix of its identifier, or `latest` for the most recent in the Organization.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "session", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
         "responses": {
           "200": { "description": "The sealed Session.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Session" } } } },
           "404": { "$ref": "#/components/responses/Refused" },
           "409": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
           "503": { "$ref": "#/components/responses/Refused" }
         }
       }
     },
-    "/operator/sessions/{session}/runs": {
+    "/operator/organizations/{organization}/sessions/{session}/runs": {
       "get": {
         "operationId": "listRuns",
         "summary": "List a Session's Runs.",
-        "parameters": [{
-          "name": "session",
-          "in": "path",
-          "required": true,
-          "schema": { "type": "string", "format": "uuid" }
-        }],
+        "description": "A Session is named by its generated name, its identifier, any unambiguous prefix of its identifier, or `latest` for the most recent in the Organization.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "session", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
         "responses": {
           "200": { "description": "Every Run, ordered by when it was enqueued.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Run" } } } } },
           "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
           "503": { "$ref": "#/components/responses/Refused" }
         }
       },
       "post": {
         "operationId": "enqueueRun",
         "summary": "Enqueue a Run in a Session.",
-        "parameters": [{
-          "name": "session",
-          "in": "path",
-          "required": true,
-          "schema": { "type": "string", "format": "uuid" }
-        }],
+        "description": "A Session is named by its generated name, its identifier, any unambiguous prefix of its identifier, or `latest` for the most recent in the Organization.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "session", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RunDeclaration" } } } },
         "responses": {
           "201": { "description": "The queued Run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Run" } } } },
           "400": { "$ref": "#/components/responses/Refused" },
           "404": { "$ref": "#/components/responses/Refused" },
           "409": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/runs/{run}": {
+      "get": {
+        "operationId": "showRun",
+        "summary": "Show a Run.",
+        "description": "A Run is named by its generated name, its identifier, any unambiguous prefix of its identifier, or `latest` for the most recent in the Organization.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "run", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "The Run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Run" } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
           "422": { "$ref": "#/components/responses/Refused" },
           "503": { "$ref": "#/components/responses/Refused" }
         }
@@ -1192,20 +1207,27 @@
         }
       }
     },
-    "/operator/sessions/{session}/transcript": {
+    "/operator/organizations/{organization}/sessions/{session}/transcript": {
       "get": {
         "operationId": "transcript",
         "summary": "Stream a Session's Transcript.",
         "description": "Replays every entry after `Last-Event-ID`, in order, each as an `entry` event whose id is the cursor that resumes after it. A read that follows then stays open and delivers entries as they are appended; the stream ends with an `end` event once the Session is sealed, or at once for a read that does not follow. A cursor that names no position in this Transcript is refused rather than silently restarting the walk.",
         "parameters": [
           {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "session",
             "in": "path",
             "required": true,
-            "description": "The Session whose Transcript is read.",
+            "description": "The Session whose Transcript is read, by its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`.",
             "schema": {
-              "type": "string",
-              "format": "uuid"
+              "type": "string"
             }
           },
           {
@@ -1243,6 +1265,9 @@
             "$ref": "#/components/responses/Refused"
           },
           "404": {
+            "$ref": "#/components/responses/Refused"
+          },
+          "422": {
             "$ref": "#/components/responses/Refused"
           },
           "503": {
@@ -1468,7 +1493,10 @@
           "agent": { "type": "string", "minLength": 1 },
           "profile": { "type": ["string", "null"] },
           "branch": { "type": ["string", "null"] },
-          "continues": { "type": ["string", "null"], "format": "uuid" }
+          "continues": {
+            "type": ["string", "null"],
+            "description": "The sealed Session this one carries on from, by its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`."
+          }
         },
         "required": ["workspace", "agent"]
       },

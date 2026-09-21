@@ -1,6 +1,6 @@
 mod support;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -77,6 +77,17 @@ fn generated_name(record: &Value) -> &str {
     assert_eq!(suffix.len(), 8, "a name has an eight-letter suffix");
     assert!(words.next().is_none(), "a name has no extra words");
     name
+}
+
+/// The shortest prefix of `id` that names no other identifier, so an unambiguous reference
+/// is unambiguous whatever the generated identifiers turn out to be.
+fn shortest_prefix_of(id: &str, others: &[&str]) -> String {
+    let mut length = 1;
+    while others.iter().any(|other| other.starts_with(&id[..length])) {
+        length += 1;
+    }
+
+    id[..length].to_owned()
 }
 
 async fn client(harness: &Harness, args: &[&str]) -> client::Finished {
@@ -213,6 +224,42 @@ fn trigger_at(organization: &str, trigger: &str) -> String {
     operator::TRIGGER
         .replace("{organization}", organization)
         .replace("{trigger}", trigger)
+}
+
+fn session_at(organization: &str, session: &str) -> String {
+    operator::SESSION
+        .replace("{organization}", organization)
+        .replace("{session}", session)
+}
+
+fn session_messages_at(organization: &str, session: &str) -> String {
+    operator::SESSION_MESSAGES
+        .replace("{organization}", organization)
+        .replace("{session}", session)
+}
+
+fn session_seal_at(organization: &str, session: &str) -> String {
+    operator::SESSION_SEAL
+        .replace("{organization}", organization)
+        .replace("{session}", session)
+}
+
+fn runs_of(organization: &str, session: &str) -> String {
+    operator::RUNS
+        .replace("{organization}", organization)
+        .replace("{session}", session)
+}
+
+fn run_at(organization: &str, run: &str) -> String {
+    operator::RUN
+        .replace("{organization}", organization)
+        .replace("{run}", run)
+}
+
+fn transcript_of(organization: &str, session: &str) -> String {
+    operator::TRANSCRIPT
+        .replace("{organization}", organization)
+        .replace("{session}", session)
 }
 
 fn failed(finished: &client::Finished) -> &str {
@@ -505,6 +552,216 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         ),
         enqueued
     );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_client_names_a_session_by_name_identifier_prefix_and_latest() {
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            "kestrel",
+            &["https://github.com/jtmthf/kestrel".to_owned()],
+            "main",
+        )
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+
+    let first = harness.open_session("acme", "kestrel", "builder").await;
+    let second = harness.open_session("acme", "kestrel", "builder").await;
+    let (first_id, second_id) = (first.id.to_string(), second.id.to_string());
+
+    let by_name = recorded(
+        &client(
+            &harness,
+            &["session", "show", &second.name, "--json", SESSION],
+        )
+        .await,
+    );
+    assert_eq!(by_name[0]["id"], second_id);
+
+    let by_id =
+        recorded(&client(&harness, &["session", "show", &first_id, "--json", SESSION]).await);
+    assert_eq!(by_id[0]["name"], first.name);
+
+    let prefix = shortest_prefix_of(&first_id, &[&second_id]);
+    assert!(
+        prefix.len() < first_id.len(),
+        "two sessions opened into the one identifier"
+    );
+    let by_prefix =
+        recorded(&client(&harness, &["session", "show", &prefix, "--json", SESSION]).await);
+    assert_eq!(by_prefix[0]["id"], first_id);
+
+    let latest =
+        recorded(&client(&harness, &["session", "show", "latest", "--json", SESSION]).await);
+    assert_eq!(latest[0]["id"], second_id);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_session_reference_matching_several_is_refused_naming_them() {
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            "kestrel",
+            &["https://github.com/jtmthf/kestrel".to_owned()],
+            "main",
+        )
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+    for _ in 0..17 {
+        harness.open_session("acme", "kestrel", "builder").await;
+    }
+
+    let listed = recorded(&client(&harness, &["session", "list", "--json", "id,name"]).await);
+    let mut by_leading: HashMap<char, Vec<(String, String)>> = HashMap::new();
+    for record in &listed {
+        let id = record["id"].as_str().expect("an identifier").to_owned();
+        let name = record["name"]
+            .as_str()
+            .expect("a generated name")
+            .to_owned();
+        by_leading
+            .entry(id.chars().next().expect("an identifier"))
+            .or_default()
+            .push((id, name));
+    }
+    let (leading, matching) = by_leading
+        .into_iter()
+        .find(|(_, matching)| matching.len() > 1)
+        .expect("seventeen identifiers over sixteen leading digits share one");
+
+    let refused = client(&harness, &["session", "show", &leading.to_string()]).await;
+    let said = failed(&refused);
+
+    assert!(said.contains("ambiguous"), "{said}");
+    for (id, name) in &matching {
+        assert!(said.contains(name), "{said} does not name {name}");
+        assert!(said.contains(id), "{said} does not name {id}");
+    }
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
+    let harness = Harness::boot().await;
+    for name in ["acme", "globex"] {
+        let organization = harness.declare_organization(name).await;
+        harness
+            .declare_workspace(
+                &organization,
+                "kestrel",
+                &["https://github.com/jtmthf/kestrel".to_owned()],
+                "main",
+            )
+            .await;
+        harness
+            .declare_agent(&organization, "builder", "opencode", None)
+            .await;
+    }
+    let acme = harness.open_session("acme", "kestrel", "builder").await;
+    let globex = harness.open_session("globex", "kestrel", "builder").await;
+
+    let refused = client(
+        &harness,
+        &[
+            "session",
+            "show",
+            &acme.id.to_string(),
+            "--organization",
+            "globex",
+        ],
+    )
+    .await;
+    let said = failed(&refused);
+    assert!(
+        said.contains("no session in the organization globex matches"),
+        "{said}"
+    );
+
+    let latest = recorded(
+        &client(
+            &harness,
+            &[
+                "session",
+                "show",
+                "latest",
+                "--organization",
+                "globex",
+                "--json",
+                SESSION,
+            ],
+        )
+        .await,
+    );
+    assert_eq!(latest[0]["id"], globex.id.to_string());
+
+    let refused = client(
+        &harness,
+        &[
+            "session",
+            "show",
+            "no-such-session",
+            "--organization",
+            "globex",
+        ],
+    )
+    .await;
+    let said = failed(&refused);
+    assert!(
+        said.contains("generated name") && said.contains("latest"),
+        "the refusal is not corrective: {said}"
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_client_names_a_run_by_name_identifier_prefix_and_latest() {
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            "kestrel",
+            &["https://github.com/jtmthf/kestrel".to_owned()],
+            "main",
+        )
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+
+    let session = harness.open_session("acme", "kestrel", "builder").await;
+    let first = harness.enqueue_run(session.id).await;
+    harness.stop_run(first.id).await;
+    let second = harness.enqueue_run(session.id).await;
+    let (first_id, second_id) = (first.id.to_string(), second.id.to_string());
+
+    let by_name = recorded(&client(&harness, &["run", "show", &second.name, "--json", RUN]).await);
+    assert_eq!(by_name[0]["id"], second_id);
+
+    let by_id = recorded(&client(&harness, &["run", "show", &first_id, "--json", RUN]).await);
+    assert_eq!(by_id[0]["name"], first.name);
+
+    let prefix = shortest_prefix_of(&first_id, &[&second_id]);
+    let by_prefix = recorded(&client(&harness, &["run", "show", &prefix, "--json", RUN]).await);
+    assert_eq!(by_prefix[0]["id"], first_id);
+
+    let latest = recorded(&client(&harness, &["run", "show", "latest", "--json", RUN]).await);
+    assert_eq!(latest[0]["id"], second_id);
 
     harness.teardown().await;
 }
@@ -819,9 +1076,9 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let session = opened["id"].as_str().expect("a session id");
-    let shown = operator::SESSION.replace("{session}", session);
-    let messages = operator::SESSION_MESSAGES.replace("{session}", session);
-    let runs = operator::RUNS.replace("{session}", session);
+    let shown = session_at("acme", session);
+    let messages = session_messages_at("acme", session);
+    let runs = runs_of("acme", session);
 
     let (status, _) = got(&harness, &shown).await;
     assert_eq!(status, StatusCode::OK);
@@ -838,12 +1095,21 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     let (status, _) = declared(&harness, &runs, &json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
+    let run_id = posted["id"].as_str().expect("a run id");
+    let run_name = posted["name"].as_str().expect("a generated run name");
+    let (status, shown_run) = got(&harness, &run_at("acme", run_id)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(shown_run["session"], session);
+    let (status, named_run) = got(&harness, &run_at("acme", run_name)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(named_run["id"], run_id);
+
     let run = harness
         .claim_run()
         .await
         .expect("the posted run should wait for the worker");
     harness.complete_run(&run.run).await;
-    let seal = operator::SESSION_SEAL.replace("{session}", session);
+    let seal = session_seal_at("acme", session);
     let (status, _) = declared(&harness, &seal, &json!({})).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = declared(&harness, &seal, &json!({})).await;
@@ -855,8 +1121,16 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
+    let session_name = opened["name"].as_str().expect("a generated session name");
+    let (status, _) = declared(
+        &harness,
+        &sessions,
+        &json!({ "workspace": "kestrel", "agent": "builder", "continues": session_name }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
 
-    let nowhere = operator::SESSION.replace("{session}", "01a0a2d8-baf8-7c02-99fa-7280f174c14a");
+    let nowhere = session_at("acme", "01a0a2d8-baf8-7c02-99fa-7280f174c14a");
     let (status, _) = got(&harness, &nowhere).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -1786,6 +2060,7 @@ async fn a_following_client_resumes_across_a_restart_without_repeating_an_entry(
 #[tokio::test]
 async fn a_client_asking_for_no_such_session_is_refused() {
     let harness = Harness::boot().await;
+    harness.declare_organization("acme").await;
     let operator = harness.operator();
 
     let read = tokio::task::spawn_blocking(move || {
@@ -1802,7 +2077,12 @@ async fn a_client_asking_for_no_such_session_is_refused() {
     .expect("the client should run");
 
     assert!(!read.status.success());
-    assert!(read.err.contains("no such session"), "{}", read.err);
+    assert!(
+        read.err
+            .contains("no session in the organization acme matches"),
+        "{}",
+        read.err
+    );
 
     harness.teardown().await;
 }
@@ -1817,7 +2097,7 @@ async fn a_cursor_from_another_transcript_is_refused_rather_than_restarting_the_
         .get(format!(
             "{}{}",
             harness.operator(),
-            operator::TRANSCRIPT.replace("{session}", &session)
+            transcript_of("acme", &session)
         ))
         .header("last-event-id", elsewhere)
         .send()
@@ -1848,7 +2128,7 @@ async fn the_operator_boundary_and_the_link_are_served_apart() {
         .get(format!(
             "{}{}?follow=false",
             harness.link(),
-            operator::TRANSCRIPT.replace("{session}", &session)
+            transcript_of("acme", &session)
         ))
         .send()
         .await
@@ -1876,7 +2156,7 @@ async fn the_operator_boundary_asks_for_no_credential() {
         .get(format!(
             "{}{}?follow=false",
             harness.operator(),
-            operator::TRANSCRIPT.replace("{session}", &session)
+            transcript_of("acme", &session)
         ))
         .send()
         .await
@@ -1943,6 +2223,7 @@ fn the_published_operator_document_describes_the_boundary_the_control_plane_serv
         (operator::SESSION_SEAL, "post"),
         (operator::RUNS, "get"),
         (operator::RUNS, "post"),
+        (operator::RUN, "get"),
         (operator::TRIGGERS, "get"),
         (operator::TRIGGERS, "post"),
         (operator::TRIGGER, "get"),

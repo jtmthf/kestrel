@@ -23,7 +23,7 @@ pub async fn open(
     agent: &str,
     profile: Option<&str>,
     branch: Option<&str>,
-    continues: Option<SessionId>,
+    continues: Option<&str>,
 ) -> Result<Session> {
     let mut tx = store.begin().await?;
 
@@ -35,7 +35,7 @@ pub async fn open(
         None => None,
     };
     let continues = match continues {
-        Some(sealed) => Some(continued(&mut tx, &organization, sealed).await?),
+        Some(reference) => Some(continued(&mut tx, &organization, reference).await?),
         None => None,
     };
 
@@ -249,18 +249,26 @@ pub async fn transcript(
     tx.log().page(&session, from, window).await
 }
 
-/// Only a sealed Session is continued: work an open one could still take belongs in it.
-async fn continued(tx: &mut Tx<'_>, organization: &Organization, id: SessionId) -> Result<Session> {
-    let sealed = tx.sessions().get(id).await?;
+pub async fn resolve(store: &Store, organization: &str, reference: &str) -> Result<Session> {
+    let mut tx = store.begin().await?;
+    let organization = tx.organizations().named(organization).await?;
 
-    if sealed.organization.id != organization.id {
-        bail!(
-            "the session {id} belongs to the organization {}",
-            sealed.organization.name
-        );
-    }
+    tx.sessions().resolved(&organization, reference).await
+}
+
+/// Only a sealed Session is continued: work an open one could still take belongs in it.
+async fn continued(
+    tx: &mut Tx<'_>,
+    organization: &Organization,
+    reference: &str,
+) -> Result<Session> {
+    let sealed = tx.sessions().resolved(organization, reference).await?;
+
     if sealed.state != SessionState::Sealed {
-        bail!("the session {id} is open, and work continues in it rather than after it");
+        bail!(
+            "the session {} is open, and work continues in it rather than after it",
+            sealed.id
+        );
     }
 
     Ok(sealed)
