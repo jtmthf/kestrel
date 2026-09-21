@@ -90,7 +90,7 @@ async fn client_given(harness: &Harness, args: &[&str], input: Option<&str>) -> 
     client::ran_by(harness, args, invocation).await
 }
 
-fn succeeded(finished: &client::Finished) -> Vec<Value> {
+fn succeeded(finished: &client::Finished) -> &[String] {
     assert!(
         finished.status.success(),
         "the client failed:\n{}",
@@ -101,8 +101,25 @@ fn succeeded(finished: &client::Finished) -> Vec<Value> {
         "the client wrote {:?} where it ran",
         finished.left_behind
     );
-    records(&finished.out)
+    &finished.out
 }
+
+fn recorded(finished: &client::Finished) -> Vec<Value> {
+    records(succeeded(finished))
+}
+
+/// What each test reads, named the way a script names it: a field the boundary gains later
+/// reaches none of these assertions.
+const ORGANIZATION: &str = "id,name";
+const WORKSPACE: &str = "id,name,repositories,branch";
+const AGENT: &str = "id,name,runtime,model";
+const CREDENTIAL: &str = "variable";
+const INTEGRATION: &str = "id,kind,repository,carries,polled_every,webhook_path,last_event_refusal";
+const EVENT: &str = "record,integration,event";
+const TRIGGER: &str = "id,name,state,brief";
+const SESSION: &str = "id,name,state,continues";
+const RUN: &str = "id,name,session,state,model";
+const ENTRY: &str = "seq,entry";
 
 /// Every answer is checked against what the published document says the operation answers.
 async fn requested(
@@ -211,9 +228,16 @@ fn failed(finished: &client::Finished) -> &str {
 async fn a_client_declares_and_lists_organizations_without_opening_a_database() {
     let harness = Harness::boot().await;
 
-    let declared = succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    let declared = recorded(
+        &client(
+            &harness,
+            &["organization", "declare", "acme", "--json", ORGANIZATION],
+        )
+        .await,
+    );
     succeeded(&client(&harness, &["organization", "declare", "globex"]).await);
-    let listed = succeeded(&client(&harness, &["organization", "list"]).await);
+    let listed =
+        recorded(&client(&harness, &["organization", "list", "--json", ORGANIZATION]).await);
 
     assert_eq!(declared.len(), 1);
     assert_eq!(declared[0]["name"], "acme");
@@ -238,7 +262,7 @@ async fn a_client_declares_and_lists_workspaces_and_agents() {
     let harness = Harness::boot().await;
     succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
 
-    let workspace = succeeded(
+    let workspace = recorded(
         &client(
             &harness,
             &[
@@ -253,11 +277,13 @@ async fn a_client_declares_and_lists_workspaces_and_agents() {
                 "https://github.com/jtmthf/skills",
                 "--branch",
                 "main",
+                "--json",
+                WORKSPACE,
             ],
         )
         .await,
     );
-    let agent = succeeded(
+    let agent = recorded(
         &client(
             &harness,
             &[
@@ -268,13 +294,33 @@ async fn a_client_declares_and_lists_workspaces_and_agents() {
                 "acme",
                 "--model",
                 "claude-opus-5",
+                "--json",
+                AGENT,
             ],
         )
         .await,
     );
-    let workspaces =
-        succeeded(&client(&harness, &["workspace", "list", "--organization", "acme"]).await);
-    let agents = succeeded(&client(&harness, &["agent", "list", "--organization", "acme"]).await);
+    let workspaces = recorded(
+        &client(
+            &harness,
+            &[
+                "workspace",
+                "list",
+                "--organization",
+                "acme",
+                "--json",
+                WORKSPACE,
+            ],
+        )
+        .await,
+    );
+    let agents = recorded(
+        &client(
+            &harness,
+            &["agent", "list", "--organization", "acme", "--json", AGENT],
+        )
+        .await,
+    );
 
     assert_eq!(workspaces, workspace);
     assert_eq!(
@@ -327,7 +373,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         .await,
     );
 
-    let opened = succeeded(
+    let opened = recorded(
         &client(
             &harness,
             &[
@@ -339,6 +385,8 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
                 "kestrel",
                 "--agent",
                 "builder",
+                "--json",
+                SESSION,
             ],
         )
         .await,
@@ -346,13 +394,27 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
     let session = opened[0]["id"].as_str().expect("a session id").to_owned();
     let session_name = generated_name(&opened[0]).to_owned();
 
-    let listed = succeeded(&client(&harness, &["session", "list", "--organization", "acme"]).await);
+    let listed = recorded(
+        &client(
+            &harness,
+            &[
+                "session",
+                "list",
+                "--organization",
+                "acme",
+                "--json",
+                SESSION,
+            ],
+        )
+        .await,
+    );
     assert_eq!(listed, opened);
-    let shown = succeeded(&client(&harness, &["session", "show", &session]).await);
+    let shown =
+        recorded(&client(&harness, &["session", "show", &session, "--json", SESSION]).await);
     assert_eq!(shown, opened);
     assert_eq!(shown[0]["name"], session_name);
 
-    let posted = succeeded(
+    let posted = recorded(
         &client(
             &harness,
             &[
@@ -360,6 +422,8 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
                 "post",
                 &session,
                 "start with the operator boundary",
+                "--json",
+                RUN,
             ],
         )
         .await,
@@ -369,7 +433,13 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
     assert_eq!(posted[0]["session"], session);
     assert_eq!(posted[0]["state"], "queued");
     assert_eq!(
-        succeeded(&client(&harness, &["run", "list", "--session", &session]).await),
+        recorded(
+            &client(
+                &harness,
+                &["run", "list", "--session", &session, "--json", RUN]
+            )
+            .await
+        ),
         posted
     );
 
@@ -379,10 +449,11 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         .expect("the posted run should wait for the worker");
     assert_eq!(completed.run.id.to_string(), run);
     harness.complete_run(&completed.run).await;
-    let sealed = succeeded(&client(&harness, &["session", "seal", &session]).await);
+    let sealed =
+        recorded(&client(&harness, &["session", "seal", &session, "--json", SESSION]).await);
     assert_eq!(sealed[0]["state"], "sealed");
 
-    let continued = succeeded(
+    let continued = recorded(
         &client(
             &harness,
             &[
@@ -396,6 +467,8 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
                 "builder",
                 "--continues",
                 &session,
+                "--json",
+                SESSION,
             ],
         )
         .await,
@@ -403,7 +476,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
     let continuing = continued[0]["id"].as_str().expect("a continuing session");
     assert_ne!(generated_name(&continued[0]), session_name);
     assert_eq!(continued[0]["continues"], session);
-    let enqueued = succeeded(
+    let enqueued = recorded(
         &client(
             &harness,
             &[
@@ -413,6 +486,8 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
                 continuing,
                 "--model",
                 "claude-opus-5",
+                "--json",
+                RUN,
             ],
         )
         .await,
@@ -421,7 +496,13 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
     assert_eq!(enqueued[0]["session"], continuing);
     assert_eq!(enqueued[0]["model"], "claude-opus-5");
     assert_eq!(
-        succeeded(&client(&harness, &["run", "list", "--session", continuing]).await),
+        recorded(
+            &client(
+                &harness,
+                &["run", "list", "--session", continuing, "--json", RUN]
+            )
+            .await
+        ),
         enqueued
     );
 
@@ -522,30 +603,53 @@ async fn a_client_manages_triggers_without_opening_a_database() {
         "kestrel",
         "--agent",
         "builder",
+        "--json",
+        TRIGGER,
     ];
-    let declared = succeeded(&client(&harness, &declaration).await);
+    let declared = recorded(&client(&harness, &declaration).await);
     let trigger = declared[0]["id"].as_str().expect("a trigger id").to_owned();
     assert_eq!(declared[0]["name"], "ready");
     assert_eq!(declared[0]["state"], "enabled");
 
-    let listed = succeeded(&client(&harness, &["trigger", "list", "--organization", "acme"]).await);
+    let listed = recorded(
+        &client(
+            &harness,
+            &[
+                "trigger",
+                "list",
+                "--organization",
+                "acme",
+                "--json",
+                TRIGGER,
+            ],
+        )
+        .await,
+    );
     assert_eq!(listed, declared);
     assert_eq!(
-        succeeded(
+        recorded(
             &client(
                 &harness,
-                &["trigger", "show", "ready", "--organization", "acme"]
+                &[
+                    "trigger",
+                    "show",
+                    "ready",
+                    "--organization",
+                    "acme",
+                    "--json",
+                    TRIGGER
+                ]
             )
             .await
         ),
         declared
     );
     assert_eq!(
-        succeeded(&client(&harness, &declaration).await)[0]["id"],
+        recorded(&client(&harness, &declaration).await)[0]["id"],
         trigger
     );
 
-    let changed = succeeded(
+    let changed = recorded(
         &client(
             &harness,
             &[
@@ -562,6 +666,8 @@ async fn a_client_manages_triggers_without_opening_a_database() {
                 "kestrel",
                 "--agent",
                 "builder",
+                "--json",
+                TRIGGER,
             ],
         )
         .await,
@@ -579,22 +685,40 @@ async fn a_client_manages_triggers_without_opening_a_database() {
         "acme",
         "--event",
         &retained,
+        "--json",
+        "matches",
     ];
-    let tested = succeeded(&client(&harness, &test).await);
+    let tested = recorded(&client(&harness, &test).await);
     assert_eq!(tested[0]["matches"], true);
 
-    let disabled = succeeded(
+    let disabled = recorded(
         &client(
             &harness,
-            &["trigger", "disable", "ready", "--organization", "acme"],
+            &[
+                "trigger",
+                "disable",
+                "ready",
+                "--organization",
+                "acme",
+                "--json",
+                "state",
+            ],
         )
         .await,
     );
     assert_eq!(disabled[0]["state"], "disabled:operator");
-    let enabled = succeeded(
+    let enabled = recorded(
         &client(
             &harness,
-            &["trigger", "enable", "ready", "--organization", "acme"],
+            &[
+                "trigger",
+                "enable",
+                "ready",
+                "--organization",
+                "acme",
+                "--json",
+                "state",
+            ],
         )
         .await,
     );
@@ -999,16 +1123,29 @@ async fn a_client_sets_lists_and_forgets_provider_credentials_without_saying_the
             "ANTHROPIC_API_KEY",
             "--organization",
             "acme",
+            "--json",
+            CREDENTIAL,
         ],
         Some(&format!("{secret}\n")),
     )
     .await;
-    let held = succeeded(&set);
-    let listed = client(&harness, &["credential", "list", "--organization", "acme"]).await;
+    let held = recorded(&set);
+    let listed = client(
+        &harness,
+        &[
+            "credential",
+            "list",
+            "--organization",
+            "acme",
+            "--json",
+            CREDENTIAL,
+        ],
+    )
+    .await;
 
     assert_eq!(held.len(), 1);
     assert_eq!(held[0]["variable"], "ANTHROPIC_API_KEY");
-    assert_eq!(succeeded(&listed), held);
+    assert_eq!(recorded(&listed), held);
     for said in [&set, &listed] {
         assert!(
             !said.out.join("\n").contains(secret) && !said.err.contains(secret),
@@ -1164,6 +1301,8 @@ async fn a_client_registers_and_lists_integrations_without_saying_their_secrets(
             &stub.base_url(),
             "--interval",
             "5m",
+            "--json",
+            INTEGRATION,
         ],
     )
     .await;
@@ -1178,14 +1317,27 @@ async fn a_client_registers_and_lists_integrations_without_saying_their_secrets(
             "acme",
             "--secret",
             "a-shared-secret",
+            "--json",
+            INTEGRATION,
         ],
     )
     .await;
-    let listed = client(&harness, &["integration", "list", "--organization", "acme"]).await;
+    let listed = client(
+        &harness,
+        &[
+            "integration",
+            "list",
+            "--organization",
+            "acme",
+            "--json",
+            INTEGRATION,
+        ],
+    )
+    .await;
 
-    let github = succeeded(&github);
-    let webhook = succeeded(&webhook);
-    let records = succeeded(&listed);
+    let github = recorded(&github);
+    let webhook = recorded(&webhook);
+    let records = recorded(&listed);
     assert_eq!(records, [webhook.clone(), github.clone()].concat());
     assert_eq!(github[0]["kind"], "github");
     assert_eq!(github[0]["repository"], "jtmthf/kestrel");
@@ -1348,8 +1500,20 @@ async fn a_client_acknowledges_the_event_an_integration_refused() {
         .await
         .expect("the webhook answers");
 
-    let refused =
-        succeeded(&client(&harness, &["integration", "list", "--organization", "acme"]).await);
+    let refused = recorded(
+        &client(
+            &harness,
+            &[
+                "integration",
+                "list",
+                "--organization",
+                "acme",
+                "--json",
+                "last_event_refusal",
+            ],
+        )
+        .await,
+    );
     let acknowledged = client(
         &harness,
         &[
@@ -1422,16 +1586,31 @@ async fn a_client_lists_an_organizations_events_and_shows_one_whole() {
         assert_eq!(answered.status(), StatusCode::ACCEPTED);
     }
 
-    let events = succeeded(&client(&harness, &["event", "list", "--organization", "acme"]).await);
-    let limited = succeeded(
+    let events = recorded(
         &client(
             &harness,
-            &["event", "list", "--organization", "acme", "--limit", "1"],
+            &["event", "list", "--organization", "acme", "--json", EVENT],
+        )
+        .await,
+    );
+    let limited = recorded(
+        &client(
+            &harness,
+            &[
+                "event",
+                "list",
+                "--organization",
+                "acme",
+                "--limit",
+                "1",
+                "--json",
+                EVENT,
+            ],
         )
         .await,
     );
     let record = events[0]["record"].as_str().expect("a record id");
-    let shown = succeeded(&client(&harness, &["event", "show", record]).await);
+    let shown = recorded(&client(&harness, &["event", "show", record, "--json", EVENT]).await);
 
     assert_eq!(events.len(), 2);
     assert_eq!(limited, events[..1]);
@@ -1446,12 +1625,9 @@ async fn a_client_lists_an_organizations_events_and_shows_one_whole() {
         harness.events("acme").await[0].record_id.to_string(),
         record
     );
-    assert_eq!(
-        got(&harness, &format!("{}?limit=1", events_of("acme")))
-            .await
-            .1,
-        Value::Array(limited)
-    );
+    let (_, over_the_boundary) = got(&harness, &format!("{}?limit=1", events_of("acme"))).await;
+    assert_eq!(over_the_boundary.as_array().map(Vec::len), Some(1));
+    assert_eq!(over_the_boundary[0]["record"], limited[0]["record"]);
 
     harness.teardown().await;
 }
@@ -1488,7 +1664,10 @@ async fn a_client_in_its_own_process_reads_a_transcript_over_the_operator_bounda
     let (operator, reading) = (harness.operator(), session.clone());
 
     let read = tokio::task::spawn_blocking(move || {
-        client::ran(&operator, &["session", "transcript", &reading])
+        client::ran(
+            &operator,
+            &["session", "transcript", &reading, "--json", ENTRY],
+        )
     })
     .await
     .expect("the client should run");
@@ -1562,7 +1741,14 @@ async fn a_following_client_resumes_across_a_restart_without_repeating_an_entry(
 
     let mut client = Client::spawn(
         &harness.operator(),
-        &["session", "transcript", &session, "--follow"],
+        &[
+            "session",
+            "transcript",
+            &session,
+            "--follow",
+            "--json",
+            ENTRY,
+        ],
     );
     let mut read = Vec::new();
     for _ in 0..before {

@@ -104,7 +104,7 @@ async fn refused(harness: &Harness) -> String {
             let record = event.record_id.to_string();
             let operator = harness.operator();
             let shown = tokio::task::spawn_blocking(move || {
-                client::ran(&operator, &["event", "show", &record])
+                client::ran(&operator, &["event", "show", &record, "--json", "firings"])
             })
             .await
             .expect("the client should run");

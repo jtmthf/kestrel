@@ -4,6 +4,10 @@ use serde_json::Value;
 use support::Harness;
 use support::client::{Finished, Invocation, ran_by};
 
+const RESOLVED: &str = "control_plane,control_plane_source,organization,organization_source,\
+                        workspaces,agents,triggers,sessions,integrations,credentials,profiles,next";
+const UNRESOLVED: &str = "control_plane,organization,organization_source,organizations,next";
+
 fn names(records: &[Value]) -> Vec<&str> {
     records
         .iter()
@@ -48,7 +52,14 @@ async fn the_flag_names_the_scope_ahead_of_the_environment_and_a_binding() {
 
     let listed = ran_by(
         &harness,
-        &["workspace", "list", "--organization", "acme"],
+        &[
+            "workspace",
+            "list",
+            "--json",
+            "name",
+            "--organization",
+            "acme",
+        ],
         bound_to("globex").env("KESTREL_ORGANIZATION", "globex"),
     )
     .await;
@@ -63,7 +74,7 @@ async fn the_environment_names_the_scope_ahead_of_a_binding() {
 
     let listed = ran_by(
         &harness,
-        &["workspace", "list"],
+        &["workspace", "list", "--json", "name"],
         bound_to("acme").env("KESTREL_ORGANIZATION", "globex"),
     )
     .await;
@@ -76,7 +87,12 @@ async fn the_environment_names_the_scope_ahead_of_a_binding() {
 async fn a_committed_binding_names_the_scope_from_the_working_directory() {
     let harness = two_organizations().await;
 
-    let listed = ran_by(&harness, &["workspace", "list"], bound_to("acme")).await;
+    let listed = ran_by(
+        &harness,
+        &["workspace", "list", "--json", "name"],
+        bound_to("acme"),
+    )
+    .await;
 
     assert_eq!(names(&listed.records()), ["for-acme"]);
     harness.teardown().await;
@@ -88,7 +104,7 @@ async fn a_committed_binding_names_the_scope_from_anywhere_in_its_repository() {
 
     let listed = ran_by(
         &harness,
-        &["workspace", "list"],
+        &["workspace", "list", "--json", "name"],
         bound_to("acme")
             .file(".git/HEAD", "ref: refs/heads/main\n")
             .within("crates/kestrel"),
@@ -129,7 +145,12 @@ async fn the_only_organization_is_the_scope_when_nothing_names_one() {
         )
         .await;
 
-    let listed = ran_by(&harness, &["workspace", "list"], Invocation::default()).await;
+    let listed = ran_by(
+        &harness,
+        &["workspace", "list", "--json", "name"],
+        Invocation::default(),
+    )
+    .await;
 
     assert_eq!(names(&listed.records()), ["kestrel"]);
     harness.teardown().await;
@@ -241,7 +262,7 @@ async fn status_prints_every_resolved_value_its_source_what_exists_and_what_to_r
 
     let reported = ran_by(
         &harness,
-        &["status", "--organization", "acme"],
+        &["status", "--organization", "acme", "--json", RESOLVED],
         Invocation::default(),
     )
     .await
@@ -271,17 +292,16 @@ async fn status_names_the_environment_and_the_binding_when_each_is_the_source() 
     let harness = Harness::boot().await;
     harness.declare_organization("acme").await;
 
+    let sourced = &["status", "--json", "organization_source"];
     let environment = ran_by(
         &harness,
-        &["status"],
+        sourced,
         Invocation::default().env("KESTREL_ORGANIZATION", "acme"),
     )
     .await
     .records();
-    let binding = ran_by(&harness, &["status"], bound_to("acme"))
-        .await
-        .records();
-    let only = ran_by(&harness, &["status"], Invocation::default())
+    let binding = ran_by(&harness, sourced, bound_to("acme")).await.records();
+    let only = ran_by(&harness, sourced, Invocation::default())
         .await
         .records();
 
@@ -305,9 +325,13 @@ async fn status_names_the_environment_and_the_binding_when_each_is_the_source() 
 async fn status_explains_an_unresolved_scope_instead_of_failing() {
     let harness = two_organizations().await;
 
-    let reported = ran_by(&harness, &["status"], Invocation::default())
-        .await
-        .records();
+    let reported = ran_by(
+        &harness,
+        &["status", "--json", UNRESOLVED],
+        Invocation::default(),
+    )
+    .await
+    .records();
 
     assert_eq!(reported[0]["control_plane"], harness.operator());
     assert_eq!(reported[0]["organization"], Value::Null);
@@ -387,7 +411,7 @@ async fn the_client_keeps_no_current_context_and_switches_none() {
     .await;
     let status = ran_by(
         &harness,
-        &["status", "--organization", "acme"],
+        &["status", "--organization", "acme", "--json", "organization"],
         Invocation::default(),
     )
     .await;

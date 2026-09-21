@@ -14,5 +14,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Fields come out in the order `--json` asked for them, whatever else the workspace builds.
+serde_json = { version = "1", features = ["preserve_order"] }
+terminal_size = "0.4.4"
 tokio = { version = "1", features = ["macros", "rt", "time"] }
