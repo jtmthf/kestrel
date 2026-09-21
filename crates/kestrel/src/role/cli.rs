@@ -155,6 +155,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
             branch,
             continues,
         }) => {
+            let continues = continues.map(|sealed| sealed.to_string());
             let session = session::open(
                 &store,
                 organization,
@@ -162,7 +163,7 @@ pub async fn run(command: &CliCommand, store: Store) -> Result<()> {
                 agent,
                 profile.as_deref(),
                 branch.as_deref(),
-                *continues,
+                continues.as_deref(),
             )
             .await?;
             println!("{}", session.id);

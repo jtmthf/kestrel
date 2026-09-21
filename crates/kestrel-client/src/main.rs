@@ -91,7 +91,7 @@ enum Command {
     /// Read Sessions
     #[command(subcommand)]
     Session(SessionCommand),
-    /// Enqueue and list Runs
+    /// Show, enqueue and list Runs
     #[command(subcommand)]
     Run(RunCommand),
     /// Print the resolved scope, where each value came from, what exists in it, and what to
@@ -108,18 +108,13 @@ impl Command {
             | Command::Profile(_)
             | Command::Integration(_)
             | Command::Trigger(_)
+            | Command::Session(_)
+            | Command::Run(_)
             | Command::Status => true,
-            Command::Organization(_) | Command::Run(_) => false,
+            Command::Organization(_) => false,
             Command::Event(event) => match event {
                 EventCommand::List { .. } => true,
                 EventCommand::Show { .. } => false,
-            },
-            Command::Session(session) => match session {
-                SessionCommand::Open { .. } | SessionCommand::List => true,
-                SessionCommand::Show { .. }
-                | SessionCommand::Post { .. }
-                | SessionCommand::Seal { .. }
-                | SessionCommand::Transcript { .. } => false,
             },
         }
     }
@@ -393,7 +388,8 @@ enum SessionCommand {
         /// The branch its work happens on
         #[arg(long)]
         branch: Option<String>,
-        /// The sealed Session this one carries on from
+        /// The sealed Session this one carries on from, by generated name, identifier, any
+        /// unambiguous prefix of its identifier, or `latest`
         #[arg(long, value_name = "SESSION")]
         continues: Option<String>,
     },
@@ -401,12 +397,12 @@ enum SessionCommand {
     List,
     /// Show a Session
     Show {
-        /// The Session's identifier
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
         session: String,
     },
     /// Add a participant's message; starts a Run or queues its next Turn
     Post {
-        /// The Session's identifier
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
         session: String,
         /// The participant saying the message
         #[arg(long, default_value = "operator")]
@@ -416,13 +412,13 @@ enum SessionCommand {
     },
     /// Seal a Session: readable ever after, and never reopened
     Seal {
-        /// The Session's identifier
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
         session: String,
     },
     /// Read a Session's Transcript, one JSON entry a line, and the cursor a later read
     /// resumes from
     Transcript {
-        /// The Session's identifier
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
         session: String,
         /// Resume after the cursor a previous read ended with
         #[arg(long)]
@@ -437,7 +433,8 @@ enum SessionCommand {
 enum RunCommand {
     /// Enqueue a Run in a Session, for the work role to claim and dispatch
     Enqueue {
-        /// The Session it executes on behalf of
+        /// The Session it executes on behalf of, by generated name, identifier, any
+        /// unambiguous prefix of its identifier, or `latest`
         #[arg(long)]
         session: String,
         /// The model it works with, or none for its Agent's or Agent Runtime's default
@@ -446,9 +443,15 @@ enum RunCommand {
     },
     /// List every Run in a Session
     List {
-        /// The Session the Runs execute on behalf of
+        /// The Session the Runs execute on behalf of, by generated name, identifier, any
+        /// unambiguous prefix of its identifier, or `latest`
         #[arg(long)]
         session: String,
+    },
+    /// Show a Run
+    Show {
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
+        run: String,
     },
 }
 
@@ -830,10 +833,12 @@ async fn main() -> Result<()> {
             )?;
         }
         Command::Session(SessionCommand::Show { session }) => {
+            let organization = scoping.resolve().await?.organization;
             show(
                 &presentation,
                 &view::SESSION,
-                &api.get(&["sessions", &session]).await?,
+                &api.get(&["organizations", &organization, "sessions", &session])
+                    .await?,
             )?;
         }
         Command::Session(SessionCommand::Post {
@@ -841,9 +846,16 @@ async fn main() -> Result<()> {
             as_participant,
             message,
         }) => {
+            let organization = scoping.resolve().await?.organization;
             let answer = api
                 .post(
-                    &["sessions", &session, "messages"],
+                    &[
+                        "organizations",
+                        &organization,
+                        "sessions",
+                        &session,
+                        "messages",
+                    ],
                     &json!({ "participant": as_participant, "message": message }),
                 )
                 .await?;
@@ -853,11 +865,15 @@ async fn main() -> Result<()> {
             show(&presentation, &view::DECLARED, &answer)?;
         }
         Command::Session(SessionCommand::Seal { session }) => {
+            let organization = scoping.resolve().await?.organization;
             show(
                 &presentation,
                 &view::DECLARED,
-                &api.post(&["sessions", &session, "seal"], &json!({}))
-                    .await?,
+                &api.post(
+                    &["organizations", &organization, "sessions", &session, "seal"],
+                    &json!({}),
+                )
+                .await?,
             )?;
         }
         Command::Session(SessionCommand::Transcript {
@@ -865,26 +881,49 @@ async fn main() -> Result<()> {
             cursor,
             follow,
         }) => {
-            let read =
-                transcript::read(&control_plane, &session, cursor, follow, &presentation).await?;
+            let organization = scoping.resolve().await?.organization;
+            let read = transcript::read(
+                &control_plane,
+                &organization,
+                &session,
+                cursor,
+                follow,
+                &presentation,
+            )
+            .await?;
             // Beside the Transcript rather than in it, so stdout carries entries and nothing else.
             if let Some(cursor) = read {
                 eprintln!("cursor  {cursor}");
             }
         }
         Command::Run(RunCommand::Enqueue { session, model }) => {
+            let organization = scoping.resolve().await?.organization;
             show(
                 &presentation,
                 &view::DECLARED,
-                &api.post(&["sessions", &session, "runs"], &json!({ "model": model }))
-                    .await?,
+                &api.post(
+                    &["organizations", &organization, "sessions", &session, "runs"],
+                    &json!({ "model": model }),
+                )
+                .await?,
             )?;
         }
         Command::Run(RunCommand::List { session }) => {
+            let organization = scoping.resolve().await?.organization;
             show(
                 &presentation,
                 &view::RUNS,
-                &api.get(&["sessions", &session, "runs"]).await?,
+                &api.get(&["organizations", &organization, "sessions", &session, "runs"])
+                    .await?,
+            )?;
+        }
+        Command::Run(RunCommand::Show { run }) => {
+            let organization = scoping.resolve().await?.organization;
+            show(
+                &presentation,
+                &view::RUN,
+                &api.get(&["organizations", &organization, "runs", &run])
+                    .await?,
             )?;
         }
         Command::Status => {

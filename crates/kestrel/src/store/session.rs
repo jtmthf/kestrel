@@ -10,6 +10,7 @@ use crate::domain::{
 use crate::instance::Observed;
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
+use crate::reference::{self, Candidate, Reference};
 use crate::store::{agent, due, organization, profile, timestamp, workspace};
 
 macro_rules! runs_where {
@@ -224,6 +225,144 @@ impl<'a> Sessions<'a> {
 
     pub async fn find(&mut self, id: SessionId) -> Result<Option<Session>> {
         find(self.connection, id).await
+    }
+
+    /// Resolves what an operator typed to exactly one Session in the organization, refusing
+    /// when nothing matched or when several did.
+    pub async fn resolved(&mut self, organization: &Organization, typed: &str) -> Result<Session> {
+        let reference = Reference::read(typed);
+
+        if reference.is_latest() {
+            let latest = sqlx::query(
+                "SELECT id FROM session
+                 WHERE organization_id = ?
+                 ORDER BY opened_at DESC, id DESC
+                 LIMIT 1",
+            )
+            .bind(organization.id.to_string())
+            .fetch_optional(&mut *self.connection)
+            .await
+            .context("reading the most recent session")?;
+            let Some(latest) = latest else {
+                return Err(reference::missing("session", &organization.name, typed));
+            };
+
+            return read(
+                &mut *self.connection,
+                latest.get::<String, _>("id").parse()?,
+            )
+            .await;
+        }
+
+        let given = reference
+            .given()
+            .expect("a reference that is not the latest names one");
+        let named = sqlx::query("SELECT id FROM session WHERE organization_id = ? AND name = ?")
+            .bind(organization.id.to_string())
+            .bind(given)
+            .fetch_optional(&mut *self.connection)
+            .await
+            .context("reading a session by its generated name")?;
+        if let Some(named) = named {
+            return read(&mut *self.connection, named.get::<String, _>("id").parse()?).await;
+        }
+
+        if let Some(prefix) = reference.prefix() {
+            let matched = sqlx::query(
+                "SELECT id, name FROM session
+                 WHERE organization_id = ? AND REPLACE(LOWER(id), '-', '') LIKE ? || '%'
+                 ORDER BY name, id",
+            )
+            .bind(organization.id.to_string())
+            .bind(prefix)
+            .fetch_all(&mut *self.connection)
+            .await
+            .context("reading sessions by identifier prefix")?
+            .iter()
+            .map(candidate)
+            .collect::<Vec<_>>();
+
+            match matched.as_slice() {
+                [] => {}
+                [only] => return read(&mut *self.connection, only.id.parse()?).await,
+                _ => {
+                    return Err(reference::ambiguous(
+                        "session",
+                        &organization.name,
+                        given,
+                        &matched,
+                    ));
+                }
+            }
+        }
+
+        Err(reference::missing("session", &organization.name, given))
+    }
+
+    /// A Run on the same terms as a Session.
+    pub async fn resolved_run(&mut self, organization: &Organization, typed: &str) -> Result<Run> {
+        let reference = Reference::read(typed);
+
+        if reference.is_latest() {
+            let latest = sqlx::query(runs_where!(
+                "organization_id = ?
+                 ORDER BY enqueued_at DESC, id DESC
+                 LIMIT 1"
+            ))
+            .bind(organization.id.to_string())
+            .fetch_optional(&mut *self.connection)
+            .await
+            .context("reading the most recent run")?;
+            let Some(latest) = latest else {
+                return Err(reference::missing("run", &organization.name, typed));
+            };
+
+            return run(&latest);
+        }
+
+        let given = reference
+            .given()
+            .expect("a reference that is not the latest names one");
+        let named = sqlx::query(runs_where!("organization_id = ? AND name = ?"))
+            .bind(organization.id.to_string())
+            .bind(given)
+            .fetch_optional(&mut *self.connection)
+            .await
+            .context("reading a run by its generated name")?;
+        if let Some(named) = named {
+            return run(&named);
+        }
+
+        if let Some(prefix) = reference.prefix() {
+            let matched = sqlx::query(
+                "SELECT id, name FROM run
+                 WHERE organization_id = ? AND REPLACE(LOWER(id), '-', '') LIKE ? || '%'
+                 ORDER BY name, id",
+            )
+            .bind(organization.id.to_string())
+            .bind(prefix)
+            .fetch_all(&mut *self.connection)
+            .await
+            .context("reading runs by identifier prefix")?
+            .iter()
+            .map(candidate)
+            .collect::<Vec<_>>();
+
+            match matched.as_slice() {
+                [] => {}
+                [only] => return self.run(only.id.parse()?).await,
+                _ => {
+                    return Err(reference::ambiguous(
+                        "run",
+                        &organization.name,
+                        given,
+                        &matched,
+                    ));
+                }
+            }
+        }
+
+        Err(reference::missing("run", &organization.name, given))
     }
 
     pub async fn all(&mut self, organization: &Organization) -> Result<Vec<Session>> {
@@ -1151,6 +1290,13 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
             .map(|event| event.parse())
             .transpose()?,
     }))
+}
+
+fn candidate(row: &SqliteRow) -> Candidate {
+    Candidate {
+        id: row.get("id"),
+        name: row.get("name"),
+    }
 }
 
 fn run(row: &SqliteRow) -> Result<Run> {

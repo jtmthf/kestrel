@@ -57,15 +57,15 @@ pub const TRIGGER_DISABLE: &str =
     "/operator/organizations/{organization}/triggers/{trigger}/disable";
 pub const TRIGGER_ENABLE: &str = "/operator/organizations/{organization}/triggers/{trigger}/enable";
 pub const SESSIONS: &str = "/operator/organizations/{organization}/sessions";
-pub const SESSION: &str = "/operator/sessions/{session}";
-pub const SESSION_MESSAGES: &str = "/operator/sessions/{session}/messages";
-pub const SESSION_SEAL: &str = "/operator/sessions/{session}/seal";
-pub const RUNS: &str = "/operator/sessions/{session}/runs";
-pub const TRANSCRIPT: &str = "/operator/sessions/{session}/transcript";
+pub const SESSION: &str = "/operator/organizations/{organization}/sessions/{session}";
+pub const SESSION_MESSAGES: &str =
+    "/operator/organizations/{organization}/sessions/{session}/messages";
+pub const SESSION_SEAL: &str = "/operator/organizations/{organization}/sessions/{session}/seal";
+pub const RUNS: &str = "/operator/organizations/{organization}/sessions/{session}/runs";
+pub const RUN: &str = "/operator/organizations/{organization}/runs/{run}";
+pub const TRANSCRIPT: &str = "/operator/organizations/{organization}/sessions/{session}/transcript";
 
 const EVENTS_LISTED: usize = 50;
-
-const NO_SUCH_SESSION: &str = "no such session";
 
 const POLL: Duration = Duration::from_millis(100);
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -135,6 +135,7 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .route(SESSION_MESSAGES, post(post_to_session))
         .route(SESSION_SEAL, post(seal_session))
         .route(RUNS, get(runs).post(enqueue_run))
+        .route(RUN, get(show_run))
         .route(TRANSCRIPT, get(transcript))
         .with_state(ControlPlane { store, shutdown })
 }
@@ -1117,11 +1118,6 @@ async fn open_session(
     declaration: Result<Json<SessionDeclaration>, JsonRejection>,
 ) -> Result<(StatusCode, Json<SessionRecord>), Refused> {
     let Json(declaration) = declaration?;
-    let continues = declaration
-        .continues
-        .as_deref()
-        .map(session_id)
-        .transpose()?;
     let session = session::open(
         &control_plane.store,
         &organization,
@@ -1129,7 +1125,7 @@ async fn open_session(
         &declaration.agent,
         declaration.profile.as_deref(),
         declaration.branch.as_deref(),
-        continues,
+        declaration.continues.as_deref(),
     )
     .await
     .map_err(session_refusal)?;
@@ -1142,11 +1138,9 @@ async fn open_session(
 
 async fn show_session(
     State(control_plane): State<ControlPlane>,
-    Path(id): Path<String>,
+    Path((organization, session)): Path<(String, String)>,
 ) -> Result<Json<SessionRecord>, Refused> {
-    let session = session::show(&control_plane.store, session_id(&id)?)
-        .await
-        .map_err(session_refusal)?;
+    let session = resolved(&control_plane, &organization, &session).await?;
 
     Ok(Json(
         SessionRecord::read(&control_plane.store, session).await?,
@@ -1155,13 +1149,14 @@ async fn show_session(
 
 async fn post_to_session(
     State(control_plane): State<ControlPlane>,
-    Path(id): Path<String>,
+    Path((organization, session)): Path<(String, String)>,
     message: Result<Json<SessionMessage>, JsonRejection>,
 ) -> Result<Json<Option<RunRecord>>, Refused> {
     let Json(message) = message?;
+    let session = resolved(&control_plane, &organization, &session).await?;
     let run = session::post(
         &control_plane.store,
-        session_id(&id)?,
+        session.id,
         &message.participant,
         &message.message,
     )
@@ -1173,9 +1168,10 @@ async fn post_to_session(
 
 async fn seal_session(
     State(control_plane): State<ControlPlane>,
-    Path(id): Path<String>,
+    Path((organization, session)): Path<(String, String)>,
 ) -> Result<Json<SessionRecord>, Refused> {
-    let session = session::seal(&control_plane.store, session_id(&id)?)
+    let session = resolved(&control_plane, &organization, &session).await?;
+    let session = session::seal(&control_plane.store, session.id)
         .await
         .map_err(session_refusal)?;
 
@@ -1186,9 +1182,10 @@ async fn seal_session(
 
 async fn runs(
     State(control_plane): State<ControlPlane>,
-    Path(id): Path<String>,
+    Path((organization, session)): Path<(String, String)>,
 ) -> Result<Json<Vec<RunRecord>>, Refused> {
-    let runs = work::runs(&control_plane.store, session_id(&id)?)
+    let session = resolved(&control_plane, &organization, &session).await?;
+    let runs = work::runs(&control_plane.store, session.id)
         .await
         .map_err(session_refusal)?;
 
@@ -1197,13 +1194,14 @@ async fn runs(
 
 async fn enqueue_run(
     State(control_plane): State<ControlPlane>,
-    Path(id): Path<String>,
+    Path((organization, session)): Path<(String, String)>,
     declaration: Result<Json<RunDeclaration>, JsonRejection>,
 ) -> Result<(StatusCode, Json<RunRecord>), Refused> {
     let Json(declaration) = declaration?;
+    let session = resolved(&control_plane, &organization, &session).await?;
     let run = work::enqueue(
         &control_plane.store,
-        session_id(&id)?,
+        session.id,
         declaration.model.as_deref(),
     )
     .await
@@ -1212,9 +1210,23 @@ async fn enqueue_run(
     Ok((StatusCode::CREATED, Json(run.into())))
 }
 
-fn session_id(id: &str) -> Result<SessionId, Refused> {
-    id.parse()
-        .map_err(|_| Refused::NotFound(NO_SUCH_SESSION.to_owned()))
+async fn show_run(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, run)): Path<(String, String)>,
+) -> Result<Json<RunRecord>, Refused> {
+    let run = work::resolve_run(&control_plane.store, &organization, &run).await?;
+
+    Ok(Json(run.into()))
+}
+
+async fn resolved(
+    control_plane: &ControlPlane,
+    organization: &str,
+    session: &str,
+) -> Result<Session, Refused> {
+    session::resolve(&control_plane.store, organization, session)
+        .await
+        .map_err(session_refusal)
 }
 
 fn session_refusal(error: anyhow::Error) -> Refused {
@@ -1231,10 +1243,7 @@ fn session_refusal(error: anyhow::Error) -> Refused {
     {
         return Refused::Conflict(message);
     }
-    if message.contains("is sealed")
-        || message.contains("is open, and work continues")
-        || message.contains("belongs to the organization")
-    {
+    if message.contains("is sealed") || message.contains("is open, and work continues") {
         return Refused::Unprocessable(message);
     }
 
@@ -1286,13 +1295,12 @@ where
 /// the last id it was handed.
 async fn transcript(
     State(control_plane): State<ControlPlane>,
-    Path(session): Path<String>,
+    Path((organization, session)): Path<(String, String)>,
     Query(following): Query<Following>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, BoxError>>>, Refused> {
-    let session: SessionId = session
-        .parse()
-        .map_err(|_| Refused::NotFound(NO_SUCH_SESSION.to_owned()))?;
+    let session = resolved(&control_plane, &organization, &session).await?;
+    let session = session.id;
     let follow = following.follow.unwrap_or(true);
     let from = last_event_id(&headers)?;
     let mut read = reading(&control_plane.store, session, from).await?;
@@ -1343,7 +1351,7 @@ async fn reading(store: &Store, id: SessionId, from: Option<Cursor>) -> Result<R
         .sessions()
         .find(id)
         .await?
-        .ok_or_else(|| Refused::NotFound(NO_SUCH_SESSION.to_owned()))?;
+        .ok_or_else(|| Refused::NotFound("no session".to_owned()))?;
     let page = tx.log().page(&session, from, Window::DEFAULT).await?;
 
     Ok(Read {
