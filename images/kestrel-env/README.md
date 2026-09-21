@@ -63,8 +63,8 @@ one thing the shipped path does not do.
 The supervisor dials the link outward and the image exposes no port: an Environment needs egress and
 nothing else, which is the capability every deployment target has.
 
-It runs as the unprivileged `kestrel` user in `/workspace`, which is where an ACP session's working
-directory is and where a Workspace's repositories belong. Anything written into an Environment from
+It runs as the unprivileged `kestrel` user in `/workspace`, where a Workspace's repositories are
+checked out side by side. An ACP session's working directory is the checkout of the first of them. Anything written into an Environment from
 outside has to land owned by that user, and a derived image that installs packages needs `USER root`
 first.
 

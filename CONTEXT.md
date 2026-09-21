@@ -289,6 +289,12 @@ words from drifting.
   re-dispatches it.
 - A run may wait between prompt turns with its ACP conversation and instance intact. Waiting holds
   no active-work slot; the next prompt continues that same run. A turn ending does not end a run.
+- A turn in which the agent produced no message, narration or detail **fails** its run: a prompt
+  that never became work is not an answer.
+- A run's agent conversation is rooted in the checkout of the **first** repository its session
+  fixed; the session's other repositories sit beside it.
+- What an agent runtime writes as diagnostics reaches the **operator**, never the transcript: it is
+  not the agent speaking.
 - kestrel retries **dispatch**, never **work**. A run that started and failed is retried only by a
   workflow enqueueing a new one.
 - A session records the run that enqueued it, if any. Enqueueing grants that run **no** rights over

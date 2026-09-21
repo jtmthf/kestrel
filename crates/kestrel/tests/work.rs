@@ -3,10 +3,11 @@
 
 mod support;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
+use kestrel::log::Entry;
 use kestrel::work::{Report, Reported};
 use support::Harness;
 use support::environment::Environment;
@@ -343,6 +344,119 @@ async fn a_branch_the_remote_does_not_have_is_cut_from_the_workspaces() {
     assert_eq!(
         runtime.wrote("found"),
         "kestrel/issue-43 a workspace's repository"
+    );
+
+    harness.teardown().await;
+}
+
+async fn located(harness: &Harness, session: &Session) -> Vec<PathBuf> {
+    harness
+        .transcript(session.id)
+        .await
+        .into_iter()
+        .filter_map(|recorded| match recorded.entry {
+            Entry::Said { message, .. } => Some(PathBuf::from(message)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn checkout_of(instance: &str, repository: &str) -> PathBuf {
+    Environment::workspace_of(instance)
+        .canonicalize()
+        .expect("the instance's directory should exist")
+        .join(repository)
+}
+
+#[tokio::test]
+async fn a_runs_agent_is_rooted_in_the_checkout_of_its_sessions_repository() {
+    let harness = Harness::dispatching_to(
+        supervisor::binary(),
+        &scripted_agent::playing(Script::Locates),
+    )
+    .await;
+    let session = a_session(&harness).await;
+
+    let run = harness.enqueue_run(session.id).await;
+    let ended = ended(&harness, run.id).await;
+
+    let instance = ended.instance.expect("an instance");
+    assert_eq!(
+        located(&harness, &session).await,
+        [checkout_of(&instance, repository::NAME)]
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_runs_agent_is_rooted_in_the_first_repository_its_session_declares() {
+    let harness = Harness::dispatching_to(
+        supervisor::binary(),
+        &scripted_agent::playing(Script::Locates),
+    )
+    .await;
+    a_session(&harness).await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            "both",
+            &[
+                repository::other_url().to_owned(),
+                repository::url().to_owned(),
+            ],
+            repository::BRANCH,
+        )
+        .await;
+    let session = harness.open_session("acme", "both", "builder").await;
+
+    let run = harness.enqueue_run(session.id).await;
+    let ended = ended(&harness, run.id).await;
+
+    let instance = ended.instance.expect("an instance");
+    assert_eq!(
+        located(&harness, &session).await,
+        [checkout_of(&instance, repository::OTHER)]
+    );
+    assert!(
+        checkout_of(&instance, repository::NAME)
+            .join(".git")
+            .is_dir(),
+        "the session's other repository is not checked out beside the first"
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn redeclaring_the_workspace_does_not_move_where_an_open_sessions_agent_is_rooted() {
+    let harness = Harness::dispatching_to(
+        supervisor::binary(),
+        &scripted_agent::playing(Script::Locates),
+    )
+    .await;
+    let session = a_session(&harness).await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            repository::NAME,
+            &[
+                repository::other_url().to_owned(),
+                repository::url().to_owned(),
+            ],
+            repository::BRANCH,
+        )
+        .await;
+
+    let run = harness.enqueue_run(session.id).await;
+    let ended = ended(&harness, run.id).await;
+
+    let instance = ended.instance.expect("an instance");
+    assert_eq!(
+        located(&harness, &session).await,
+        [checkout_of(&instance, repository::NAME)]
     );
 
     harness.teardown().await;
