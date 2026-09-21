@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::process::Command;
@@ -103,6 +103,15 @@ async fn read(directory: &Path) -> Result<Git, String> {
             .parse()
             .map_err(|_| format!("git counted {unpushed:?} unpushed commits"))?,
     })
+}
+
+pub fn root(checkout: Option<&Checkout>) -> PathBuf {
+    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+
+    match checkout.and_then(|checkout| checkout.repositories.first()) {
+        Some(first) => here.join(cloned_into(first)),
+        None => here,
+    }
 }
 
 /// The directory `git clone` would choose for itself, named so the checkout after it can find it.

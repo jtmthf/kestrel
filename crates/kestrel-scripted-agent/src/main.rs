@@ -1,6 +1,7 @@
 //! A canned sequence over real stdio JSON-RPC, so the main suite drives kestrel's ACP client
 //! over the wire rather than over a shim above it, with no network and no model spend.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -41,6 +42,8 @@ struct Cli {
 async fn main() -> Result<()> {
     let script = Cli::parse().script;
     let prompted_so_far: Arc<Mutex<Vec<String>>> = Arc::default();
+    let opened_against: Arc<Mutex<Option<PathBuf>>> = Arc::default();
+    let located = Arc::clone(&opened_against);
 
     Agent
         .builder()
@@ -89,7 +92,10 @@ async fn main() -> Result<()> {
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |_new: NewSessionRequest, responder, _connection| {
+            async move |new: NewSessionRequest, responder, _connection| {
+                *opened_against
+                    .lock()
+                    .expect("where the session was opened should not be poisoned") = Some(new.cwd);
                 if script == Script::Insists {
                     return responder.respond_with_error(Error::auth_required());
                 }
@@ -120,6 +126,10 @@ async fn main() -> Result<()> {
         .on_receive_request(
             async move |prompt: PromptRequest, responder, connection| {
                 let prompted_so_far = Arc::clone(&prompted_so_far);
+                let located = located
+                    .lock()
+                    .expect("where the session was opened should not be poisoned")
+                    .clone();
                 let prompted: String = prompt
                     .prompt
                     .iter()
@@ -139,7 +149,7 @@ async fn main() -> Result<()> {
                         so_far.push(prompted.clone());
                         earlier
                     };
-                    let stop = play(script, &prompted, &earlier, &connection).await?;
+                    let stop = play(script, &prompted, &earlier, located, &connection).await?;
                     responder.respond(PromptResponse::new(stop))
                 })
             },
@@ -153,6 +163,7 @@ async fn play(
     script: Script,
     prompted: &str,
     earlier: &[String],
+    located: Option<PathBuf>,
     connection: &ConnectionTo<Client>,
 ) -> Result<StopReason> {
     if script == Script::Dawdles {
@@ -176,6 +187,14 @@ async fn play(
             false => "I forgot part of the earlier context",
         };
         say(connection, "message-1", message)?;
+        return Ok(StopReason::EndTurn);
+    }
+    if script == Script::Locates {
+        let said = match located {
+            Some(directory) => directory.display().to_string(),
+            None => "no session was opened".to_owned(),
+        };
+        say(connection, "message-1", &said)?;
         return Ok(StopReason::EndTurn);
     }
     if script == Script::Echoes {

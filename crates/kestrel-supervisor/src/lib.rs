@@ -284,7 +284,12 @@ async fn conversation(
     match written(home, credentials.files, diagnostics) {
         Ok(written) => {
             attending.written = written;
-            Ok(Some(Conversation::open(runtime, provider, prompt)))
+            Ok(Some(Conversation::open(
+                runtime,
+                provider,
+                prompt,
+                checkout::root(attending.checkout.as_ref()),
+            )))
         }
         Err(because) => {
             diagnostics.info(&because);

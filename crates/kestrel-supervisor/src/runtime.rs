@@ -76,7 +76,12 @@ pub struct Conversation {
 impl Conversation {
     /// `provider` reaches the agent's own process and nothing else: not this one's
     /// environment, not a file, and not ACP, which carries no credentials (ADR-0007).
-    pub fn open(runtime: &Runtime, provider: BTreeMap<String, String>, first: String) -> Self {
+    pub fn open(
+        runtime: &Runtime,
+        provider: BTreeMap<String, String>,
+        first: String,
+        root: PathBuf,
+    ) -> Self {
         let (prompts, prompted) = mpsc::unbounded_channel();
         let (answered, turns) = mpsc::unbounded_channel();
         prompts
@@ -87,6 +92,7 @@ impl Conversation {
             runtime.auth.clone(),
             runtime.model.clone(),
             provider,
+            root,
             prompted,
             answered,
         ));
@@ -134,6 +140,7 @@ async fn conversing(
     auth: Option<String>,
     model: Option<String>,
     provider: BTreeMap<String, String>,
+    root: PathBuf,
     mut prompts: mpsc::UnboundedReceiver<String>,
     turns: mpsc::UnboundedSender<Worked>,
 ) {
@@ -194,7 +201,7 @@ async fn conversing(
             let turns = turns.clone();
 
             async move |connection: ConnectionTo<agent_client_protocol::Agent>| {
-                let conversed = set_up(&connection, auth, model, &heard).await?;
+                let conversed = set_up(&connection, auth, model, root, &heard).await?;
 
                 while let Some(prompt) = prompts.recv().await {
                     let answered = connection
@@ -239,6 +246,7 @@ async fn set_up(
     connection: &ConnectionTo<agent_client_protocol::Agent>,
     auth: Option<String>,
     model: Option<String>,
+    root: PathBuf,
     heard: &Mutex<Heard>,
 ) -> Result<SessionId, Error> {
     let initialized = connection
@@ -275,7 +283,7 @@ async fn set_up(
     }
 
     let set_up = connection
-        .send_request(NewSessionRequest::new(working_directory()))
+        .send_request(NewSessionRequest::new(root))
         .block_task()
         .await
         .map_err(|error| unlogged_in(error, &initialized.auth_methods))?;
@@ -418,10 +426,6 @@ fn selectable_values(options: &SessionConfigSelectOptions) -> impl Iterator<Item
     };
 
     values.into_iter()
-}
-
-fn working_directory() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
 /// Why a turn that stopped for anything but ending it ends the conversation too.

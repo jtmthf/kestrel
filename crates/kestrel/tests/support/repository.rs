@@ -10,11 +10,45 @@ use tempfile::TempDir;
 pub const NAME: &str = "kestrel";
 pub const BRANCH: &str = "main";
 pub const EXISTING_BRANCH: &str = "kestrel/existing";
+/// A second repository, for a Workspace that declares more than one.
+pub const OTHER: &str = "companion";
 
 pub fn url() -> &'static str {
     static REPOSITORY: OnceLock<(TempDir, String)> = OnceLock::new();
 
     &REPOSITORY.get_or_init(initialized).1
+}
+
+pub fn other_url() -> &'static str {
+    static REPOSITORY: OnceLock<(TempDir, String)> = OnceLock::new();
+
+    &REPOSITORY
+        .get_or_init(|| {
+            let directory = TempDir::new().expect("a temporary directory");
+            let repository = directory.path().join(OTHER);
+            std::fs::create_dir(&repository).expect("the repository should be made");
+            std::fs::write(repository.join("README.md"), "another repository\n")
+                .expect("the repository should have something in it");
+            for arguments in [
+                vec!["init", "--initial-branch", BRANCH],
+                vec!["add", "README.md"],
+                vec![
+                    "-c",
+                    "user.name=kestrel",
+                    "-c",
+                    "user.email=kestrel@example.com",
+                    "commit",
+                    "--message",
+                    "the commit the branch points at",
+                ],
+            ] {
+                git(&repository, &arguments);
+            }
+            let url = format!("file://{}", repository.display());
+
+            (directory, url)
+        })
+        .1
 }
 
 fn initialized() -> (TempDir, String) {

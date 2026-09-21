@@ -51,6 +51,8 @@ pub enum Script {
     /// Speaks, but takes long enough over the turn that the control plane can be killed and
     /// restarted while the Run is still in flight.
     Lingers,
+    /// Says the directory its session was opened against, and nothing else.
+    Locates,
 }
 
 impl Script {
@@ -70,6 +72,7 @@ impl Script {
             Script::Insists => "insists",
             Script::Dawdles => "dawdles",
             Script::Lingers => "lingers",
+            Script::Locates => "locates",
         }
     }
 }
