@@ -164,6 +164,42 @@ impl<'a> Log<'a> {
         })
     }
 
+    /// What one participant said after a Turn was prompted, oldest first, which is that Turn's
+    /// response to report.
+    pub async fn said_since(
+        &mut self,
+        session: &Session,
+        seq: i64,
+        participant: &str,
+    ) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT body
+             FROM transcript_entry
+             WHERE session_id = ? AND seq > ?
+               AND json_extract(body, '$.kind') = 'said'
+             ORDER BY seq",
+        )
+        .bind(session.id.to_string())
+        .bind(seq)
+        .fetch_all(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading what was said in session {}", session.id))?;
+
+        let mut said = Vec::new();
+        for row in rows {
+            if let Entry::Said {
+                participant: who,
+                message,
+            } = serde_json::from_str(row.get("body"))?
+                && who == participant
+            {
+                said.push(message);
+            }
+        }
+
+        Ok(said)
+    }
+
     /// The Brief, if nobody has said anything since it: participants joining and Runs starting
     /// are not something said.
     pub async fn unfollowed_brief(&mut self, session: &Session) -> Result<Option<String>> {

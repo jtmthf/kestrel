@@ -5,8 +5,8 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 use crate::domain::{
     Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
-    Organization, Session, SubscriptionProfile, Templates, Trigger, TriggerId, TriggerState,
-    Workspace,
+    Organization, Session, SessionId, SubscriptionProfile, Templates, Trigger, TriggerId,
+    TriggerState, Workspace,
 };
 use crate::filter::{Attribute, Filter};
 use crate::store::{agent, integration, organization, profile, workspace};
@@ -255,6 +255,36 @@ impl<'a> Triggers<'a> {
             })?;
 
         trigger(self.connection, &row).await
+    }
+
+    /// The Trigger whose opening firing made this Session, if any: the authority a follow-up
+    /// into that Session is judged by.
+    pub async fn opening_of(&mut self, session: SessionId) -> Result<Option<Trigger>> {
+        let row = sqlx::query(
+            "SELECT trigger_id
+             FROM firing
+             WHERE session_id = ? AND outcome = 'opened'
+             ORDER BY fired_at, trigger_id
+             LIMIT 1",
+        )
+        .bind(session.to_string())
+        .fetch_optional(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading what opened the session {session}"))?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let id = row.get::<String, _>("trigger_id").parse::<TriggerId>()?;
+        let trigger_row = sqlx::query(triggers_where!("id = ?"))
+            .bind(id.to_string())
+            .fetch_optional(&mut *self.connection)
+            .await?;
+
+        match trigger_row {
+            Some(row) => Ok(Some(trigger(&mut *self.connection, &row).await?)),
+            None => Ok(None),
+        }
     }
 
     pub async fn due_at(&mut self, trigger: &Trigger) -> Result<Option<Timestamp>> {

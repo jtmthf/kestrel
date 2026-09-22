@@ -235,18 +235,20 @@ pub struct EventRefusal {
     pub observed_at: Timestamp,
 }
 
-/// A Run's exit status on its way back to the surface that started the Session, composed when
-/// the Run ended and posted once however many attempts that takes.
+/// Something kestrel says back on the surface that started the Session: a completed Turn's
+/// response, or the Run's own final Outcome. Posted once however many attempts that takes.
+/// `turn` is the Turn's seq, or `None` for the Run's own outcome.
 #[derive(Debug, Clone)]
-pub struct Outcome {
+pub struct Delivery {
     pub run: RunId,
+    pub turn: Option<i64>,
     pub organization: OrganizationId,
     pub integration: IntegrationId,
     pub event: EventRecordId,
     pub subject: i64,
     pub body: String,
-    /// Set before a request goes out and left set: a Run whose Session was told nothing yet
-    /// but which has been attempted may already have a comment on the issue.
+    /// Set before a request goes out and left set: a Delivery that has been attempted may
+    /// already have a comment on the issue, and is read back rather than posted twice.
     pub attempted_at: Option<Timestamp>,
 }
 

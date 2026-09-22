@@ -1062,6 +1062,13 @@ impl Harness {
             .expect("the claim should ask")
     }
 
+    /// Prompts a Run between turns with what is held for it, the way the work role's sweep does.
+    pub async fn prompt_waiting(&self) {
+        work::occupy(&self.store, 1, &[SERIALIZED.to_owned()])
+            .await
+            .expect("the occupancy should ask");
+    }
+
     pub async fn block_run(&self, run: &Run, blocker: &Run) {
         let mut tx = self.store.begin().await.expect("a transaction");
         tx.sessions()

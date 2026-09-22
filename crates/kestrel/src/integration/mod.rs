@@ -1,6 +1,6 @@
 pub mod credential;
+pub mod delivery;
 pub mod github;
-pub mod outcome;
 pub mod webhook;
 
 use anyhow::{Result, bail};

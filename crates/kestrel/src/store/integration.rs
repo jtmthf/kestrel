@@ -5,9 +5,9 @@ use sqlx::{Row, SqliteConnection};
 
 use crate::declined::Declined;
 use crate::domain::{
-    Connection, Direction, Event, EventRecordId, EventRefusal, GithubConnection, Integration,
-    IntegrationId, IntegrationKind, Occurrence, Organization, OrganizationId, Outcome, Run,
-    Session,
+    Connection, Delivery, Direction, Event, EventRecordId, EventRefusal, GithubConnection,
+    Integration, IntegrationId, IntegrationKind, Occurrence, Organization, OrganizationId, Run,
+    RunId, Session,
 };
 use crate::integration::credential::Token;
 use crate::integration::webhook::Verifier;
@@ -457,32 +457,35 @@ impl<'a> Integrations<'a> {
         Ok(())
     }
 
-    /// Due the moment it is recorded, and recorded in the transaction that ends the Run, so a
-    /// Run that ended has an outcome to deliver and one that did not has nothing to withdraw.
-    pub async fn record_outcome(
+    /// Due the moment it is recorded, and recorded in the transaction that answered the Turn or
+    /// ended the Run, so what kestrel said has a delivery waiting and what it did not say has
+    /// nothing to withdraw.
+    pub async fn record_delivery(
         &mut self,
         run: &Run,
         integration: &Integration,
         event: &Event,
+        turn: Option<i64>,
         body: &str,
     ) -> Result<()> {
         let subject = crate::integration::github::EventData::new(&event.occurrence)
             .subject_issue()
             .with_context(|| {
                 format!(
-                    "the event {} names no issue the outcome could reach",
+                    "the event {} names no issue a delivery could reach",
                     event.record_id
                 )
             })?;
 
         sqlx::query(
-            "INSERT INTO outcome
-                 (run_id, organization_id, integration_id, event_record_id, subject, body, due_at,
-                  recorded_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT (run_id) DO NOTHING",
+            "INSERT INTO delivery
+                 (run_id, turn, organization_id, integration_id, event_record_id, subject, body,
+                  due_at, recorded_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (run_id, turn) DO NOTHING",
         )
         .bind(run.id.to_string())
+        .bind(turn.unwrap_or(0))
         .bind(run.organization.to_string())
         .bind(integration.id.to_string())
         .bind(event.record_id.to_string())
@@ -497,64 +500,79 @@ impl<'a> Integrations<'a> {
         Ok(())
     }
 
-    pub async fn outcomes_due(&mut self, at: Timestamp) -> Result<Vec<Outcome>> {
+    /// Whether any of a Run's Turns has already said its response: a Run whose Turns did adds
+    /// nothing by saying its own success over again (ADR-0024).
+    pub async fn has_turn_deliveries(&mut self, run: RunId) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT EXISTS (SELECT 1 FROM delivery WHERE run_id = ? AND turn > 0) AS said",
+        )
+        .bind(run.to_string())
+        .fetch_one(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading what run {run} has said back"))?;
+
+        Ok(row.get("said"))
+    }
+
+    pub async fn deliveries_due(&mut self, at: Timestamp) -> Result<Vec<Delivery>> {
         sqlx::query(
-            "SELECT run_id, organization_id, integration_id, event_record_id, subject, body,
+            "SELECT run_id, turn, organization_id, integration_id, event_record_id, subject, body,
                     attempted_at
-             FROM outcome
+             FROM delivery
              WHERE due_at <= ?
              ORDER BY due_at",
         )
         .bind(due(at))
         .fetch_all(&mut *self.connection)
         .await
-        .context("reading which outcomes are due a delivery")?
+        .context("reading which deliveries are due")?
         .iter()
-        .map(outcome)
+        .map(delivery)
         .collect()
     }
 
     /// Committed before the request goes out rather than after it comes back: what this
     /// records is that a comment may now exist, which is true from the moment kestrel asks.
-    pub async fn attempting_outcome(&mut self, outcome: &Outcome, at: Timestamp) -> Result<()> {
-        sqlx::query("UPDATE outcome SET attempted_at = ? WHERE run_id = ?")
+    pub async fn attempting_delivery(&mut self, delivery: &Delivery, at: Timestamp) -> Result<()> {
+        sqlx::query("UPDATE delivery SET attempted_at = ? WHERE run_id = ? AND turn = ?")
             .bind(at.to_string())
-            .bind(outcome.run.to_string())
+            .bind(delivery.run.to_string())
+            .bind(delivery.turn.unwrap_or(0))
             .execute(&mut *self.connection)
             .await
-            .with_context(|| {
-                format!("recording an attempt at the outcome of run {}", outcome.run)
-            })?;
+            .with_context(|| format!("recording an attempt at what run {} said", delivery.run))?;
 
         Ok(())
     }
 
-    pub async fn outcome_delivered(&mut self, outcome: &Outcome, to: &str) -> Result<()> {
+    pub async fn delivery_delivered(&mut self, delivery: &Delivery, to: &str) -> Result<()> {
         sqlx::query(
-            "UPDATE outcome SET delivered_at = ?, delivered_to = ?, due_at = NULL
-             WHERE run_id = ?",
+            "UPDATE delivery SET delivered_at = ?, delivered_to = ?, due_at = NULL
+             WHERE run_id = ? AND turn = ?",
         )
         .bind(Timestamp::now().to_string())
         .bind(to)
-        .bind(outcome.run.to_string())
+        .bind(delivery.run.to_string())
+        .bind(delivery.turn.unwrap_or(0))
         .execute(&mut *self.connection)
         .await
-        .with_context(|| format!("recording the outcome of run {} as said", outcome.run))?;
+        .with_context(|| format!("recording what run {} said as delivered", delivery.run))?;
 
         Ok(())
     }
 
-    pub async fn outcome_deferred(
+    pub async fn delivery_deferred(
         &mut self,
-        outcome: &Outcome,
+        delivery: &Delivery,
         due_again_at: Timestamp,
     ) -> Result<()> {
-        sqlx::query("UPDATE outcome SET due_at = ? WHERE run_id = ?")
+        sqlx::query("UPDATE delivery SET due_at = ? WHERE run_id = ? AND turn = ?")
             .bind(due(due_again_at))
-            .bind(outcome.run.to_string())
+            .bind(delivery.run.to_string())
+            .bind(delivery.turn.unwrap_or(0))
             .execute(&mut *self.connection)
             .await
-            .with_context(|| format!("deferring the outcome of run {}", outcome.run))?;
+            .with_context(|| format!("deferring what run {} said", delivery.run))?;
 
         Ok(())
     }
@@ -701,9 +719,13 @@ fn event(row: &SqliteRow) -> Result<Event> {
     })
 }
 
-fn outcome(row: &SqliteRow) -> Result<Outcome> {
-    Ok(Outcome {
+fn delivery(row: &SqliteRow) -> Result<Delivery> {
+    Ok(Delivery {
         run: row.get::<String, _>("run_id").parse()?,
+        turn: match row.get::<i64, _>("turn") {
+            0 => None,
+            turn => Some(turn),
+        },
         organization: row.get::<String, _>("organization_id").parse()?,
         integration: row.get::<String, _>("integration_id").parse()?,
         event: row.get::<String, _>("event_record_id").parse()?,
