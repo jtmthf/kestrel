@@ -1424,6 +1424,136 @@ async fn the_operator_documents_trigger_answers_and_refusals() {
 }
 
 #[tokio::test]
+async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            "kestrel",
+            &["https://github.com/jtmthf/kestrel".to_owned()],
+            "main",
+        )
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+    let fields = "name,every,cron,zone,filter";
+    let declare = |extra: &'static [&'static str]| {
+        let mut args = vec![
+            "trigger",
+            "declare",
+            "triage",
+            "--organization",
+            "acme",
+            "--brief",
+            "Triage",
+            "--workspace",
+            "kestrel",
+            "--agent",
+            "builder",
+            "--json",
+            fields,
+        ];
+        args.extend_from_slice(extra);
+        args
+    };
+
+    let triage = recorded(
+        &client(
+            &harness,
+            &declare(&["--cron", "0 9 * * 1-5", "--zone", "America/New_York"]),
+        )
+        .await,
+    );
+    assert_eq!(
+        triage,
+        [json!({
+            "name": "triage",
+            "every": null,
+            "cron": "0 9 * * 1-5",
+            "zone": "America/New_York",
+            "filter": null,
+        })]
+    );
+    let listed = recorded(
+        &client(
+            &harness,
+            &[
+                "trigger",
+                "list",
+                "--organization",
+                "acme",
+                "--json",
+                fields,
+            ],
+        )
+        .await,
+    );
+    assert_eq!(listed, triage);
+    let shown = recorded(
+        &client(
+            &harness,
+            &[
+                "trigger",
+                "show",
+                "triage",
+                "--organization",
+                "acme",
+                "--json",
+                fields,
+            ],
+        )
+        .await,
+    );
+    assert_eq!(shown, triage);
+
+    for refused in [
+        declare(&["--cron", "0 9 * * *", "--zone", "UTC", "--every", "1h"]),
+        declare(&[
+            "--cron",
+            "0 9 * * *",
+            "--zone",
+            "UTC",
+            "--filter",
+            r#"{"exact":{"type":"x"}}"#,
+        ]),
+        declare(&["--cron", "0 9 * * *"]),
+    ] {
+        failed(&client(&harness, &refused).await);
+    }
+
+    let triggers = triggers_of("acme");
+    for body in [
+        json!({ "cron": "0 9 * * *", "every": "1h" }),
+        json!({ "cron": "0 9 * * *", "zone": "UTC", "filter": { "exact": { "type": "x" } } }),
+        json!({ "cron": "0 9 * * *" }),
+        json!({ "every": "1h", "zone": "UTC" }),
+        json!({ "cron": "0 9 * * *", "zone": "Mars/Olympus_Mons" }),
+        json!({ "cron": "* * * * *", "zone": "UTC" }),
+    ] {
+        let mut declaration = json!({
+            "name": "broken",
+            "brief": "x",
+            "workspace": "kestrel",
+            "agent": "builder",
+        });
+        declaration
+            .as_object_mut()
+            .expect("a declaration is an object")
+            .extend(body.as_object().expect("a body is an object").clone());
+        let (status, refusal) = declared(&harness, &triggers, &declaration).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {refusal}"
+        );
+    }
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn the_operator_documents_session_and_run_answers_and_refusals() {
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;

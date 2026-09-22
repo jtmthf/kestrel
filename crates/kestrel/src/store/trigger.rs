@@ -3,10 +3,11 @@ use jiff::{SignedDuration, Timestamp};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
+use crate::cron::Cron;
 use crate::domain::{
     Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
-    Organization, Session, SubscriptionProfile, Templates, Trigger, TriggerId, TriggerState,
-    Workspace,
+    Organization, Schedule, Session, SessionId, SubscriptionProfile, Templates, Trigger,
+    TriggerId, TriggerState, Workspace,
 };
 use crate::filter::{Attribute, Filter};
 use crate::store::{agent, integration, organization, profile, workspace};
@@ -14,7 +15,7 @@ use crate::store::{agent, integration, organization, profile, workspace};
 macro_rules! triggers_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, organization_id, name, filter, every_ms, due_at, brief, branch, correlation, on_miss, workspace_id,
+            "SELECT id, organization_id, name, filter, every_ms, cron, zone, due_at, brief, branch, correlation, on_miss, workspace_id,
                     agent_id, subscription_profile_id, state, applied, declared_at
              FROM trigger
              WHERE ",
@@ -67,28 +68,23 @@ impl<'a> Triggers<'a> {
             declared_at: Timestamp::now(),
         };
 
-        let (filter, every, due_at) = match fires {
-            Fires::On(filter) => (Some(filter.to_json().to_string()), None, None),
-            Fires::Every(every) => (
-                None,
-                Some(i64::try_from(every.as_millis())?),
-                Some(trigger.declared_at.checked_add(*every)?.to_string()),
-            ),
-        };
+        let columns = Columns::of(fires, trigger.declared_at)?;
 
         sqlx::query(
             "INSERT INTO trigger
-                 (id, organization_id, name, filter, every_ms, due_at, brief, branch, correlation,
-                  on_miss, workspace_id, agent_id, subscription_profile_id, state, applied,
-                  enabled_at, declared_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 (id, organization_id, name, filter, every_ms, cron, zone, due_at, brief, branch,
+                  correlation, on_miss, workspace_id, agent_id, subscription_profile_id, state,
+                  applied, enabled_at, declared_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(trigger.id.to_string())
         .bind(organization.id.to_string())
         .bind(&trigger.name)
-        .bind(filter)
-        .bind(every)
-        .bind(due_at)
+        .bind(columns.filter)
+        .bind(columns.every)
+        .bind(columns.cron)
+        .bind(columns.zone)
+        .bind(columns.due_at)
         .bind(templates.brief.to_string())
         .bind(templates.branch.as_ref().map(ToString::to_string))
         .bind(templates.correlation.as_ref().map(ToString::to_string))
@@ -127,25 +123,20 @@ impl<'a> Triggers<'a> {
         applied: bool,
     ) -> Result<Trigger> {
         let declared_at = Timestamp::now();
-        let (filter, every, due_at) = match fires {
-            Fires::On(filter) => (Some(filter.to_json().to_string()), None, None),
-            Fires::Every(every) => (
-                None,
-                Some(i64::try_from(every.as_millis())?),
-                Some(declared_at.checked_add(*every)?.to_string()),
-            ),
-        };
+        let columns = Columns::of(fires, declared_at)?;
 
         sqlx::query(
             "UPDATE trigger
-                SET filter = ?, every_ms = ?, due_at = ?, brief = ?, branch = ?, correlation = ?,
-                    on_miss = ?, workspace_id = ?, agent_id = ?, subscription_profile_id = ?,
-                    applied = ?, declared_at = ?
+                SET filter = ?, every_ms = ?, cron = ?, zone = ?, due_at = ?, brief = ?,
+                    branch = ?, correlation = ?, on_miss = ?, workspace_id = ?, agent_id = ?,
+                    subscription_profile_id = ?, applied = ?, declared_at = ?
               WHERE id = ?",
         )
-        .bind(filter)
-        .bind(every)
-        .bind(due_at)
+        .bind(columns.filter)
+        .bind(columns.every)
+        .bind(columns.cron)
+        .bind(columns.zone)
+        .bind(columns.due_at)
         .bind(templates.brief.to_string())
         .bind(templates.branch.as_ref().map(ToString::to_string))
         .bind(templates.correlation.as_ref().map(ToString::to_string))
@@ -255,6 +246,36 @@ impl<'a> Triggers<'a> {
             })?;
 
         trigger(self.connection, &row).await
+    }
+
+    /// The Trigger whose opening firing made this Session, if any: the authority a follow-up
+    /// into that Session is judged by.
+    pub async fn opening_of(&mut self, session: SessionId) -> Result<Option<Trigger>> {
+        let row = sqlx::query(
+            "SELECT trigger_id
+             FROM firing
+             WHERE session_id = ? AND outcome = 'opened'
+             ORDER BY fired_at, trigger_id
+             LIMIT 1",
+        )
+        .bind(session.to_string())
+        .fetch_optional(&mut *self.connection)
+        .await
+        .with_context(|| format!("reading what opened the session {session}"))?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let id = row.get::<String, _>("trigger_id").parse::<TriggerId>()?;
+        let trigger_row = sqlx::query(triggers_where!("id = ?"))
+            .bind(id.to_string())
+            .fetch_optional(&mut *self.connection)
+            .await?;
+
+        match trigger_row {
+            Some(row) => Ok(Some(trigger(&mut *self.connection, &row).await?)),
+            None => Ok(None),
+        }
     }
 
     pub async fn due_at(&mut self, trigger: &Trigger) -> Result<Option<Timestamp>> {
@@ -562,7 +583,7 @@ fn matching(query: &mut QueryBuilder<Sqlite>, trigger: &Trigger) {
     query.push("(");
     predicate(query, &trigger.filter());
     // A webhook can name any source and type, so only kestrel's own minting elapses a schedule.
-    if matches!(trigger.fires, Fires::Every(_)) {
+    if matches!(trigger.fires, Fires::Scheduled(_)) {
         query.push(" AND event.integration_id IS NULL");
     }
     query
@@ -653,6 +674,45 @@ fn operand(query: &mut QueryBuilder<Sqlite>, attribute: &Attribute) {
     query.push(column);
 }
 
+struct Columns {
+    filter: Option<String>,
+    every: Option<i64>,
+    cron: Option<String>,
+    zone: Option<String>,
+    due_at: Option<String>,
+}
+
+impl Columns {
+    fn of(fires: &Fires, declared_at: Timestamp) -> Result<Self> {
+        let (filter, every, cron, zone) = match fires {
+            Fires::On(filter) => (Some(filter.to_json().to_string()), None, None, None),
+            Fires::Scheduled(Schedule::Every(every)) => {
+                (None, Some(i64::try_from(every.as_millis())?), None, None)
+            }
+            Fires::Scheduled(Schedule::Cron(cron)) => (
+                None,
+                None,
+                Some(cron.to_string()),
+                Some(cron.zone().to_owned()),
+            ),
+        };
+        let due_at = match fires {
+            Fires::On(_) => None,
+            Fires::Scheduled(schedule) => {
+                Some(schedule.following(declared_at, declared_at)?.to_string())
+            }
+        };
+
+        Ok(Self {
+            filter,
+            every,
+            cron,
+            zone,
+            due_at,
+        })
+    }
+}
+
 async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<Trigger> {
     let organization =
         organization::with_id(connection, row.get::<String, _>("organization_id").parse()?).await?;
@@ -702,10 +762,19 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
         fires: match (
             row.get::<Option<String>, _>("filter"),
             row.get::<Option<i64>, _>("every_ms"),
+            row.get::<Option<String>, _>("cron"),
+            row.get::<Option<String>, _>("zone"),
         ) {
-            (Some(filter), None) => Fires::On(filter.parse()?),
-            (None, Some(every)) => Fires::Every(SignedDuration::from_millis(every)),
-            _ => anyhow::bail!("a trigger fires on a filter or a schedule, and not both"),
+            (Some(filter), None, None, None) => Fires::On(filter.parse()?),
+            (None, Some(every), None, None) => {
+                Fires::Scheduled(Schedule::Every(SignedDuration::from_millis(every)))
+            }
+            (None, None, Some(cron), Some(zone)) => {
+                Fires::Scheduled(Schedule::Cron(Cron::new(&cron, &zone)?))
+            }
+            _ => anyhow::bail!(
+                "a trigger fires on a filter, an interval or a cron expression, and only one"
+            ),
         },
         templates: Templates {
             brief: row.get::<String, _>("brief").parse()?,

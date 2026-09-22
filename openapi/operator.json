@@ -1641,7 +1641,7 @@
           "trigger": {
             "allOf": [
               { "$ref": "#/components/schemas/TriggerDeclaration" },
-              { "not": { "required": ["every"] } }
+              { "not": { "anyOf": [{ "required": ["every"] }, { "required": ["cron"] }, { "required": ["zone"] }] } }
             ]
           }
         },
@@ -1687,7 +1687,9 @@
         "properties": {
           "name": { "type": "string", "minLength": 1 },
           "filter": { "type": "object", "description": "A CloudEvents filter of exact, prefix, suffix, all, any, or not." },
-          "every": { "type": "string", "description": "A duration such as `1h`, in place of a filter." },
+          "every": { "type": "string", "description": "A duration such as `1h`, counted from the declaration, in place of a filter." },
+          "cron": { "type": "string", "description": "Five fields of minute, hour, day of the month, month and day of the week, such as `0 9 * * 1-5`, in place of a filter or an interval." },
+          "zone": { "type": "string", "description": "The IANA time zone a cron expression is read in, such as `America/New_York`." },
           "brief": { "type": "string", "minLength": 1 },
           "branch": { "type": ["string", "null"] },
           "correlation": { "type": ["string", "null"] },
@@ -1699,8 +1701,9 @@
         },
         "required": ["name", "brief", "workspace", "agent"],
         "oneOf": [
-          { "required": ["filter"], "not": { "required": ["every"] } },
-          { "required": ["every"], "not": { "required": ["filter"] } }
+          { "required": ["filter"], "not": { "anyOf": [{ "required": ["every"] }, { "required": ["cron"] }, { "required": ["zone"] }] } },
+          { "required": ["every"], "not": { "anyOf": [{ "required": ["filter"] }, { "required": ["cron"] }, { "required": ["zone"] }] } },
+          { "required": ["cron", "zone"], "not": { "anyOf": [{ "required": ["filter"] }, { "required": ["every"] }] } }
         ]
       },
       "Trigger": {
@@ -1721,6 +1724,8 @@
           },
           "filter": { "type": ["object", "null"] },
           "every": { "type": ["string", "null"] },
+          "cron": { "type": ["string", "null"] },
+          "zone": { "type": ["string", "null"] },
           "admits_outsiders": { "type": "boolean", "description": "Whether the filter fires for Events from people outside the Organization." },
           "brief": { "type": "string" },
           "branch": { "type": ["string", "null"] },
@@ -1733,7 +1738,7 @@
           "applied": { "type": "boolean", "description": "Whether a trigger file declared it, rather than flags." },
           "declared_at": { "type": "string", "format": "date-time" }
         },
-        "required": ["id", "organization", "name", "state", "disabled_because", "firing_budget", "filter", "every", "admits_outsiders", "brief", "branch", "correlation", "on_miss", "workspace", "agent", "allows", "profile", "applied", "declared_at"]
+        "required": ["id", "organization", "name", "state", "disabled_because", "firing_budget", "filter", "every", "cron", "zone", "admits_outsiders", "brief", "branch", "correlation", "on_miss", "workspace", "agent", "allows", "profile", "applied", "declared_at"]
       },
       "TriggerTest": {
         "type": "object",

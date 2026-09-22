@@ -7,6 +7,7 @@ use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::cron::Cron;
 use crate::filter::{Attribute, Filter};
 use crate::integration::credential::Token;
 use crate::template::Template;
@@ -236,18 +237,20 @@ pub struct EventRefusal {
     pub observed_at: Timestamp,
 }
 
-/// A Run's exit status on its way back to the surface that started the Session, composed when
-/// the Run ended and posted once however many attempts that takes.
+/// Something kestrel says back on the surface that started the Session: a completed Turn's
+/// response, or the Run's own final Outcome. Posted once however many attempts that takes.
+/// `turn` is the Turn's seq, or `None` for the Run's own outcome.
 #[derive(Debug, Clone)]
-pub struct Outcome {
+pub struct Delivery {
     pub run: RunId,
+    pub turn: Option<i64>,
     pub organization: OrganizationId,
     pub integration: IntegrationId,
     pub event: EventRecordId,
     pub subject: i64,
     pub body: String,
-    /// Set before a request goes out and left set: a Run whose Session was told nothing yet
-    /// but which has been attempted may already have a comment on the issue.
+    /// Set before a request goes out and left set: a Delivery that has been attempted may
+    /// already have a comment on the issue, and is read back rather than posted twice.
     pub attempted_at: Option<Timestamp>,
 }
 
@@ -369,7 +372,7 @@ impl Trigger {
     pub fn filter(&self) -> Filter {
         match &self.fires {
             Fires::On(filter) => filter.clone(),
-            Fires::Every(_) => Filter::All(vec![
+            Fires::Scheduled(_) => Filter::All(vec![
                 Filter::Exact(Attribute::Source, self.source()),
                 Filter::Exact(Attribute::Type, ELAPSED.to_owned()),
             ]),
@@ -379,8 +382,19 @@ impl Trigger {
     /// The Event its schedule mints on elapsing when due, keyed by that due time so a sweep
     /// that runs twice records it once.
     pub fn elapsing(&self, due: Timestamp) -> Option<Occurrence> {
-        let Fires::Every(every) = self.fires else {
+        let Fires::Scheduled(schedule) = &self.fires else {
             return None;
+        };
+        let data = match schedule {
+            Schedule::Every(every) => serde_json::json!({
+                "trigger": self.name,
+                "every": format!("{every:#}"),
+            }),
+            Schedule::Cron(cron) => serde_json::json!({
+                "trigger": self.name,
+                "cron": cron.to_string(),
+                "zone": cron.zone(),
+            }),
         };
 
         Some(Occurrence {
@@ -390,10 +404,7 @@ impl Trigger {
             r#type: ELAPSED.to_owned(),
             subject: None,
             time: due,
-            data: serde_json::json!({
-                "trigger": self.name,
-                "every": format!("{every:#}"),
-            }),
+            data,
         })
     }
 
@@ -423,14 +434,45 @@ pub const ELAPSED: &str = "dev.kestrel.schedule.elapsed";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fires {
     On(Filter),
-    Every(SignedDuration),
+    Scheduled(Schedule),
 }
 
 impl fmt::Display for Fires {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Fires::On(filter) => filter.fmt(f),
-            Fires::Every(every) => write!(f, "every {every:#}"),
+            Fires::Scheduled(Schedule::Every(every)) => write!(f, "every {every:#}"),
+            Fires::Scheduled(Schedule::Cron(cron)) => {
+                write!(f, "on the cron {cron} in {}", cron.zone())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Schedule {
+    Every(SignedDuration),
+    Cron(Cron),
+}
+
+impl Schedule {
+    /// An interval counts from `anchor`; a cron expression ignores it.
+    pub fn following(&self, anchor: Timestamp, at: Timestamp) -> Result<Timestamp> {
+        match self {
+            Schedule::Every(every) => {
+                let elapsed = at.duration_since(anchor).as_nanos() / every.as_nanos();
+                Ok(Timestamp::from_nanosecond(
+                    anchor.as_nanosecond() + (elapsed + 1) * every.as_nanos(),
+                )?)
+            }
+            Schedule::Cron(cron) => cron.after(at),
+        }
+    }
+
+    pub fn fastest(&self) -> SignedDuration {
+        match self {
+            Schedule::Every(every) => *every,
+            Schedule::Cron(cron) => cron.fastest(),
         }
     }
 }

@@ -131,7 +131,89 @@ const ACTORS: &[&[&str]] = &[
     &["comment", "user", "login"],
 ];
 
+/// Who wrote an Event, as far as a filter can say: the login an actor comparison names, and the
+/// standing in the repository GitHub reports.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Author<'a> {
+    pub login: Option<&'a str>,
+    pub association: Option<&'a str>,
+}
+
+/// How one comparison holds of a value, so what a filter says about an author is read the way
+/// the matcher would read it.
+#[derive(Debug, Clone, Copy)]
+enum Comparison {
+    Exact,
+    Prefix,
+    Suffix,
+}
+
+impl Comparison {
+    fn holds(self, candidate: &str, value: &str) -> bool {
+        match self {
+            Comparison::Exact => candidate == value,
+            Comparison::Prefix => candidate.starts_with(value),
+            Comparison::Suffix => candidate.ends_with(value),
+        }
+    }
+}
+
+impl Author<'_> {
+    /// Whether one comparison is about who wrote the Event, and holds of this author. A
+    /// comparison about the Event's content says nothing about the author and does not hold
+    /// against them.
+    fn satisfies(self, attribute: &Attribute, value: &str, comparison: Comparison) -> bool {
+        let Attribute::Data(path) = attribute else {
+            return true;
+        };
+
+        if ACTORS
+            .iter()
+            .any(|actor| path.iter().map(String::as_str).eq(actor.iter().copied()))
+        {
+            return self
+                .login
+                .is_some_and(|login| comparison.holds(login, value));
+        }
+        if path.last().is_some_and(|key| key == "author_association") && MEMBERS.contains(&value) {
+            return self
+                .association
+                .is_some_and(|association| MEMBERS.contains(&association));
+        }
+
+        true
+    }
+}
+
 impl Filter {
+    /// Whether this filter authorizes `author` to speak in a Session it opened. A filter that
+    /// admits outsiders lets anyone; one that does not lets only the logins and member
+    /// associations it names. Comparisons about the Event's content are ignored, so a remark
+    /// from an authorized author is admitted even though the command prefix the filter was
+    /// written to match does not fit it.
+    pub fn admits(&self, author: Author<'_>) -> bool {
+        self.admits_outsiders() || self.allows(author)
+    }
+
+    fn allows(&self, author: Author<'_>) -> bool {
+        match self {
+            Filter::Exact(attribute, value) => {
+                author.satisfies(attribute, value, Comparison::Exact)
+            }
+            Filter::Prefix(attribute, value) => {
+                author.satisfies(attribute, value, Comparison::Prefix)
+            }
+            Filter::Suffix(attribute, value) => {
+                author.satisfies(attribute, value, Comparison::Suffix)
+            }
+            Filter::All(filters) => filters.iter().all(|filter| filter.allows(author)),
+            Filter::Any(filters) => filters.iter().any(|filter| filter.allows(author)),
+            // A negation of something that says nothing about the author says nothing about them.
+            Filter::Not(filter) if filter.admits_outsiders() => true,
+            Filter::Not(filter) => !filter.allows(author),
+        }
+    }
+
     /// Judged from the filter's shape alone, so it errs toward warning: only GitHub tells kestrel
     /// who an actor is, and only a comparison every match must pass can be trusted to decline one.
     pub fn admits_outsiders(&self) -> bool {
@@ -358,6 +440,74 @@ mod tests {
             let parsed: Filter = filter.parse().expect("the filter should parse");
             assert_eq!(parsed.admits_outsiders(), admits, "{filter}");
         }
+    }
+
+    fn author<'a>(login: &'a str, association: Option<&'a str>) -> Author<'a> {
+        Author {
+            login: Some(login),
+            association,
+        }
+    }
+
+    #[test]
+    fn a_filter_authorizes_the_actors_it_names_and_admits_outsiders_it_does_not() {
+        let dogfood: Filter = serde_json::json!({"all": [
+            {"exact": {"source": "https://github.com/jtmthf/kestrel"}},
+            {"exact": {"type": "com.github.issue_comment.created"}},
+            {"any": [
+                {"all": [
+                    {"exact": {"data.user.login": "jtmthf"}},
+                    {"prefix": {"data.body": "@kestrel"}}
+                ]},
+                {"all": [
+                    {"exact": {"data.comment.user.login": "jtmthf"}},
+                    {"prefix": {"data.comment.body": "@kestrel"}}
+                ]}
+            ]}
+        ]})
+        .to_string()
+        .parse()
+        .expect("the filter should parse");
+
+        // The command prefix does not fit a remark, and says nothing about who wrote it.
+        assert!(dogfood.admits(author("jtmthf", None)));
+        assert!(!dogfood.admits(author("a-stranger", None)));
+        assert!(!dogfood.admits(Author::default()));
+
+        // A filter that admits outsiders authorizes whoever the comment came from.
+        let labelled: Filter = serde_json::json!({"exact": {"type": "com.github.issues.labeled"}})
+            .to_string()
+            .parse()
+            .expect("the filter should parse");
+        assert!(labelled.admits(author("a-stranger", None)));
+    }
+
+    #[test]
+    fn a_filter_authorizes_a_member_association_where_it_names_one() {
+        let members: Filter =
+            serde_json::json!({"exact": {"data.issue.author_association": "MEMBER"}})
+                .to_string()
+                .parse()
+                .expect("the filter should parse");
+
+        assert!(members.admits(author("anyone", Some("OWNER"))));
+        assert!(members.admits(author("anyone", Some("COLLABORATOR"))));
+        assert!(!members.admits(author("anyone", Some("CONTRIBUTOR"))));
+        assert!(!members.admits(author("anyone", None)));
+    }
+
+    #[test]
+    fn a_negation_about_the_events_content_does_not_decline_an_author() {
+        let filter: Filter = serde_json::json!({"all": [
+            {"exact": {"data.user.login": "jtmthf"}},
+            {"not": {"exact": {"data.body": "not this"}}}
+        ]})
+        .to_string()
+        .parse()
+        .expect("the filter should parse");
+
+        assert!(filter.admits(author("jtmthf", None)));
+        assert!(!filter.admits(author("a-stranger", None)));
     }
 
     #[test]

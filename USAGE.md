@@ -769,8 +769,8 @@ pick which agent's credentials the run gets
 `kestrel trigger list` shows each one, and what it matches:
 
 ```
-id                                    name       state    workspace  agent    every  filter
-01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel    builder  -      {"all":[{"exact":{"source":"https://github.com/jtmthf/kestrel"}},…]}
+id                                    name       state    workspace  agent    every  cron  filter
+01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel    builder  -      -     {"all":[{"exact":{"source":"https://github.com/jtmthf/kestrel"}},…]}
 ```
 
 Before trusting a trigger with work, ask it about an event kestrel already recorded. A test starts
@@ -842,6 +842,29 @@ nothing shorter than six minutes is accepted. Elapsings missed while kestrel was
 once each, and a disabled trigger's schedule does not elapse at all. A session opened this way has no
 issue to report to, so its outcome goes nowhere.
 
+An interval drifts with whenever it was declared and cannot skip a weekend. Work that belongs at a
+time of day, or on certain days, declares a cron expression and the time zone it is read in in place
+of `--every`:
+
+```sh
+kestrel trigger declare triage \
+  --cron '0 9 * * 1-5' \
+  --zone America/New_York \
+  --brief 'Triage what arrived since yesterday, as of {{ event.time }}' \
+  --workspace kestrel \
+  --agent builder
+```
+
+The expression is five fields — minute, hour, day of the month, month and day of the week (0 is
+Sunday) — each `*`, a number, a range such as `1-5`, a list such as `0,30`, or a step over `*` or a
+range such as `*/15`. There are no names, no `?`, `L` or `W`, and an expression restricts the day of
+the month or the day of the week, never both. The zone is required; `UTC` is one. A time the clocks
+spring past elapses at the moment they jump, and a time they fall back over elapses on its first
+pass, so a daily trigger fires once each day across a change. It elapses on the same path an
+interval does, with `data` holding the expression and the zone in place of the interval, and an
+expression whose closest two times are nearer than six minutes is refused the way a short interval
+is. `trigger show` prints the expression and its zone, `trigger list` the expression.
+
 `trigger test` needs no event for a scheduled trigger. Given none, it renders against the event the
 next elapsing would mint, and says when that is due:
 
@@ -861,26 +884,33 @@ brief        Sweep the backlog for stale issues as of 2026-09-17T14:02:03.118Z
 ## The answer comes back to the issue
 
 An integration carries kestrel's requests outbound as well as events inbound, and the one you
-registered above declares both. So when the run ends — stopped, sealed or failed — the issue that
-started it gets a comment:
+registered above declares both. Each completed turn of a run posts the agent's answer on the issue
+that started it, promptly, before the run is over:
 
 ```
-**kestrel** — run succeeded
+Opened https://github.com/jtmthf/kestrel/pull/92 with the fix and a regression test.
 
-> Opened https://github.com/jtmthf/kestrel/pull/92 with the fix and a regression test.
+<!-- kestrel run 01a07c33-2f88-7a05-bb31-58c0d9e4d7f0 turn 1 -->
+```
+
+The pull request is the agent's own, opened with the `gh` its run carries and the `GH_TOKEN` set
+above; kestrel reasons about no git and never learns which pull request was opened — if there is a
+link there, it is there because the agent named it.
+
+A run whose turns already said their answers adds nothing by saying it succeeded, so those turns are
+all the issue gets. A run that failed says so, and says why, and a run that answered no turn at all
+still says how it ended; that comment names the run and quotes the last thing the agent said:
+
+```
+**kestrel** — run failed: the environment could not be provisioned
 
 Session `01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04` · run `01a07c33-2f88-7a05-bb31-58c0d9e4d7f0`
 ```
 
-The quoted part is the last thing the agent said. The pull request is the agent's own, opened with the
-`gh` its run carries and the `GH_TOKEN` set above; kestrel reasons about no git and never learns
-which pull request was opened — if there is a link there, it is there because the agent named it.
-A run that failed gets a comment too, saying so and saying why.
-
-Exactly one comment per run, whatever happens in between. The comment carries a marker naming the
-run, so a control plane killed between sending it and hearing back reads the issue on the way up,
-recognises its own comment and does not leave a second. A comment GitHub refuses is tried again on
-the next sweep and never changes how the run ended.
+Every comment carries an invisible marker naming the run and, for a turn, the turn, so a control
+plane killed between sending it and hearing back reads the issue on the way up, recognises its own
+comments and does not leave duplicates. A comment GitHub refuses is tried again on the next sweep
+and never changes how the run ended.
 
 Register an integration with `--carries inbound` and kestrel watches the repository without ever
 writing to it.
@@ -894,9 +924,11 @@ agent conversation, on the same supervisor and instance.
 
 If the agent is still working on a turn when the comment arrives, the message waits durably. Every
 message that arrived during the turn becomes the next one, in the order they arrived, once the agent
-answers. A comment on an issue whose session has sealed starts nothing: only a command does, opening
-a new session whose `continues` field names the sealed one, on the sealed session's branch. A command
-is never also posted as a message.
+answers. Only a comment from someone the trigger that opened the session authorizes feeds it: a
+trigger that names its author takes only that author's remarks, while one that admits outsiders
+takes anyone's. A comment on an issue whose session has sealed starts nothing: only a command does,
+opening a new session whose `continues` field names the sealed one, on the sealed session's branch. A
+command is never also posted as a message.
 
 A run ends when you stop it, when its session seals, or when it fails:
 

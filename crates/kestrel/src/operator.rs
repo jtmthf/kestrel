@@ -17,11 +17,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::agent::{self, NotOffered};
+use crate::cron::Cron;
 use crate::declaration;
 use crate::declined::Declined;
 use crate::domain::{
     self, Agent, Connection, CorrelationMiss, Direction, EventRecordId, EventRefusal, Fires,
-    Firing, Integration, Occurrence, Organization, Run, Session, SessionId, SessionState,
+    Firing, Integration, Occurrence, Organization, Run, Schedule, Session, SessionId, SessionState,
     SubscriptionProfile, Templates, Trigger, Workspace,
 };
 use crate::filter::Filter;
@@ -209,6 +210,8 @@ struct TriggerDeclaration {
     name: String,
     filter: Option<serde_json::Value>,
     every: Option<String>,
+    cron: Option<String>,
+    zone: Option<String>,
     brief: String,
     branch: Option<String>,
     correlation: Option<String>,
@@ -326,6 +329,8 @@ struct TriggerRecord {
     firing_budget: FiringBudgetRecord,
     filter: Option<serde_json::Value>,
     every: Option<String>,
+    cron: Option<String>,
+    zone: Option<String>,
     admits_outsiders: bool,
     brief: String,
     branch: Option<String>,
@@ -459,9 +464,21 @@ impl RunRecord {
 
 impl From<Trigger> for TriggerRecord {
     fn from(trigger: Trigger) -> Self {
-        let (filter, every, admits_outsiders) = match trigger.fires {
-            Fires::On(filter) => (Some(filter.to_json()), None, filter.admits_outsiders()),
-            Fires::Every(every) => (None, Some(format!("{every:#}")), false),
+        let (filter, every, cron, zone, admits_outsiders) = match trigger.fires {
+            Fires::On(filter) => {
+                let admits_outsiders = filter.admits_outsiders();
+                (Some(filter.to_json()), None, None, None, admits_outsiders)
+            }
+            Fires::Scheduled(Schedule::Every(every)) => {
+                (None, Some(format!("{every:#}")), None, None, false)
+            }
+            Fires::Scheduled(Schedule::Cron(cron)) => (
+                None,
+                None,
+                Some(cron.to_string()),
+                Some(cron.zone().to_owned()),
+                false,
+            ),
         };
 
         Self {
@@ -476,6 +493,8 @@ impl From<Trigger> for TriggerRecord {
             },
             filter,
             every,
+            cron,
+            zone,
             admits_outsiders,
             brief: trigger.templates.brief.to_string(),
             branch: trigger.templates.branch.map(|branch| branch.to_string()),
@@ -1319,17 +1338,40 @@ async fn applied_triggers(
 fn parse_trigger_declaration(
     declaration: &TriggerDeclaration,
 ) -> Result<(Fires, Templates, Option<CorrelationMiss>), Refused> {
-    let fires = match (&declaration.filter, &declaration.every) {
-        (Some(filter), None) => Fires::On(
+    let fires = match (
+        &declaration.filter,
+        &declaration.every,
+        &declaration.cron,
+        &declaration.zone,
+    ) {
+        (Some(filter), None, None, None) => Fires::On(
             Filter::from_json(filter)
                 .map_err(|error| Refused::Unprocessable(format!("a trigger filter: {error}")))?,
         ),
-        (None, Some(every)) => Fires::Every(every.parse().map_err(|error| {
-            Refused::Unprocessable(format!("a trigger schedule is a duration: {error}"))
-        })?),
+        (None, Some(every), None, None) => {
+            Fires::Scheduled(Schedule::Every(every.parse().map_err(|error| {
+                Refused::Unprocessable(format!("a trigger schedule is a duration: {error}"))
+            })?))
+        }
+        (None, None, Some(cron), Some(zone)) => {
+            Fires::Scheduled(Schedule::Cron(Cron::new(cron, zone).map_err(|error| {
+                Refused::Unprocessable(format!("a trigger schedule: {error:#}"))
+            })?))
+        }
+        (None, None, Some(_), None) => {
+            return Err(Refused::Unprocessable(
+                "a cron expression declares the time zone it is read in".to_owned(),
+            ));
+        }
+        (_, _, None, Some(_)) => {
+            return Err(Refused::Unprocessable(
+                "a time zone is declared only with a cron expression".to_owned(),
+            ));
+        }
         _ => {
             return Err(Refused::Unprocessable(
-                "a trigger declares a filter or a schedule, and not both".to_owned(),
+                "a trigger declares a filter, an interval or a cron expression, and only one"
+                    .to_owned(),
             ));
         }
     };

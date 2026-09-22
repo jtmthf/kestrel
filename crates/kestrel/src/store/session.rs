@@ -1203,14 +1203,18 @@ impl<'a> Sessions<'a> {
         .collect()
     }
 
+    /// The Turn is anchored to the last Transcript entry before its prompt, so what the Agent
+    /// says during it is what follows that, never anything said before.
     pub async fn prompt_turn(&mut self, run: &Run) -> Result<i64> {
         let prompted = sqlx::query(
-            "INSERT INTO turn (run_id, organization_id, seq, prompted_at)
+            "INSERT INTO turn (run_id, organization_id, seq, prompted_at, from_seq)
              VALUES (
                  ?,
                  ?,
                  (SELECT COALESCE(MAX(seq), 0) + 1 FROM turn WHERE run_id = ?),
-                 ?
+                 ?,
+                 (SELECT COALESCE(MAX(seq), 0) FROM transcript_entry
+                   WHERE session_id = (SELECT session_id FROM run WHERE id = ?))
              )
              RETURNING seq",
         )
@@ -1218,6 +1222,7 @@ impl<'a> Sessions<'a> {
         .bind(run.organization.to_string())
         .bind(run.id.to_string())
         .bind(Timestamp::now().to_string())
+        .bind(run.id.to_string())
         .fetch_one(&mut *self.connection)
         .await
         .with_context(|| format!("prompting a turn of the run {}", run.id))?;
@@ -1225,18 +1230,22 @@ impl<'a> Sessions<'a> {
         Ok(prompted.get("seq"))
     }
 
-    /// `false` when no turn was waiting on an answer, so an answer replayed after a reconnect
-    /// closes nothing twice.
-    pub async fn answer_turn(&mut self, run: &Run) -> Result<bool> {
-        let answered =
-            sqlx::query("UPDATE turn SET answered_at = ? WHERE run_id = ? AND answered_at IS NULL")
-                .bind(Timestamp::now().to_string())
-                .bind(run.id.to_string())
-                .execute(&mut *self.connection)
-                .await
-                .with_context(|| format!("answering the turn of the run {}", run.id))?;
+    /// The seq of the Turn waiting on an answer and the Transcript position its prompt followed,
+    /// or `None` when no Turn was waiting, so an answer replayed after a reconnect closes
+    /// nothing twice.
+    pub async fn answer_turn(&mut self, run: &Run) -> Result<Option<(i64, i64)>> {
+        let answered = sqlx::query(
+            "UPDATE turn SET answered_at = ?
+             WHERE run_id = ? AND answered_at IS NULL
+             RETURNING seq, from_seq",
+        )
+        .bind(Timestamp::now().to_string())
+        .bind(run.id.to_string())
+        .fetch_optional(&mut *self.connection)
+        .await
+        .with_context(|| format!("answering the turn of the run {}", run.id))?;
 
-        Ok(answered.rows_affected() > 0)
+        Ok(answered.map(|row| (row.get("seq"), row.get("from_seq"))))
     }
 
     pub async fn turns(&mut self, run: RunId) -> Result<Vec<Turn>> {

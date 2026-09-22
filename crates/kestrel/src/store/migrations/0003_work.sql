@@ -16,6 +16,8 @@ CREATE TABLE turn (
     organization_id TEXT NOT NULL REFERENCES organization (id),
     seq INTEGER NOT NULL,
     prompted_at TEXT NOT NULL,
+    -- The last Transcript entry before the prompt, so this Turn's response is what follows it.
+    from_seq INTEGER NOT NULL DEFAULT 0,
     answered_at TEXT,
     PRIMARY KEY (run_id, seq)
 ) STRICT;

@@ -7,7 +7,7 @@ use tracing::{debug, info};
 
 use crate::domain::{Exit, Run, RunId, RunState, SessionId, Turn, Usage};
 use crate::instance::Observed;
-use crate::integration::outcome;
+use crate::integration::delivery;
 use crate::link;
 use crate::link::credential::Secret;
 use crate::log::{Entry, Message};
@@ -296,7 +296,15 @@ pub async fn report(
             tx.sessions().record_usage(run, &usage).await?;
         }
         Report::Answered => {
-            if tx.sessions().answer_turn(run).await? {
+            if let Some((turn, from_seq)) = tx.sessions().answer_turn(run).await? {
+                let session = tx.sessions().get(run.session).await?;
+                let said = tx
+                    .log()
+                    .said_since(&session, from_seq, &session.agent.name)
+                    .await?;
+                if !said.is_empty() {
+                    delivery::record_turn(&mut tx, run, &session, turn, &said).await?;
+                }
                 tx.sessions()
                     .record_active(run.session, Timestamp::now())
                     .await?;
@@ -451,7 +459,7 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
             )
             .await?;
         tx.sessions().invalidate_credentials(run).await?;
-        outcome::record(tx, run, &session, &exit).await?;
+        delivery::record_outcome(tx, run, &session, &exit).await?;
         if let Exit::Failed { .. } = exit {
             cascade_unreachable(tx, run.id).await?;
         }
