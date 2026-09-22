@@ -3,7 +3,10 @@ mod support;
 use std::time::Duration;
 
 use jiff::SignedDuration;
-use kestrel::domain::{CorrelationMiss, Direction, Event, RunState, Session, TriggerState};
+use kestrel::cron::Cron;
+use kestrel::domain::{
+    CorrelationMiss, Direction, Event, RunState, Schedule, Session, TriggerState,
+};
 use kestrel::log::{Entry, Message};
 use kestrel::trigger::Rendered;
 use support::github_stub::{self, GithubStub};
@@ -1304,7 +1307,7 @@ async fn hourly(harness: &Harness, brief: &str) -> kestrel::domain::Trigger {
         .try_declare_scheduled_trigger(
             "acme",
             "sweep",
-            SignedDuration::from_hours(1),
+            Schedule::Every(SignedDuration::from_hours(1)),
             &templates(brief, Some("kestrel/sweep-{{ event.id[:13] }}"), None),
         )
         .await
@@ -1394,7 +1397,7 @@ async fn a_schedule_faster_than_the_firing_budget_is_refused() {
         .try_declare_scheduled_trigger(
             "acme",
             "impatient",
-            SignedDuration::from_mins(1),
+            Schedule::Every(SignedDuration::from_mins(1)),
             &templates("Sweep the backlog", None, None),
         )
         .await
@@ -1506,6 +1509,140 @@ async fn a_webhook_naming_a_schedule_does_not_elapse_it() {
     );
     assert_ne!(session.started_by, Some(forged.record_id));
     assert_eq!(harness.sessions("acme").await.len(), 1);
+
+    harness.teardown().await;
+}
+
+fn weekday_mornings() -> Cron {
+    Cron::new("0 9 * * 1-5", "America/New_York").expect("a weekday-morning cron should parse")
+}
+
+async fn triage(harness: &Harness, brief: &str) -> kestrel::domain::Trigger {
+    harness
+        .try_declare_scheduled_trigger(
+            "acme",
+            "triage",
+            Schedule::Cron(weekday_mornings()),
+            &templates(brief, None, None),
+        )
+        .await
+        .expect("a weekday-morning schedule should declare")
+}
+
+#[tokio::test]
+async fn a_cron_schedule_elapsing_opens_a_session_the_way_an_interval_does() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let trigger = triage(&harness, "Triage for {{ event.data.trigger }}").await;
+    let due = weekday_mornings()
+        .after(trigger.declared_at)
+        .expect("a weekday morning comes");
+
+    assert!(
+        harness
+            .elapse(due - SignedDuration::from_secs(1))
+            .await
+            .is_empty()
+    );
+    let minted = harness.elapse(due).await;
+    let session = opened(&harness, 1).await.remove(0);
+
+    assert_eq!(minted.len(), 1);
+    let event = harness.events("acme").await.remove(0);
+    assert_eq!(event.integration, None, "kestrel minted it");
+    assert_eq!(event.occurrence.r#type, "dev.kestrel.schedule.elapsed");
+    assert_eq!(
+        event.occurrence.source,
+        format!("urn:kestrel:trigger:{}", trigger.id)
+    );
+    assert_eq!(event.occurrence.id, due.to_string());
+    assert_eq!(event.occurrence.time, due);
+    assert_eq!(event.occurrence.data["cron"], "0 9 * * 1-5");
+    assert_eq!(event.occurrence.data["zone"], "America/New_York");
+    assert_eq!(session.started_by, Some(event.record_id));
+    assert_eq!(
+        first_entry(&harness, &session).await,
+        Entry::Brief {
+            trigger: "triage".to_owned(),
+            brief: "Triage for triage".to_owned(),
+        }
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn cron_elapsings_missed_while_nothing_swept_elapse_once() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let trigger = triage(&harness, "Triage").await;
+    let cron = weekday_mornings();
+    let due = cron
+        .after(trigger.declared_at)
+        .expect("a weekday morning comes");
+    let much_later = due + SignedDuration::from_hours(24 * 10);
+
+    let caught_up = harness.elapse(much_later).await;
+    assert_eq!(caught_up.len(), 1, "ten days of mornings elapse once");
+    assert_eq!(caught_up[0].time, due);
+    assert!(harness.elapse(much_later).await.is_empty());
+    let next = cron
+        .after(much_later)
+        .expect("another weekday morning comes");
+    let resumed = harness.elapse(next).await;
+
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0].time, next);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_cron_schedule_faster_than_the_firing_budget_is_refused() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+
+    let refusal = harness
+        .try_declare_scheduled_trigger(
+            "acme",
+            "impatient",
+            Schedule::Cron(Cron::new("0-5 9 * * *", "UTC").expect("the cron should parse")),
+            &templates("Sweep the backlog", None, None),
+        )
+        .await
+        .expect_err("a cron that exhausts its budget should be refused");
+
+    let refusal = format!("{refusal:#}");
+    assert!(
+        refusal.contains("as often as every 1m") && refusal.contains("fire at most every 6m"),
+        "the refusal does not say what would do: {refusal}"
+    );
+    assert!(harness.triggers("acme").await.is_empty());
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_cron_triggered_trigger_is_tested_against_its_next_elapsing() {
+    let harness = Harness::boot().await;
+    an_organization(&harness, "acme").await;
+    let trigger = triage(&harness, "Triage due {{ event.time }}").await;
+    let due = weekday_mornings()
+        .after(trigger.declared_at)
+        .expect("a weekday morning comes");
+
+    let tested = harness.test_scheduled_trigger("acme", "triage").await;
+
+    assert!(tested.matches);
+    assert_eq!(tested.elapsing, Some(due));
+    assert_eq!(
+        tested.rendered.expect("the brief should render").brief,
+        format!("Triage due {due}")
+    );
+    assert!(
+        harness.events("acme").await.is_empty(),
+        "a test records nothing"
+    );
 
     harness.teardown().await;
 }

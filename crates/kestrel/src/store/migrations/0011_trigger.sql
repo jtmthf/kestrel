@@ -4,6 +4,8 @@ CREATE TABLE trigger (
     name TEXT NOT NULL,
     filter TEXT,
     every_ms INTEGER CHECK (every_ms > 0),
+    cron TEXT,
+    zone TEXT,
     due_at TEXT,
     brief TEXT NOT NULL,
     branch TEXT,
@@ -17,8 +19,9 @@ CREATE TABLE trigger (
     enabled_at TEXT NOT NULL,
     declared_at TEXT NOT NULL,
     CHECK ((correlation IS NULL) = (on_miss IS NULL)),
-    CHECK ((filter IS NULL) <> (every_ms IS NULL)),
-    CHECK ((every_ms IS NULL) = (due_at IS NULL)),
+    CHECK ((filter IS NOT NULL) + (every_ms IS NOT NULL) + (cron IS NOT NULL) = 1),
+    CHECK ((cron IS NULL) = (zone IS NULL)),
+    CHECK ((filter IS NULL) = (due_at IS NOT NULL)),
     UNIQUE (organization_id, name)
 ) STRICT;
 

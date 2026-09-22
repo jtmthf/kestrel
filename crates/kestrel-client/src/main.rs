@@ -285,6 +285,10 @@ enum EventCommand {
 }
 
 #[derive(Debug, Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a command is parsed once per invocation"
+)]
 enum TriggerCommand {
     /// Make the Organization's applied Triggers what a declaration file says, printing the diff
     Apply {
@@ -301,11 +305,22 @@ enum TriggerCommand {
         name: String,
         /// The Events it matches: a CloudEvents filter as JSON; `@FILE` reads it from a file
         /// and `-` from standard input
-        #[arg(long, value_name = "JSON", required_unless_present = "every")]
+        #[arg(long, value_name = "JSON", required_unless_present_any = ["every", "cron"])]
         filter: Option<String>,
-        /// Fire on a schedule in place of a filter
+        /// Fire on an interval counted from the declaration, in place of a filter
         #[arg(long, value_name = "DURATION", conflicts_with = "filter")]
         every: Option<String>,
+        /// Fire on a five-field cron expression, in place of a filter or an interval
+        #[arg(
+            long,
+            value_name = "EXPRESSION",
+            conflicts_with_all = ["filter", "every"],
+            requires = "zone"
+        )]
+        cron: Option<String>,
+        /// The IANA time zone the cron expression is read in, such as UTC or America/New_York
+        #[arg(long, value_name = "ZONE", requires = "cron")]
+        zone: Option<String>,
         /// The Brief a firing hands its Session, rendered over an Event; `@FILE` reads it from
         /// a file and `-` from standard input
         #[arg(long)]
@@ -805,6 +820,8 @@ async fn main() -> Result<()> {
             name,
             filter,
             every,
+            cron,
+            zone,
             brief,
             branch,
             correlation,
@@ -844,6 +861,12 @@ async fn main() -> Result<()> {
             }
             if let Some(every) = every {
                 declaration.insert("every".to_owned(), Value::String(every));
+            }
+            if let Some(cron) = cron {
+                declaration.insert("cron".to_owned(), Value::String(cron));
+            }
+            if let Some(zone) = zone {
+                declaration.insert("zone".to_owned(), Value::String(zone));
             }
             let declared = api
                 .post(&["organizations", &organization, "triggers"], &declaration)
