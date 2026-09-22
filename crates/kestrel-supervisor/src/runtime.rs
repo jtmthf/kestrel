@@ -177,19 +177,20 @@ async fn conversing(
             {
                 let heard = Arc::clone(&heard);
                 async move |request: RequestPermissionRequest, responder, _connection| {
+                    let mut heard = heard
+                        .lock()
+                        .expect("what the agent said should not be poisoned");
+                    heard.produced = true;
                     let outcome = match permission::allow_once(&request.options) {
                         Some(option) => {
-                            heard
-                                .lock()
-                                .expect("what the agent said should not be poisoned")
-                                .allowed
-                                .push(Subject::from(&request));
+                            heard.allowed.push(Subject::from(&request));
                             RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
                                 option,
                             ))
                         }
                         None => RequestPermissionOutcome::Cancelled,
                     };
+                    drop(heard);
 
                     responder.respond(RequestPermissionResponse::new(outcome))
                 }
@@ -214,7 +215,11 @@ async fn conversing(
                     if let Some(because) = stopped_short(answered.stop_reason) {
                         return Ok(Some(because));
                     }
-                    if turns.send(taken(&heard).worked(None)).is_err() {
+                    let this_turn = taken(&heard);
+                    let failed = this_turn
+                        .produced_nothing()
+                        .then(|| "the agent answered the prompt with nothing".to_owned());
+                    if turns.send(this_turn.worked(failed)).is_err() {
                         return Ok(None);
                     }
                 }
@@ -450,6 +455,9 @@ struct Heard {
     usage: Option<Usage>,
     allowed: Vec<Subject>,
     on: Option<On>,
+    /// Whether this turn produced anything at all; a usage, command, mode or config update does
+    /// not.
+    produced: bool,
 }
 
 #[derive(Default)]
@@ -461,7 +469,14 @@ struct Message {
 impl Heard {
     fn update(&mut self, update: SessionUpdate) {
         match update {
-            SessionUpdate::AgentMessageChunk(chunk) => self.chunk(&chunk),
+            SessionUpdate::AgentMessageChunk(chunk) => {
+                self.produced = true;
+                self.chunk(&chunk);
+            }
+            SessionUpdate::AgentThoughtChunk(_)
+            | SessionUpdate::Plan(_)
+            | SessionUpdate::ToolCall(_)
+            | SessionUpdate::ToolCallUpdate(_) => self.produced = true,
             SessionUpdate::UsageUpdate(usage) => {
                 self.usage = Some(Usage {
                     context_used: usage.used,
@@ -501,6 +516,10 @@ impl Heard {
         }
     }
 
+    fn produced_nothing(&self) -> bool {
+        !self.produced
+    }
+
     fn worked(mut self, failed: Option<String>) -> Worked {
         self.close();
 
@@ -517,8 +536,10 @@ impl Heard {
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::schema::v1::{
-        AuthMethodAgent, AuthMethodTerminal, Plan, SessionConfigSelect, SessionConfigSelectGroup,
-        SessionConfigSelectOption, ToolCall, UsageUpdate,
+        AuthMethodAgent, AuthMethodTerminal, AvailableCommandsUpdate, ConfigOptionUpdate,
+        CurrentModeUpdate, Plan, SessionConfigSelect, SessionConfigSelectGroup,
+        SessionConfigSelectOption, SessionModeId, ToolCall, ToolCallUpdate, ToolCallUpdateFields,
+        UsageUpdate,
     };
 
     use super::*;
@@ -535,6 +556,15 @@ mod tests {
         }
 
         heard.worked(None)
+    }
+
+    fn produced_something(updates: Vec<SessionUpdate>) -> bool {
+        let mut heard = Heard::default();
+        for update in updates {
+            heard.update(update);
+        }
+
+        !heard.produced_nothing()
     }
 
     #[test]
@@ -569,6 +599,40 @@ mod tests {
         ]);
 
         assert!(worked.said.is_empty());
+    }
+
+    #[test]
+    fn a_turn_that_produced_nothing_produced_nothing() {
+        assert!(!produced_something(Vec::new()));
+    }
+
+    #[test]
+    fn bookkeeping_updates_alone_are_not_something_produced() {
+        assert!(!produced_something(vec![
+            SessionUpdate::UsageUpdate(UsageUpdate::new(12, 100)),
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(Vec::new())),
+            SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(SessionModeId::new("build"))),
+            SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(Vec::new())),
+        ]));
+    }
+
+    #[test]
+    fn a_message_a_thought_a_plan_and_a_tool_call_are_each_something_produced() {
+        assert!(produced_something(vec![SessionUpdate::AgentMessageChunk(
+            chunk(Some("one"), "said")
+        )]));
+        assert!(produced_something(vec![SessionUpdate::AgentThoughtChunk(
+            chunk(Some("one"), "thinking")
+        )]));
+        assert!(produced_something(vec![SessionUpdate::Plan(Plan::new(
+            Vec::new()
+        ))]));
+        assert!(produced_something(vec![SessionUpdate::ToolCall(
+            ToolCall::new("call-1", "read README.md")
+        )]));
+        assert!(produced_something(vec![SessionUpdate::ToolCallUpdate(
+            ToolCallUpdate::new("call-1", ToolCallUpdateFields::new())
+        )]));
     }
 
     #[test]

@@ -221,6 +221,69 @@ async fn a_turn_the_agent_fails_ends_the_run() {
     harness.teardown().await;
 }
 
+/// The rule is about a Turn, not only the first one: a later Turn that produces nothing fails
+/// the Run too, and the next instruction starts a new Run.
+#[tokio::test]
+async fn a_later_turn_that_produced_nothing_fails_the_run() {
+    let (harness, session) = conversing(Script::Lapses).await;
+    let run = harness
+        .post(session.id, "operator", "the first thing to do")
+        .await;
+    harness.answered(run.id, 1).await;
+
+    let continued = harness
+        .post_while_busy(session.id, "operator", "the second thing to do")
+        .await
+        .expect("a run between turns takes the message as its next prompt");
+    assert_eq!(continued.id, run.id);
+    let ended = harness.answered(run.id, 2).await;
+
+    let Some(Exit::Failed { because }) = &ended.exit else {
+        panic!(
+            "the run ended {:?}, and its second turn produced nothing",
+            ended.exit
+        );
+    };
+    assert!(
+        because.contains("answered the prompt with nothing"),
+        "unhelpful exit status: {because}"
+    );
+    let turns = harness.turns(run.id).await;
+    assert_eq!(turns.len(), 2);
+    assert!(
+        turns[0].answered_at.is_some(),
+        "the first turn was not answered"
+    );
+    assert!(
+        turns[1].answered_at.is_none(),
+        "the empty turn was recorded as answered"
+    );
+
+    // A failed Run is done: the next instruction starts a new one rather than continuing it.
+    harness
+        .post_while_busy(session.id, "operator", "one more try")
+        .await;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let next = loop {
+        if let Some(next) = harness
+            .runs(session.id)
+            .await
+            .into_iter()
+            .find(|candidate| candidate.id != run.id)
+        {
+            break next;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the next instruction never started a new run"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    harness.answered(next.id, 1).await;
+    harness.stop_run(next.id).await;
+    harness.teardown().await;
+}
+
 /// The turn in flight is not interrupted; what arrived during it is the next turn, in the
 /// order it arrived.
 #[tokio::test]

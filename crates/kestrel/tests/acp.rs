@@ -194,6 +194,51 @@ async fn a_turn_that_stops_for_any_other_reason_fails_the_run() {
     harness.teardown().await;
 }
 
+/// A prompt that never became work is not an answer: a turn with no message, narration or
+/// detail fails the run rather than reporting itself answered.
+#[tokio::test]
+async fn a_turn_that_produced_nothing_fails_the_run_and_names_why() {
+    let (harness, _, run) = worked(Script::Silent).await;
+
+    let Some(Exit::Failed { because }) = &run.exit else {
+        panic!(
+            "the run ended {:?}, and its agent produced nothing",
+            run.exit
+        );
+    };
+    assert!(
+        because.contains("answered the prompt with nothing"),
+        "unhelpful exit status: {because}"
+    );
+    assert!(
+        harness
+            .turns(run.id)
+            .await
+            .iter()
+            .all(|turn| turn.answered_at.is_none()),
+        "a turn that produced nothing was recorded as answered"
+    );
+
+    harness.teardown().await;
+}
+
+/// Bookkeeping alone is not the agent working, but a tool call or a permission request is,
+/// even when nothing is said.
+#[tokio::test]
+async fn a_turn_that_only_used_a_tool_or_asked_permission_is_answered() {
+    for script in [Script::Works, Script::Asks] {
+        let (harness, _, run) = worked(script).await;
+
+        assert_eq!(run.exit, Some(Exit::Succeeded), "{script:?}");
+        assert!(
+            harness.turns(run.id).await[0].answered_at.is_some(),
+            "{script:?}"
+        );
+
+        harness.teardown().await;
+    }
+}
+
 #[tokio::test]
 async fn an_agent_that_does_not_answer_acp_v1_fails_the_run_rather_than_being_prompted_anyway() {
     let (harness, session, run) = worked(Script::Predates).await;
