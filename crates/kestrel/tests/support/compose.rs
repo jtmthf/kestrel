@@ -138,7 +138,6 @@ impl Stack {
         format!("http://{published}")
     }
 
-    /// The installed Client, run as an operator runs it against the stack.
     pub fn client(&self, command: &[&str]) -> Finished {
         client::ran(&self.operator(), command)
     }

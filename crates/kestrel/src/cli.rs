@@ -19,8 +19,7 @@ Roles:
   The control plane runs as one of two roles, selected by argv on one image: `serve` and
   `work`. Operators reach it with the `kestrel` Client, a separate program.
 
-  Run it with no command to start every role in one process. That is the default, and at
-  0.1 it is the only supported topology.";
+  Run it with no command to start every role in one process. That is the default.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {

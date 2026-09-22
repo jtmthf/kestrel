@@ -420,7 +420,6 @@ struct Listed {
     exit: Value,
 }
 
-/// A Run as `run show` shows it: the Instance it is on, and how it went.
 fn listed(stack: &Stack, run: &str) -> Listed {
     let shown = stack.ran(&["run", "show", run, "--json", "instance,exit"]);
     let shown: Value =

@@ -582,7 +582,7 @@ async fn set_agent_model(
         model.model.as_deref(),
     )
     .await
-    .map_err(trigger_refusal)?;
+    .map_err(named_refusal)?;
 
     Ok(Json(agent.into()))
 }
@@ -1058,7 +1058,7 @@ async fn triggers(
 ) -> Result<Json<Vec<TriggerRecord>>, Refused> {
     let triggers = trigger::triggers(&control_plane.store, &organization)
         .await
-        .map_err(trigger_refusal)?;
+        .map_err(named_refusal)?;
 
     Ok(Json(triggers.into_iter().map(Into::into).collect()))
 }
@@ -1073,7 +1073,7 @@ async fn declare_trigger(
     let (fires, templates, on_miss) = parse_trigger_declaration(&declaration)?;
     let created = !trigger::triggers(&control_plane.store, &organization)
         .await
-        .map_err(trigger_refusal)?
+        .map_err(named_refusal)?
         .iter()
         .any(|trigger| trigger.name == declaration.name);
     let trigger = trigger::declare(
@@ -1091,7 +1091,7 @@ async fn declare_trigger(
         },
     )
     .await
-    .map_err(trigger_refusal)?;
+    .map_err(named_refusal)?;
 
     Ok((
         if created {
@@ -1109,7 +1109,7 @@ async fn show_trigger(
 ) -> Result<Json<TriggerRecord>, Refused> {
     let trigger = trigger::show(&control_plane.store, &organization, &name)
         .await
-        .map_err(trigger_refusal)?;
+        .map_err(named_refusal)?;
 
     Ok(Json(trigger.into()))
 }
@@ -1162,7 +1162,7 @@ async fn test_trigger(
             .await
         }
     }
-    .map_err(trigger_refusal)?;
+    .map_err(named_refusal)?;
     let rendered = tested
         .rendered
         .map_err(|error| Refused::Unprocessable(error.to_string()))?;
@@ -1186,7 +1186,7 @@ async fn disable_trigger(
 ) -> Result<Json<TriggerRecord>, Refused> {
     let trigger = trigger::disable(&control_plane.store, &organization, &name)
         .await
-        .map_err(trigger_refusal)?;
+        .map_err(named_refusal)?;
 
     Ok(Json(trigger.into()))
 }
@@ -1197,7 +1197,7 @@ async fn enable_trigger(
 ) -> Result<Json<TriggerRecord>, Refused> {
     let trigger = trigger::enable(&control_plane.store, &organization, &name)
         .await
-        .map_err(trigger_refusal)?;
+        .map_err(named_refusal)?;
 
     Ok(Json(trigger.into()))
 }
@@ -1244,7 +1244,7 @@ async fn dispatch_trigger(
     .await
     .map_err(|error| match error.to_string() {
         missing if missing.starts_with("no integration named ") => Refused::NotFound(missing),
-        _ => trigger_refusal(error),
+        _ => named_refusal(error),
     })?;
 
     Ok(Json(match fired {
@@ -1276,60 +1276,11 @@ async fn dispatch_trigger(
     }))
 }
 
-#[derive(Serialize)]
-struct AppliedTriggersRecord {
-    changes: Vec<TriggerChangeRecord>,
-    admitting_outsiders: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct TriggerChangeRecord {
-    name: String,
-    action: &'static str,
-    differences: Vec<DifferenceRecord>,
-}
-
-#[derive(Serialize)]
-struct DifferenceRecord {
-    field: &'static str,
-    was: Option<String>,
-    becomes: Option<String>,
-}
-
-impl From<apply::Applied> for AppliedTriggersRecord {
-    fn from(applied: apply::Applied) -> Self {
-        Self {
-            changes: applied
-                .changes
-                .into_iter()
-                .map(|change| TriggerChangeRecord {
-                    name: change.name,
-                    action: match change.action {
-                        apply::Action::Add => "add",
-                        apply::Action::Change => "change",
-                        apply::Action::Remove => "remove",
-                    },
-                    differences: change
-                        .differences
-                        .into_iter()
-                        .map(|difference| DifferenceRecord {
-                            field: difference.field,
-                            was: difference.was,
-                            becomes: difference.becomes,
-                        })
-                        .collect(),
-                })
-                .collect(),
-            admitting_outsiders: applied.admitting_outsiders,
-        }
-    }
-}
-
 async fn apply_triggers(
     State(control_plane): State<ControlPlane>,
     Path(organization): Path<String>,
     file: Result<Json<apply::File>, JsonRejection>,
-) -> Result<Json<AppliedTriggersRecord>, Refused> {
+) -> Result<Json<apply::Applied>, Refused> {
     applied_triggers(control_plane, organization, file, false).await
 }
 
@@ -1337,7 +1288,7 @@ async fn preview_applied_triggers(
     State(control_plane): State<ControlPlane>,
     Path(organization): Path<String>,
     file: Result<Json<apply::File>, JsonRejection>,
-) -> Result<Json<AppliedTriggersRecord>, Refused> {
+) -> Result<Json<apply::Applied>, Refused> {
     applied_triggers(control_plane, organization, file, true).await
 }
 
@@ -1346,15 +1297,15 @@ async fn applied_triggers(
     organization: String,
     file: Result<Json<apply::File>, JsonRejection>,
     dry_run: bool,
-) -> Result<Json<AppliedTriggersRecord>, Refused> {
+) -> Result<Json<apply::Applied>, Refused> {
     let Json(file) = file?;
     let declarations =
         apply::declarations(file).map_err(|error| Refused::Unprocessable(format!("{error:#}")))?;
     let applied = apply::apply(&control_plane.store, &organization, &declarations, dry_run)
         .await
-        .map_err(trigger_refusal)?;
+        .map_err(named_refusal)?;
 
-    Ok(Json(applied.into()))
+    Ok(Json(applied))
 }
 
 fn parse_trigger_declaration(
@@ -1404,7 +1355,7 @@ fn parse_trigger_declaration(
     Ok((fires, templates, on_miss))
 }
 
-fn trigger_refusal(error: anyhow::Error) -> Refused {
+fn named_refusal(error: anyhow::Error) -> Refused {
     let message = error.to_string();
     if message.starts_with("no organization ")
         || message.starts_with("no workspace named ")

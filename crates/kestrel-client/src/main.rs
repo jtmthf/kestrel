@@ -353,6 +353,7 @@ enum TriggerCommand {
     },
     /// Start a Trigger's work on an issue now, whether or not its filter matches anything
     Dispatch {
+        /// The Trigger whose work starts
         name: String,
         /// The GitHub Integration the issue is read through, and its Outcome said back through
         #[arg(long)]
@@ -1169,7 +1170,7 @@ enum Action {
 }
 
 fn declaration(file: &str) -> Result<Value> {
-    yaml_serde::from_str(&read_file(file)?).context("reading the declaration file")
+    parsed(&read_file(file)?)
 }
 
 /// An empty file is sent as an empty mapping, so the control plane refuses it for the
@@ -1180,34 +1181,38 @@ fn trigger_file(file: &str) -> Result<Value> {
         return Ok(json!({}));
     }
 
-    yaml_serde::from_str(&text).context("reading the declaration file")
+    parsed(&text)
+}
+
+fn parsed(text: &str) -> Result<Value> {
+    yaml_serde::from_str(text).context("reading the declaration file")
 }
 
 fn read_file(file: &str) -> Result<String> {
     if file == "-" {
-        let mut text = String::new();
-        std::io::stdin()
-            .read_to_string(&mut text)
-            .context("reading the declaration from standard input")?;
-        return Ok(text);
+        return standard_input();
     }
 
     std::fs::read_to_string(file).with_context(|| format!("reading the declaration file {file}"))
 }
 
-/// A value given as itself, as `@FILE` for a file's contents, or as `-` for standard input.
 fn given(value: &str) -> Result<String> {
     if value == "-" {
-        let mut text = String::new();
-        std::io::stdin()
-            .read_to_string(&mut text)
-            .context("reading standard input")?;
-        return Ok(text);
+        return standard_input();
     }
     match value.strip_prefix('@') {
         Some(path) => std::fs::read_to_string(path).with_context(|| format!("reading {path}")),
         None => Ok(value.to_owned()),
     }
+}
+
+fn standard_input() -> Result<String> {
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .context("reading standard input")?;
+
+    Ok(text)
 }
 
 #[derive(Deserialize)]

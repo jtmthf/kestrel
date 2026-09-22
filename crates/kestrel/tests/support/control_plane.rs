@@ -59,7 +59,6 @@ impl Volume {
         Self { name, mount }
     }
 
-    /// The image over this volume, handed these arguments and left to exit.
     pub fn run(&self, command: &[&str]) -> Ran {
         let mut run = vec!["run", "--rm", "--volume", &self.mount, built()];
         run.extend_from_slice(command);
