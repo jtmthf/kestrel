@@ -7,14 +7,15 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodTerminal, ContentBlock, ContentChunk,
-    Cost, InitializeRequest, InitializeResponse, MessageId, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
-    PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelect, SessionConfigSelectOption, SessionConfigValueId, SessionNotification,
-    SessionUpdate, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason,
-    TextContent, ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
+    AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodTerminal, AvailableCommandsUpdate,
+    ContentBlock, ContentChunk, Cost, InitializeRequest, InitializeResponse, MessageId,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, Plan, PlanEntry,
+    PlanEntryPriority, PlanEntryStatus, PromptCapabilities, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigSelect, SessionConfigSelectOption,
+    SessionConfigValueId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, StopReason, TextContent, ToolCall, ToolCallStatus,
+    ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use clap::Parser;
@@ -213,6 +214,32 @@ async fn play(
         say(connection, "message-1", "this is not work I will do")?;
         return Ok(StopReason::Refusal);
     }
+    if script == Script::Silent {
+        update(
+            connection,
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(Vec::new())),
+        )?;
+        return Ok(StopReason::EndTurn);
+    }
+    if script == Script::Works {
+        update(
+            connection,
+            SessionUpdate::ToolCall(
+                ToolCall::new(TOOL_CALL, "read README.md").status(ToolCallStatus::Completed),
+            ),
+        )?;
+        return Ok(StopReason::EndTurn);
+    }
+    if script == Script::Asks {
+        permission_to_use_a_tool(connection).await?;
+        return Ok(StopReason::EndTurn);
+    }
+    if script == Script::Lapses {
+        if earlier.is_empty() {
+            say(connection, "message-1", "the first turn is answered")?;
+        }
+        return Ok(StopReason::EndTurn);
+    }
 
     update(
         connection,
@@ -233,26 +260,7 @@ async fn play(
         ),
     )?;
 
-    let outcome = connection
-        .send_request(RequestPermissionRequest::new(
-            SESSION,
-            ToolCallUpdate::new(TOOL_CALL, ToolCallUpdateFields::new()),
-            vec![allow_once(), reject_once()],
-        ))
-        .block_task()
-        .await?
-        .outcome;
-
-    let RequestPermissionOutcome::Selected(selected) = outcome else {
-        return Err(Error::internal_error()
-            .data("the scripted agent was left without permission to proceed"));
-    };
-    if selected.option_id.0.as_ref() != ALLOW_ONCE {
-        return Err(Error::internal_error().data(format!(
-            "the scripted agent offered {ALLOW_ONCE} and was answered {}",
-            selected.option_id.0
-        )));
-    }
+    permission_to_use_a_tool(connection).await?;
 
     if script == Script::Dies {
         std::process::exit(9);
@@ -343,6 +351,33 @@ fn models(current: impl Into<SessionConfigValueId>) -> SessionConfigOption {
         )),
     )
     .category(SessionConfigOptionCategory::Model)
+}
+
+/// Refuses to go on unless the client allows the call once, which is what makes a Run that
+/// succeeded evidence that the round-trip completed.
+async fn permission_to_use_a_tool(connection: &ConnectionTo<Client>) -> Result<()> {
+    let outcome = connection
+        .send_request(RequestPermissionRequest::new(
+            SESSION,
+            ToolCallUpdate::new(TOOL_CALL, ToolCallUpdateFields::new()),
+            vec![allow_once(), reject_once()],
+        ))
+        .block_task()
+        .await?
+        .outcome;
+
+    let RequestPermissionOutcome::Selected(selected) = outcome else {
+        return Err(Error::internal_error()
+            .data("the scripted agent was left without permission to proceed"));
+    };
+    if selected.option_id.0.as_ref() != ALLOW_ONCE {
+        return Err(Error::internal_error().data(format!(
+            "the scripted agent offered {ALLOW_ONCE} and was answered {}",
+            selected.option_id.0
+        )));
+    }
+
+    Ok(())
 }
 
 fn allow_once() -> PermissionOption {

@@ -53,6 +53,16 @@ pub enum Script {
     Lingers,
     /// Says the directory its session was opened against, and nothing else.
     Locates,
+    /// Ends the turn without a message, a thought, a plan or a tool call, having sent only the
+    /// bookkeeping a runtime sends when its agent says nothing.
+    Silent,
+    /// Calls a tool and ends the turn, without saying anything.
+    Works,
+    /// Asks permission and ends the turn, without a message, a thought, a plan or a tool call
+    /// notification of its own.
+    Asks,
+    /// Answers its first turn, then produces nothing on the turns after it.
+    Lapses,
 }
 
 impl Script {
@@ -73,6 +83,10 @@ impl Script {
             Script::Dawdles => "dawdles",
             Script::Lingers => "lingers",
             Script::Locates => "locates",
+            Script::Silent => "silent",
+            Script::Works => "works",
+            Script::Asks => "asks",
+            Script::Lapses => "lapses",
         }
     }
 }
