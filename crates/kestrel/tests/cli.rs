@@ -479,10 +479,16 @@ fn a_control_plane_killed_mid_turn_comes_back_and_the_turn_is_answered() {
     declared(&killed);
     let session = opened(&killed);
     let run = killed.run(&["run", "enqueue", "--session", &session]);
+    // The transcript says the Run started only once the supervisor holds the Start instruction,
+    // which is the first moment a restart has anything to recover; an instance alone is not.
     killed.until(
-        &["run", "list", "--session", &session, "--json", RUN],
-        |listed| listed.iter().any(|run| !run["instance"].is_null()),
-        "reached an instance",
+        &["session", "transcript", &session, "--json", "seq,entry"],
+        |transcribed| {
+            transcribed
+                .iter()
+                .any(|recorded| recorded["entry"]["kind"] == "run_started")
+        },
+        "started its turn",
     );
     killed.killed();
 
