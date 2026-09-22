@@ -95,7 +95,8 @@ or the command that delegated it, can choose instead. Named, listable, disableab
 budget. A trigger is the rule, never an individual firing; the session records the event that
 started it. A trigger matches only events recorded after it was declared: working the history a
 repository already holds is a deliberate act, and declaring a trigger is not it. One that declares
-a schedule in place of a match fires on its own elapsing. A trigger may name a workflow; when it
+a schedule — an interval, or a cron expression read in a declared time zone — in place of a match
+fires on its own elapsing. A trigger may name a workflow; when it
 does, each firing begins a campaign, and the session it starts belongs to that campaign.
 _Avoid_: subscription, listener, automation, matcher
 

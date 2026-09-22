@@ -764,8 +764,8 @@ pick which agent's credentials the run gets
 `kestrel trigger list` shows each one, and what it matches:
 
 ```
-id                                    name       state    workspace  agent    every  filter
-01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel    builder  -      {"all":[{"exact":{"source":"https://github.com/jtmthf/kestrel"}},…]}
+id                                    name       state    workspace  agent    every  cron  filter
+01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel    builder  -      -     {"all":[{"exact":{"source":"https://github.com/jtmthf/kestrel"}},…]}
 ```
 
 Before trusting a trigger with work, ask it about an event kestrel already recorded. A test starts
@@ -836,6 +836,29 @@ firing budget applies. A schedule that would exceed the budget is refused when y
 nothing shorter than six minutes is accepted. Elapsings missed while kestrel was down fire once, not
 once each, and a disabled trigger's schedule does not elapse at all. A session opened this way has no
 issue to report to, so its outcome goes nowhere.
+
+An interval drifts with whenever it was declared and cannot skip a weekend. Work that belongs at a
+time of day, or on certain days, declares a cron expression and the time zone it is read in in place
+of `--every`:
+
+```sh
+kestrel trigger declare triage \
+  --cron '0 9 * * 1-5' \
+  --zone America/New_York \
+  --brief 'Triage what arrived since yesterday, as of {{ event.time }}' \
+  --workspace kestrel \
+  --agent builder
+```
+
+The expression is five fields — minute, hour, day of the month, month and day of the week (0 is
+Sunday) — each `*`, a number, a range such as `1-5`, a list such as `0,30`, or a step over `*` or a
+range such as `*/15`. There are no names, no `?`, `L` or `W`, and an expression restricts the day of
+the month or the day of the week, never both. The zone is required; `UTC` is one. A time the clocks
+spring past elapses at the moment they jump, and a time they fall back over elapses on its first
+pass, so a daily trigger fires once each day across a change. It elapses on the same path an
+interval does, with `data` holding the expression and the zone in place of the interval, and an
+expression whose closest two times are nearer than six minutes is refused the way a short interval
+is. `trigger show` prints the expression and its zone, `trigger list` the expression.
 
 `trigger test` needs no event for a scheduled trigger. Given none, it renders against the event the
 next elapsing would mint, and says when that is due:

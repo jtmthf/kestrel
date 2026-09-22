@@ -62,6 +62,7 @@ pub const TRIGGERS: View = View::Rows(&[
     "workspace",
     "agent",
     "every",
+    "cron",
     "filter",
 ]);
 pub const TRIGGER: View = View::Detail(&[
@@ -72,6 +73,8 @@ pub const TRIGGER: View = View::Detail(&[
     "disabled_because",
     "firing_budget",
     "every",
+    "cron",
+    "zone",
     "filter",
     "workspace",
     "agent",

@@ -10,7 +10,8 @@ pub mod apply;
 
 use crate::domain::{
     Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
-    Occurrence, Organization, RunId, SessionId, Templates, Trigger, TriggerId, TriggerState,
+    Occurrence, Organization, RunId, Schedule, SessionId, Templates, Trigger, TriggerId,
+    TriggerState,
 };
 use crate::fanout::{self, Change};
 use crate::integration::github::{self, EventData, Github};
@@ -121,13 +122,18 @@ pub(crate) fn check_miss(templates: &Templates, on_miss: Option<CorrelationMiss>
 
 pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trigger> {
     check_miss(declaration.templates, declaration.on_miss)?;
-    if let Fires::Every(every) = declaration.fires {
+    if let Fires::Scheduled(schedule) = declaration.fires {
         let budget = FiringBudget::default();
-        let fastest = budget.window / i32::try_from(budget.limit.get())?;
-        if *every < fastest {
+        let allowed = budget.window / i32::try_from(budget.limit.get())?;
+        let fastest = schedule.fastest();
+        if fastest < allowed {
+            let pace = match schedule {
+                Schedule::Every(_) => format!("every {fastest:#}"),
+                Schedule::Cron(_) => format!("as often as every {fastest:#}"),
+            };
             bail!(
-                "a trigger firing every {every:#} would exhaust its budget of {} firings in {:#}: \
-                 fire at most every {fastest:#}",
+                "a trigger firing {pace} would exhaust its budget of {} firings in {:#}: \
+                 fire at most every {allowed:#}",
                 budget.limit,
                 budget.window
             );
@@ -472,7 +478,7 @@ pub async fn elapse(store: &Store, at: Timestamp) -> Result<Vec<Occurrence>> {
     let mut minted = Vec::new();
 
     for (trigger, due) in tx.triggers().schedules_due(at).await? {
-        let Fires::Every(every) = trigger.fires else {
+        let Fires::Scheduled(schedule) = &trigger.fires else {
             bail!("the trigger {} is due but has no schedule", trigger.name);
         };
         let occurrence = trigger
@@ -486,9 +492,7 @@ pub async fn elapse(store: &Store, at: Timestamp) -> Result<Vec<Occurrence>> {
             minted.push(occurrence);
         }
 
-        let missed = at.duration_since(due).as_nanos() / every.as_nanos();
-        let next =
-            Timestamp::from_nanosecond(due.as_nanosecond() + (missed + 1) * every.as_nanos())?;
+        let next = schedule.following(due, at)?;
         tx.triggers().due_again(&trigger, next).await?;
     }
     tx.commit().await?;
