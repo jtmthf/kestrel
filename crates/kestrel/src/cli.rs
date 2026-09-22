@@ -1,21 +1,14 @@
-use std::convert::Infallible;
-use std::io::Read as _;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
-use jiff::SignedDuration;
 
 use crate::compute::{Docker, Driver, LocalExec};
-use crate::domain::{CorrelationMiss, Direction, EventRecordId, RunId, SessionId};
-use crate::integration::github;
-use crate::log::Cursor;
 use crate::role::serve::Listen;
 use crate::role::work::{AgentRuntime, Dispatch};
-use crate::template::Template;
 
 const SUPERVISOR: &str = "kestrel-supervisor";
 const IMAGE: &str = "kestrel-env:latest";
@@ -23,17 +16,16 @@ const DEFAULT_MAX_ACTIVE_RUNS: NonZeroUsize = NonZeroUsize::new(2).unwrap();
 
 const ROLES: &str = "\
 Roles:
-  kestrel runs as one of three roles, selected by argv on one image: `serve`, `work`, and
-  the CLI — every other command, which does its one thing and exits.
+  The control plane runs as one of two roles, selected by argv on one image: `serve` and
+  `work`. Operators reach it with the `kestrel` Client, a separate program.
 
-  Run kestrel with no command to start every role in one process. That is the default,
-  and at 0.1 it is the only supported topology.";
+  Run it with no command to start every role in one process. That is the default, and at
+  0.1 it is the only supported topology.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Serve,
     Work,
-    Cli,
 }
 
 impl Role {
@@ -41,7 +33,6 @@ impl Role {
         match self {
             Role::Serve => "serve",
             Role::Work => "work",
-            Role::Cli => "cli",
         }
     }
 }
@@ -52,18 +43,9 @@ impl std::fmt::Display for Role {
     }
 }
 
-/// Not a wrapper around [`Role`]: the CLI role is one-shot, never started and waited in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Selection<'a> {
-    AllInOne,
-    Serve,
-    Work,
-    Cli(&'a CliCommand),
-}
-
 #[derive(Debug, Parser)]
 #[command(
-    name = "kestrel",
+    name = "kestrel-control-plane",
     version,
     about = "kestrel — background agents, triggered by the events a team already produces.",
     disable_help_subcommand = true,
@@ -186,577 +168,9 @@ pub enum Command {
     Serve,
     /// Claim queued Runs and execute them
     Work,
-    #[command(flatten)]
-    Cli(Box<CliCommand>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum CliCommand {
-    /// Declare and list Organizations
-    #[command(subcommand)]
-    Organization(OrganizationCommand),
-    /// Declare and list Workspaces
-    #[command(subcommand)]
-    Workspace(WorkspaceCommand),
-    /// Declare and list Agents
-    #[command(subcommand)]
-    Agent(AgentCommand),
-    /// Hold and forget the Provider Credentials an Organization's Runs reach a model with
-    #[command(subcommand)]
-    Credential(CredentialCommand),
-    /// Declare Subscription Profiles, and hold and forget the logins in them
-    #[command(subcommand)]
-    Profile(ProfileCommand),
-    /// Open and read Sessions
-    #[command(subcommand)]
-    Session(SessionCommand),
-    /// Enqueue and list Runs
-    #[command(subcommand)]
-    Run(RunCommand),
-    /// List the Instances held for work that exists nowhere else, and release them
-    #[command(subcommand)]
-    Instance(InstanceCommand),
-    /// Register and list Integrations
-    #[command(subcommand)]
-    Integration(IntegrationCommand),
-    /// Declare, inspect and disable Triggers
-    #[command(subcommand)]
-    Trigger(TriggerCommand),
-    /// List the Events an Integration has discovered
-    #[command(subcommand)]
-    Event(EventCommand),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum TriggerCommand {
-    /// Make an Organization's applied Triggers what a declaration file says, printing the diff
-    Apply {
-        #[arg(long)]
-        organization: String,
-        /// The declaration file, or `-` for standard input
-        #[arg(short = 'f', long = "file", value_name = "FILE", value_parser = Given::path)]
-        file: Given,
-        /// Print the diff without making it
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Declare a one-off Trigger: what it matches, and the Agent and Workspace it starts work with
-    Declare {
-        /// The name it is referred to by
-        name: String,
-        /// The Organization it belongs to
-        #[arg(long)]
-        organization: String,
-        /// The Events it matches: a CloudEvents filter of exact, prefix, suffix, all, any and
-        /// not over id, source, specversion, type, subject and time, which kestrel extends to
-        /// reach into data.<path>; `@FILE` reads it from a file and `-` from standard input
-        #[arg(
-            long,
-            value_name = "JSON",
-            value_parser = Given::text,
-            required_unless_present = "every"
-        )]
-        filter: Option<Given>,
-        /// Fire on a schedule in place of a filter: each time this long elapses, starting from
-        /// the declaration, kestrel mints a `dev.kestrel.schedule.elapsed` Event and fires on it
-        #[arg(long, value_name = "DURATION", conflicts_with = "filter")]
-        every: Option<SignedDuration>,
-        /// The Brief a firing hands its Session: a minijinja template over `event`, in which
-        /// anything undefined is an error rather than nothing; `@FILE` reads it from a file and
-        /// `-` from standard input
-        #[arg(long, value_name = "TEMPLATE", value_parser = Given::text)]
-        brief: Given,
-        /// The branch a firing's work happens on, rendered from `event`; a branch of the
-        /// Session's own, cut from the Workspace's, when not given
-        #[arg(long, value_name = "TEMPLATE")]
-        branch: Option<Template>,
-        /// The key that decides whether a Session for this work already exists, rendered
-        /// from `event`
-        #[arg(long, value_name = "TEMPLATE")]
-        correlation: Option<Template>,
-        /// What to do when the rendered correlation names no open Session: `open` or `ignore`
-        #[arg(long, value_name = "OPEN|IGNORE")]
-        on_miss: Option<CorrelationMiss>,
-        /// The Workspace a firing's work happens against
-        #[arg(long)]
-        workspace: String,
-        /// The Agent a firing starts work with
-        #[arg(long)]
-        agent: String,
-        /// Another Agent an `agent:<name>` label on the work item may choose instead; repeat
-        /// for many
-        #[arg(long = "allow", value_name = "AGENT")]
-        allows: Vec<String>,
-        /// The Subscription Profile a firing's Runs are spawned with, whose owner is
-        /// authorizing every one of them by naming it here
-        #[arg(long, value_name = "PROFILE")]
-        profile: Option<String>,
-    },
-    /// Say whether a Trigger matches an Event already recorded, and what a firing for it
-    /// would render, starting no work
-    Test {
-        /// The name it is referred to by
-        name: String,
-        #[arg(long)]
-        organization: String,
-        /// The Event's record, as `event list` prints it; a scheduled Trigger without one is
-        /// tested against the Event its next elapsing would mint
-        #[arg(long, value_name = "RECORD")]
-        event: Option<EventRecordId>,
-        /// Test the Trigger as a declaration file declares it rather than as it was applied;
-        /// `-` for standard input
-        #[arg(short = 'f', long = "file", value_name = "FILE", value_parser = Given::path)]
-        file: Option<Given>,
-        /// The instruction a dispatch supplies, which the brief reads as `instruction`; `@FILE`
-        /// reads it from a file and `-` from standard input
-        #[arg(long, value_parser = Given::text)]
-        instruction: Option<Given>,
-    },
-    /// Start a Trigger's work on an issue now, whether or not its filter matches anything
-    Dispatch {
-        /// The name it is referred to by
-        name: String,
-        #[arg(long)]
-        organization: String,
-        /// The GitHub Integration the issue is read through, and its Outcome said back through
-        #[arg(long)]
-        integration: String,
-        /// The issue to work on
-        #[arg(long, value_name = "NUMBER")]
-        issue: i64,
-        /// The instruction the brief reads as `instruction`; `@FILE` reads it from a file and
-        /// `-` from standard input
-        #[arg(long, value_parser = Given::text)]
-        instruction: Option<Given>,
-        /// An Agent the Trigger allows, in place of the one it or a label would choose
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// List every Trigger in an Organization, and what each matches
-    List {
-        #[arg(long)]
-        organization: String,
-    },
-    /// Show a Trigger
-    Show {
-        /// The name it is referred to by
-        name: String,
-        #[arg(long)]
-        organization: String,
-    },
-    /// Stop a Trigger firing, without forgetting it
-    Disable {
-        /// The name it is referred to by
-        name: String,
-        #[arg(long)]
-        organization: String,
-    },
-    /// Let a disabled Trigger fire again
-    Enable {
-        /// The name it is referred to by
-        name: String,
-        #[arg(long)]
-        organization: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Given {
-    Text(String),
-    File(PathBuf),
-    Stdin,
-}
-
-impl Given {
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "clap's value_parser takes a Result"
-    )]
-    fn text(given: &str) -> Result<Self, Infallible> {
-        Ok(match given {
-            "-" => Given::Stdin,
-            _ => match given.strip_prefix('@') {
-                Some(path) => Given::File(path.into()),
-                None => Given::Text(given.to_owned()),
-            },
-        })
-    }
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "clap's value_parser takes a Result"
-    )]
-    fn path(given: &str) -> Result<Self, Infallible> {
-        Ok(match given {
-            "-" => Given::Stdin,
-            _ => Given::File(given.into()),
-        })
-    }
-
-    pub fn read(&self) -> Result<String> {
-        match self {
-            Given::Text(text) => Ok(text.clone()),
-            Given::File(path) => {
-                std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
-            }
-            Given::Stdin => {
-                let mut read = String::new();
-                std::io::stdin()
-                    .read_to_string(&mut read)
-                    .context("reading standard input")?;
-                Ok(read)
-            }
-        }
-    }
-
-    pub fn parse<T>(&self, what: &str) -> Result<T>
-    where
-        T: std::str::FromStr<Err = anyhow::Error>,
-    {
-        let text = self.read()?;
-        text.parse().with_context(|| match self {
-            Given::Text(_) => format!("the {what}"),
-            Given::File(path) => format!("the {what} in {}", path.display()),
-            Given::Stdin => format!("the {what} on standard input"),
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum IntegrationCommand {
-    /// Register an Integration: a credentialed connection to an external system
-    #[command(subcommand)]
-    Register(RegisterCommand),
-    /// List every Integration in an Organization, and the directions each carries
-    List {
-        #[arg(long)]
-        organization: String,
-    },
-    /// Acknowledge the latest oversized Event refused by an Integration
-    AcknowledgeRefusal {
-        name: String,
-        #[arg(long)]
-        organization: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum RegisterCommand {
-    /// A connection to GitHub, watching one repository
-    Github {
-        /// The name it is referred to by
-        name: String,
-        /// The Organization whose credential it holds
-        #[arg(long)]
-        organization: String,
-        /// The repository it watches, as owner/name
-        #[arg(long, value_name = "OWNER/NAME")]
-        repository: String,
-        /// The credential it presents to GitHub
-        #[arg(long, env = "KESTREL_GITHUB_TOKEN", value_name = "TOKEN")]
-        token: String,
-        /// A direction it carries — inbound, outbound; repeat for both
-        #[arg(
-            long = "carries",
-            value_name = "DIRECTION",
-            default_values = ["inbound", "outbound"]
-        )]
-        carries: Vec<Direction>,
-        /// How often the poll asks GitHub what has happened
-        #[arg(long, value_name = "DURATION", default_value = "1m")]
-        interval: SignedDuration,
-        /// The secret GitHub signs webhook deliveries with; given one, kestrel receives the
-        /// repository's events by webhook and stops polling for them
-        #[arg(long, env = "KESTREL_GITHUB_WEBHOOK_SECRET", value_name = "SECRET")]
-        webhook_secret: Option<String>,
-        #[arg(long, env = "KESTREL_GITHUB_API", default_value = github::API, hide = true)]
-        api: String,
-    },
-    /// A generic endpoint any producer can POST CloudEvents to
-    Webhook {
-        /// The name it is referred to by
-        name: String,
-        /// The Organization whose Events it records
-        #[arg(long)]
-        organization: String,
-        /// The secret a sender presents as `Authorization: Bearer <secret>`
-        #[arg(long, env = "KESTREL_WEBHOOK_SECRET", value_name = "SECRET")]
-        secret: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum EventCommand {
-    /// List the Events recorded for an Organization, most recent first
-    List {
-        #[arg(long)]
-        organization: String,
-        /// How many to list at most
-        #[arg(long, default_value_t = 50)]
-        limit: usize,
-    },
-    /// Show one Event's whole envelope and payload
-    Show {
-        #[arg(long)]
-        record: EventRecordId,
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum RunCommand {
-    /// Enqueue a Run in a Session, for the work role to claim and dispatch
-    Enqueue {
-        /// The Session it executes on behalf of
-        #[arg(long)]
-        session: SessionId,
-        /// The model it works with, or none for its Agent's or Agent Runtime's default
-        #[arg(long)]
-        model: Option<String>,
-    },
-    /// List every Run in a Session, with the Instance it executed on
-    List {
-        #[arg(long)]
-        session: SessionId,
-    },
-    /// End a Run: it succeeds between turns, and fails mid-turn or before it started
-    Stop {
-        /// The Run's identifier
-        run: RunId,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum InstanceCommand {
-    /// List every Instance kept because it may hold the only copy of its Session's work, and why
-    List {
-        #[arg(long)]
-        organization: String,
-    },
-    /// Destroy a Session's Instance, discarding whatever it holds that was never pushed
-    Release {
-        /// The Session whose Instance it is
-        session: SessionId,
-        #[arg(long, default_value = "operator")]
-        as_participant: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum SessionCommand {
-    /// Open a Session against a Workspace and an Agent
-    Open {
-        /// The Organization it belongs to
-        #[arg(long)]
-        organization: String,
-        /// The Workspace its work happens against
-        #[arg(long)]
-        workspace: String,
-        /// The Agent that participates in it
-        #[arg(long)]
-        agent: String,
-        /// The Subscription Profile its Runs are spawned with, and no other
-        #[arg(long, value_name = "PROFILE")]
-        profile: Option<String>,
-        /// An existing branch its work happens on; a branch of its own, cut from the
-        /// Workspace's, when not given
-        #[arg(long)]
-        branch: Option<String>,
-        /// The sealed Session this one carries on from
-        #[arg(long, value_name = "SESSION")]
-        continues: Option<SessionId>,
-    },
-    /// List every Session in an Organization, with the Event that started each
-    List {
-        #[arg(long)]
-        organization: String,
-    },
-    /// Seal a Session: readable ever after, and never reopened
-    Seal {
-        /// The Session's identifier
-        session: SessionId,
-    },
-    /// Add a participant's message; work starts now or after the active Run ends
-    Post {
-        session: SessionId,
-        #[arg(long, default_value = "operator")]
-        as_participant: String,
-        message: String,
-    },
-    /// Show a Session
-    Show {
-        /// The Session's identifier
-        session: SessionId,
-    },
-    /// Read one window of a Session's Transcript, and the cursor the next one resumes from
-    Transcript {
-        /// The Session's identifier
-        session: SessionId,
-        /// Resume from the cursor a previous read ended with
-        #[arg(long)]
-        cursor: Option<Cursor>,
-        /// How many entries to read at most
-        #[arg(long, value_name = "ENTRIES")]
-        window: Option<usize>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum CredentialCommand {
-    /// Hold a Provider Credential against an Organization, read from standard input
-    Set {
-        /// The environment variable an Agent Runtime reads it from
-        variable: String,
-        /// The Organization that holds it
-        #[arg(long)]
-        organization: String,
-    },
-    /// List what an Organization holds, by the variable each is read from and never by value
-    List {
-        #[arg(long)]
-        organization: String,
-    },
-    /// Forget a Provider Credential an Organization holds
-    Forget {
-        /// The environment variable it is read from
-        variable: String,
-        /// The Organization that holds it
-        #[arg(long)]
-        organization: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum ProfileCommand {
-    /// Declare a Subscription Profile: a person's login to a subscribed Agent Runtime
-    Declare {
-        /// The name a Session or Trigger names it by
-        name: String,
-        /// The Organization it is declared in
-        #[arg(long)]
-        organization: String,
-        /// The person it belongs to, which never changes
-        #[arg(long)]
-        owner: String,
-    },
-    /// Hold a login in a profile, read from standard input
-    Set {
-        /// The profile it is held in
-        name: String,
-        #[arg(long)]
-        organization: String,
-        #[command(flatten)]
-        entry: ProfileEntry,
-    },
-    /// List every profile in an Organization, with what each holds and never its contents
-    List {
-        #[arg(long)]
-        organization: String,
-    },
-    /// Forget a login a profile holds
-    Forget {
-        /// The profile it is held in
-        name: String,
-        #[arg(long)]
-        organization: String,
-        #[command(flatten)]
-        entry: ProfileEntry,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Args)]
-#[group(required = true, multiple = false)]
-pub struct ProfileEntry {
-    /// An environment variable the Agent Runtime is spawned with
-    #[arg(long, value_name = "NAME")]
-    pub variable: Option<String>,
-    /// A file beneath the agent's home, handed back after each Run so a refreshed login
-    /// persists
-    #[arg(long, value_name = "PATH")]
-    pub file: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum AgentCommand {
-    /// Declare an Agent: the actor identity that participates in a Session
-    Declare {
-        /// The name it is referred to by
-        name: String,
-        /// The Organization it belongs to
-        #[arg(long)]
-        organization: String,
-        /// The Agent Runtime that drives it
-        #[arg(long, default_value = "opencode")]
-        runtime: String,
-        /// The model it works with, or none for whatever its Agent Runtime defaults to
-        #[arg(long)]
-        model: Option<String>,
-    },
-    /// Change the model an Agent works with, leaving every Run in flight on the one it has
-    Model {
-        /// The name it is referred to by
-        name: String,
-        /// The Organization it belongs to
-        #[arg(long)]
-        organization: String,
-        /// The model it works with, or none for whatever its Agent Runtime defaults to
-        #[arg(long)]
-        model: Option<String>,
-    },
-    /// List every Agent in an Organization
-    List {
-        #[arg(long)]
-        organization: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum WorkspaceCommand {
-    /// Declare a Workspace: the repositories and branch a Session's work happens against
-    Declare {
-        /// The name it is referred to by
-        name: String,
-        /// The Organization it belongs to
-        #[arg(long)]
-        organization: String,
-        /// A repository the work happens against; repeat for many
-        #[arg(long = "repository", value_name = "URL", required = true)]
-        repositories: Vec<String>,
-        /// The branch the work happens on
-        #[arg(long)]
-        branch: String,
-    },
-    /// List every Workspace in an Organization
-    List {
-        #[arg(long)]
-        organization: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum OrganizationCommand {
-    /// Declare an Organization
-    Declare {
-        /// The name it is referred to by
-        name: String,
-    },
-    /// List every Organization
-    List,
 }
 
 impl Cli {
-    /// Every other command is the CLI role; this match being exhaustive is what forces the
-    /// first one to say so.
-    pub fn selection(&self) -> Selection<'_> {
-        match &self.command {
-            None => Selection::AllInOne,
-            Some(Command::Serve) => Selection::Serve,
-            Some(Command::Work) => Selection::Work,
-            Some(Command::Cli(command)) => Selection::Cli(command),
-        }
-    }
-
     pub fn listen(&self) -> Listen {
         Listen {
             link: self.listen,
@@ -833,89 +247,34 @@ mod tests {
     }
 
     fn parsed(argv: &[&str]) -> Cli {
-        let mut args = vec!["kestrel"];
+        let mut args = vec!["kestrel-control-plane"];
         args.extend_from_slice(argv);
         Cli::parse_from(args)
     }
 
     #[test]
     fn no_role_selects_every_role_in_one_process() {
-        assert_eq!(parsed(&[]).selection(), Selection::AllInOne);
+        assert_eq!(parsed(&[]).command, None);
     }
 
     #[test]
     fn serve_selects_the_serve_role() {
-        assert_eq!(parsed(&["serve"]).selection(), Selection::Serve);
+        assert_eq!(parsed(&["serve"]).command, Some(Command::Serve));
     }
 
     #[test]
     fn work_selects_the_work_role() {
-        assert_eq!(parsed(&["work"]).selection(), Selection::Work);
+        assert_eq!(parsed(&["work"]).command, Some(Command::Work));
     }
 
     #[test]
-    fn every_other_command_is_the_one_shot_cli_role() {
-        assert_eq!(
-            parsed(&["organization", "list"]).selection(),
-            Selection::Cli(&CliCommand::Organization(OrganizationCommand::List))
-        );
-    }
-
-    #[test]
-    fn a_run_may_name_the_model_it_works_with() {
-        let Cli {
-            command: Some(Command::Cli(command)),
-            ..
-        } = parsed(&[
-            "run",
-            "enqueue",
-            "--session",
-            "01a0a2d8-baf8-7c02-99fa-7280f174c14a",
-            "--model",
-            "scripted-max",
-        ])
-        else {
-            panic!("the run command should parse");
-        };
-
-        assert!(matches!(
-            *command,
-            CliCommand::Run(RunCommand::Enqueue { model: Some(model), .. }) if model == "scripted-max"
-        ));
-    }
-
-    fn declaring(fires: &[&str]) -> Result<Cli, clap::Error> {
-        let mut argv = vec![
-            "kestrel",
-            "trigger",
-            "declare",
-            "sweep",
-            "--organization",
-            "acme",
-            "--brief",
-            "Sweep the backlog",
-            "--workspace",
-            "kestrel",
-            "--agent",
-            "builder",
-        ];
-        argv.extend_from_slice(fires);
-        Cli::try_parse_from(argv)
-    }
-
-    #[test]
-    fn a_trigger_declares_a_filter_or_a_schedule_and_not_both() {
-        let filter = r#"{"exact": {"type": "com.github.issues.labeled"}}"#;
-
-        assert!(declaring(&["--filter", filter]).is_ok());
-        assert!(declaring(&["--every", "1h"]).is_ok());
-        assert!(declaring(&["--filter", filter, "--every", "1h"]).is_err());
-        assert!(declaring(&[]).is_err());
+    fn an_operator_command_is_no_role_of_the_control_plane() {
+        assert!(Cli::try_parse_from(["kestrel-control-plane", "organization", "list"]).is_err());
     }
 
     #[test]
     fn an_unknown_command_is_rejected_rather_than_run_as_a_role() {
-        assert!(Cli::try_parse_from(["kestrel", "wrok"]).is_err());
+        assert!(Cli::try_parse_from(["kestrel-control-plane", "wrok"]).is_err());
     }
 
     fn dispatch(argv: &[&str]) -> Dispatch {
@@ -979,7 +338,7 @@ mod tests {
     fn a_runtime_named_without_its_command_is_rejected() {
         for given in ["opencode", "=opencode acp", "opencode="] {
             assert!(
-                Cli::try_parse_from(["kestrel", "--agent-runtime", given]).is_err(),
+                Cli::try_parse_from(["kestrel-control-plane", "--agent-runtime", given]).is_err(),
                 "{given} was accepted"
             );
         }
@@ -987,7 +346,9 @@ mod tests {
 
     #[test]
     fn a_driver_that_is_neither_is_rejected_rather_than_falling_back() {
-        assert!(Cli::try_parse_from(["kestrel", "--compute", "firecracker"]).is_err());
+        assert!(
+            Cli::try_parse_from(["kestrel-control-plane", "--compute", "firecracker"]).is_err()
+        );
     }
 
     #[test]
@@ -1001,7 +362,7 @@ mod tests {
 
     #[test]
     fn an_active_run_limit_of_zero_is_rejected() {
-        assert!(Cli::try_parse_from(["kestrel", "--max-active-runs", "0"]).is_err());
+        assert!(Cli::try_parse_from(["kestrel-control-plane", "--max-active-runs", "0"]).is_err());
     }
 
     #[test]
@@ -1027,10 +388,10 @@ mod tests {
     }
 
     #[test]
-    fn help_lists_the_three_roles() {
+    fn help_lists_the_two_roles() {
         let help = rendered_help();
         let spoken = help.to_lowercase();
-        for role in [Role::Serve, Role::Work, Role::Cli] {
+        for role in [Role::Serve, Role::Work] {
             assert!(
                 spoken.contains(role.as_str()),
                 "--help does not mention the {role} role:\n{help}"

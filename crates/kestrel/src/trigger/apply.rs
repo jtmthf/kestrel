@@ -51,7 +51,7 @@ pub struct Applied {
 /// removed; `triggers: {}` says that on purpose.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct File {
+pub struct File {
     triggers: BTreeMap<String, Entry>,
 }
 
@@ -71,8 +71,10 @@ struct Entry {
 }
 
 pub fn parse(text: &str) -> Result<Vec<Declared>> {
-    let file: File = yaml_serde::from_str(text).context("reading the declaration file")?;
+    declarations(yaml_serde::from_str(text).context("reading the declaration file")?)
+}
 
+pub fn declarations(file: File) -> Result<Vec<Declared>> {
     file.triggers
         .into_iter()
         .map(|(name, entry)| {

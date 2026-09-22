@@ -1,13 +1,16 @@
+//! The installed `kestrel` Client against a control plane booted as its own binary: nothing
+//! here reaches the database except through the operator boundary.
+
 mod support;
 
-use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write as _};
+use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use support::client;
+use serde_json::Value;
+use support::client::{self, Finished, Invocation};
 use support::github_stub::{self, GithubStub};
 use support::scripted_agent::Script;
 use tempfile::TempDir;
@@ -18,6 +21,13 @@ struct Kestrel {
     data_dir: TempDir,
 }
 
+/// A control plane running over a [`Kestrel`]'s data directory, and every line it has said.
+struct Booted {
+    child: Child,
+    said: Arc<Mutex<String>>,
+    operator: String,
+}
+
 impl Kestrel {
     fn new() -> Self {
         Self {
@@ -25,67 +35,14 @@ impl Kestrel {
         }
     }
 
-    fn try_run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_kestrel"))
-            .args(args)
-            .env("KESTREL_DATA_DIR", self.data_dir.path())
-            .output()
-            .expect("kestrel should run")
-    }
-
-    /// A Provider Credential is read from standard input rather than from an argument, so the
-    /// only way to set one is to write it down the pipe.
-    fn try_run_on_stdin(&self, args: &[&str], input: &str) -> Output {
-        let mut kestrel = Command::new(env!("CARGO_BIN_EXE_kestrel"))
-            .args(args)
-            .env("KESTREL_DATA_DIR", self.data_dir.path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("kestrel should run");
-        kestrel
-            .stdin
-            .take()
-            .expect("stdin should be piped")
-            .write_all(input.as_bytes())
-            .expect("the secret should reach kestrel");
-
-        kestrel
-            .wait_with_output()
-            .expect("kestrel should be waitable")
-    }
-
-    fn set_credential(&self, variable: &str, organization: &str, secret: &str) -> String {
-        let output = self.try_run_on_stdin(
-            &[
-                "credential",
-                "set",
-                variable,
-                "--organization",
-                organization,
-            ],
-            secret,
-        );
-        assert!(
-            output.status.success(),
-            "`kestrel credential set {variable}` failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        String::from_utf8_lossy(&output.stdout)
-            .trim_end()
-            .to_owned()
-    }
-
-    /// An ephemeral port, so tests that boot one concurrently never race over kestrel's
+    /// An ephemeral link port, so tests that boot one concurrently never race over kestrel's
     /// default.
-    fn boot(&self) -> Child {
-        self.booting("127.0.0.1:0", Script::Speaks)
+    fn boot(&self) -> Booted {
+        self.booting("127.0.0.1:0", Script::Speaks, "info")
     }
 
-    fn booting(&self, listen: &str, script: Script) -> Child {
-        Command::new(env!("CARGO_BIN_EXE_kestrel"))
+    fn booting(&self, listen: &str, script: Script, level: &str) -> Booted {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_kestrel-control-plane"))
             .env("KESTREL_DATA_DIR", self.data_dir.path())
             .env("KESTREL_LISTEN", listen)
             .env("KESTREL_OPERATOR_LISTEN", "127.0.0.1:0")
@@ -99,48 +56,15 @@ impl Kestrel {
                     support::scripted_agent::playing(script)
                 ),
             )
-            .env("RUST_LOG", "info")
+            .env("RUST_LOG", level)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("kestrel should spawn")
-    }
+            .expect("the control plane should spawn");
 
-    fn until(&self, args: &[&str], listed: impl Fn(&str) -> bool, what: &str) -> String {
-        let deadline = Instant::now() + PATIENCE;
-
-        loop {
-            let shown = self.run(args);
-            if listed(&shown) {
-                return shown;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "`kestrel {}` never {what}. the last listing was:\n{shown}",
-                args.join(" ")
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    /// Everything the control plane says while it runs, at the loudest level it has, drained
-    /// as it is said so that a chatty log cannot block the process on a full pipe.
-    fn booted_saying_everything(&self) -> (Child, Arc<Mutex<String>>) {
-        let mut kestrel = Command::new(env!("CARGO_BIN_EXE_kestrel"))
-            .env("KESTREL_DATA_DIR", self.data_dir.path())
-            .env("KESTREL_LISTEN", "127.0.0.1:0")
-            .env("KESTREL_OPERATOR_LISTEN", "127.0.0.1:0")
-            .env("KESTREL_COMPUTE", "local-exec")
-            .env("KESTREL_SUPERVISOR", support::supervisor::binary())
-            .env("RUST_LOG", "trace")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("kestrel should spawn");
-
-        let stderr = kestrel.stderr.take().expect("stderr should be piped");
+        // Drained as it is said, so a chatty log cannot block the process on a full pipe.
+        let stderr = child.stderr.take().expect("stderr should be piped");
         let said = Arc::new(Mutex::new(String::new()));
         let draining = Arc::clone(&said);
         std::thread::spawn(move || {
@@ -150,1289 +74,128 @@ impl Kestrel {
                 said.push('\n');
             }
         });
+        let operator = operator_of(&said);
 
-        (kestrel, said)
+        Booted {
+            child,
+            said,
+            operator,
+        }
+    }
+}
+
+impl Booted {
+    fn client(&self, args: &[&str]) -> Finished {
+        client::ran(&self.operator, args)
     }
 
-    /// `Child::kill` is a `SIGKILL`, so nothing kestrel holds in memory is given a chance to land.
-    fn kill_a_booted_control_plane(&self) {
-        let mut kestrel = self.boot();
-
-        let stderr = BufReader::new(kestrel.stderr.take().expect("stderr should be piped"));
-        let booted = stderr
-            .lines()
-            .map_while(Result::ok)
-            .any(|line| line.contains("role started"));
-
-        let _ = kestrel.kill();
-        kestrel.wait().expect("kestrel should be waitable");
-        assert!(booted, "kestrel never started a role");
+    fn client_as(&self, args: &[&str], invocation: Invocation) -> Finished {
+        client::ran_as(&self.operator, args, invocation)
     }
 
     fn run(&self, args: &[&str]) -> String {
-        let output = self.try_run(args);
-        assert!(
-            output.status.success(),
-            "`kestrel {}` failed with {}:\n{}",
-            args.join(" "),
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
+        succeeded(args, &self.client(args))
+    }
+
+    fn run_as(&self, args: &[&str], invocation: Invocation) -> String {
+        succeeded(args, &self.client_as(args, invocation))
+    }
+
+    fn records(&self, args: &[&str]) -> Vec<Value> {
+        self.client(args).records()
+    }
+
+    fn record(&self, args: &[&str]) -> Value {
+        let mut records = self.records(args);
+        assert_eq!(
+            records.len(),
+            1,
+            "`kestrel {}` answered {records:?}",
+            args.join(" ")
         );
-        String::from_utf8(output.stdout)
-            .expect("output should be utf-8")
-            .trim_end()
-            .to_owned()
+        records.remove(0)
+    }
+
+    /// The refusal itself, so a test asserting one never passes on a command that succeeded.
+    fn refused(&self, args: &[&str]) -> String {
+        refusal(args, &self.client(args))
+    }
+
+    fn refused_as(&self, args: &[&str], invocation: Invocation) -> String {
+        refusal(args, &self.client_as(args, invocation))
+    }
+
+    fn until(&self, args: &[&str], listed: impl Fn(&[Value]) -> bool, what: &str) -> Vec<Value> {
+        let deadline = Instant::now() + PATIENCE;
+
+        loop {
+            let shown = self.records(args);
+            if listed(&shown) {
+                return shown;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "`kestrel {}` never {what}. the last listing was:\n{shown:?}",
+                args.join(" ")
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn said(&self) -> String {
+        self.said
+            .lock()
+            .expect("the log should not be poisoned")
+            .clone()
+    }
+
+    /// `Child::kill` is a `SIGKILL`, so nothing the control plane holds in memory is given a
+    /// chance to land.
+    fn killed(mut self) {
+        let _ = self.child.kill();
+        self.child
+            .wait()
+            .expect("the control plane should be waitable");
+    }
+
+    /// Signalled rather than killed, so the work role sees a stopped Run's supervisor off the
+    /// link before it goes.
+    fn terminated(mut self) {
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::kill(self.child.id() as i32, libc::SIGTERM);
+        }
+        self.child
+            .wait()
+            .expect("the control plane should be waitable");
     }
 }
 
-/// Signalled rather than killed, so the work role sees a stopped Run's supervisor off the link
-/// before it goes.
-fn terminated(mut kestrel: Child) {
-    #[allow(unsafe_code)]
-    unsafe {
-        libc::kill(kestrel.id() as i32, libc::SIGTERM);
+impl Drop for Booted {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
-    kestrel.wait().expect("kestrel should be waitable");
 }
 
-/// The one path a person actually takes: the work role running while a Run is worked.
-fn dispatched(kestrel: &Kestrel, session: &str) -> String {
-    let booted = kestrel.boot();
-    let deadline = Instant::now() + PATIENCE;
-
-    let listed = loop {
-        let listed = kestrel.run(&["run", "list", "--session", session]);
-        if listed.contains("succeeded") || listed.contains("failed") {
-            break listed;
-        }
-        // Answering a turn never ends a Run, so one waiting is stopped the way a person would.
-        if let Some(waiting) = listed.lines().find(|line| line.ends_with("  waiting")) {
-            let run = waiting
-                .split_whitespace()
-                .next()
-                .expect("a run's identifier");
-            kestrel.run(&["run", "stop", run]);
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no run in the session {session} ended. the last listing was:\n{listed}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    };
-
-    terminated(booted);
-
-    listed
-}
-
-fn declared() -> Kestrel {
-    let kestrel = Kestrel::new();
-    kestrel.run(&["organization", "declare", "acme"]);
-    kestrel.run(&[
-        "workspace",
-        "declare",
-        support::repository::NAME,
-        "--organization",
-        "acme",
-        "--repository",
-        support::repository::url(),
-        "--branch",
-        support::repository::BRANCH,
-    ]);
-    kestrel.run(&[
-        "agent",
-        "declare",
-        "builder",
-        "--organization",
-        "acme",
-        "--model",
-        kestrel_scripted_agent::OTHER_MODEL,
-    ]);
-    kestrel.set_credential(support::PROVIDER_KEY, "acme", support::A_PROVIDER_KEY);
-    kestrel
-}
-
-fn shown(block: &str) -> HashMap<String, String> {
-    block
-        .lines()
-        .map(|line| {
-            let (field, value) = line.split_once(' ').expect("a field and a value");
-            (field.to_owned(), value.trim_start().to_owned())
-        })
-        .collect()
-}
-
-/// The refusal itself, so a test asserting one never passes on a command that succeeded.
-fn refused(kestrel: &Kestrel, args: &[&str]) -> String {
-    let refusal = kestrel.try_run(args);
+fn succeeded(args: &[&str], finished: &Finished) -> String {
     assert!(
-        !refusal.status.success(),
+        finished.status.success(),
+        "`kestrel {}` failed with {}:\n{}",
+        args.join(" "),
+        finished.status,
+        finished.err
+    );
+    finished.out.join("\n")
+}
+
+fn refusal(args: &[&str], finished: &Finished) -> String {
+    assert!(
+        !finished.status.success(),
         "`kestrel {}` was expected to be refused, and succeeded",
         args.join(" ")
     );
-    String::from_utf8_lossy(&refusal.stderr).into_owned()
-}
-
-fn opened(kestrel: &Kestrel) -> String {
-    kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ])
-}
-
-#[test]
-fn first_boot_needs_no_configuration_file_to_declare_an_organization() {
-    let kestrel = Kestrel::new();
-
-    let id = kestrel.run(&["organization", "declare", "acme"]);
-
-    assert!(kestrel.data_dir.path().join("kestrel.db").exists());
-    assert_eq!(
-        kestrel.run(&["organization", "list"]),
-        format!("{id}  acme")
-    );
-}
-
-#[test]
-fn a_role_boots_on_an_empty_data_directory_and_makes_its_database() {
-    let kestrel = Kestrel::new();
-
-    kestrel.kill_a_booted_control_plane();
-
-    assert!(kestrel.data_dir.path().join("kestrel.db").exists());
-    assert_eq!(kestrel.run(&["organization", "list"]), "");
-}
-
-#[test]
-fn a_workspace_names_repositories_and_a_branch() {
-    let kestrel = Kestrel::new();
-    kestrel.run(&["organization", "declare", "acme"]);
-
-    let id = kestrel.run(&[
-        "workspace",
-        "declare",
-        "kestrel",
-        "--organization",
-        "acme",
-        "--repository",
-        "https://github.com/jtmthf/kestrel",
-        "--repository",
-        "https://github.com/jtmthf/skills",
-        "--branch",
-        "main",
-    ]);
-
-    assert_eq!(
-        kestrel.run(&["workspace", "list", "--organization", "acme"]),
-        format!(
-            "{id}  kestrel  main  https://github.com/jtmthf/kestrel,https://github.com/jtmthf/skills"
-        )
-    );
-}
-
-#[test]
-fn a_workspace_cannot_be_declared_against_an_organization_that_was_never_declared() {
-    let kestrel = Kestrel::new();
-
-    let refusal = kestrel.try_run(&[
-        "workspace",
-        "declare",
-        "kestrel",
-        "--organization",
-        "acme",
-        "--repository",
-        "https://github.com/jtmthf/kestrel",
-        "--branch",
-        "main",
-    ]);
-
-    assert!(!refusal.status.success());
-    assert!(
-        String::from_utf8_lossy(&refusal.stderr).contains("no organization named acme"),
-        "unhelpful refusal: {}",
-        String::from_utf8_lossy(&refusal.stderr)
-    );
-}
-
-#[test]
-fn a_disabled_trigger_shows_its_reason_and_budget() {
-    let kestrel = declared();
-    kestrel.run(&[
-        "trigger",
-        "declare",
-        "ready",
-        "--organization",
-        "acme",
-        "--filter",
-        r#"{"exact": {"type": "com.github.issues.labeled"}}"#,
-        "--brief",
-        "Work on {{ event.data.issue.title }}",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-    kestrel.run(&["trigger", "disable", "ready", "--organization", "acme"]);
-
-    let trigger = kestrel.run(&["trigger", "show", "ready", "--organization", "acme"]);
-
-    assert!(trigger.contains("state         disabled"));
-    assert!(trigger.contains("disabled      disabled by an operator"));
-    assert!(trigger.contains("budget        10 firings"));
-}
-
-#[test]
-fn a_scheduled_trigger_shows_its_schedule_and_tests_without_an_event() {
-    let kestrel = declared();
-    kestrel.run(&[
-        "trigger",
-        "declare",
-        "sweep",
-        "--organization",
-        "acme",
-        "--every",
-        "2h",
-        "--brief",
-        "Sweep the backlog for {{ event.data.trigger }} every {{ event.data.every }}",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-
-    let shown = kestrel.run(&["trigger", "show", "sweep", "--organization", "acme"]);
-    let tested = kestrel.run(&["trigger", "test", "sweep", "--organization", "acme"]);
-
-    assert!(shown.contains("fires         every 2h"), "{shown}");
-    assert!(tested.starts_with("matches\nelapsing      "), "{tested}");
-    assert!(
-        tested.contains("Sweep the backlog for sweep every 2h"),
-        "{tested}"
-    );
-}
-
-#[test]
-fn a_trigger_test_renders_the_brief_over_a_dispatchs_instruction() {
-    let kestrel = declared();
-    kestrel.run(&[
-        "trigger",
-        "declare",
-        "sweep",
-        "--organization",
-        "acme",
-        "--every",
-        "2h",
-        "--brief",
-        "{% if instruction %}{{ instruction }}{% else %}Sweep the backlog{% endif %} for \
-         {{ event.data.trigger }}",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-
-    let by_default = kestrel.run(&["trigger", "test", "sweep", "--organization", "acme"]);
-    let instructed = kestrel.run(&[
-        "trigger",
-        "test",
-        "sweep",
-        "--organization",
-        "acme",
-        "--instruction",
-        "/triage the oldest issue",
-    ]);
-
-    assert!(
-        by_default.ends_with("\n\nSweep the backlog for sweep"),
-        "{by_default}"
-    );
-    assert!(
-        instructed.ends_with("\n\n/triage the oldest issue for sweep"),
-        "{instructed}"
-    );
-}
-
-#[test]
-fn an_agent_names_the_runtime_and_model_it_participates_with() {
-    let kestrel = Kestrel::new();
-    kestrel.run(&["organization", "declare", "acme"]);
-
-    let id = kestrel.run(&[
-        "agent",
-        "declare",
-        "builder",
-        "--organization",
-        "acme",
-        "--model",
-        "claude-opus-5",
-    ]);
-
-    assert_eq!(
-        kestrel.run(&["agent", "list", "--organization", "acme"]),
-        format!("{id}  builder  opencode  claude-opus-5")
-    );
-}
-
-#[test]
-fn an_agent_that_names_no_model_lists_as_naming_none() {
-    let kestrel = Kestrel::new();
-    kestrel.run(&["organization", "declare", "acme"]);
-
-    let id = kestrel.run(&["agent", "declare", "builder", "--organization", "acme"]);
-
-    assert_eq!(
-        kestrel.run(&["agent", "list", "--organization", "acme"]),
-        format!("{id}  builder  opencode  -")
-    );
-}
-
-#[test]
-fn an_agents_model_changes_through_the_cli_rather_than_by_declaring_it_again() {
-    let kestrel = Kestrel::new();
-    kestrel.run(&["organization", "declare", "acme"]);
-    let id = kestrel.run(&[
-        "agent",
-        "declare",
-        "builder",
-        "--organization",
-        "acme",
-        "--model",
-        "claude-opus-5",
-    ]);
-
-    assert_eq!(
-        kestrel.run(&[
-            "agent",
-            "model",
-            "builder",
-            "--organization",
-            "acme",
-            "--model",
-            "claude-sonnet-5",
-        ]),
-        "claude-sonnet-5"
-    );
-
-    assert_eq!(
-        kestrel.run(&["agent", "list", "--organization", "acme"]),
-        format!("{id}  builder  opencode  claude-sonnet-5")
-    );
-    assert_eq!(
-        kestrel.run(&["agent", "model", "builder", "--organization", "acme"]),
-        "-"
-    );
-}
-
-/// What a runtime offers is learned from the Runs it has worked, so an Agent naming a model
-/// outside it is refused at the CLI rather than at a dispatch that would fail.
-#[test]
-fn a_model_a_known_runtime_does_not_advertise_is_refused_when_the_agent_is_declared() {
-    let kestrel = declared();
-    let session = opened(&kestrel);
-    kestrel.run(&["run", "enqueue", "--session", &session]);
-    dispatched(&kestrel, &session);
-
-    let refusal = refused(
-        &kestrel,
-        &[
-            "agent",
-            "declare",
-            "reviewer",
-            "--organization",
-            "acme",
-            "--model",
-            "a-model-no-agent-offers",
-        ],
-    );
-
-    assert!(
-        refusal.contains(kestrel_scripted_agent::DEFAULT_MODEL),
-        "the refusal does not say what the runtime offers: {refusal}"
-    );
-}
-
-#[test]
-fn a_provider_credential_is_held_against_an_organization_and_listed_by_variable() {
-    let kestrel = Kestrel::new();
-    kestrel.run(&["organization", "declare", "acme"]);
-
-    assert_eq!(
-        kestrel.set_credential("ANTHROPIC_API_KEY", "acme", "a-provider-key"),
-        "ANTHROPIC_API_KEY"
-    );
-
-    let listed = kestrel.run(&["credential", "list", "--organization", "acme"]);
-    assert!(
-        listed.starts_with("ANTHROPIC_API_KEY  "),
-        "unexpected listing: {listed}"
-    );
-    assert!(
-        !listed.contains("a-provider-key"),
-        "the listing carries the credential itself: {listed}"
-    );
-}
-
-/// Never an argument: one would be in the operator's shell history and in what `ps` shows of
-/// the process holding it.
-#[test]
-fn a_provider_credential_is_read_from_standard_input_and_nothing_on_it_is_refused() {
-    let kestrel = Kestrel::new();
-    kestrel.run(&["organization", "declare", "acme"]);
-
-    let refusal = kestrel.try_run_on_stdin(
-        &[
-            "credential",
-            "set",
-            "ANTHROPIC_API_KEY",
-            "--organization",
-            "acme",
-        ],
-        "\n",
-    );
-
-    assert!(!refusal.status.success());
-    assert!(
-        String::from_utf8_lossy(&refusal.stderr).contains("nothing was on it"),
-        "unhelpful refusal: {}",
-        String::from_utf8_lossy(&refusal.stderr)
-    );
-    assert_eq!(
-        kestrel.run(&["credential", "list", "--organization", "acme"]),
-        ""
-    );
-}
-
-#[test]
-fn holding_a_credential_again_replaces_the_one_held_rather_than_holding_two() {
-    let kestrel = Kestrel::new();
-    kestrel.run(&["organization", "declare", "acme"]);
-
-    kestrel.set_credential("ANTHROPIC_API_KEY", "acme", "the-first-key");
-    kestrel.set_credential("ANTHROPIC_API_KEY", "acme", "the-second-key");
-
-    assert_eq!(
-        kestrel
-            .run(&["credential", "list", "--organization", "acme"])
-            .lines()
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn a_credential_an_organization_never_held_is_not_forgotten_quietly() {
-    let kestrel = Kestrel::new();
-    kestrel.run(&["organization", "declare", "acme"]);
-    kestrel.set_credential("ANTHROPIC_API_KEY", "acme", "a-provider-key");
-
-    let refusal = refused(
-        &kestrel,
-        &[
-            "credential",
-            "forget",
-            "OPENAI_API_KEY",
-            "--organization",
-            "acme",
-        ],
-    );
-    assert!(
-        refusal.contains("holds no provider credential named OPENAI_API_KEY"),
-        "unhelpful refusal: {refusal}"
-    );
-
-    assert_eq!(
-        kestrel.run(&[
-            "credential",
-            "forget",
-            "ANTHROPIC_API_KEY",
-            "--organization",
-            "acme"
-        ]),
-        "ANTHROPIC_API_KEY"
-    );
-    assert_eq!(
-        kestrel.run(&["credential", "list", "--organization", "acme"]),
-        ""
-    );
-}
-
-#[test]
-fn a_credential_cannot_be_held_against_an_organization_that_was_never_declared() {
-    let kestrel = Kestrel::new();
-
-    let refusal = kestrel.try_run_on_stdin(
-        &[
-            "credential",
-            "set",
-            "ANTHROPIC_API_KEY",
-            "--organization",
-            "acme",
-        ],
-        "a-provider-key",
-    );
-
-    assert!(!refusal.status.success());
-    assert!(
-        String::from_utf8_lossy(&refusal.stderr).contains("no organization named acme"),
-        "unhelpful refusal: {}",
-        String::from_utf8_lossy(&refusal.stderr)
-    );
-}
-
-#[test]
-fn a_session_opens_against_a_workspace_and_an_agent() {
-    let kestrel = declared();
-
-    let id = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-    let session = shown(&kestrel.run(&["session", "show", &id]));
-
-    assert_eq!(session["session"], id);
-    assert_eq!(session["organization"], "acme");
-    assert_eq!(session["workspace"], "kestrel");
-    assert_eq!(session["agent"], "builder");
-    assert_eq!(session["state"], "open");
-}
-
-#[test]
-fn opening_a_session_records_the_agent_joining_it() {
-    let kestrel = declared();
-
-    let id = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-    let transcript = kestrel.run(&["session", "transcript", &id]);
-
-    let entry = transcript.lines().next().expect("one entry");
-    assert!(
-        entry.starts_with("1  ") && entry.ends_with("participant joined  builder"),
-        "unexpected first transcript entry: {entry}"
-    );
-    assert_eq!(transcript.lines().count(), 1);
-}
-
-#[test]
-fn a_session_outlives_the_process_that_opened_it() {
-    let kestrel = declared();
-    let id = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-    let session = kestrel.run(&["session", "show", &id]);
-    let transcript = kestrel.run(&["session", "transcript", &id]);
-
-    kestrel.kill_a_booted_control_plane();
-
-    assert_eq!(kestrel.run(&["session", "show", &id]), session);
-    assert_eq!(kestrel.run(&["session", "transcript", &id]), transcript);
-}
-
-#[test]
-fn a_session_takes_one_run_at_a_time() {
-    let kestrel = declared();
-    let session = opened(&kestrel);
-    let run = kestrel.run(&["run", "enqueue", "--session", &session]);
-
-    let refusal = refused(&kestrel, &["run", "enqueue", "--session", &session]);
-
-    assert!(
-        refusal.contains(&run) && refusal.contains("one at a time"),
-        "unhelpful refusal: {refusal}"
-    );
-    assert_eq!(
-        kestrel
-            .run(&["run", "list", "--session", &session])
-            .lines()
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn the_cli_posts_a_message_and_enqueues_the_sessions_next_run() {
-    let kestrel = declared();
-    let session = opened(&kestrel);
-
-    let run = kestrel.run(&["session", "post", &session, "please add the missing test"]);
-
-    assert!(
-        kestrel
-            .run(&["run", "list", "--session", &session])
-            .contains(&format!("{run}  -  -  queued"))
-    );
-    assert!(
-        kestrel
-            .run(&["session", "transcript", &session])
-            .contains("said  operator  please add the missing test")
-    );
-}
-
-#[test]
-fn a_session_seals_through_the_cli_only_once_no_run_is_in_flight() {
-    let kestrel = declared();
-    let session = opened(&kestrel);
-    let run = kestrel.run(&["run", "enqueue", "--session", &session]);
-
-    let refusal = refused(&kestrel, &["session", "seal", &session]);
-    assert!(
-        refusal.contains(&run) && refusal.contains("still in flight"),
-        "unhelpful refusal: {refusal}"
-    );
-    assert_eq!(
-        shown(&kestrel.run(&["session", "show", &session]))["state"],
-        "open"
-    );
-
-    dispatched(&kestrel, &session);
-
-    assert_eq!(kestrel.run(&["session", "seal", &session]), session);
-    let sealed = shown(&kestrel.run(&["session", "show", &session]));
-    assert_eq!(sealed["state"], "sealed");
-    assert!(
-        sealed.contains_key("sealed"),
-        "a sealed session says when: {sealed:?}"
-    );
-}
-
-#[test]
-fn an_instance_is_shown_on_its_session_and_released_on_the_record() {
-    let kestrel = declared();
-    let session = opened(&kestrel);
-    kestrel.run(&["run", "enqueue", "--session", &session]);
-    dispatched(&kestrel, &session);
-
-    let instance = shown(&kestrel.run(&["session", "show", &session]))["instance"].clone();
-    assert_eq!(
-        kestrel.run(&["instance", "list", "--organization", "acme"]),
-        "",
-        "a checkout the remote can restore was held"
-    );
-
-    assert_eq!(kestrel.run(&["instance", "release", &session]), instance);
-
-    assert!(
-        !shown(&kestrel.run(&["session", "show", &session])).contains_key("instance"),
-        "a released instance is still the session's"
-    );
-    let transcript = kestrel.run(&["session", "transcript", &session]);
-    assert!(
-        transcript.ends_with(&format!("instance released  operator  {instance}")),
-        "the release is not on the record:\n{transcript}"
-    );
-    let refusal = refused(&kestrel, &["instance", "release", &session]);
-    assert!(
-        refusal.contains("no instance"),
-        "unhelpful refusal: {refusal}"
-    );
-}
-
-#[test]
-fn a_sealed_session_is_readable_and_takes_no_more_work() {
-    let kestrel = declared();
-    let session = opened(&kestrel);
-    kestrel.run(&["run", "enqueue", "--session", &session]);
-    dispatched(&kestrel, &session);
-    let transcript = kestrel.run(&["session", "transcript", &session]);
-
-    kestrel.run(&["session", "seal", &session]);
-
-    assert_eq!(
-        kestrel.run(&["session", "transcript", &session]),
-        transcript
-    );
-    assert!(
-        transcript.lines().count() > 1,
-        "nothing was transcribed to read back"
-    );
-    let refusal = refused(&kestrel, &["run", "enqueue", "--session", &session]);
-    assert!(refusal.contains("sealed"), "unhelpful refusal: {refusal}");
-}
-
-#[test]
-fn no_command_reopens_a_sealed_session() {
-    let kestrel = declared();
-    let session = opened(&kestrel);
-    kestrel.run(&["session", "seal", &session]);
-    let sealed = kestrel.run(&["session", "show", &session]);
-
-    for again in [
-        vec!["session", "seal", &session],
-        vec!["run", "enqueue", "--session", &session],
-    ] {
-        refused(&kestrel, &again);
-    }
-
-    assert_eq!(kestrel.run(&["session", "show", &session]), sealed);
-}
-
-#[test]
-fn work_that_continues_a_sealed_session_reads_the_link_from_both_ends() {
-    let kestrel = declared();
-    let sealed = opened(&kestrel);
-    kestrel.run(&["session", "seal", &sealed]);
-
-    let continuing = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-        "--continues",
-        &sealed,
-    ]);
-
-    assert_ne!(continuing, sealed);
-    assert_eq!(
-        shown(&kestrel.run(&["session", "show", &continuing]))["continues"],
-        sealed
-    );
-    assert_eq!(
-        shown(&kestrel.run(&["session", "show", &sealed]))["continued-by"],
-        continuing
-    );
-    kestrel.run(&["run", "enqueue", "--session", &continuing]);
-}
-
-#[test]
-fn a_session_that_is_still_open_is_not_continued() {
-    let kestrel = declared();
-    let open = opened(&kestrel);
-
-    let refusal = refused(
-        &kestrel,
-        &[
-            "session",
-            "open",
-            "--organization",
-            "acme",
-            "--workspace",
-            "kestrel",
-            "--agent",
-            "builder",
-            "--continues",
-            &open,
-        ],
-    );
-
-    assert!(
-        refusal.contains("continues in it rather than after it"),
-        "unhelpful refusal: {refusal}"
-    );
-}
-
-#[test]
-fn a_declaration_is_reachable_only_from_the_organization_it_belongs_to() {
-    let kestrel = declared();
-    kestrel.run(&["organization", "declare", "globex"]);
-    kestrel.run(&[
-        "workspace",
-        "declare",
-        "kestrel",
-        "--organization",
-        "globex",
-        "--repository",
-        "https://github.com/globex/kestrel",
-        "--branch",
-        "trunk",
-    ]);
-
-    let workspaces = kestrel.run(&["workspace", "list", "--organization", "globex"]);
-    assert_eq!(workspaces.lines().count(), 1);
-    assert!(
-        workspaces.contains("trunk") && !workspaces.contains("jtmthf"),
-        "globex can see acme's workspace: {workspaces}"
-    );
-    assert_eq!(
-        kestrel.run(&["agent", "list", "--organization", "globex"]),
-        ""
-    );
-
-    let refusal = kestrel.try_run(&[
-        "session",
-        "open",
-        "--organization",
-        "globex",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-
-    assert!(!refusal.status.success());
-    assert!(
-        String::from_utf8_lossy(&refusal.stderr)
-            .contains("no agent named builder in the organization globex"),
-        "acme's agent was reachable from globex: {}",
-        String::from_utf8_lossy(&refusal.stderr)
-    );
-}
-
-#[test]
-fn a_run_enqueued_through_the_cli_is_dispatched_and_lists_where_it_executed() {
-    let kestrel = declared();
-    let session = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-    let run = kestrel.run(&["run", "enqueue", "--session", &session]);
-
-    assert_eq!(
-        kestrel.run(&["run", "list", "--session", &session]),
-        format!("{run}  -  -  queued")
-    );
-
-    let listed = dispatched(&kestrel, &session);
-
-    let mut listed = listed.split("  ");
-    assert_eq!(listed.next(), Some(run.as_str()));
-    assert!(
-        listed
-            .next()
-            .is_some_and(|environment| environment.starts_with("local-exec/")),
-        "the run does not list the environment it executed in"
-    );
-    assert_eq!(listed.next(), Some(kestrel_scripted_agent::OTHER_MODEL));
-    assert_eq!(listed.next(), Some("succeeded"));
-}
-
-#[test]
-fn a_dispatched_run_starts_and_ends_in_its_sessions_transcript() {
-    let kestrel = declared();
-    let session = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-    let run = kestrel.run(&["run", "enqueue", "--session", &session]);
-    dispatched(&kestrel, &session);
-
-    let transcript = kestrel.run(&["session", "transcript", &session]);
-    let said: Vec<&str> = transcript.lines().collect();
-
-    assert_eq!(said.len(), 5, "unexpected transcript:\n{transcript}");
-    assert!(said[1].ends_with(&format!("run started  {run}")));
-    assert!(said[2].ends_with("said  builder  half of one message, and the other half"));
-    assert!(said[3].ends_with("said  builder  a second message"));
-    assert!(said[4].ends_with(&format!("run ended  {run}  succeeded")));
-}
-
-#[test]
-fn the_cli_reads_a_transcript_one_window_at_a_time_and_pages_with_the_cursor() {
-    let kestrel = declared();
-    let session = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-    kestrel.run(&["run", "enqueue", "--session", &session]);
-    dispatched(&kestrel, &session);
-    let whole = kestrel.run(&["session", "transcript", &session]);
-
-    let mut walked: Vec<String> = Vec::new();
-    let mut cursor: Option<String> = None;
-    loop {
-        let mut args = vec!["session", "transcript", session.as_str(), "--window", "2"];
-        if let Some(held) = cursor.as_deref() {
-            args.extend(["--cursor", held]);
-        }
-
-        let read = kestrel.try_run(&args);
-        assert!(read.status.success());
-        let page = String::from_utf8_lossy(&read.stdout);
-        let page = page.trim_end();
-        cursor = String::from_utf8_lossy(&read.stderr)
-            .lines()
-            .find_map(|line| line.strip_prefix("cursor  "))
-            .map(str::to_owned);
-
-        if page.is_empty() {
-            break;
-        }
-        assert!(
-            page.lines().count() <= 2,
-            "a read overran its window:\n{page}"
-        );
-        walked.extend(page.lines().map(str::to_owned));
-    }
-
-    assert_eq!(walked.join("\n"), whole);
-    assert_eq!(walked.len(), 5, "unexpected transcript:\n{whole}");
-}
-
-/// An Agent says whatever it says, and the CLI hands back a cursor a reader gives straight
-/// back, so the two may never be read off the same place.
-#[test]
-fn what_an_entry_says_cannot_be_mistaken_for_the_cursor() {
-    let kestrel = declared();
-    let session = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-
-    let read = kestrel.try_run(&["session", "transcript", &session]);
-
-    assert!(
-        !String::from_utf8_lossy(&read.stdout).contains("cursor  "),
-        "the cursor is in the transcript an agent writes into"
-    );
-    assert!(
-        String::from_utf8_lossy(&read.stderr).contains("cursor  "),
-        "the read hands back no cursor to resume from"
-    );
-}
-
-#[test]
-fn the_cli_refuses_a_cursor_it_did_not_issue() {
-    let kestrel = declared();
-    let session = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-
-    let nonsense = kestrel.try_run(&[
-        "session",
-        "transcript",
-        &session,
-        "--cursor",
-        "halfway-through",
-    ]);
-    assert!(!nonsense.status.success());
-
-    let nowhere = format!("{session}:99");
-    let refusal = kestrel.try_run(&["session", "transcript", &session, "--cursor", &nowhere]);
-    assert!(!refusal.status.success());
-    assert!(
-        String::from_utf8_lossy(&refusal.stderr).contains("no position in this transcript"),
-        "the read started over rather than refusing: {}",
-        String::from_utf8_lossy(&refusal.stderr)
-    );
-}
-
-#[test]
-fn the_cli_refuses_a_window_wider_than_one_read_may_return() {
-    let kestrel = declared();
-    let session = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-
-    let refusal = kestrel.try_run(&["session", "transcript", &session, "--window", "5000"]);
-
-    assert!(!refusal.status.success());
-    assert!(
-        String::from_utf8_lossy(&refusal.stderr).contains("a window is 1 to 500 entries"),
-        "an unbounded read was served: {}",
-        String::from_utf8_lossy(&refusal.stderr)
-    );
-}
-
-/// A port nothing is listening on, so a control plane that is killed comes back on the
-/// address the Environment it left behind already dialled.
-fn a_free_port() -> String {
-    let port = TcpListener::bind("127.0.0.1:0")
-        .expect("a free port")
-        .local_addr()
-        .expect("a bound address")
-        .port();
-
-    format!("127.0.0.1:{port}")
-}
-
-/// ADR-0002's definition of done for rung 0.1, out of process and against a real `SIGKILL`:
-/// nothing kestrel held in memory lands, and the Environment it provisioned outlives it.
-#[test]
-fn a_control_plane_killed_mid_turn_comes_back_and_the_turn_is_answered() {
-    let kestrel = declared();
-    let session = kestrel.run(&[
-        "session",
-        "open",
-        "--organization",
-        "acme",
-        "--workspace",
-        "kestrel",
-        "--agent",
-        "builder",
-    ]);
-    let listen = a_free_port();
-    let run = kestrel.run(&["run", "enqueue", "--session", &session]);
-
-    let mut killed = kestrel.booting(&listen, Script::Lingers);
-    kestrel.until(
-        &["run", "list", "--session", &session],
-        |listed| listed.contains("local-exec/"),
-        "reached an environment",
-    );
-    killed.kill().expect("kestrel should be killable");
-    killed.wait().expect("kestrel should be waitable");
-
-    let restarted = kestrel.booting(&listen, Script::Lingers);
-    kestrel.until(
-        &["run", "list", "--session", &session],
-        |listed| listed.contains("waiting") || listed.contains("failed"),
-        "answered its turn",
-    );
-    kestrel.run(&["run", "stop", &run]);
-    let listed = kestrel.run(&["run", "list", "--session", &session]);
-    // The supervisor belongs to the control plane that was killed, so this one cannot wait it off
-    // the link on the way down; it leaves within a poll of the stop reaching it.
-    std::thread::sleep(Duration::from_secs(1));
-    terminated(restarted);
-
-    assert!(
-        listed.contains("succeeded"),
-        "the run's turn was not answered after the restart:\n{listed}"
-    );
-    assert_eq!(
-        transcribed(&kestrel.run(&["session", "transcript", &session])),
-        vec![
-            "1  participant joined  builder".to_owned(),
-            format!("2  run started  {run}"),
-            "3  said  builder  half of one message, and the other half".to_owned(),
-            "4  said  builder  a second message".to_owned(),
-            format!("5  run ended  {run}  succeeded"),
-        ]
-    );
-}
-
-/// The seq and the entry, without the moment it was appended, which is different every run.
-fn transcribed(transcript: &str) -> Vec<String> {
-    transcript
-        .lines()
-        .map(|entry| {
-            let (seq, rest) = entry.split_once("  ").expect("a seq and an entry");
-            let (_, entry) = rest.split_once("  ").expect("an appended-at and an entry");
-            format!("{seq}  {entry}")
-        })
-        .collect()
-}
-
-fn watching(kestrel: &Kestrel, stub: &GithubStub, interval: &str) -> String {
-    kestrel.run(&["organization", "declare", "acme"]);
-    kestrel.run(&[
-        "integration",
-        "register",
-        "github",
-        "hub",
-        "--organization",
-        "acme",
-        "--repository",
-        "jtmthf/kestrel",
-        "--token",
-        support::TOKEN,
-        "--api",
-        &stub.base_url(),
-        "--interval",
-        interval,
-    ])
-}
-
-#[test]
-fn the_cli_registers_an_integration_with_a_credential_and_lists_what_it_carries() {
-    let kestrel = Kestrel::new();
-    let stub = GithubStub::start();
-
-    let id = watching(&kestrel, &stub, "1m");
-
-    assert_eq!(
-        kestrel.run(&["integration", "list", "--organization", "acme"]),
-        format!("{id}  hub  github  jtmthf/kestrel  inbound,outbound  every 1m")
-    );
-}
-
-#[test]
-fn the_cli_registers_a_webhook_and_lists_where_it_is_delivered_to() {
-    let kestrel = Kestrel::new();
-    kestrel.run(&["organization", "declare", "acme"]);
-
-    let id = kestrel.run(&[
-        "integration",
-        "register",
-        "webhook",
-        "ci",
-        "--organization",
-        "acme",
-        "--secret",
-        "a-shared-secret",
-    ]);
-
-    let listed = kestrel.run(&["integration", "list", "--organization", "acme"]);
-    assert_eq!(
-        listed,
-        format!("{id}  ci  webhook  -  inbound  at /webhooks/{id}")
-    );
-    assert!(!listed.contains("a-shared-secret"));
-}
-
-#[test]
-fn an_integration_carries_only_the_directions_it_was_registered_with() {
-    let kestrel = Kestrel::new();
-    let stub = GithubStub::start();
-    kestrel.run(&["organization", "declare", "acme"]);
-
-    kestrel.run(&[
-        "integration",
-        "register",
-        "github",
-        "hub",
-        "--organization",
-        "acme",
-        "--repository",
-        "jtmthf/kestrel",
-        "--token",
-        support::TOKEN,
-        "--api",
-        &stub.base_url(),
-        "--carries",
-        "inbound",
-    ]);
-
-    let listed = kestrel.run(&["integration", "list", "--organization", "acme"]);
-    assert!(
-        listed.contains("  inbound  "),
-        "an integration registered inbound lists as {listed}"
-    );
-}
-
-/// A Client hands the control plane every secret it holds over the operator boundary, and
-/// the control plane says none of them back while it takes them.
-#[test]
-fn secrets_set_through_the_client_appear_in_no_log_line() {
-    let kestrel = Kestrel::new();
-    let stub = GithubStub::start();
-    let (mut booted, said) = kestrel.booted_saying_everything();
-    let operator = operator_of(&said);
-    let provider_key = "sk-kestrel-should-never-say-this-either";
-    let signing_secret = "whsec-kestrel-should-never-say-this";
-
-    let ran = |finished: client::Finished| {
-        assert!(
-            finished.status.success(),
-            "the client failed:\n{}",
-            finished.err
-        );
-        finished.out.join("\n")
-    };
-    let mut printed = ran(client::ran(&operator, &["organization", "declare", "acme"]));
-    printed += &ran(client::ran_given(
-        &operator,
-        &[
-            "credential",
-            "set",
-            "ANTHROPIC_API_KEY",
-            "--organization",
-            "acme",
-        ],
-        provider_key,
-    ));
-    let registering = [
-        "integration",
-        "register",
-        "github",
-        "hub",
-        "--organization",
-        "acme",
-        "--repository",
-        "jtmthf/kestrel",
-        "--token",
-        support::TOKEN,
-        "--api",
-        &stub.base_url(),
-        "--webhook-secret",
-        signing_secret,
-    ];
-    printed += &ran(client::ran(&operator, &registering));
-    let taken = client::ran(&operator, &registering);
-    assert!(!taken.status.success(), "a taken name was registered twice");
-    printed += &taken.err;
-    printed += &ran(client::ran(
-        &operator,
-        &["credential", "list", "--organization", "acme"],
-    ));
-    printed += &ran(client::ran(
-        &operator,
-        &["integration", "list", "--organization", "acme"],
-    ));
-    let _ = booted.kill();
-    booted.wait().expect("kestrel should be waitable");
-    let said = said.lock().expect("the log should not be poisoned").clone();
-
-    assert!(
-        said.contains("INSERT INTO provider_credential")
-            && said.contains("INSERT INTO integration"),
-        "the control plane logged nothing of what it was asked to hold:\n{said}"
-    );
-    for (name, secret) in [
-        ("the provider key", provider_key),
-        ("the token", support::TOKEN),
-        ("the signing secret", signing_secret),
-    ] {
-        assert!(!printed.contains(secret), "the client printed {name}");
-        assert!(!said.contains(secret), "a log line spelled {name} out");
-    }
+    finished.err.clone()
 }
 
 fn operator_of(said: &Mutex<String>) -> String {
@@ -1454,16 +217,382 @@ fn operator_of(said: &Mutex<String>) -> String {
         }
         assert!(
             Instant::now() < deadline,
-            "the control plane never said where operators reach it"
+            "the control plane never said where operators reach it:\n{}",
+            said.lock().expect("the log should not be poisoned")
         );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 
+/// A port nothing is listening on, so a control plane that is killed comes back on the
+/// address the Environment it left behind already dialled.
+fn a_free_port() -> String {
+    let port = TcpListener::bind("127.0.0.1:0")
+        .expect("a free port")
+        .local_addr()
+        .expect("a bound address")
+        .port();
+
+    format!("127.0.0.1:{port}")
+}
+
+const RUN: &str = "id,state,waiting,exit,instance,worked_model";
+
+fn runs(kestrel: &Booted, session: &str) -> Vec<Value> {
+    kestrel.records(&["run", "list", "--session", session, "--json", RUN])
+}
+
+/// Answering a turn never ends a Run, so one waiting is stopped the way a person would.
+fn dispatched(kestrel: &Booted, session: &str) -> Vec<Value> {
+    let deadline = Instant::now() + PATIENCE;
+
+    loop {
+        let listed = runs(kestrel, session);
+        if listed.iter().all(|run| !run["exit"]["status"].is_null()) {
+            return listed;
+        }
+        for waiting in listed.iter().filter(|run| run["waiting"] == true) {
+            let run = waiting["id"].as_str().expect("a run's identifier");
+            kestrel.run(&["run", "stop", run]);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no run in the session {session} ended. the last listing was:\n{listed:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn declared(kestrel: &Booted) {
+    kestrel.run(&["organization", "declare", "acme"]);
+    kestrel.run(&[
+        "workspace",
+        "declare",
+        support::repository::NAME,
+        "--repository",
+        support::repository::url(),
+        "--branch",
+        support::repository::BRANCH,
+    ]);
+    kestrel.run(&[
+        "agent",
+        "declare",
+        "builder",
+        "--model",
+        kestrel_scripted_agent::OTHER_MODEL,
+    ]);
+    kestrel.run_as(
+        &["credential", "set", support::PROVIDER_KEY],
+        Invocation::default().given(support::A_PROVIDER_KEY),
+    );
+}
+
+fn opened(kestrel: &Booted) -> String {
+    kestrel.run(&[
+        "session",
+        "open",
+        "--workspace",
+        support::repository::NAME,
+        "--agent",
+        "builder",
+    ])
+}
+
+/// Each entry as `seq kind …`, without the moment it was appended, which is different every
+/// run.
+fn transcribed(kestrel: &Booted, session: &str) -> Vec<String> {
+    kestrel
+        .records(&["session", "transcript", session, "--json", "seq,entry"])
+        .iter()
+        .map(|recorded| {
+            let entry = &recorded["entry"];
+            let said = match entry["kind"].as_str().expect("an entry kind") {
+                "participant_joined" => format!("participant joined {}", entry["participant"]),
+                "run_started" => format!("run started {}", entry["run"]),
+                "said" => format!("said {} {}", entry["participant"], entry["message"]),
+                "run_ended" => format!("run ended {} {}", entry["run"], entry["exit"]["status"]),
+                "instance_released" => format!(
+                    "instance released {} {}",
+                    entry["participant"], entry["instance"]
+                ),
+                kind => kind.to_owned(),
+            };
+            format!("{} {}", recorded["seq"], said.replace('"', ""))
+        })
+        .collect()
+}
+
+#[test]
+fn a_role_boots_on_an_empty_data_directory_and_makes_its_database() {
+    let kestrel = Kestrel::new();
+
+    let booted = kestrel.boot();
+
+    assert!(kestrel.data_dir.path().join("kestrel.db").exists());
+    assert_eq!(booted.run(&["organization", "list"]), "");
+}
+
+#[test]
+fn a_disabled_trigger_shows_its_reason_and_budget() {
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
+    booted.run(&[
+        "trigger",
+        "declare",
+        "ready",
+        "--filter",
+        r#"{"exact": {"type": "com.github.issues.labeled"}}"#,
+        "--brief",
+        "Work on {{ event.data.issue.title }}",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+    booted.run(&["trigger", "disable", "ready"]);
+
+    let trigger = booted.record(&[
+        "trigger",
+        "show",
+        "ready",
+        "--json",
+        "state,disabled_because,firing_budget",
+    ]);
+
+    assert_eq!(trigger["state"], "disabled:operator");
+    assert_eq!(trigger["disabled_because"], "disabled by an operator");
+    assert_eq!(trigger["firing_budget"]["limit"], 10);
+}
+
+#[test]
+fn an_agents_model_changes_without_declaring_the_agent_again() {
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    booted.run(&["organization", "declare", "acme"]);
+    booted.run(&[
+        "agent",
+        "declare",
+        "builder",
+        "--runtime",
+        "codex",
+        "--model",
+        "claude-opus-5",
+    ]);
+
+    assert_eq!(
+        booted.run(&["agent", "model", "builder", "--model", "claude-sonnet-5"]),
+        "claude-sonnet-5"
+    );
+    assert_eq!(
+        booted.records(&["agent", "list", "--json", "name,runtime,model"]),
+        [serde_json::json!({ "name": "builder", "runtime": "codex", "model": "claude-sonnet-5" })]
+    );
+    assert_eq!(
+        booted.record(&["agent", "model", "builder", "--json", "model"])["model"],
+        Value::Null
+    );
+    assert!(
+        booted
+            .refused(&["agent", "model", "reviewer", "--model", "claude-sonnet-5"])
+            .contains("no agent named reviewer"),
+    );
+}
+
+#[test]
+fn an_instance_is_shown_on_its_session_and_released_on_the_record() {
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
+    let session = opened(&booted);
+    booted.run(&["run", "enqueue", "--session", &session]);
+    dispatched(&booted, &session);
+
+    let shown = booted.record(&["session", "show", &session, "--json", "instance,held"]);
+    let instance = shown["instance"]
+        .as_str()
+        .expect("the session keeps its instance")
+        .to_owned();
+    assert_eq!(
+        shown["held"],
+        Value::Null,
+        "a checkout the remote can restore was held"
+    );
+    assert_eq!(booted.run(&["instance", "list"]), "");
+
+    assert_eq!(booted.run(&["instance", "release", &session]), instance);
+
+    assert_eq!(
+        booted.record(&["session", "show", &session, "--json", "instance"])["instance"],
+        Value::Null,
+        "a released instance is still the session's"
+    );
+    assert_eq!(
+        transcribed(&booted, &session).last(),
+        Some(&format!("6 instance released operator {instance}")),
+        "the release is not on the record"
+    );
+    assert!(
+        booted
+            .refused(&["instance", "release", &session])
+            .contains("no instance"),
+    );
+}
+
+#[test]
+fn a_run_ends_succeeded_between_turns_and_is_not_stopped_twice() {
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
+    let session = opened(&booted);
+    let run = booted.run(&["run", "enqueue", "--session", &session]);
+
+    let listed = dispatched(&booted, &session);
+
+    assert_eq!(listed[0]["id"], run);
+    assert_eq!(listed[0]["exit"]["status"], "succeeded");
+    assert!(
+        listed[0]["instance"]
+            .as_str()
+            .is_some_and(|instance| instance.starts_with("local-exec/")),
+        "the run does not list the instance it executed on: {listed:?}"
+    );
+    assert_eq!(
+        listed[0]["worked_model"],
+        kestrel_scripted_agent::OTHER_MODEL
+    );
+    assert!(
+        booted
+            .refused(&["run", "stop", &run])
+            .contains("has already ended"),
+    );
+}
+
+/// ADR-0002's definition of done for rung 0.1, out of process and against a real `SIGKILL`:
+/// nothing the control plane held in memory lands, and the Environment it provisioned
+/// outlives it.
+#[test]
+fn a_control_plane_killed_mid_turn_comes_back_and_the_turn_is_answered() {
+    let kestrel = Kestrel::new();
+    let listen = a_free_port();
+    let killed = kestrel.booting(&listen, Script::Lingers, "info");
+    declared(&killed);
+    let session = opened(&killed);
+    let run = killed.run(&["run", "enqueue", "--session", &session]);
+    killed.until(
+        &["run", "list", "--session", &session, "--json", RUN],
+        |listed| listed.iter().any(|run| !run["instance"].is_null()),
+        "reached an instance",
+    );
+    killed.killed();
+
+    let restarted = kestrel.booting(&listen, Script::Lingers, "info");
+    restarted.until(
+        &["run", "list", "--session", &session, "--json", RUN],
+        |listed| {
+            listed
+                .iter()
+                .any(|run| run["waiting"] == true || !run["exit"].is_null())
+        },
+        "answered its turn",
+    );
+    restarted.run(&["run", "stop", &run]);
+    let listed = runs(&restarted, &session);
+    let transcript = transcribed(&restarted, &session);
+    // The supervisor belongs to the control plane that was killed, so this one cannot wait it off
+    // the link on the way down; it leaves within a poll of the stop reaching it.
+    std::thread::sleep(Duration::from_secs(1));
+    restarted.terminated();
+
+    assert_eq!(
+        listed[0]["exit"]["status"], "succeeded",
+        "the run's turn was not answered after the restart: {listed:?}"
+    );
+    assert_eq!(
+        transcript,
+        vec![
+            "1 participant joined builder".to_owned(),
+            format!("2 run started {run}"),
+            "3 said builder half of one message, and the other half".to_owned(),
+            "4 said builder a second message".to_owned(),
+            format!("5 run ended {run} succeeded"),
+        ]
+    );
+}
+
+/// A Client hands the control plane every secret it holds over the operator boundary, and
+/// the control plane says none of them back while it takes them.
+#[test]
+fn secrets_set_through_the_client_appear_in_no_log_line() {
+    let kestrel = Kestrel::new();
+    let stub = GithubStub::start();
+    let booted = kestrel.booting("127.0.0.1:0", Script::Speaks, "trace");
+    let provider_key = "sk-kestrel-should-never-say-this-either";
+    let signing_secret = "whsec-kestrel-should-never-say-this";
+
+    let mut printed = booted.run(&["organization", "declare", "acme"]);
+    printed += &booted.run_as(
+        &["credential", "set", "ANTHROPIC_API_KEY"],
+        Invocation::default().given(provider_key),
+    );
+    let registering = [
+        "integration",
+        "register",
+        "github",
+        "hub",
+        "--repository",
+        "jtmthf/kestrel",
+        "--token",
+        support::TOKEN,
+        "--api",
+        &stub.base_url(),
+        "--webhook-secret",
+        signing_secret,
+    ];
+    printed += &booted.run(&registering);
+    printed += &booted.refused(&registering);
+    printed += &booted.run(&["credential", "list"]);
+    printed += &booted.run(&["integration", "list"]);
+    let said = booted.said();
+    booted.killed();
+
+    assert!(
+        said.contains("INSERT INTO provider_credential")
+            && said.contains("INSERT INTO integration"),
+        "the control plane logged nothing of what it was asked to hold:\n{said}"
+    );
+    for (name, secret) in [
+        ("the provider key", provider_key),
+        ("the token", support::TOKEN),
+        ("the signing secret", signing_secret),
+    ] {
+        assert!(!printed.contains(secret), "the client printed {name}");
+        assert!(!said.contains(secret), "a log line spelled {name} out");
+    }
+}
+
+fn watching(kestrel: &Booted, stub: &GithubStub, interval: &str) {
+    kestrel.run(&["organization", "declare", "acme"]);
+    kestrel.run(&[
+        "integration",
+        "register",
+        "github",
+        "hub",
+        "--repository",
+        "jtmthf/kestrel",
+        "--token",
+        support::TOKEN,
+        "--api",
+        &stub.base_url(),
+        "--interval",
+        interval,
+    ]);
+}
+
 /// The one command that has a credential in it, and the whole of what kestrel says while it
 /// uses it: neither the listing an operator reads nor the log they debug from has the token.
 #[test]
-fn the_cli_lists_what_a_poll_recorded_and_the_credential_appears_in_neither_it_nor_a_log() {
+fn the_client_lists_what_a_poll_recorded_and_the_credential_appears_in_neither_it_nor_a_log() {
     let kestrel = Kestrel::new();
     let stub = GithubStub::start();
     for _ in 0..8 {
@@ -1473,32 +602,28 @@ fn the_cli_lists_what_a_poll_recorded_and_the_credential_appears_in_neither_it_n
             "ready-for-agent",
         )]));
     }
-    watching(&kestrel, &stub, "1ms");
+    let booted = kestrel.booting("127.0.0.1:0", Script::Speaks, "trace");
+    watching(&booted, &stub, "1ms");
 
-    let (mut booted, said) = kestrel.booted_saying_everything();
-    let listed = kestrel.until(
-        &["event", "list", "--organization", "acme"],
-        |listed| listed.contains("ready-for-agent"),
+    let listed = booted.until(
+        &["event", "list", "--json", "record,event"],
+        |listed| !listed.is_empty(),
         "listed an event polled from github",
     );
-    let _ = booted.kill();
-    booted.wait().expect("kestrel should be waitable");
-    let said = said.lock().expect("the log should not be poisoned").clone();
+    let said = booted.said();
+    let record = listed[0]["record"].as_str().expect("an event record");
+    let shown = booted.record(&["event", "show", record, "--json", "record,event"]);
+    booted.killed();
 
-    assert!(
-        listed.contains("jtmthf/kestrel") && listed.contains("labeled") && listed.contains("#43"),
-        "an event listing that does not say what happened where:\n{listed}"
-    );
-    let record = listed
-        .split_whitespace()
-        .find_map(|field| field.strip_prefix("record="))
-        .expect("the listing should label the Event record identifier");
-    let shown: serde_json::Value =
-        serde_json::from_str(&kestrel.run(&["event", "show", "--record", record, "--json"]))
-            .expect("event show --json should print JSON");
     assert_eq!(shown["record"], record);
     assert_eq!(shown["event"]["id"], "7");
     assert_eq!(shown["event"]["specversion"], "1.0");
+    assert_eq!(shown["event"]["subject"], "#43");
+    let listed = serde_json::to_string(&listed).expect("the listing serializes");
+    assert!(
+        listed.contains("ready-for-agent"),
+        "an event listing that does not say what happened:\n{listed}"
+    );
     assert!(
         !listed.contains(support::TOKEN),
         "the listing spelled the credential out"
@@ -1510,6 +635,76 @@ fn the_cli_lists_what_a_poll_recorded_and_the_credential_appears_in_neither_it_n
     assert!(
         said.contains("a poll recorded events"),
         "the control plane never said it polled:\n{said}"
+    );
+}
+
+#[test]
+fn a_dispatch_starts_a_triggers_work_on_the_issue_it_names() {
+    let kestrel = Kestrel::new();
+    let stub = GithubStub::start();
+    stub.script_answer("GET", "/issues/60", github_stub::issue(60, &[]));
+    let booted = kestrel.boot();
+    declared(&booted);
+    booted.run(&[
+        "integration",
+        "register",
+        "github",
+        "hub",
+        "--repository",
+        "jtmthf/kestrel",
+        "--token",
+        support::TOKEN,
+        "--api",
+        &stub.base_url(),
+        "--carries",
+        "outbound",
+    ]);
+    booted.run(&[
+        "trigger",
+        "declare",
+        "delegated",
+        "--filter",
+        r#"{"exact": {"type": "com.github.issue_comment.created"}}"#,
+        "--brief",
+        "{{ instruction }} {{ event.data.issue.number }}",
+        "--branch",
+        "kestrel/issue-{{ event.data.issue.number }}",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+
+    let fired = booted.record(&[
+        "trigger",
+        "dispatch",
+        "delegated",
+        "--integration",
+        "hub",
+        "--issue",
+        "60",
+        "--instruction",
+        "/tdd the parser",
+        "--json",
+        "outcome,session,run",
+    ]);
+
+    assert_eq!(fired["outcome"], "opened");
+    let session = fired["session"].as_str().expect("the session it opened");
+    let shown = booted.record(&["session", "show", session, "--json", "checkout"]);
+    assert_eq!(shown["checkout"]["branch"], "kestrel/issue-60");
+    assert!(
+        booted
+            .refused(&[
+                "trigger",
+                "dispatch",
+                "delegated",
+                "--integration",
+                "nowhere",
+                "--issue",
+                "60",
+            ])
+            .contains("no integration named nowhere"),
     );
 }
 
@@ -1530,47 +725,37 @@ triggers:
     agent: builder
 "#;
 
-fn applying(kestrel: &Kestrel, declarations: &str, flags: &[&str]) -> Output {
-    let file = kestrel.data_dir.path().join("triggers.yaml");
-    std::fs::write(&file, declarations).expect("the declaration file should be written");
-    let mut args = vec![
-        "trigger",
-        "apply",
-        "--organization",
-        "acme",
-        "-f",
-        file.to_str().expect("a UTF-8 path"),
-    ];
+fn applying(kestrel: &Booted, declarations: &str, flags: &[&str]) -> Finished {
+    let mut args = vec!["trigger", "apply", "-f", "triggers.yaml"];
     args.extend_from_slice(flags);
-    kestrel.try_run(&args)
-}
-
-fn applied(kestrel: &Kestrel, declarations: &str, flags: &[&str]) -> (String, String) {
-    let output = applying(kestrel, declarations, flags);
-    assert!(
-        output.status.success(),
-        "`kestrel trigger apply` failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    (
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
+    kestrel.client_as(
+        &args,
+        Invocation::default().file("triggers.yaml", declarations),
     )
 }
 
-fn trigger_names(kestrel: &Kestrel) -> Vec<String> {
+/// What it printed, and what it warned of.
+fn applied(kestrel: &Booted, declarations: &str, flags: &[&str]) -> (String, String) {
+    let finished = applying(kestrel, declarations, flags);
+    let diff = succeeded(&["trigger", "apply"], &finished);
+    (diff, finished.err)
+}
+
+fn trigger_names(kestrel: &Booted) -> Vec<String> {
     kestrel
-        .run(&["trigger", "list", "--organization", "acme"])
-        .lines()
-        .map(|line| line.split("  ").nth(1).expect("a name").to_owned())
+        .records(&["trigger", "list", "--json", "name"])
+        .iter()
+        .map(|trigger| trigger["name"].as_str().expect("a name").to_owned())
         .collect()
 }
 
 #[test]
 fn apply_prints_the_diff_it_makes_and_nothing_once_it_is_made() {
-    let kestrel = declared();
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
 
-    let (diff, _) = applied(&kestrel, APPLIED, &[]);
+    let (diff, _) = applied(&booted, APPLIED, &[]);
 
     assert!(diff.contains("+ ready\n"), "{diff}");
     assert!(diff.contains("+ triage\n"), "{diff}");
@@ -1578,22 +763,24 @@ fn apply_prints_the_diff_it_makes_and_nothing_once_it_is_made() {
         diff.contains("    brief\n      + Work on {{ event.data.issue.title }}\n"),
         "{diff}"
     );
-    assert_eq!(trigger_names(&kestrel), ["ready", "triage"]);
-    let shown = kestrel.run(&["trigger", "show", "ready", "--organization", "acme"]);
-    assert!(shown.contains("declared by   a file"), "{shown}");
+    assert_eq!(trigger_names(&booted), ["ready", "triage"]);
+    assert_eq!(
+        booted.record(&["trigger", "show", "ready", "--json", "applied"])["applied"],
+        true
+    );
 
-    assert_eq!(applied(&kestrel, APPLIED, &[]).0, "no changes\n");
+    assert_eq!(applied(&booted, APPLIED, &[]).0, "no changes");
 }
 
 #[test]
 fn reapplying_changes_and_removes_only_what_a_file_applied() {
-    let kestrel = declared();
-    kestrel.run(&[
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
+    booted.run(&[
         "trigger",
         "declare",
         "one-off",
-        "--organization",
-        "acme",
         "--filter",
         r#"{"exact": {"type": "com.example.build.failed"}}"#,
         "--brief",
@@ -1603,7 +790,7 @@ fn reapplying_changes_and_removes_only_what_a_file_applied() {
         "--agent",
         "builder",
     ]);
-    applied(&kestrel, APPLIED, &[]);
+    applied(&booted, APPLIED, &[]);
 
     let changed = r#"
 triggers:
@@ -1613,24 +800,24 @@ triggers:
     workspace: kestrel
     agent: builder
 "#;
-    let (diff, _) = applied(&kestrel, changed, &[]);
+    let (diff, _) = applied(&booted, changed, &[]);
 
     assert_eq!(
         diff,
-        "~ ready\n    brief\n      - Work on {{ event.data.issue.title }}\n      + Work {{ event.data.issue.html_url }}\n- triage\n"
+        "~ ready\n    brief\n      - Work on {{ event.data.issue.title }}\n      + Work {{ event.data.issue.html_url }}\n- triage"
     );
-    assert_eq!(trigger_names(&kestrel), ["one-off", "ready"]);
+    assert_eq!(trigger_names(&booted), ["one-off", "ready"]);
 }
 
 #[test]
 fn a_one_off_a_file_declares_becomes_the_files() {
-    let kestrel = declared();
-    kestrel.run(&[
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
+    booted.run(&[
         "trigger",
         "declare",
         "ready",
-        "--organization",
-        "acme",
         "--filter",
         r#"{"exact": {"type": "com.github.issues.labeled"}}"#,
         "--brief",
@@ -1641,47 +828,54 @@ fn a_one_off_a_file_declares_becomes_the_files() {
         "builder",
     ]);
 
-    let (diff, _) = applied(&kestrel, APPLIED, &[]);
+    let (diff, _) = applied(&booted, APPLIED, &[]);
 
     assert!(
         diff.contains("~ ready\n    declared by\n      - flags\n      + a file\n"),
         "{diff}"
     );
-    applied(&kestrel, "triggers: {}", &[]);
-    assert!(trigger_names(&kestrel).is_empty());
+    applied(&booted, "triggers: {}", &[]);
+    assert!(trigger_names(&booted).is_empty());
 }
 
 #[test]
 fn a_dry_run_prints_the_diff_and_changes_nothing() {
-    let kestrel = declared();
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
 
-    let (diff, _) = applied(&kestrel, APPLIED, &["--dry-run"]);
+    let (diff, warned) = applied(&booted, APPLIED, &["--dry-run"]);
 
     assert!(diff.contains("+ ready\n"), "{diff}");
-    assert!(trigger_names(&kestrel).is_empty());
+    assert!(trigger_names(&booted).is_empty());
+    assert!(warned.contains("the trigger ready fires"), "{warned}");
+    assert!(warned.contains("0.4"), "{warned}");
+    assert!(!warned.contains("the trigger triage"), "{warned}");
 }
 
 #[test]
 fn an_apply_that_cannot_be_made_whole_changes_nothing() {
-    let kestrel = declared();
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
     let naming_a_stranger = format!(
         "{APPLIED}  stranger:\n    filter: {{exact: {{type: x}}}}\n    brief: x\n    workspace: kestrel\n    agent: nobody\n"
     );
 
-    let refusal = applying(&kestrel, &naming_a_stranger, &[]);
-
-    assert!(!refusal.status.success());
-    assert!(
-        String::from_utf8_lossy(&refusal.stderr).contains("nobody"),
-        "{}",
-        String::from_utf8_lossy(&refusal.stderr)
+    let refusal = refusal(
+        &["trigger", "apply"],
+        &applying(&booted, &naming_a_stranger, &[]),
     );
-    assert!(trigger_names(&kestrel).is_empty());
+
+    assert!(refusal.contains("nobody"), "{refusal}");
+    assert!(trigger_names(&booted).is_empty());
 }
 
 #[test]
 fn a_declaration_file_that_is_not_one_is_refused_saying_where() {
-    let kestrel = declared();
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
 
     for (declarations, because) in [
         ("", "triggers"),
@@ -1699,9 +893,7 @@ fn a_declaration_file_that_is_not_one_is_refused_saying_where() {
             "agnet",
         ),
     ] {
-        let refusal = applying(&kestrel, declarations, &[]);
-        let said = String::from_utf8_lossy(&refusal.stderr);
-        assert!(!refusal.status.success(), "{declarations:?} applied");
+        let said = refusal(&["trigger", "apply"], &applying(&booted, declarations, &[]));
         assert!(
             said.contains(because),
             "{declarations:?} was refused unhelpfully: {said}"
@@ -1710,103 +902,169 @@ fn a_declaration_file_that_is_not_one_is_refused_saying_where() {
 }
 
 #[test]
-fn apply_names_each_trigger_that_admits_outsiders() {
-    let kestrel = declared();
+fn apply_reads_a_declaration_file_from_standard_input() {
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
 
-    let (_, warned) = applied(&kestrel, APPLIED, &["--dry-run"]);
+    booted.run_as(
+        &["trigger", "apply", "-f", "-"],
+        Invocation::default().given(APPLIED),
+    );
 
-    assert!(warned.contains("the trigger ready fires"), "{warned}");
-    assert!(warned.contains("0.4"), "{warned}");
-    assert!(!warned.contains("the trigger triage"), "{warned}");
+    assert_eq!(trigger_names(&booted), ["ready", "triage"]);
 }
 
 #[test]
-fn apply_reads_a_declaration_file_from_standard_input() {
-    let kestrel = declared();
+fn a_trigger_is_tested_as_a_file_declares_it_rather_than_as_it_was_applied() {
+    let kestrel = Kestrel::new();
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(
+        7,
+        43,
+        "ready-for-agent",
+    )]));
+    let booted = kestrel.boot();
+    declared(&booted);
+    watching(&booted, &stub, "1ms");
+    booted.run(&[
+        "trigger",
+        "declare",
+        "ready",
+        "--filter",
+        r#"{"exact": {"type": "com.github.issues.opened"}}"#,
+        "--brief",
+        "as applied",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
+    let event = booted.until(
+        &["event", "list", "--json", "record"],
+        |listed| !listed.is_empty(),
+        "listed an event polled from github",
+    )[0]["record"]
+        .as_str()
+        .expect("an event record")
+        .to_owned();
+    let declaring = "triggers:\n  ready:\n    filter: {exact: {type: com.github.issues.labeled}}\n    brief: '{{ instruction }} {{ event.subject }}'\n    workspace: kestrel\n    agent: builder\n";
 
-    let output = kestrel.try_run_on_stdin(
-        &["trigger", "apply", "--organization", "acme", "-f", "-"],
-        APPLIED,
+    let tested = booted
+        .client_as(
+            &[
+                "trigger",
+                "test",
+                "ready",
+                "--event",
+                &event,
+                "-f",
+                "triggers.yaml",
+                "--instruction",
+                "@instruction.md",
+                "--json",
+                "matches,brief",
+            ],
+            Invocation::default()
+                .file("triggers.yaml", declaring)
+                .file("instruction.md", "/triage"),
+        )
+        .records();
+
+    assert_eq!(
+        tested,
+        [serde_json::json!({ "matches": true, "brief": "/triage #43" })]
     );
-
+    assert_eq!(
+        booted.record(&[
+            "trigger", "test", "ready", "--event", &event, "--json", "matches"
+        ])["matches"],
+        false
+    );
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        booted
+            .refused_as(
+                &[
+                    "trigger",
+                    "test",
+                    "elsewhere",
+                    "--event",
+                    &event,
+                    "-f",
+                    "triggers.yaml"
+                ],
+                Invocation::default().file("triggers.yaml", declaring),
+            )
+            .contains("declares no trigger elsewhere"),
     );
-    assert_eq!(trigger_names(&kestrel), ["ready", "triage"]);
 }
 
 #[test]
 fn a_brief_and_a_filter_are_read_from_a_file_or_standard_input() {
-    let kestrel = declared();
-    let brief = kestrel.data_dir.path().join("brief.md");
-    std::fs::write(
-        &brief,
-        "Work on {{ event.data.issue.title }}\n\nand say so.\n",
-    )
-    .expect("the brief should be written");
-    let from_a_file = format!("@{}", brief.display());
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
 
-    let output = kestrel.try_run_on_stdin(
+    let finished = booted.client_as(
         &[
             "trigger",
             "declare",
             "ready",
-            "--organization",
-            "acme",
             "--filter",
             "-",
             "--brief",
-            &from_a_file,
+            "@brief.md",
             "--workspace",
             "kestrel",
             "--agent",
             "builder",
         ],
-        r#"{"exact": {"type": "com.github.issues.labeled"}}"#,
+        Invocation::default()
+            .given(r#"{"exact": {"type": "com.github.issues.labeled"}}"#)
+            .file(
+                "brief.md",
+                "Work on {{ event.data.issue.title }}\n\nand say so.\n",
+            ),
     );
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    succeeded(&["trigger", "declare"], &finished);
 
-    let shown = kestrel.run(&["trigger", "show", "ready", "--organization", "acme"]);
+    let shown = booted.record(&["trigger", "show", "ready", "--json", "filter,brief,applied"]);
+    assert_eq!(
+        shown["filter"],
+        serde_json::json!({ "exact": { "type": "com.github.issues.labeled" } })
+    );
     assert!(
-        shown.contains(r#"fires         type = "com.github.issues.labeled""#),
+        shown["brief"]
+            .as_str()
+            .is_some_and(|brief| brief.ends_with("and say so.\n")),
         "{shown}"
     );
-    assert!(shown.ends_with("and say so."), "{shown}");
-    assert!(shown.contains("declared by   flags"), "{shown}");
+    assert_eq!(shown["applied"], false);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("the trigger ready fires"),
+        finished.err.contains("the trigger ready fires"),
         "a one-off admitting outsiders was declared without a warning"
     );
 }
 
 #[test]
 fn only_one_of_a_filter_and_a_brief_is_read_from_standard_input() {
-    let kestrel = declared();
+    let kestrel = Kestrel::new();
+    let booted = kestrel.boot();
+    declared(&booted);
 
-    let refusal = refused(
-        &kestrel,
-        &[
-            "trigger",
-            "declare",
-            "ready",
-            "--organization",
-            "acme",
-            "--filter",
-            "-",
-            "--brief",
-            "-",
-            "--workspace",
-            "kestrel",
-            "--agent",
-            "builder",
-        ],
-    );
+    let refusal = booted.refused(&[
+        "trigger",
+        "declare",
+        "ready",
+        "--filter",
+        "-",
+        "--brief",
+        "-",
+        "--workspace",
+        "kestrel",
+        "--agent",
+        "builder",
+    ]);
 
     assert!(refusal.contains("standard input"), "{refusal}");
 }

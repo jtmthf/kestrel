@@ -1,9 +1,7 @@
 use anyhow::{Result, bail};
 use jiff::{SignedDuration, Timestamp};
 
-use crate::domain::{
-    Event, Exit, Organization, Run, RunId, RunState, Session, SessionId, SessionState,
-};
+use crate::domain::{Exit, Organization, Run, RunId, RunState, Session, SessionId, SessionState};
 use crate::fanout::{self, Change};
 use crate::instance;
 use crate::link;
@@ -155,18 +153,6 @@ pub async fn sessions(store: &Store, organization: &str) -> Result<Vec<Session>>
     let organization = tx.organizations().named(organization).await?;
 
     tx.sessions().all(&organization).await
-}
-
-/// Read on its own rather than with the Session: most Sessions were opened by a person, and
-/// every path that reports one would otherwise pay for the Event none of them has.
-pub async fn started_by(store: &Store, session: &Session) -> Result<Option<Event>> {
-    let Some(event) = session.started_by else {
-        return Ok(None);
-    };
-
-    Ok(Some(
-        store.begin().await?.integrations().event(event).await?,
-    ))
 }
 
 pub async fn continuations(store: &Store, id: SessionId) -> Result<Vec<SessionId>> {

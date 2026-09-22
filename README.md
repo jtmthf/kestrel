@@ -18,12 +18,13 @@ are still there after the process is killed. Runs execute: enqueue one and the c
 provisions an isolated container, clones the workspace into it, and drives opencode there by
 speaking the Agent Client Protocol over the link in [`openapi/link.json`](openapi/link.json), which
 the environment dials out to, authenticating as the run it is executing, and reconnects to with its
-cursor when the control plane restarts under it. Beside the link, on a loopback listener of its
-own, the control plane serves the operator boundary in [`openapi/operator.json`](openapi/operator.json);
-`kestrel-client` declares and lists organizations, workspaces and agents over it, sets and forgets
-provider credentials and the subscription profiles a session names, registers integrations and reads the events they record, and
-`kestrel-client session transcript --follow` streams a session's transcript over it, all from outside
-the control plane's process. What stops a run short of useful work is that
+cursor when the control plane restarts under it. Beside the link, on a listener of its own, the
+control plane serves the operator boundary in [`openapi/operator.json`](openapi/operator.json), and
+it is the only way in: `kestrel`, the Client an operator installs, declares and lists organizations,
+workspaces and agents over it, sets and forgets provider credentials and the subscription profiles a
+session names, registers integrations and reads the events they record, and
+`kestrel session transcript --follow` streams a session's transcript over it, all from outside the
+control plane's process. What stops a run short of useful work is that
 nothing carries a task to it: every run asks its agent the same fixed question, and nothing triggers
 or schedules one, so every session is opened by hand.
 [`USAGE.md`](USAGE.md) walks all of that on your own machine and says where it stops. The repo also
@@ -47,8 +48,15 @@ come up: the control plane, the image a run executes in, and the filtered socket
 daemon is reached through. The database is on a named volume, so bringing the stack down and up
 again keeps every session and its transcript.
 
-kestrel's surface is the CLI role on the running control plane. [`USAGE.md`](USAGE.md) walks from
-here to a run that has reached and left an environment.
+The stack publishes the operator boundary on the host's loopback, at `127.0.0.1:7718`, and kestrel's
+surface is the Client that reaches it, installed on its own:
+
+```sh
+cargo install --locked --path crates/kestrel-client
+kestrel status
+```
+
+[`USAGE.md`](USAGE.md) walks from here to a run that has reached and left an environment.
 
 **A provider key is the one value kestrel asks for, and it is the operator's.** It is held by the
 organization, encrypted with a key kestrel generates at first boot beside its database, and reaches

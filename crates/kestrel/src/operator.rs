@@ -25,19 +25,21 @@ use crate::domain::{
     SubscriptionProfile, Templates, Trigger, Workspace,
 };
 use crate::filter::Filter;
-use crate::integration::{self, Connecting, Registration, github};
+use crate::integration::github::{self, Github};
+use crate::integration::{self, Connecting, Registration};
 use crate::log::{self, Cursor, Page, Unreadable, Window};
 use crate::profile::{self, Entry};
 use crate::provider::{self, Held};
 use crate::store::organization::NoSuchOrganization;
 use crate::store::{Declared, Store};
 use crate::template::Template;
-use crate::trigger;
-use crate::{session, work};
+use crate::trigger::{self, apply};
+use crate::{instance, session, work};
 
 pub const ORGANIZATIONS: &str = "/operator/organizations";
 pub const WORKSPACES: &str = "/operator/organizations/{organization}/workspaces";
 pub const AGENTS: &str = "/operator/organizations/{organization}/agents";
+pub const AGENT_MODEL: &str = "/operator/organizations/{organization}/agents/{agent}/model";
 pub const DECLARATION: &str = "/operator/organizations/{organization}/declaration";
 pub const DECLARATION_PREVIEW: &str = "/operator/organizations/{organization}/declaration/preview";
 pub const CREDENTIALS: &str = "/operator/organizations/{organization}/credentials";
@@ -59,13 +61,22 @@ pub const TRIGGER_TEST: &str = "/operator/organizations/{organization}/triggers/
 pub const TRIGGER_DISABLE: &str =
     "/operator/organizations/{organization}/triggers/{trigger}/disable";
 pub const TRIGGER_ENABLE: &str = "/operator/organizations/{organization}/triggers/{trigger}/enable";
+pub const TRIGGER_DISPATCH: &str =
+    "/operator/organizations/{organization}/triggers/{trigger}/dispatch";
+pub const APPLIED_TRIGGERS: &str = "/operator/organizations/{organization}/applied-triggers";
+pub const APPLIED_TRIGGERS_PREVIEW: &str =
+    "/operator/organizations/{organization}/applied-triggers/preview";
+pub const INSTANCES: &str = "/operator/organizations/{organization}/instances";
 pub const SESSIONS: &str = "/operator/organizations/{organization}/sessions";
 pub const SESSION: &str = "/operator/organizations/{organization}/sessions/{session}";
 pub const SESSION_MESSAGES: &str =
     "/operator/organizations/{organization}/sessions/{session}/messages";
 pub const SESSION_SEAL: &str = "/operator/organizations/{organization}/sessions/{session}/seal";
+pub const SESSION_INSTANCE_RELEASE: &str =
+    "/operator/organizations/{organization}/sessions/{session}/instance/release";
 pub const RUNS: &str = "/operator/organizations/{organization}/sessions/{session}/runs";
 pub const RUN: &str = "/operator/organizations/{organization}/runs/{run}";
+pub const RUN_STOP: &str = "/operator/organizations/{organization}/runs/{run}/stop";
 pub const TRANSCRIPT: &str = "/operator/organizations/{organization}/sessions/{session}/transcript";
 
 const EVENTS_LISTED: usize = 50;
@@ -113,6 +124,7 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .route(ORGANIZATIONS, get(organizations).post(declare_organization))
         .route(WORKSPACES, get(workspaces).post(declare_workspace))
         .route(AGENTS, get(agents).post(declare_agent))
+        .route(AGENT_MODEL, put(set_agent_model))
         .route(DECLARATION, post(apply_declaration))
         .route(DECLARATION_PREVIEW, post(preview_declaration))
         .route(CREDENTIALS, get(credentials))
@@ -135,12 +147,18 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .route(TRIGGER_TEST, post(test_trigger))
         .route(TRIGGER_DISABLE, post(disable_trigger))
         .route(TRIGGER_ENABLE, post(enable_trigger))
+        .route(TRIGGER_DISPATCH, post(dispatch_trigger))
+        .route(APPLIED_TRIGGERS, post(apply_triggers))
+        .route(APPLIED_TRIGGERS_PREVIEW, post(preview_applied_triggers))
+        .route(INSTANCES, get(instances))
         .route(SESSIONS, get(sessions).post(open_session))
         .route(SESSION, get(show_session))
         .route(SESSION_MESSAGES, post(post_to_session))
         .route(SESSION_SEAL, post(seal_session))
+        .route(SESSION_INSTANCE_RELEASE, post(release_instance))
         .route(RUNS, get(runs).post(enqueue_run))
         .route(RUN, get(show_run))
+        .route(RUN_STOP, post(stop_run))
         .route(TRANSCRIPT, get(transcript))
         .with_state(ControlPlane { store, shutdown })
 }
@@ -205,6 +223,26 @@ struct TriggerDeclaration {
 struct TriggerTest {
     event: Option<String>,
     instruction: Option<String>,
+    declared: Option<apply::File>,
+}
+
+#[derive(Deserialize)]
+struct TriggerDispatch {
+    integration: String,
+    issue: i64,
+    instruction: Option<String>,
+    agent: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AgentModel {
+    model: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Release {
+    #[serde(default = "default_operator_participant")]
+    participant: String,
 }
 
 fn default_operator_participant() -> String {
@@ -242,6 +280,8 @@ struct SessionRecord {
     agent: String,
     profile: Option<String>,
     checkout: domain::Checkout,
+    instance: Option<String>,
+    held: Option<String>,
     correlation: Option<String>,
     state: String,
     opened_at: Timestamp,
@@ -258,6 +298,7 @@ struct RunRecord {
     name: String,
     session: String,
     state: String,
+    waiting: bool,
     exit: Option<domain::Exit>,
     instance: Option<String>,
     supervisor: Option<String>,
@@ -279,8 +320,10 @@ struct TriggerRecord {
     name: String,
     state: String,
     disabled_because: Option<String>,
+    firing_budget: FiringBudgetRecord,
     filter: Option<serde_json::Value>,
     every: Option<String>,
+    admits_outsiders: bool,
     brief: String,
     branch: Option<String>,
     correlation: Option<String>,
@@ -289,7 +332,14 @@ struct TriggerRecord {
     agent: String,
     allows: Vec<String>,
     profile: Option<String>,
+    applied: bool,
     declared_at: Timestamp,
+}
+
+#[derive(Serialize)]
+struct FiringBudgetRecord {
+    limit: usize,
+    window: String,
 }
 
 #[derive(Serialize)]
@@ -340,6 +390,10 @@ impl SessionRecord {
             .into_iter()
             .map(|session| session.to_string())
             .collect();
+        let instance = work::instance(store, session.id).await?;
+        let held = instance::held_by(store, session.id)
+            .await?
+            .map(|held| held.because);
 
         Ok(Self {
             id: session.id.to_string(),
@@ -349,6 +403,8 @@ impl SessionRecord {
             agent: session.agent.name,
             profile: session.profile.map(|profile| profile.name),
             checkout: session.checkout,
+            instance,
+            held,
             correlation: session.correlation,
             state: session.state.as_str().to_owned(),
             opened_at: session.opened_at,
@@ -361,13 +417,16 @@ impl SessionRecord {
     }
 }
 
-impl From<Run> for RunRecord {
-    fn from(run: Run) -> Self {
-        Self {
+impl RunRecord {
+    async fn read(store: &Store, run: Run) -> Result<Self, Refused> {
+        let waiting = run.exit.is_none() && work::is_waiting(store, &run).await?;
+
+        Ok(Self {
             id: run.id.to_string(),
             name: run.name,
             session: run.session.to_string(),
             state: run.state.as_str().to_owned(),
+            waiting,
             exit: run.exit,
             instance: run.instance,
             supervisor: run.supervisor,
@@ -380,15 +439,24 @@ impl From<Run> for RunRecord {
             connected_at: run.connected.as_ref().map(|connected| connected.at),
             supervisor_version: run.connected.map(|connected| connected.version),
             usage: run.usage,
+        })
+    }
+
+    async fn all(store: &Store, runs: Vec<Run>) -> Result<Vec<Self>, Refused> {
+        let mut records = Vec::with_capacity(runs.len());
+        for run in runs {
+            records.push(Self::read(store, run).await?);
         }
+
+        Ok(records)
     }
 }
 
 impl From<Trigger> for TriggerRecord {
     fn from(trigger: Trigger) -> Self {
-        let (filter, every) = match trigger.fires {
-            Fires::On(filter) => (Some(filter.to_json()), None),
-            Fires::Every(every) => (None, Some(format!("{every:#}"))),
+        let (filter, every, admits_outsiders) = match trigger.fires {
+            Fires::On(filter) => (Some(filter.to_json()), None, filter.admits_outsiders()),
+            Fires::Every(every) => (None, Some(format!("{every:#}")), false),
         };
 
         Self {
@@ -397,8 +465,13 @@ impl From<Trigger> for TriggerRecord {
             name: trigger.name,
             state: trigger.state.as_str().to_owned(),
             disabled_because: trigger.disabled_because,
+            firing_budget: FiringBudgetRecord {
+                limit: trigger.firing_budget.limit.get(),
+                window: format!("{:#}", trigger.firing_budget.window),
+            },
             filter,
             every,
+            admits_outsiders,
             brief: trigger.templates.brief.to_string(),
             branch: trigger.templates.branch.map(|branch| branch.to_string()),
             correlation: trigger
@@ -410,6 +483,7 @@ impl From<Trigger> for TriggerRecord {
             agent: trigger.agent.name,
             allows: trigger.allows.into_iter().map(|agent| agent.name).collect(),
             profile: trigger.profile.map(|profile| profile.name),
+            applied: trigger.applied,
             declared_at: trigger.declared_at,
         }
     }
@@ -493,6 +567,24 @@ async fn agents(
     let agents = agent::agents(&control_plane.store, &organization).await?;
 
     Ok(Json(agents.into_iter().map(Into::into).collect()))
+}
+
+async fn set_agent_model(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, name)): Path<(String, String)>,
+    model: Result<Json<AgentModel>, JsonRejection>,
+) -> Result<Json<AgentRecord>, Refused> {
+    let Json(model) = model?;
+    let agent = agent::set_model(
+        &control_plane.store,
+        &organization,
+        &name,
+        model.model.as_deref(),
+    )
+    .await
+    .map_err(trigger_refusal)?;
+
+    Ok(Json(agent.into()))
 }
 
 async fn declare_agent(
@@ -1037,14 +1129,39 @@ async fn test_trigger(
                 .map_err(|_| Refused::NotFound(format!("no event {event}")))
         })
         .transpose()?;
-    let tested = trigger::test(
-        &control_plane.store,
-        &organization,
-        &name,
-        event,
-        tested.instruction.as_deref(),
-    )
-    .await
+    let instruction = tested.instruction.as_deref();
+    let tested = match tested.declared {
+        Some(file) => {
+            let declarations = apply::declarations(file)
+                .map_err(|error| Refused::Unprocessable(format!("{error:#}")))?;
+            let declared = declarations
+                .iter()
+                .find(|declared| declared.name == name)
+                .ok_or_else(|| {
+                    Refused::Unprocessable(format!(
+                        "the declaration file declares no trigger {name}"
+                    ))
+                })?;
+            trigger::test_declared(
+                &control_plane.store,
+                &organization,
+                declared,
+                event,
+                instruction,
+            )
+            .await
+        }
+        None => {
+            trigger::test(
+                &control_plane.store,
+                &organization,
+                &name,
+                event,
+                instruction,
+            )
+            .await
+        }
+    }
     .map_err(trigger_refusal)?;
     let rendered = tested
         .rendered
@@ -1083,6 +1200,161 @@ async fn enable_trigger(
         .map_err(trigger_refusal)?;
 
     Ok(Json(trigger.into()))
+}
+
+#[derive(Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+enum FiredRecord {
+    Opened {
+        event: String,
+        session: String,
+        run: String,
+    },
+    Fed {
+        event: String,
+        session: String,
+        run: Option<String>,
+    },
+    Ignored {
+        event: String,
+        correlation: String,
+    },
+}
+
+async fn dispatch_trigger(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, name)): Path<(String, String)>,
+    dispatch: Result<Json<TriggerDispatch>, JsonRejection>,
+) -> Result<Json<FiredRecord>, Refused> {
+    let Json(dispatch) = dispatch?;
+    let fired = trigger::dispatch(
+        &control_plane.store,
+        &Github::dialling_out()?,
+        trigger::Dispatch {
+            organization: &organization,
+            trigger: &name,
+            integration: &dispatch.integration,
+            issue: dispatch.issue,
+            asked: trigger::Asked {
+                instruction: dispatch.instruction.as_deref(),
+                agent: dispatch.agent.as_deref(),
+            },
+        },
+    )
+    .await
+    .map_err(|error| match error.to_string() {
+        missing if missing.starts_with("no integration named ") => Refused::NotFound(missing),
+        _ => trigger_refusal(error),
+    })?;
+
+    Ok(Json(match fired {
+        trigger::Fired::Opened {
+            event,
+            session,
+            run,
+        } => FiredRecord::Opened {
+            event: event.to_string(),
+            session: session.to_string(),
+            run: run.to_string(),
+        },
+        trigger::Fired::Fed {
+            event,
+            session,
+            run,
+        } => FiredRecord::Fed {
+            event: event.to_string(),
+            session: session.to_string(),
+            run: run.map(|run| run.to_string()),
+        },
+        trigger::Fired::Ignored {
+            event, correlation, ..
+        } => FiredRecord::Ignored {
+            event: event.to_string(),
+            correlation,
+        },
+        trigger::Fired::Failed { because, .. } => return Err(Refused::Unprocessable(because)),
+    }))
+}
+
+#[derive(Serialize)]
+struct AppliedTriggersRecord {
+    changes: Vec<TriggerChangeRecord>,
+    admitting_outsiders: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct TriggerChangeRecord {
+    name: String,
+    action: &'static str,
+    differences: Vec<DifferenceRecord>,
+}
+
+#[derive(Serialize)]
+struct DifferenceRecord {
+    field: &'static str,
+    was: Option<String>,
+    becomes: Option<String>,
+}
+
+impl From<apply::Applied> for AppliedTriggersRecord {
+    fn from(applied: apply::Applied) -> Self {
+        Self {
+            changes: applied
+                .changes
+                .into_iter()
+                .map(|change| TriggerChangeRecord {
+                    name: change.name,
+                    action: match change.action {
+                        apply::Action::Add => "add",
+                        apply::Action::Change => "change",
+                        apply::Action::Remove => "remove",
+                    },
+                    differences: change
+                        .differences
+                        .into_iter()
+                        .map(|difference| DifferenceRecord {
+                            field: difference.field,
+                            was: difference.was,
+                            becomes: difference.becomes,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            admitting_outsiders: applied.admitting_outsiders,
+        }
+    }
+}
+
+async fn apply_triggers(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    file: Result<Json<apply::File>, JsonRejection>,
+) -> Result<Json<AppliedTriggersRecord>, Refused> {
+    applied_triggers(control_plane, organization, file, false).await
+}
+
+async fn preview_applied_triggers(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    file: Result<Json<apply::File>, JsonRejection>,
+) -> Result<Json<AppliedTriggersRecord>, Refused> {
+    applied_triggers(control_plane, organization, file, true).await
+}
+
+async fn applied_triggers(
+    control_plane: ControlPlane,
+    organization: String,
+    file: Result<Json<apply::File>, JsonRejection>,
+    dry_run: bool,
+) -> Result<Json<AppliedTriggersRecord>, Refused> {
+    let Json(file) = file?;
+    let declarations =
+        apply::declarations(file).map_err(|error| Refused::Unprocessable(format!("{error:#}")))?;
+    let applied = apply::apply(&control_plane.store, &organization, &declarations, dry_run)
+        .await
+        .map_err(trigger_refusal)?;
+
+    Ok(Json(applied.into()))
 }
 
 fn parse_trigger_declaration(
@@ -1155,6 +1427,52 @@ fn declaration_refusal(error: anyhow::Error) -> Refused {
     Refused::Unprocessable(message)
 }
 
+#[derive(Serialize)]
+struct HeldRecord {
+    session: String,
+    instance: String,
+    because: String,
+}
+
+async fn instances(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+) -> Result<Json<Vec<HeldRecord>>, Refused> {
+    let held = instance::held(&control_plane.store, &organization).await?;
+
+    Ok(Json(
+        held.into_iter()
+            .map(|held| HeldRecord {
+                session: held.session.to_string(),
+                instance: held.instance,
+                because: held.because,
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Serialize)]
+struct ReleasedRecord {
+    instance: String,
+}
+
+async fn release_instance(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, session)): Path<(String, String)>,
+    release: Result<Json<Release>, JsonRejection>,
+) -> Result<Json<ReleasedRecord>, Refused> {
+    let Json(release) = release?;
+    let session = resolved(&control_plane, &organization, &session).await?;
+    let instance = instance::release(&control_plane.store, session.id, &release.participant)
+        .await
+        .map_err(|error| match error.to_string() {
+            none if none.ends_with("has no instance to release") => Refused::NotFound(none),
+            _ => session_refusal(error),
+        })?;
+
+    Ok(Json(ReleasedRecord { instance }))
+}
+
 async fn sessions(
     State(control_plane): State<ControlPlane>,
     Path(organization): Path<String>,
@@ -1218,8 +1536,12 @@ async fn post_to_session(
     )
     .await
     .map_err(session_refusal)?;
+    let run = match run {
+        Some(run) => Some(RunRecord::read(&control_plane.store, run).await?),
+        None => None,
+    };
 
-    Ok(Json(run.map(Into::into)))
+    Ok(Json(run))
 }
 
 async fn seal_session(
@@ -1245,7 +1567,7 @@ async fn runs(
         .await
         .map_err(session_refusal)?;
 
-    Ok(Json(runs.into_iter().map(Into::into).collect()))
+    Ok(Json(RunRecord::all(&control_plane.store, runs).await?))
 }
 
 async fn enqueue_run(
@@ -1263,7 +1585,10 @@ async fn enqueue_run(
     .await
     .map_err(session_refusal)?;
 
-    Ok((StatusCode::CREATED, Json(run.into())))
+    Ok((
+        StatusCode::CREATED,
+        Json(RunRecord::read(&control_plane.store, run).await?),
+    ))
 }
 
 async fn show_run(
@@ -1272,7 +1597,23 @@ async fn show_run(
 ) -> Result<Json<RunRecord>, Refused> {
     let run = work::resolve_run(&control_plane.store, &organization, &run).await?;
 
-    Ok(Json(run.into()))
+    Ok(Json(RunRecord::read(&control_plane.store, run).await?))
+}
+
+async fn stop_run(
+    State(control_plane): State<ControlPlane>,
+    Path((organization, run)): Path<(String, String)>,
+) -> Result<Json<RunRecord>, Refused> {
+    let run = work::resolve_run(&control_plane.store, &organization, &run).await?;
+    work::stop(&control_plane.store, run.id)
+        .await
+        .map_err(|error| match error.to_string() {
+            ended if ended.ends_with("has already ended") => Refused::Conflict(ended),
+            _ => error.into(),
+        })?;
+    let run = work::run(&control_plane.store, run.id).await?;
+
+    Ok(Json(RunRecord::read(&control_plane.store, run).await?))
 }
 
 async fn resolved(

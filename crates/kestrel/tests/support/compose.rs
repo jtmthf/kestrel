@@ -1,7 +1,8 @@
 //! The shipped compose stack as a test drives it: built and brought up the way the README
-//! says to, driven through the CLI role inside it, and torn down with its volume. Every
-//! resource the suite touches is scoped to a namespace derived from this checkout, so two
-//! checkouts on one daemon never address the same project, volume, network or image.
+//! says to, driven by the installed Client through the port it publishes, and torn down with
+//! its volume. Every resource the suite touches is scoped to a namespace derived from this
+//! checkout, so two checkouts on one daemon never address the same project, volume, network,
+//! image or host port.
 
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
@@ -12,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
+use super::client::{self, Finished, Invocation};
 use super::docker::{Ran, ran_against, repository};
 
 pub const CONTROL_PLANE: &str = "kestrel";
@@ -30,14 +32,16 @@ pub struct Namespace {
 
 impl Namespace {
     /// What a `docker compose` invocation must inherit for every resource it touches to be
-    /// this checkout's.
-    pub fn environment(&self) -> [(&str, &str); 5] {
+    /// this checkout's. The operator port is left for the daemon to choose, so no two
+    /// checkouts' stacks contend for the host's.
+    pub fn environment(&self) -> [(&str, &str); 6] {
         [
             ("COMPOSE_PROJECT_NAME", &self.project),
             ("KESTREL_VOLUME", &self.volume),
             ("KESTREL_LINK_NETWORK", &self.link),
             ("KESTREL_CONTROL_IMAGE", &self.control_plane),
             ("KESTREL_ENV_IMAGE", &self.environment),
+            ("KESTREL_OPERATOR_PORT", ""),
         ]
     }
 }
@@ -123,36 +127,39 @@ impl Stack {
         self.start();
     }
 
-    /// The CLI role in the control plane, which does its one thing and exits.
+    /// Where the installed Client reaches the stack: the port it published on the host's
+    /// loopback, which moves each time the stack comes up.
+    pub fn operator(&self) -> String {
+        let published = completed(
+            &["port", CONTROL_PLANE, "7718"],
+            "finding the published operator port",
+        );
+
+        format!("http://{published}")
+    }
+
+    /// The installed Client, run as an operator runs it against the stack.
+    pub fn client(&self, command: &[&str]) -> Finished {
+        client::ran(&self.operator(), command)
+    }
+
     pub fn ran(&self, command: &[&str]) -> String {
-        let mut kestrel = vec!["kestrel"];
-        kestrel.extend_from_slice(command);
-        let ran = self.in_the_control_plane(&kestrel);
-        assert_eq!(
-            ran.code,
-            0,
-            "`kestrel {}` in the stack failed:\n{}",
+        self.ran_given(command, None)
+    }
+
+    pub fn ran_given(&self, command: &[&str], input: Option<&str>) -> String {
+        let invocation = input.map_or_else(Invocation::default, |input| {
+            Invocation::default().given(input)
+        });
+        let ran = client::ran_as(&self.operator(), command, invocation);
+        assert!(
+            ran.status.success(),
+            "`kestrel {}` against the stack failed:\n{}",
             command.join(" "),
             ran.err
         );
 
-        ran.out
-    }
-
-    /// Down a pipe rather than as an argument, which is the only way `credential set` takes one.
-    pub fn held_a_provider_credential(&self, organization: &str, variable: &str, secret: &str) {
-        let ran = self.in_the_control_plane(&[
-            "sh",
-            "-c",
-            &format!(
-                "printf %s {secret} | kestrel credential set {variable} --organization {organization}"
-            ),
-        ]);
-        assert_eq!(
-            ran.code, 0,
-            "the stack would not hold the provider credential {variable}:\n{}",
-            ran.err
-        );
+        ran.out.join("\n")
     }
 
     pub fn in_the_control_plane(&self, command: &[&str]) -> Ran {

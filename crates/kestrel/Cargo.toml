@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "kestrel-control-plane"
+path = "src/main.rs"
+
 [lints]
 workspace = true
 

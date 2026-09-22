@@ -1,5 +1,5 @@
-//! `kestrel-client` as an operator runs it: its own process, handed a control-plane URL and
-//! nothing else, in a home and a working directory holding no database.
+//! The installed `kestrel` Client as an operator runs it: its own process, handed a
+//! control-plane URL and nothing else, in a home and a working directory holding no database.
 
 use std::fs::File;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
@@ -21,7 +21,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 pub fn binary() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
 
-    BINARY.get_or_init(|| built::binary("kestrel-client"))
+    BINARY.get_or_init(|| built::named("kestrel-client", "kestrel"))
 }
 
 pub struct Client {

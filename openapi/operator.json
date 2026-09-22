@@ -288,6 +288,25 @@
         }
       }
     },
+    "/operator/organizations/{organization}/agents/{agent}/model": {
+      "put": {
+        "operationId": "setAgentModel",
+        "summary": "Change the model an Agent works with.",
+        "description": "Every Run already in flight keeps the model it was dispatched with.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "agent", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentModel" } } } },
+        "responses": {
+          "200": { "description": "The Agent, working with the model it names from its next Run on.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Agent" } } } },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
     "/operator/organizations/{organization}/declaration": {
       "post": {
         "operationId": "applyDeclaration",
@@ -1138,6 +1157,26 @@
         }
       }
     },
+    "/operator/organizations/{organization}/sessions/{session}/instance/release": {
+      "post": {
+        "operationId": "releaseInstance",
+        "summary": "Destroy a Session's Instance.",
+        "description": "A Session is named by its generated name, its identifier, any unambiguous prefix of its identifier, or `latest` for the most recent in the Organization. Whatever the Instance holds that was never pushed is discarded.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "session", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InstanceRelease" } } } },
+        "responses": {
+          "200": { "description": "The Instance released, and recorded as released in the Transcript.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ReleasedInstance" } } } },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
     "/operator/organizations/{organization}/sessions/{session}/runs": {
       "get": {
         "operationId": "listRuns",
@@ -1185,6 +1224,24 @@
         "responses": {
           "200": { "description": "The Run.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Run" } } } },
           "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/runs/{run}/stop": {
+      "post": {
+        "operationId": "stopRun",
+        "summary": "End a Run.",
+        "description": "A Run is named by its generated name, its identifier, any unambiguous prefix of its identifier, or `latest` for the most recent in the Organization.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "run", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "The ended Run: succeeded between turns, failed mid-turn or before it started.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Run" } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
           "422": { "$ref": "#/components/responses/Refused" },
           "503": { "$ref": "#/components/responses/Refused" }
         }
@@ -1275,6 +1332,74 @@
         ],
         "responses": {
           "200": { "description": "The enabled Trigger.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Trigger" } } } },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/triggers/{trigger}/dispatch": {
+      "post": {
+        "operationId": "dispatchTrigger",
+        "summary": "Start a Trigger's work on an issue now.",
+        "description": "The issue is read through the named GitHub Integration and recorded as a dev.kestrel.dispatched Event, which fires the Trigger whether or not its filter matches.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "trigger", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TriggerDispatch" } } } },
+        "responses": {
+          "200": { "description": "What the firing did: opened a Session, fed an open one, or found none to feed.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Fired" } } } },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/applied-triggers": {
+      "post": {
+        "operationId": "applyTriggers",
+        "summary": "Make an Organization's applied Triggers what a file declares.",
+        "description": "Triggers the file does not name are removed if a file applied them, and left alone if flags declared them. One transaction: a file that cannot be applied whole changes nothing.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TriggerFile" } } } },
+        "responses": {
+          "200": { "description": "The diff applied.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AppliedTriggers" } } } },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/applied-triggers/preview": {
+      "post": {
+        "operationId": "previewAppliedTriggers",
+        "summary": "Preview a trigger file without changing control-plane state.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TriggerFile" } } } },
+        "responses": {
+          "200": { "description": "The diff applying it would make.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AppliedTriggers" } } } },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/instances": {
+      "get": {
+        "operationId": "listHeldInstances",
+        "summary": "List the Instances held for work that exists nowhere else.",
+        "parameters": [
+          { "name": "organization", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Every held Instance, and why it is held.", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/HeldInstance" } } } } },
           "404": { "$ref": "#/components/responses/Refused" },
           "503": { "$ref": "#/components/responses/Refused" }
         }
@@ -1576,8 +1701,17 @@
           "name": { "type": "string" },
           "state": { "type": "string", "enum": ["enabled", "disabled:operator", "disabled:firing-budget"] },
           "disabled_because": { "type": ["string", "null"] },
+          "firing_budget": {
+            "type": "object",
+            "properties": {
+              "limit": { "type": "integer", "minimum": 1 },
+              "window": { "type": "string" }
+            },
+            "required": ["limit", "window"]
+          },
           "filter": { "type": ["object", "null"] },
           "every": { "type": ["string", "null"] },
+          "admits_outsiders": { "type": "boolean", "description": "Whether the filter fires for Events from people outside the Organization." },
           "brief": { "type": "string" },
           "branch": { "type": ["string", "null"] },
           "correlation": { "type": ["string", "null"] },
@@ -1586,15 +1720,20 @@
           "agent": { "type": "string" },
           "allows": { "type": "array", "items": { "type": "string" } },
           "profile": { "type": ["string", "null"] },
+          "applied": { "type": "boolean", "description": "Whether a trigger file declared it, rather than flags." },
           "declared_at": { "type": "string", "format": "date-time" }
         },
-        "required": ["id", "organization", "name", "state", "disabled_because", "filter", "every", "brief", "branch", "correlation", "on_miss", "workspace", "agent", "allows", "profile", "declared_at"]
+        "required": ["id", "organization", "name", "state", "disabled_because", "firing_budget", "filter", "every", "admits_outsiders", "brief", "branch", "correlation", "on_miss", "workspace", "agent", "allows", "profile", "applied", "declared_at"]
       },
       "TriggerTest": {
         "type": "object",
         "properties": {
           "event": { "type": ["string", "null"], "format": "uuid" },
-          "instruction": { "type": ["string", "null"] }
+          "instruction": { "type": ["string", "null"] },
+          "declared": {
+            "anyOf": [{ "$ref": "#/components/schemas/TriggerFile" }, { "type": "null" }],
+            "description": "A trigger file, to test the Trigger as it declares it rather than as it was applied."
+          }
         }
       },
       "TriggerTestResult": {
@@ -1608,6 +1747,108 @@
           "elapsing": { "type": ["string", "null"], "format": "date-time" }
         },
         "required": ["matches", "brief", "branch", "correlation", "agent", "elapsing"]
+      },
+      "AgentModel": {
+        "type": "object",
+        "properties": {
+          "model": { "type": ["string", "null"] }
+        }
+      },
+      "TriggerFile": {
+        "type": "object",
+        "properties": {
+          "triggers": {
+            "type": "object",
+            "description": "Each Trigger the file applies, keyed by its name; `{}` removes every Trigger a file applied.",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "filter": { "type": "object" },
+                "brief": { "type": "string" },
+                "branch": { "type": ["string", "null"] },
+                "correlation": { "type": ["string", "null"] },
+                "on_miss": { "type": ["string", "null"], "enum": ["open", "ignore", null] },
+                "workspace": { "type": "string" },
+                "agent": { "type": "string" },
+                "allows": { "type": "array", "items": { "type": "string" } },
+                "profile": { "type": ["string", "null"] }
+              },
+              "required": ["filter", "brief", "workspace", "agent"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["triggers"],
+        "additionalProperties": false
+      },
+      "AppliedTriggers": {
+        "type": "object",
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "action": { "type": "string", "enum": ["add", "change", "remove"] },
+                "differences": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "field": { "type": "string" },
+                      "was": { "type": ["string", "null"] },
+                      "becomes": { "type": ["string", "null"] }
+                    },
+                    "required": ["field", "was", "becomes"]
+                  }
+                }
+              },
+              "required": ["name", "action", "differences"]
+            }
+          },
+          "admitting_outsiders": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["changes", "admitting_outsiders"]
+      },
+      "TriggerDispatch": {
+        "type": "object",
+        "properties": {
+          "integration": { "type": "string" },
+          "issue": { "type": "integer" },
+          "instruction": { "type": ["string", "null"] },
+          "agent": { "type": ["string", "null"] }
+        },
+        "required": ["integration", "issue"]
+      },
+      "Fired": {
+        "oneOf": [
+          { "type": "object", "properties": { "outcome": { "const": "opened" }, "event": { "type": "string", "format": "uuid" }, "session": { "type": "string", "format": "uuid" }, "run": { "type": "string", "format": "uuid" } }, "required": ["outcome", "event", "session", "run"] },
+          { "type": "object", "properties": { "outcome": { "const": "fed" }, "event": { "type": "string", "format": "uuid" }, "session": { "type": "string", "format": "uuid" }, "run": { "type": ["string", "null"], "format": "uuid" } }, "required": ["outcome", "event", "session", "run"] },
+          { "type": "object", "properties": { "outcome": { "const": "ignored" }, "event": { "type": "string", "format": "uuid" }, "correlation": { "type": "string" } }, "required": ["outcome", "event", "correlation"] }
+        ]
+      },
+      "HeldInstance": {
+        "type": "object",
+        "properties": {
+          "session": { "type": "string", "format": "uuid" },
+          "instance": { "type": "string" },
+          "because": { "type": "string" }
+        },
+        "required": ["session", "instance", "because"]
+      },
+      "InstanceRelease": {
+        "type": "object",
+        "properties": {
+          "participant": { "type": "string", "default": "operator" }
+        }
+      },
+      "ReleasedInstance": {
+        "type": "object",
+        "properties": {
+          "instance": { "type": "string" }
+        },
+        "required": ["instance"]
       },
       "SessionDeclaration": {
         "type": "object",
@@ -1641,6 +1882,8 @@
           "agent": { "type": "string" },
           "profile": { "type": ["string", "null"] },
           "checkout": { "$ref": "#/components/schemas/Checkout" },
+          "instance": { "type": ["string", "null"], "description": "The Instance its Runs execute on, while one is kept." },
+          "held": { "type": ["string", "null"], "description": "Why its Instance is held for work that exists nowhere else, if it is." },
           "correlation": { "type": ["string", "null"] },
           "state": { "type": "string", "enum": ["open", "sealed"] },
           "opened_at": { "type": "string", "format": "date-time" },
@@ -1650,7 +1893,7 @@
           "started_by": { "type": ["string", "null"], "format": "uuid" },
           "continued_by": { "type": "array", "items": { "type": "string", "format": "uuid" } }
         },
-        "required": ["id", "name", "organization", "workspace", "agent", "profile", "checkout", "correlation", "state", "opened_at", "last_active_at", "sealed_at", "continues", "started_by", "continued_by"]
+        "required": ["id", "name", "organization", "workspace", "agent", "profile", "checkout", "instance", "held", "correlation", "state", "opened_at", "last_active_at", "sealed_at", "continues", "started_by", "continued_by"]
       },
       "Checkout": {
         "type": "object",
@@ -1674,6 +1917,7 @@
           "name": { "type": "string", "pattern": "^[a-z]+-[a-z]+-[a-z]{8}$" },
           "session": { "type": "string", "format": "uuid" },
           "state": { "type": "string", "enum": ["queued", "active", "ended", "unreachable"] },
+          "waiting": { "type": "boolean", "description": "Whether an active Run has answered its turn and waits for the next one." },
           "exit": { "anyOf": [{ "$ref": "#/components/schemas/Exit" }, { "type": "null" }] },
           "instance": { "type": ["string", "null"] },
           "supervisor": { "type": ["string", "null"] },
@@ -1687,7 +1931,7 @@
           "supervisor_version": { "type": ["string", "null"] },
           "usage": { "anyOf": [{ "$ref": "#/components/schemas/Usage" }, { "type": "null" }] }
         },
-        "required": ["id", "name", "session", "state", "exit", "instance", "supervisor", "model", "worked_model", "enqueued_at", "started_at", "ended_at", "lease_expires_at", "connected_at", "supervisor_version", "usage"]
+        "required": ["id", "name", "session", "state", "waiting", "exit", "instance", "supervisor", "model", "worked_model", "enqueued_at", "started_at", "ended_at", "lease_expires_at", "connected_at", "supervisor_version", "usage"]
       },
       "Exit": {
         "oneOf": [

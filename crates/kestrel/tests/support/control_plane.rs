@@ -1,5 +1,5 @@
 //! The `kestrel` control-plane image as a test drives it: built rather than assumed present,
-//! and run over the volume an operator's database lives on.
+//! run over the volume an operator's database lives on, and reached from outside it.
 
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use super::client;
 use super::docker::{self, Ran, removed};
 
 const IMAGE: &str = "kestrel:test";
@@ -58,20 +59,7 @@ impl Volume {
         Self { name, mount }
     }
 
-    /// The CLI role over this volume, which does its one thing and exits.
-    pub fn ran(&self, command: &[&str]) -> String {
-        let ran = self.run(command);
-        assert_eq!(
-            ran.code,
-            0,
-            "`kestrel {}` in the image failed:\n{}",
-            command.join(" "),
-            ran.err
-        );
-
-        ran.out
-    }
-
+    /// The image over this volume, handed these arguments and left to exit.
     pub fn run(&self, command: &[&str]) -> Ran {
         let mut run = vec!["run", "--rm", "--volume", &self.mount, built()];
         run.extend_from_slice(command);
@@ -102,41 +90,70 @@ impl Drop for Volume {
     }
 }
 
-/// The image started as a role rather than as a one-shot command.
+/// The image started as its roles, with the link and the operator boundary each on a host
+/// port, so a test reaches them the way an Environment and an operator outside it would.
 pub struct Started {
     name: String,
-    published: Option<String>,
+    link: String,
+    operator: String,
 }
 
 impl Started {
     pub fn with(volume: &Volume, arguments: &[&str]) -> Self {
-        Self::starting(volume, arguments, false)
-    }
-
-    /// The link on a host port, so a test reaches it the way an Environment outside the
-    /// container would.
-    pub fn publishing_the_link(volume: &Volume, arguments: &[&str]) -> Self {
-        Self::starting(volume, arguments, true)
-    }
-
-    fn starting(volume: &Volume, arguments: &[&str], publish: bool) -> Self {
         let name = named("control-plane");
-        let mut run = vec!["run", "--detach", "--name", &name, "--env", "RUST_LOG=info"];
-        if publish {
-            run.extend_from_slice(&["--publish", "127.0.0.1::7717"]);
-        }
-        run.extend_from_slice(&["--volume", &volume.mount, built()]);
+        let mut run = vec![
+            "run",
+            "--detach",
+            "--name",
+            &name,
+            "--env",
+            "RUST_LOG=info",
+            "--publish",
+            "127.0.0.1::7717",
+            "--publish",
+            "127.0.0.1::7718",
+            "--volume",
+            &volume.mount,
+            built(),
+        ];
         run.extend_from_slice(arguments);
         docker::completed(&run, "starting the control plane");
 
-        let published = publish.then(|| {
+        let published = |port: &str| {
             docker::completed(
-                &["port", &name, "7717/tcp"],
-                "finding the address the link was published on",
+                &["port", &name, port],
+                &format!("finding the address {port} was published on"),
             )
-        });
+        };
+        let link = published("7717/tcp");
+        let operator = format!("http://{}", published("7718/tcp"));
 
-        Self { name, published }
+        Self {
+            name,
+            link,
+            operator,
+        }
+    }
+
+    /// Where a Client reaches the operator boundary, once it answers one. A published port
+    /// accepts a connection before anything in the container listens, so connecting proves
+    /// nothing.
+    pub fn operator(&self) -> &str {
+        let deadline = Instant::now() + PATIENCE;
+        while !client::ran(&self.operator, &["organization", "list"])
+            .status
+            .success()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the operator boundary never answered at {}. it said:\n{}",
+                self.operator,
+                self.everything_it_said()
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        &self.operator
     }
 
     pub fn wait_until_it_says(&self, what: &str) {
@@ -168,11 +185,7 @@ impl Started {
     /// What the link answers a request with, or nothing at all when the address it bound is
     /// not one a caller outside the container can reach.
     pub fn what_the_link_answers(&self) -> String {
-        let address = self
-            .published
-            .as_deref()
-            .expect("the link should have been published on a host port");
-        let mut link = TcpStream::connect(address).expect("the published link should accept");
+        let mut link = TcpStream::connect(&self.link).expect("the published link should accept");
         link.write_all(b"GET / HTTP/1.0\r\n\r\n")
             .expect("the published link should take a request");
 

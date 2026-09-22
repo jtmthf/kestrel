@@ -44,9 +44,13 @@ services:
     volumes:
       - kestrel:/var/lib/kestrel
     networks: [daemon, link]
+    # Where the `kestrel` Client reaches it. The operator boundary authenticates nobody, so it
+    # is published on the host's loopback and on no other interface (ADR-0015).
+    ports:
+      - 127.0.0.1:${KESTREL_OPERATOR_PORT-7718}:7718
     restart: unless-stopped
     healthcheck:
-      test: [CMD, kestrel, organization, list]
+      test: [CMD, curl, --fail, --silent, --show-error, --output, /dev/null, http://127.0.0.1:7718/operator/organizations]
       interval: 10s
       timeout: 10s
       retries: 3

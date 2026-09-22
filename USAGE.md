@@ -9,11 +9,13 @@ kestrel is at rung `0.1`. [`ROADMAP.md`](ROADMAP.md) is the order the rest arriv
 
 ## Before you start
 
-- **Docker**, with Compose v2. Nothing else — kestrel asks for no configuration of its own, and
-  there is nothing for you to supply.
+- **Docker**, with Compose v2. kestrel asks for no configuration of its own, and there is nothing
+  for you to supply.
 - **An amd64 or arm64 machine.** The image a run executes in is built for those two, and the build
   fails on anything else rather than producing something that will not start.
 - **A clone of this repository.** The stack builds from source rather than pulling images.
+- **Rust**, through [rustup](https://rustup.rs), to build the `kestrel` Client. The toolchain
+  `rust-toolchain.toml` pins is fetched on the first build.
 
 The first `docker compose up` builds three images and takes a few minutes. Every start after it
 takes seconds.
@@ -33,22 +35,25 @@ database is on a named volume, so it outlives the containers.
 
 Drop the `-d` to watch the logs in the foreground, or run `docker compose logs -f kestrel`.
 
-Every command below reaches the control plane's CLI, which lives inside that container:
+Every command below is the **Client**, `kestrel`, a program of its own that reaches the control
+plane over HTTP and holds nothing itself. Install it from the same clone:
 
 ```sh
-alias kestrel='docker compose exec kestrel kestrel'
+cargo install --locked --path crates/kestrel-client
 ```
 
-The alias is for readability only. The real command is
-`docker compose exec kestrel kestrel <something>`, and it is worth remembering that it reaches into
-a container, because that is where to look when something goes wrong.
+The stack publishes the control plane's operator boundary on your machine's loopback, at
+`127.0.0.1:7718`, which is where the Client looks unless `--control-plane` or
+`KESTREL_CONTROL_PLANE` names another URL. Nothing there authenticates the caller, so the port is
+published on loopback and nowhere else; reach a control plane on another machine through a tunnel.
+`kestrel status` says which control plane it reached, what exists there, and what to run next.
 
 ## Declare what the work happens against
 
 Three declarations, in this order, because each needs the one before it. Each prints the identifier
-of what it declared. A declaration describes what should exist, so running one again is safe: an
-unchanged one changes nothing, and a changed one updates the workspace or agent by that name in
-place, keeping its identifier.
+of what it declared, and nothing else, so `$(…)` captures it. A declaration describes what should
+exist, so running one again is safe: an unchanged one changes nothing, and a changed one updates the
+workspace or agent by that name in place, keeping its identifier.
 
 An **organization** is the outermost boundary. Every record kestrel keeps belongs to exactly one:
 
@@ -56,12 +61,15 @@ An **organization** is the outermost boundary. Every record kestrel keeps belong
 kestrel organization declare acme
 ```
 
+With one organization, every command below applies to it without being told. Once there are two,
+each needs `--organization`, `KESTREL_ORGANIZATION`, or a committed `.kestrel/organization` naming
+one, and refuses to guess.
+
 A **workspace** is what a session's work happens against — repositories and the base branch each
 session's own branch is cut from. Repeat `--repository` to name more than one.
 
 ```sh
 kestrel workspace declare kestrel \
-  --organization acme \
   --repository https://github.com/jtmthf/kestrel \
   --branch main
 ```
@@ -70,7 +78,7 @@ An **agent** is a configured identity rather than a running process: the agent r
 it, and the model it works with.
 
 ```sh
-kestrel agent declare builder --organization acme
+kestrel agent declare builder
 ```
 
 Naming no `--model` asks for whatever the agent runtime's own default is, which is what you want
@@ -81,7 +89,7 @@ Changing an agent's model is configuration rather than a rebuild, and a run alre
 on the model it was dispatched with:
 
 ```sh
-kestrel agent model builder --organization acme --model anthropic/claude-opus-4-5
+kestrel agent model builder --model anthropic/claude-opus-4-5
 ```
 
 Once a run has worked, kestrel knows what that runtime advertised, and refuses a model outside it
@@ -95,14 +103,14 @@ carries all three. Set `KESTREL_AGENT_RUNTIME` on the control plane, or pass
 missing from it fails and says which.
 
 ```sh
-kestrel agent declare codex --organization acme --runtime codex
+kestrel agent declare codex --runtime codex
 ```
 
 A session takes its agent's runtime and model when it opens and keeps them while it is open:
 redeclaring the agent, or changing its model, changes the sessions opened after that.
 
-`kestrel organization list`, `kestrel workspace list --organization acme` and
-`kestrel agent list --organization acme` show what you have declared.
+`kestrel organization list`, `kestrel workspace list` and `kestrel agent list` show what you have
+declared.
 
 ## Open a session
 
@@ -110,10 +118,12 @@ A **session** is the durable thread of work. It survives restarts, owns a transc
 many runs over its life.
 
 ```sh
-kestrel session open --organization acme --workspace kestrel --agent builder
+kestrel session open --workspace kestrel --agent builder
 ```
 
-Keep the identifier it prints — everything below takes it.
+It prints the session's identifier. Everything below takes a session as that identifier, as any
+prefix of it that names only one, as the generated name `session show` prints, or as `latest` for
+the one opened most recently.
 
 The session fixes the workspace's repositories as they are now and declares a branch of its own,
 `kestrel/<session>`, so sessions opened side by side never work on one another's branch. Pass
@@ -124,31 +134,43 @@ repository and the branch. A later run on the same instance finds the checkout e
 before it left it, pushed or not. The control plane itself runs no git.
 
 ```sh
-kestrel session show 01a07846-49fa-7dc0-a44b-183a63794ee3
+kestrel session show latest
 ```
 
 ```
-session       01a07846-49fa-7dc0-a44b-183a63794ee3
-organization  acme
-workspace     kestrel
-agent         builder
-runtime       opencode
-model         -
-branch        kestrel/01a07846-49fa-7dc0-a44b-183a63794ee3
-base          main
-state         open
-opened        2026-09-06T19:51:07.514310886Z
-last active   2026-09-06T19:51:07.514310886Z
+id              01a07846-49fa-7dc0-a44b-183a63794ee3
+name            grand-acorn-simpjvvl
+organization    acme
+workspace       kestrel
+agent           builder
+profile         -
+base            main
+branch          kestrel/01a07846-49fa-7dc0-a44b-183a63794ee3
+instance        -
+held            -
+correlation     -
+state           open
+opened at       2026-09-06T19:51:07.514310Z
+last active at  2026-09-06T19:51:07.514310Z
+sealed at       -
+started by      -
+continues       -
+continued by    -
 ```
+
+On a terminal the Client prints for a person to read. Piped anywhere else it prints the same fields
+tab-delimited, one record a line; `--json id,state` prints just those fields as JSON, one record a
+line, whatever it is attached to.
 
 It already has a transcript, because opening it put the agent in as a participant:
 
 ```sh
-kestrel session transcript 01a07846-49fa-7dc0-a44b-183a63794ee3
+kestrel session transcript latest
 ```
 
 ```
-1  2026-09-06T19:51:07.514407094Z  participant joined  builder
+1  2026-09-06T19:51:07.514407Z  {"kind":"participant_joined","participant":"builder"}
+cursor  01a07846-49fa-7dc0-a44b-183a63794ee3:1
 ```
 
 ## Enqueue a run
@@ -157,7 +179,7 @@ A **run** is one execution of an agent runtime on its session's instance: one co
 over as many turns as the session gives it. At most one is ever open in a session.
 
 ```sh
-kestrel run enqueue --session 01a07846-49fa-7dc0-a44b-183a63794ee3
+kestrel run enqueue --session latest
 ```
 
 Within seconds the control plane claims it, provisions a container for the session, and starts a
@@ -171,15 +193,16 @@ a laptop for two repository checkouts, supervisors, and agent runtimes. Set
 a different positive limit; runs beyond it remain queued until active ones end.
 
 ```sh
-kestrel run list --session 01a07846-49fa-7dc0-a44b-183a63794ee3
+kestrel run list --session latest
 ```
 
 ```
-01a07846-5d97-7230-9315-bfef2a644006  docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006  -  active
+id                                    name                  state   waiting  status  because  instance                                             worked model
+01a07846-5d97-7230-9315-bfef2a644006  eager-raven-owvigqbk  active  false    -       -        docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006  -
 ```
 
-The second column is the instance, and the third is the model the run is on, which it says once
-the turn is over. The instance is a real container, and the run's supervisor in it says what it is
+`waiting` is whether the agent has answered its turn and waits for the next one, and the worked model
+is the one the run is on, which it says once the turn is over. The instance is a real container, and the run's supervisor in it says what it is
 doing in the control plane's log:
 
 ```sh
@@ -226,18 +249,14 @@ plan, Claude Code through a Claude plan, or an OpenCode Go key. kestrel keeps it
 checkout or provider account has to. It reaches only the runs of sessions that name it.
 
 ```sh
-kestrel profile declare jack --organization acme --owner jack
-docker compose exec -T kestrel kestrel profile set jack --organization acme \
-  --file .codex/auth.json < ~/.codex/auth.json
-docker compose exec -T kestrel kestrel profile set jack --organization acme \
-  --file .local/share/opencode/auth.json < ~/.local/share/opencode/auth.json
-kestrel profile set jack --organization acme --variable CLAUDE_CODE_OAUTH_TOKEN
+kestrel profile declare jack --owner jack
+kestrel profile set jack --file .codex/auth.json < ~/.codex/auth.json
+kestrel profile set jack --file .local/share/opencode/auth.json < ~/.local/share/opencode/auth.json
+kestrel profile set jack --variable CLAUDE_CODE_OAUTH_TOKEN
 ```
 
-`-T` lets a file reach the command through the alias's `docker compose exec`. The last command waits
-for the token `claude setup-token` printed: paste it and press Ctrl-D. Each login is read from
-standard input, sealed with the key beside the database, and never printed again. `kestrel profile
-list --organization acme` shows a profile's owner and what it holds, by name only. A `--variable`
+The last command waits for the token `claude setup-token` printed: paste it and press Ctrl-D. Each login is read from
+standard input, sealed with the key beside the database, and never printed again. `kestrel profile list` shows a profile's owner and what it holds, by name only. A `--variable`
 goes into the agent runtime's environment. A `--file` is written at that path beneath the agent's
 home when the run starts. When the run ends it is read back and removed from the instance, so a
 login the runtime refreshed there is the one the next run gets, on this instance or a fresh one. A
@@ -252,7 +271,7 @@ as a variable. Whether a Claude plan may be used through its ACP adapter is unse
 Name the profile when you open the session, or give a trigger's declaration `profile: jack`:
 
 ```sh
-kestrel session open --organization acme --workspace kestrel --agent codex --profile jack
+kestrel session open --workspace kestrel --agent codex --profile jack
 ```
 
 A session that names a profile needs no provider credential, and a follow-up that continues it keeps
@@ -272,13 +291,14 @@ down and back up to see both:
 ```sh
 docker compose down
 docker compose up -d
-kestrel session transcript 01a07846-49fa-7dc0-a44b-183a63794ee3
+kestrel session transcript latest
 ```
 
 ```
-1  2026-09-06T19:51:07.514407094Z  participant joined  builder
-2  2026-09-06T19:51:13.316822628Z  run started  01a07846-5d97-7230-9315-bfef2a644006
-3  2026-09-06T19:58:58.48925017Z  run ended  01a07846-5d97-7230-9315-bfef2a644006  failed: the control plane stopped while this run was in flight
+1  2026-09-06T19:51:07.514407Z  {"kind":"participant_joined","participant":"builder"}
+2  2026-09-06T19:51:13.316822Z  {"kind":"run_started","run":"01a07846-5d97-7230-9315-bfef2a644006"}
+3  2026-09-06T19:58:58.489250Z  {"kind":"run_ended","run":"01a07846-5d97-7230-9315-bfef2a644006","exit":{"status":"failed","because":"the control plane stopped while this run was in flight"}}
+cursor  01a07846-49fa-7dc0-a44b-183a63794ee3:3
 ```
 
 The session and its transcript are intact. The run that was executing ended with an explicit status
@@ -293,44 +313,36 @@ session's branch out from the remote.
 `docker compose down --volumes` removes the named volume too, and with it every session, transcript
 and declaration on this machine. It is the only command here that destroys anything.
 
-## Reading a long transcript
+## Following a transcript
 
-A transcript is read in bounded windows, so a session with thousands of entries costs the same to
-read as one with three.
-
-```sh
-kestrel session transcript 01a07846-49fa-7dc0-a44b-183a63794ee3 --window 2
-```
-
-```
-1  2026-09-06T19:51:07.514407094Z  participant joined  builder
-2  2026-09-06T19:51:13.316822628Z  run started  01a07846-5d97-7230-9315-bfef2a644006
-```
-
-The cursor the next window resumes from is written to **stderr**, so it never runs together with the
-entries on stdout:
+A transcript is streamed rather than paged: `session transcript` prints every entry there is and
+stops. The cursor it ends on is written to **stderr**, so it never runs together with the entries on
+stdout:
 
 ```
 cursor  01a07846-49fa-7dc0-a44b-183a63794ee3:2
 ```
 
-Pass it back to continue:
+Pass it back to read only what came after it:
 
 ```sh
-kestrel session transcript 01a07846-49fa-7dc0-a44b-183a63794ee3 \
-  --cursor 01a07846-49fa-7dc0-a44b-183a63794ee3:2
+kestrel session transcript latest --cursor 01a07846-49fa-7dc0-a44b-183a63794ee3:2
 ```
 
 ```
-3  2026-09-06T19:58:58.48925017Z  run ended  01a07846-5d97-7230-9315-bfef2a644006  failed: the control plane stopped while this run was in flight
+3  2026-09-06T19:58:58.489250Z  {"kind":"run_ended","run":"01a07846-5d97-7230-9315-bfef2a644006","exit":{"status":"failed","because":"the control plane stopped while this run was in flight"}}
+cursor  01a07846-49fa-7dc0-a44b-183a63794ee3:3
 ```
+
+Add `--follow` to keep printing entries as they are appended, until the session seals. A follow that
+loses the control plane reconnects from the last entry it printed, and repeats none.
 
 ## Sealing a session
 
 Sealing ends a session without deleting it. A sealed session stays readable and is never reopened.
 
 ```sh
-kestrel session seal 01a07846-49fa-7dc0-a44b-183a63794ee3
+kestrel session seal latest
 ```
 
 Sealing archives the session's instance: the work role destroys its container. It does so only when
@@ -340,17 +352,18 @@ uncommitted or stashed and no commit that no remote branch has. Output that git 
 above was cut off before its supervisor could say what the checkout held, so this session is refused:
 
 ```
-Error: the session 01a07846-49fa-7dc0-a44b-183a63794ee3's instance docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006 may hold the only copy of its work (no run reported what its checkout holds); publish it from a follow-up run, or release the instance to discard it
+Error: the control plane refused: the session 01a07846-49fa-7dc0-a44b-183a63794ee3's instance docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006 may hold the only copy of its work (no run reported what its checkout holds); publish it from a follow-up run, or release the instance to discard it
 ```
 
-Every held instance is listed with its reason, and `kestrel session show` repeats the reason on a `held`
-line:
+Every held instance is listed with its reason, and `kestrel session show` repeats the reason on its
+`held` line:
 
 ```sh
-kestrel instance list --organization acme
+kestrel instance list
 ```
 
 ```
+session                               instance                                             because
 01a07846-49fa-7dc0-a44b-183a63794ee3  docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006  no run reported what its checkout holds
 ```
 
@@ -360,14 +373,14 @@ To keep that work, post a message asking the agent to push it. To discard it, re
 The release destroys the instance and is recorded in the session's transcript:
 
 ```sh
-kestrel instance release 01a07846-49fa-7dc0-a44b-183a63794ee3
-kestrel session seal 01a07846-49fa-7dc0-a44b-183a63794ee3
+kestrel instance release latest
+kestrel session seal latest
 ```
 
 A sealed session accepts no further runs:
 
 ```
-Error: the session 01a07846-49fa-7dc0-a44b-183a63794ee3 is sealed, and accepts no run
+Error: the control plane refused: the session 01a07846-49fa-7dc0-a44b-183a63794ee3 is sealed, and accepts no run
 ```
 
 Sealing ends a run that is waiting between turns, and it succeeds. A session whose run is still in
@@ -382,22 +395,18 @@ work is pushed or its instance released.
 Work that would have continued it starts a new session that records the sealed one:
 
 ```sh
-kestrel session open --organization acme --workspace kestrel --agent builder \
-  --continues 01a07846-49fa-7dc0-a44b-183a63794ee3
+kestrel session open --workspace kestrel --agent builder --continues latest
 ```
 
 Both ends of that link are visible. The new session shows what it continues, and the sealed one
-gains a `continued-by` line:
+names it on its `continued by` line:
+
+```sh
+kestrel session show latest --json id,state,continues
+```
 
 ```
-session       01a0784e-7844-7ee3-a273-9f032047aeb4
-organization  acme
-workspace     kestrel
-agent         builder
-state         open
-opened        2026-09-06T20:00:03.652235801Z
-last active   2026-09-06T20:00:03.652235801Z
-continues     01a07846-49fa-7dc0-a44b-183a63794ee3
+{"id":"01a0784e-7844-7ee3-a273-9f032047aeb4","state":"open","continues":"01a07846-49fa-7dc0-a44b-183a63794ee3"}
 ```
 
 ## Hand kestrel an issue
@@ -411,7 +420,6 @@ requests outbound, or both:
 
 ```sh
 kestrel integration register github origin \
-  --organization acme \
   --repository jtmthf/kestrel \
   --token ghp_your_token
 ```
@@ -431,7 +439,7 @@ events as GitHub delivers them. `kestrel integration list` shows the path to poi
 Anything that can POST can start work, through a generic webhook:
 
 ```sh
-kestrel integration register webhook ci --organization acme --secret "$KESTREL_WEBHOOK_SECRET"
+kestrel integration register webhook ci --secret "$KESTREL_WEBHOOK_SECRET"
 ```
 
 A sender presents the secret as `Authorization: Bearer <secret>` and POSTs to the integration's
@@ -453,12 +461,15 @@ kestrel answers `202 Accepted` once the event is recorded, and matches it afterw
 delivered twice with the same `source` and `id` is recorded once.
 
 ```sh
-kestrel event list --organization acme
+kestrel event list
 ```
 
 ```
-01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77  2026-09-07T14:01:58Z  jtmthf/kestrel  commented  jtmthf  #44  0.1/21: The GitHub Trigger opens a Session from an Event
+record                                time                  source                             type                             subject
+01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77  2026-09-07T14:01:58Z  https://github.com/jtmthf/kestrel  com.github.issue_comment.created  #44
 ```
+
+`kestrel event show <record>` prints one event whole, its payload included.
 
 Now the rule itself. A trigger decides what an agent does to a repository with your
 organization's credentials, so declare it in a file you keep in version control and review in a
@@ -503,7 +514,7 @@ checkout takes a session, and a session takes a trigger. So you apply it, and ke
 diff it makes:
 
 ```sh
-kestrel trigger apply --organization acme -f .kestrel/triggers.yaml
+kestrel trigger apply -f .kestrel/triggers.yaml
 ```
 
 ```
@@ -580,7 +591,6 @@ For a trigger you are trying out, the same declaration goes on the command line:
 
 ```sh
 kestrel trigger declare ready \
-  --organization acme \
   --filter '{"all": [
     {"exact": {"source": "https://github.com/jtmthf/kestrel"}},
     {"exact": {"type": "com.github.issue_comment.created"}},
@@ -596,7 +606,7 @@ kestrel trigger declare ready \
 `--filter` and `--brief` each take their text as it is, from a file as `@path`, or from standard
 input as `-`. `--correlation` pairs with `--on-miss`. An apply leaves a trigger declared this way
 alone unless its file declares one of the same name, which it then takes over; `kestrel trigger
-show` says which way each was declared.
+show` says which way each was declared, on its `applied` line.
 
 ### Strangers
 
@@ -643,11 +653,10 @@ so every declaration and session above is still there.
 variable and hand it the token `gh` already holds:
 
 ```sh
-gh auth token | docker compose exec -T kestrel kestrel credential set GH_TOKEN --organization acme
+gh auth token | kestrel credential set GH_TOKEN
 ```
 
-`-T` lets the token reach the command through the alias's `docker compose exec`, and the secret
-travels on standard input rather than in an argument. `GH_TOKEN` is not a name kestrel treats
+The secret travels on standard input rather than in an argument. `GH_TOKEN` is not a name kestrel treats
 specially: it is simply the variable `gh` already looks for, and kestrel hands it to the agent's
 process the way it hands over a Provider Credential
 ([ADR-0010](docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md)). The token needs
@@ -657,11 +666,12 @@ Comment `@kestrel` on an issue in that repository, and within a poll interval th
 open with a run queued behind it:
 
 ```sh
-kestrel session list --organization acme
+kestrel session list
 ```
 
 ```
-01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04  open  kestrel  builder  01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
+id                                    name                  state  workspace  agent    started by
+01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04  brisk-heron-kqpzmwdt  open   kestrel    builder  01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
 ```
 
 The last column is the event that started it. `kestrel session show` prints it beside the branch
@@ -670,10 +680,8 @@ branch from the workspace's when the repository does not have it yet. The render
 first transcript entry:
 
 ```
-1  2026-09-07T14:02:03.118Z  brief  delegated  /implement https://github.com/jtmthf/kestrel/issues/44
-
-Read the issue and its comments with `gh issue view --comments` before you start.
-2  2026-09-07T14:02:03.118Z  participant joined  builder
+1  2026-09-07T14:02:03.118Z  {"kind":"brief","trigger":"delegated","brief":"/implement https://github.com/jtmthf/kestrel/issues/44\n\nRead the issue and its comments with `gh issue view --comments` before you start."}
+2  2026-09-07T14:02:03.118Z  {"kind":"participant_joined","participant":"builder"}
 ```
 
 The agent's first prompt is that brief, character for character, and nothing else. kestrel does not
@@ -708,12 +716,16 @@ the sealed one.
 An operator can hand a trigger an issue directly, whether or not anything on GitHub would match it:
 
 ```sh
-kestrel trigger dispatch delegated --organization acme --integration origin --issue 44 \
+kestrel trigger dispatch delegated --integration origin --issue 44 \
   --instruction '/implement' --agent codex
 ```
 
 ```
-opened  01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04  01a07c31-6a11-7cc2-9d41-0b5b6a2b7f05
+outcome      opened
+session      01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04
+run          01a07c31-6a11-7cc2-9d41-0b5b6a2b7f05
+event        01a07c31-6a0f-7cc2-9d41-0b5b6a2b7f03
+correlation  -
 ```
 
 kestrel reads the issue through the integration, records a `dev.kestrel.dispatched` event whose
@@ -747,10 +759,11 @@ agents the declaration allows. Anyone who can label an issue on a public reposit
 pick which agent's credentials the run gets
 ([ADR-0013](docs/adr/0013-an-event-supplies-data-never-authority.md)).
 
-`kestrel trigger list --organization acme` shows what each one matches, the way you would say it:
+`kestrel trigger list` shows each one, and what it matches:
 
 ```
-01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel  builder  source = "https://github.com/jtmthf/kestrel" and type = "com.github.issue_comment.created" and ((data.user.login = "jtmthf" and data.body starts with "@kestrel") or (data.comment.user.login = "jtmthf" and data.comment.body starts with "@kestrel"))
+id                                    name       state    workspace  agent    every  filter
+01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel    builder  -      {"all":[{"exact":{"source":"https://github.com/jtmthf/kestrel"}},…]}
 ```
 
 Before trusting a trigger with work, ask it about an event kestrel already recorded. A test starts
@@ -760,18 +773,18 @@ matches, then prints the branch, the correlation and the brief exactly as that e
 them:
 
 ```sh
-kestrel trigger test delegated --organization acme --event 01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
+kestrel trigger test delegated --event 01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
 ```
 
 ```
-matches
-agent         builder
-branch        kestrel/issue-44
-correlation   https://github.com/jtmthf/kestrel#44
+matches      true
+elapsing     -
+agent        builder
+branch       kestrel/issue-44
+correlation  https://github.com/jtmthf/kestrel#44
+brief        /implement https://github.com/jtmthf/kestrel/issues/44
 
-/implement https://github.com/jtmthf/kestrel/issues/44
-
-Read the issue and its comments with `gh issue view --comments` before you start.
+             Read the issue and its comments with `gh issue view --comments` before you start.
 ```
 
 It renders even when the filter does not match, so a brief can be written against the event it is
@@ -785,14 +798,14 @@ An event several triggers match fires every one of them; no trigger is first, an
 does not stop the next. Disabling stops one firing without forgetting what it was:
 
 ```sh
-kestrel trigger disable delegated --organization acme
+kestrel trigger disable delegated
 ```
 
 ```
-disabled
+disabled:operator
 ```
 
-`kestrel trigger enable delegated --organization acme` puts it back.
+`kestrel trigger enable delegated` puts it back.
 
 Each Trigger has a budget of ten firings per hour. The firing that would exceed it is recorded
 without opening a Session, and disables only that Trigger. `kestrel trigger show` names the reason;
@@ -805,7 +818,6 @@ declare a schedule in place of a filter, and not both:
 
 ```sh
 kestrel trigger declare sweep \
-  --organization acme \
   --every 24h \
   --brief 'Sweep the backlog for stale issues as of {{ event.time }}' \
   --branch 'kestrel/sweep-{{ event.id[:10] }}' \
@@ -827,16 +839,16 @@ issue to report to, so its outcome goes nowhere.
 next elapsing would mint, and says when that is due:
 
 ```sh
-kestrel trigger test sweep --organization acme
+kestrel trigger test sweep
 ```
 
 ```
-matches
-elapsing      2026-09-17T14:02:03.118Z
-branch        kestrel/sweep-2026-09-17
-correlation   -
-
-Sweep the backlog for stale issues as of 2026-09-17T14:02:03.118Z
+matches      true
+elapsing     2026-09-17T14:02:03.118Z
+agent        builder
+branch       kestrel/sweep-2026-09-17
+correlation  -
+brief        Sweep the backlog for stale issues as of 2026-09-17T14:02:03.118Z
 ```
 
 ## The answer comes back to the issue
@@ -886,7 +898,7 @@ kestrel run stop 01a07846-5d97-7230-9315-bfef2a644006
 ```
 
 ```
-01a07846-5d97-7230-9315-bfef2a644006  succeeded
+succeeded
 ```
 
 A run stopped between turns succeeds; one stopped mid-turn, or before it started, fails. A comment on
@@ -897,7 +909,7 @@ the runtime, so the new conversation sees the brief, earlier runs, and the follo
 An operator can post the same kind of message directly:
 
 ```sh
-kestrel session post 01a07846-49fa-7dc0-a44b-183a63794ee3 "please add the missing test"
+kestrel session post latest "please add the missing test"
 ```
 
 Pass `--as-participant NAME` to record a name other than `operator` in the transcript.
