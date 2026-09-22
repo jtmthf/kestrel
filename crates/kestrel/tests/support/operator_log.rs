@@ -1,5 +1,3 @@
-//! The in-process control plane's diagnostics, as an operator would read them on its stderr.
-
 use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 

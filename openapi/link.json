@@ -504,7 +504,7 @@
         ]
       },
       "Stderr": {
-        "description": "Lines the Agent Runtime wrote to stderr, oldest first, sent as it writes them. They are the operator's diagnostics, never anything the agent said, and a line the link was not there to take is not sent again.",
+        "description": "Lines the Agent Runtime wrote to stderr, oldest first, sent as it writes them. They are the operator's diagnostics, never anything the agent said, and a line the link was not there to take in time is not sent again.",
         "type": "object",
         "properties": {
           "kind": {

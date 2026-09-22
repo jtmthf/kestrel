@@ -27,8 +27,9 @@ use crate::permission::{self, Subject};
 /// Nothing on the link carries work for a Run, so every Run asks the same thing.
 const PROMPT: &str = "Do the work this environment was provisioned for.";
 
-/// What this Environment was configured to drive, and what the Run asks of it. Which Agent
-/// Runtime is on the other end is the configuration's business, never this module's.
+/// What this Environment was configured to drive, what the Run asks of it, and where what the
+/// agent writes to stderr goes. Which Agent Runtime is on the other end is the configuration's
+/// business, never this module's.
 #[derive(Debug, Clone)]
 pub struct Runtime {
     pub command: String,
@@ -453,7 +454,7 @@ fn bounded(line: &str) -> String {
     while !line.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}… [truncated from {} bytes]", &line[..end], line.len())
+    format!("{}… [truncated]", &line[..end])
 }
 
 /// Why a turn that stopped for anything but ending it ends the conversation too.
@@ -833,7 +834,7 @@ mod tests {
         let carried = bounded(&overlong);
 
         assert!(carried.starts_with(&"é".repeat(LINE_LIMIT / 2)));
-        assert!(carried.ends_with(&format!("… [truncated from {} bytes]", overlong.len())));
+        assert!(carried.ends_with("… [truncated]"));
         assert!(carried.len() < LINE_LIMIT + 64);
     }
 

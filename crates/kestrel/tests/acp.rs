@@ -159,8 +159,7 @@ async fn what_the_agent_writes_to_stderr_reaches_the_operator_log_mid_run_and_no
     assert_eq!(harness.run(run.id).await.state, RunState::Active);
     assert!(relayed[0].contains(MUTTERED), "{}", relayed[0]);
     assert!(
-        relayed[1].contains(&format!("truncated from {OVERLONG} bytes"))
-            && relayed[1].len() < OVERLONG,
+        relayed[1].contains("[truncated]") && relayed[1].len() < OVERLONG,
         "the overlong line was relayed {} bytes long",
         relayed[1].len()
     );

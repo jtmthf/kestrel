@@ -20,6 +20,9 @@ const RECONNECT_AFTER: Duration = Duration::from_millis(250);
 /// of these going missing, and through the control plane itself restarting under it.
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(2);
 const STDERR_LINES_PER_REPORT: usize = 64;
+const STDERR_REPORT_PATIENCE: Duration = Duration::from_secs(5);
+/// Long enough for the last lines of an agent that has just exited, which are often why.
+const STDERR_DRAINING: Duration = Duration::from_secs(1);
 
 pub trait Diagnostics {
     fn info(&self, message: &str);
@@ -82,10 +85,16 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
     // Nothing else reaches the link while a turn is being worked, so this Environment says it
     // is alive beside the work rather than between the steps of it.
     let alive = tokio::spawn(saying_it_is_alive(Arc::clone(&link)));
-    let relaying = tokio::spawn(relaying_stderr(Arc::clone(&link), written));
+    let mut relaying = tokio::spawn(relaying_stderr(Arc::clone(&link), written));
     let status = attending(&link, &runtime, home.as_deref(), diagnostics).await;
     alive.abort();
-    relaying.abort();
+    drop(runtime);
+    if tokio::time::timeout(STDERR_DRAINING, &mut relaying)
+        .await
+        .is_err()
+    {
+        relaying.abort();
+    }
 
     status
 }
@@ -99,16 +108,14 @@ async fn saying_it_is_alive(link: Arc<Link>) {
     }
 }
 
-/// Beside the work for the same reason a heartbeat is: a turn that hangs is exactly when what
-/// the agent is writing matters. A line the link was not there to take is lost, never queued
-/// behind a reconnect.
+/// A line the link was not there to take in time is lost, never queued behind a reconnect.
 async fn relaying_stderr(link: Arc<Link>, mut written: mpsc::UnboundedReceiver<String>) {
     let mut lines = Vec::new();
     while written.recv_many(&mut lines, STDERR_LINES_PER_REPORT).await > 0 {
         let report = Report::Stderr {
             lines: std::mem::take(&mut lines),
         };
-        let _ = link.report(&report, None).await;
+        let _ = tokio::time::timeout(STDERR_REPORT_PATIENCE, link.report(&report, None)).await;
     }
 }
 
