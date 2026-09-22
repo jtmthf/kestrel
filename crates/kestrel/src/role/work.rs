@@ -181,6 +181,18 @@ async fn execute(
     };
     work::executes_on(store, &run, instance.name()).await?;
 
+    // Committed before the supervisor is spawned, so one that outlives this process fetches its
+    // Start on reconnect rather than holding the lease out forever on a Run that cannot begin.
+    if let Err(error) = link::start(store, &run).await {
+        work::fail(
+            store,
+            &run,
+            &format!("the run could not be started: {error}"),
+        )
+        .await?;
+        return Ok(());
+    }
+
     let mut supervisor = match instance.supervise(&[
         ("KESTREL_LINK", dispatch.link.as_str()),
         ("KESTREL_RUN", &run.id.to_string()),
@@ -352,7 +364,6 @@ async fn start(
     mut supervisor: Supervisor,
     shutdown: &CancellationToken,
 ) -> Result<Exit> {
-    link::start(store, run).await?;
     info!(run = %run.id, supervisor = supervisor.name(), "a run's supervisor started");
 
     let ended = attend(store, run, &mut supervisor, shutdown).await;
