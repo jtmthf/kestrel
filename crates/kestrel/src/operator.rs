@@ -166,6 +166,7 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
 #[derive(Deserialize)]
 struct OrganizationDeclaration {
     name: String,
+    max_live_instances: Option<std::num::NonZeroUsize>,
 }
 
 #[derive(Deserialize)]
@@ -253,6 +254,7 @@ fn default_operator_participant() -> String {
 struct OrganizationRecord {
     id: String,
     name: String,
+    max_live_instances: Option<std::num::NonZeroUsize>,
 }
 
 #[derive(Serialize)]
@@ -299,6 +301,7 @@ struct RunRecord {
     session: String,
     state: String,
     waiting: bool,
+    waiting_for: Option<String>,
     exit: Option<domain::Exit>,
     instance: Option<String>,
     supervisor: Option<String>,
@@ -357,6 +360,7 @@ impl From<Organization> for OrganizationRecord {
         Self {
             id: organization.id.to_string(),
             name: organization.name,
+            max_live_instances: organization.max_live_instances,
         }
     }
 }
@@ -427,6 +431,7 @@ impl RunRecord {
             session: run.session.to_string(),
             state: run.state.as_str().to_owned(),
             waiting,
+            waiting_for: run.waiting_for,
             exit: run.exit,
             instance: run.instance,
             supervisor: run.supervisor,
@@ -506,7 +511,10 @@ async fn declare_organization(
     named(&declaration.name)?;
 
     let mut tx = control_plane.store.begin().await?;
-    let declared = tx.organizations().declare(&declaration.name).await?;
+    let declared = tx
+        .organizations()
+        .declare(&declaration.name, declaration.max_live_instances)
+        .await?;
     tx.commit().await?;
 
     Ok(answered::<_, OrganizationRecord>(declared))

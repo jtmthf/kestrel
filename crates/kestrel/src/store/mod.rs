@@ -143,7 +143,12 @@ mod tests {
 
     async fn declared(store: &Store) -> (Organization, Workspace, Agent) {
         let mut tx = store.begin().await.unwrap();
-        let organization = tx.organizations().declare("acme").await.unwrap().record;
+        let organization = tx
+            .organizations()
+            .declare("acme", None)
+            .await
+            .unwrap()
+            .record;
         let workspace = tx
             .workspaces()
             .declare(

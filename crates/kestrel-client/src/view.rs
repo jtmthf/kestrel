@@ -17,7 +17,7 @@ impl View {
     }
 }
 
-pub const ORGANIZATIONS: View = View::Rows(&["id", "name"]);
+pub const ORGANIZATIONS: View = View::Rows(&["id", "name", "max_live_instances"]);
 pub const WORKSPACES: View = View::Rows(&["id", "name", "branch", "repositories"]);
 pub const AGENTS: View = View::Rows(&["id", "name", "runtime", "model"]);
 pub const AGENT_MODEL: View = View::Value("model");
@@ -121,6 +121,7 @@ pub const RUNS: View = View::Rows(&[
     "name",
     "state",
     "waiting",
+    "waiting_for",
     "exit.status",
     "exit.because",
     "instance",
@@ -132,6 +133,7 @@ pub const RUN: View = View::Detail(&[
     "session",
     "state",
     "waiting",
+    "waiting_for",
     "exit.status",
     "exit.because",
     "instance",

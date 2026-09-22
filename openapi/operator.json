@@ -1495,6 +1495,11 @@
           "name": {
             "type": "string",
             "minLength": 1
+          },
+          "max_live_instances": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": "The most active, idle, or held Instances this Organization may keep live. Null means unbounded."
           }
         },
         "required": [
@@ -1510,11 +1515,16 @@
           },
           "name": {
             "type": "string"
+          },
+          "max_live_instances": {
+            "type": ["integer", "null"],
+            "minimum": 1
           }
         },
         "required": [
           "id",
-          "name"
+          "name",
+          "max_live_instances"
         ]
       },
       "WorkspaceDeclaration": {
@@ -1918,6 +1928,7 @@
           "session": { "type": "string", "format": "uuid" },
           "state": { "type": "string", "enum": ["queued", "active", "ended", "unreachable"] },
           "waiting": { "type": "boolean", "description": "Whether an active Run has answered its turn and waits for the next one." },
+          "waiting_for": { "type": ["string", "null"] },
           "exit": { "anyOf": [{ "$ref": "#/components/schemas/Exit" }, { "type": "null" }] },
           "instance": { "type": ["string", "null"] },
           "supervisor": { "type": ["string", "null"] },
@@ -1931,7 +1942,7 @@
           "supervisor_version": { "type": ["string", "null"] },
           "usage": { "anyOf": [{ "$ref": "#/components/schemas/Usage" }, { "type": "null" }] }
         },
-        "required": ["id", "name", "session", "state", "waiting", "exit", "instance", "supervisor", "model", "worked_model", "enqueued_at", "started_at", "ended_at", "lease_expires_at", "connected_at", "supervisor_version", "usage"]
+        "required": ["id", "name", "session", "state", "waiting", "waiting_for", "exit", "instance", "supervisor", "model", "worked_model", "enqueued_at", "started_at", "ended_at", "lease_expires_at", "connected_at", "supervisor_version", "usage"]
       },
       "Exit": {
         "oneOf": [

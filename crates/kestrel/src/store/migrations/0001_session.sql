@@ -1,6 +1,7 @@
 CREATE TABLE organization (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
+    max_live_instances INTEGER CHECK (max_live_instances > 0),
     declared_at TEXT NOT NULL
 ) STRICT;
 

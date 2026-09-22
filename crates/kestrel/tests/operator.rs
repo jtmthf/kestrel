@@ -141,7 +141,7 @@ fn recorded(finished: &client::Finished) -> Vec<Value> {
 
 /// What each test reads, named the way a script names it: a field the boundary gains later
 /// reaches none of these assertions.
-const ORGANIZATION: &str = "id,name";
+const ORGANIZATION: &str = "id,name,max_live_instances";
 const WORKSPACE: &str = "id,name,repositories,branch";
 const AGENT: &str = "id,name,runtime,model";
 const CREDENTIAL: &str = "variable";
@@ -306,7 +306,15 @@ async fn a_client_declares_and_lists_organizations_without_opening_a_database() 
     let declared = recorded(
         &client(
             &harness,
-            &["organization", "declare", "acme", "--json", ORGANIZATION],
+            &[
+                "organization",
+                "declare",
+                "acme",
+                "--max-live-instances",
+                "3",
+                "--json",
+                ORGANIZATION,
+            ],
         )
         .await,
     );
@@ -316,6 +324,7 @@ async fn a_client_declares_and_lists_organizations_without_opening_a_database() 
 
     assert_eq!(declared.len(), 1);
     assert_eq!(declared[0]["name"], "acme");
+    assert_eq!(declared[0]["max_live_instances"], 3);
     assert_eq!(
         listed
             .iter()

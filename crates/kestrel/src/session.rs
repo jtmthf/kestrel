@@ -110,7 +110,10 @@ async fn idle(store: &Store) -> Result<Vec<SessionId>> {
 
     for session in tx.sessions().idle(Timestamp::now() - IDLE).await? {
         let holds_unpublished_work = match tx.sessions().kept_instance(session.id).await? {
-            Some(kept) => instance::unpublished(kept.observed.as_deref()).is_some(),
+            Some(kept) => {
+                instance::unpublished(&session.checkout.repositories, kept.observed.as_deref())
+                    .is_some()
+            }
             None => false,
         };
         if !holds_unpublished_work && in_flight(&mut tx, &session).await?.is_none() {

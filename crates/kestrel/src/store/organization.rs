@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 
 use anyhow::{Context as _, Result};
 use jiff::Timestamp;
@@ -23,10 +24,23 @@ impl<'a> Organizations<'a> {
         }
     }
 
-    pub async fn declare(&mut self, name: &str) -> Result<Declared<Organization>> {
+    pub async fn declare(
+        &mut self,
+        name: &str,
+        max_live_instances: Option<NonZeroUsize>,
+    ) -> Result<Declared<Organization>> {
         if let Some(organization) = self.find(name).await? {
+            sqlx::query("UPDATE organization SET max_live_instances = ? WHERE id = ?")
+                .bind(max_live_instances.map(|limit| limit.get() as i64))
+                .bind(organization.id.to_string())
+                .execute(&mut *self.connection)
+                .await
+                .with_context(|| format!("limiting the organization {name}'s live instances"))?;
             return Ok(Declared {
-                record: organization,
+                record: Organization {
+                    max_live_instances,
+                    ..organization
+                },
                 created: false,
             });
         }
@@ -34,15 +48,20 @@ impl<'a> Organizations<'a> {
         let organization = Organization {
             id: OrganizationId::generate(),
             name: name.to_owned(),
+            max_live_instances,
         };
 
-        sqlx::query("INSERT INTO organization (id, name, declared_at) VALUES (?, ?, ?)")
-            .bind(organization.id.to_string())
-            .bind(&organization.name)
-            .bind(Timestamp::now().to_string())
-            .execute(&mut *self.connection)
-            .await
-            .with_context(|| format!("declaring the organization {name}"))?;
+        sqlx::query(
+            "INSERT INTO organization (id, name, max_live_instances, declared_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(organization.id.to_string())
+        .bind(&organization.name)
+        .bind(max_live_instances.map(|limit| limit.get() as i64))
+        .bind(Timestamp::now().to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("declaring the organization {name}"))?;
 
         Ok(Declared {
             record: organization,
@@ -51,7 +70,7 @@ impl<'a> Organizations<'a> {
     }
 
     pub async fn all(&mut self) -> Result<Vec<Organization>> {
-        sqlx::query("SELECT id, name FROM organization ORDER BY name")
+        sqlx::query("SELECT id, name, max_live_instances FROM organization ORDER BY name")
             .fetch_all(&mut *self.connection)
             .await?
             .iter()
@@ -69,7 +88,7 @@ impl<'a> Organizations<'a> {
     }
 
     async fn find(&mut self, name: &str) -> Result<Option<Organization>> {
-        sqlx::query("SELECT id, name FROM organization WHERE name = ?")
+        sqlx::query("SELECT id, name, max_live_instances FROM organization WHERE name = ?")
             .bind(name)
             .fetch_optional(&mut *self.connection)
             .await?
@@ -194,7 +213,7 @@ pub(crate) async fn with_id(
     connection: &mut SqliteConnection,
     id: OrganizationId,
 ) -> Result<Organization> {
-    let row = sqlx::query("SELECT id, name FROM organization WHERE id = ?")
+    let row = sqlx::query("SELECT id, name, max_live_instances FROM organization WHERE id = ?")
         .bind(id.to_string())
         .fetch_one(&mut *connection)
         .await?;
@@ -212,5 +231,8 @@ fn organization(row: &SqliteRow) -> Result<Organization> {
     Ok(Organization {
         id: row.get::<String, _>("id").parse()?,
         name: row.get("name"),
+        max_live_instances: row
+            .get::<Option<i64>, _>("max_live_instances")
+            .map(|limit| NonZeroUsize::new(limit as usize).expect("a positive instance limit")),
     })
 }

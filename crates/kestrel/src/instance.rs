@@ -7,6 +7,59 @@ use crate::session;
 use crate::store::session::Kept;
 use crate::store::{Store, Tx};
 
+pub enum Admission {
+    Available,
+    Waiting(String),
+}
+
+pub async fn admit(tx: &mut Tx<'_>, session: &Session) -> Result<Admission> {
+    if tx.sessions().instance(session.id).await?.is_some() {
+        return Ok(Admission::Available);
+    }
+    let Some(limit) = session.organization.max_live_instances else {
+        return Ok(Admission::Available);
+    };
+    if tx
+        .sessions()
+        .live_instance_count(&session.organization)
+        .await?
+        < limit.get()
+    {
+        return Ok(Admission::Available);
+    }
+    if let Some(instance) = tx
+        .sessions()
+        .instance_being_archived(&session.organization)
+        .await?
+    {
+        return Ok(Admission::Waiting(format!(
+            "waiting for the idle Instance {instance} to be archived"
+        )));
+    }
+
+    for kept in tx.sessions().kept_instances(&session.organization).await? {
+        let candidate = tx.sessions().get(kept.session).await?;
+        if session::in_flight(tx, &candidate).await?.is_none()
+            && unpublished(&candidate.checkout.repositories, kept.observed.as_deref()).is_none()
+        {
+            tx.sessions()
+                .archive_instance(&candidate, &kept.instance)
+                .await?;
+            return Ok(Admission::Waiting(format!(
+                "waiting for the idle Instance {} to be archived",
+                kept.instance
+            )));
+        }
+    }
+
+    Ok(Admission::Waiting(format!(
+        "the organization {} has reached its limit of {} live Instance{}; none idle is known recoverable",
+        session.organization.name,
+        limit,
+        if limit.get() == 1 { "" } else { "s" }
+    )))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Observed {
     pub repository: String,
@@ -30,12 +83,21 @@ pub enum Git {
 }
 
 /// A checkout nobody reported on is judged to hold work, since nothing says it does not.
-pub fn unpublished(observed: Option<&[Observed]>) -> Option<String> {
+pub fn unpublished(repositories: &[String], observed: Option<&[Observed]>) -> Option<String> {
     let Some(observed) = observed else {
         return Some("no run reported what its checkout holds".to_owned());
     };
 
-    let held: Vec<String> = observed.iter().filter_map(held_in).collect();
+    let mut held: Vec<String> = repositories
+        .iter()
+        .filter(|repository| {
+            !observed
+                .iter()
+                .any(|item| item.repository == repository.as_str())
+        })
+        .map(|repository| format!("{repository} was not reported"))
+        .collect();
+    held.extend(observed.iter().filter_map(held_in));
     (!held.is_empty()).then(|| held.join("; "))
 }
 
@@ -118,11 +180,13 @@ async fn judged(tx: &mut Tx<'_>, kept: Kept) -> Result<Option<Held>> {
         return Ok(None);
     }
 
-    Ok(unpublished(kept.observed.as_deref()).map(|because| Held {
-        session: kept.session,
-        instance: kept.instance,
-        because,
-    }))
+    Ok(
+        unpublished(&session.checkout.repositories, kept.observed.as_deref()).map(|because| Held {
+            session: kept.session,
+            instance: kept.instance,
+            because,
+        }),
+    )
 }
 
 /// The one way work that may exist nowhere else is ever discarded, so only a person calls it.
@@ -147,7 +211,7 @@ pub async fn release(store: &Store, id: SessionId, participant: &str) -> Result<
             Entry::InstanceReleased {
                 participant: participant.to_owned(),
                 instance: kept.instance.clone(),
-                unpublished: unpublished(kept.observed.as_deref()),
+                unpublished: unpublished(&session.checkout.repositories, kept.observed.as_deref()),
             },
         )
         .await?;
@@ -164,7 +228,7 @@ pub(crate) async fn archive_on_seal(tx: &mut Tx<'_>, session: &Session) -> Resul
         return Ok(());
     };
 
-    if let Some(because) = unpublished(kept.observed.as_deref()) {
+    if let Some(because) = unpublished(&session.checkout.repositories, kept.observed.as_deref()) {
         bail!(
             "the session {}'s instance {} may hold the only copy of its work ({because}); publish \
              it from a follow-up run, or release the instance to discard it",
@@ -208,17 +272,31 @@ mod tests {
 
     #[test]
     fn a_checkout_nobody_reported_on_is_held() {
-        assert!(unpublished(None).is_some());
+        assert!(unpublished(&[], None).is_some());
     }
 
     #[test]
     fn a_clean_pushed_checkout_holds_nothing() {
-        assert_eq!(unpublished(Some(&[read(0, 0, 0, 0)])), None);
+        assert_eq!(
+            unpublished(
+                &["https://github.com/acme/widgets".to_owned()],
+                Some(&[read(0, 0, 0, 0)])
+            ),
+            None
+        );
     }
 
     #[test]
     fn a_workspace_with_no_repositories_holds_nothing() {
-        assert_eq!(unpublished(Some(&[])), None);
+        assert_eq!(unpublished(&[], Some(&[])), None);
+    }
+
+    #[test]
+    fn a_repository_missing_from_a_report_is_held() {
+        assert_eq!(
+            unpublished(&["https://github.com/acme/widgets".to_owned()], Some(&[])).as_deref(),
+            Some("https://github.com/acme/widgets was not reported")
+        );
     }
 
     #[test]
@@ -230,7 +308,11 @@ mod tests {
             read(0, 0, 0, 1),
         ] {
             assert!(
-                unpublished(Some(std::slice::from_ref(&observed))).is_some(),
+                unpublished(
+                    &["https://github.com/acme/widgets".to_owned()],
+                    Some(std::slice::from_ref(&observed))
+                )
+                .is_some(),
                 "{observed:?} was judged to hold nothing"
             );
         }
@@ -239,7 +321,11 @@ mod tests {
     #[test]
     fn the_reason_names_the_repository_its_branch_and_what_it_holds() {
         assert_eq!(
-            unpublished(Some(&[read(1, 0, 2, 3)])).as_deref(),
+            unpublished(
+                &["https://github.com/acme/widgets".to_owned()],
+                Some(&[read(1, 0, 2, 3)])
+            )
+            .as_deref(),
             Some(
                 "https://github.com/acme/widgets on kestrel/work has 3 unpushed commits, \
                  1 untracked file, 2 stashes"
@@ -257,7 +343,14 @@ mod tests {
         };
 
         assert_eq!(
-            unpublished(Some(&[read(0, 0, 0, 0), unreadable])).as_deref(),
+            unpublished(
+                &[
+                    "https://github.com/acme/widgets".to_owned(),
+                    "https://github.com/acme/gadgets".to_owned(),
+                ],
+                Some(&[read(0, 0, 0, 0), unreadable])
+            )
+            .as_deref(),
             Some(
                 "https://github.com/acme/gadgets could not be read: there is no checkout at gadgets"
             )
