@@ -17,6 +17,7 @@ use support::supervisor::Supervisor;
 use support::{A_PROVIDER_KEY, PROVIDER_KEY};
 
 const REPOSITORY: &str = "jtmthf/kestrel";
+const MAINTAINER: &str = "jack";
 const ISSUE: i64 = 43;
 const EVENTS: &str = "/issues/events?";
 const COMMENTS: &str = "/issues/comments?";
@@ -380,6 +381,64 @@ async fn a_github_comment_enqueues_a_second_run_in_the_originating_session() {
 }
 
 #[tokio::test]
+async fn comments_arriving_during_a_turn_wait_in_order_with_their_authors() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(
+        7,
+        ISSUE,
+        "ready-for-agent",
+    )]));
+    let harness = Harness::boot().await;
+    watching(&harness, &stub).await;
+    let session = sessions(&harness, 1).await.remove(0);
+    let first = harness
+        .claim_run()
+        .await
+        .expect("the first run should claim")
+        .run;
+
+    let comments_before = stub
+        .requests()
+        .iter()
+        .filter(|request| request.url.contains(COMMENTS))
+        .count();
+    stub.script_answer(
+        "GET",
+        COMMENTS,
+        github_stub::page(&[
+            github_stub::issue_comment(12, ISSUE, "jill", "and update the docs"),
+            github_stub::issue_comment(11, ISSUE, "jack", "one more change"),
+        ]),
+    );
+    requested(&stub, COMMENTS, comments_before).await;
+    pending_arrived(&harness, session.id).await;
+    // Both comments are one poll's, and each is received in its own transaction; let the sweep
+    // finish holding the second before the run ends.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    harness.complete_run(&first).await;
+    runs(&harness, session.id, 2).await;
+
+    assert!(harness.transcript(session.id).await.iter().any(|recorded| {
+        recorded.entry
+            == Entry::Messages {
+                messages: vec![
+                    Message {
+                        participant: "jack".to_owned(),
+                        message: "one more change".to_owned(),
+                    },
+                    Message {
+                        participant: "jill".to_owned(),
+                        message: "and update the docs".to_owned(),
+                    },
+                ],
+            }
+    }));
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn a_comment_polled_with_its_origin_waits_for_the_session_to_open() {
     let stub = GithubStub::start();
     let occurred_at = serde_json::json!("2026-09-01T12:00:07Z");
@@ -526,6 +585,191 @@ async fn a_comment_on_a_sealed_session_feeds_the_open_one_holding_its_correlatio
 
     message_arrived(&harness, holding.id, "about the release").await;
     assert_eq!(harness.sessions("acme").await.len(), 2);
+
+    harness.teardown().await;
+}
+
+/// A Trigger that names the one login it obeys, so a Session it opened has an author it
+/// authorizes and everyone else is a stranger to it.
+async fn watching_a_named_actor(harness: &Harness, stub: &GithubStub) {
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(&organization, "kestrel", &[], "main")
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+    harness
+        .declare_trigger_rendering(
+            "acme",
+            "delegated",
+            &serde_json::json!({"all": [
+                {"exact": {"source": format!("https://github.com/{REPOSITORY}")}},
+                {"exact": {"type": "com.github.issue_comment.created"}},
+                {"exact": {"data.user.login": MAINTAINER}},
+                {"prefix": {"data.body": "@kestrel"}},
+            ]})
+            .to_string(),
+            "kestrel",
+            "builder",
+            &support::templates("Work on {{ event.subject }}", None, Some("the release")),
+        )
+        .await;
+    harness
+        .register_integration(
+            "acme",
+            "github",
+            REPOSITORY,
+            &stub.base_url(),
+            &[Direction::Inbound],
+            SignedDuration::from_millis(1),
+        )
+        .await;
+}
+
+/// The maintainer's command, which is the comment that opens the session.
+fn the_command(stub: &GithubStub) {
+    stub.script_answer(
+        "GET",
+        COMMENTS,
+        github_stub::page(&[github_stub::issue_comment(
+            10, ISSUE, MAINTAINER, "@kestrel",
+        )]),
+    );
+}
+
+/// Scripted only once the run is already active, so a remark is judged against an open run
+/// rather than taken as its first prompt.
+fn a_remark_from(stub: &GithubStub, author: &str, remark: &str) {
+    stub.script_answer(
+        "GET",
+        COMMENTS,
+        github_stub::page(&[github_stub::issue_comment(11, ISSUE, author, remark)]),
+    );
+}
+
+/// The sweep records the remark as an Event before it decides whether to feed it, so an Event
+/// on the issue is the signal that the decision has been made.
+async fn the_remark_was_recorded(harness: &Harness, remark: &str) {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        let recorded = harness.events("acme").await.iter().any(|event| {
+            event
+                .occurrence
+                .data
+                .get("body")
+                .and_then(serde_json::Value::as_str)
+                == Some(remark)
+        });
+        if recorded {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the remark was never polled"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_remark_from_a_stranger_does_not_feed_an_open_session() {
+    let stub = GithubStub::start();
+    the_command(&stub);
+    let harness = Harness::boot().await;
+    watching_a_named_actor(&harness, &stub).await;
+    let session = sessions(&harness, 1).await.remove(0);
+    let run = harness
+        .claim_run()
+        .await
+        .expect("the command should have opened a run")
+        .run;
+    a_remark_from(&stub, "a-stranger", "please also change the parser");
+
+    the_remark_was_recorded(&harness, "please also change the parser").await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !harness.has_pending_messages(session.id).await,
+        "a stranger's remark was held as input to the run"
+    );
+
+    harness.complete_run(&run).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        harness.runs(session.id).await.len(),
+        1,
+        "a stranger's remark started a run"
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_remark_from_the_trigger_actor_feeds_an_open_session() {
+    let stub = GithubStub::start();
+    the_command(&stub);
+    let harness = Harness::boot().await;
+    watching_a_named_actor(&harness, &stub).await;
+    let session = sessions(&harness, 1).await.remove(0);
+    let run = harness
+        .claim_run()
+        .await
+        .expect("the command should have opened a run")
+        .run;
+    a_remark_from(&stub, MAINTAINER, "please also change the parser");
+
+    pending_arrived(&harness, session.id).await;
+    harness.complete_run(&run).await;
+    runs(&harness, session.id, 2).await;
+
+    assert!(harness.transcript(session.id).await.iter().any(|recorded| {
+        recorded.entry
+            == Entry::Messages {
+                messages: vec![Message {
+                    participant: MAINTAINER.to_owned(),
+                    message: "please also change the parser".to_owned(),
+                }],
+            }
+    }));
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_comment_kestrel_left_is_never_heard_as_input() {
+    let stub = GithubStub::start();
+    stub.script_answer(
+        "GET",
+        COMMENTS,
+        github_stub::page(&[github_stub::issue_comment(
+            10, ISSUE, MAINTAINER, "@kestrel",
+        )]),
+    );
+    let harness = Harness::boot().await;
+    watching_a_named_actor(&harness, &stub).await;
+    let session = sessions(&harness, 1).await.remove(0);
+    harness
+        .claim_run()
+        .await
+        .expect("the command should have opened a run");
+
+    stub.script_answer(
+        "GET",
+        COMMENTS,
+        github_stub::page(&[github_stub::issue_comment(
+            11,
+            ISSUE,
+            MAINTAINER,
+            "what kestrel said\n\n<!-- kestrel run 01a0 turn 1 -->",
+        )]),
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    assert!(
+        !harness.has_pending_messages(session.id).await,
+        "kestrel heard its own comment as input"
+    );
+    assert_eq!(harness.runs(session.id).await.len(), 1);
 
     harness.teardown().await;
 }

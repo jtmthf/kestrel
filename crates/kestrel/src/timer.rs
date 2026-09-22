@@ -12,8 +12,8 @@ use tracing::{info, warn};
 
 use crate::domain::{Exit, RunId};
 use crate::follow_up;
+use crate::integration::delivery;
 use crate::integration::github::Github;
-use crate::integration::outcome;
 use crate::integration::{self, Polled};
 use crate::session;
 use crate::store::Store;
@@ -256,12 +256,17 @@ async fn sweep(store: &Store) -> Result<Vec<(RunId, Exit)>> {
 async fn deliver(store: &Store, github: &Github) -> Result<()> {
     let due = {
         let mut tx = store.begin().await?;
-        tx.integrations().outcomes_due(Timestamp::now()).await?
+        tx.integrations().deliveries_due(Timestamp::now()).await?
     };
 
-    for outcome in due {
-        if let Some(comment) = outcome::deliver(store, github, &outcome).await? {
-            info!(run = %outcome.run, comment, "a run's outcome reached the issue it came from");
+    for delivery in due {
+        if let Some(comment) = delivery::deliver(store, github, &delivery).await? {
+            info!(
+                run = %delivery.run,
+                turn = delivery.turn,
+                comment,
+                "what a run said reached the issue it came from"
+            );
         }
     }
 

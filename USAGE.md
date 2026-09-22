@@ -879,26 +879,33 @@ brief        Sweep the backlog for stale issues as of 2026-09-17T14:02:03.118Z
 ## The answer comes back to the issue
 
 An integration carries kestrel's requests outbound as well as events inbound, and the one you
-registered above declares both. So when the run ends — stopped, sealed or failed — the issue that
-started it gets a comment:
+registered above declares both. Each completed turn of a run posts the agent's answer on the issue
+that started it, promptly, before the run is over:
 
 ```
-**kestrel** — run succeeded
+Opened https://github.com/jtmthf/kestrel/pull/92 with the fix and a regression test.
 
-> Opened https://github.com/jtmthf/kestrel/pull/92 with the fix and a regression test.
+<!-- kestrel run 01a07c33-2f88-7a05-bb31-58c0d9e4d7f0 turn 1 -->
+```
+
+The pull request is the agent's own, opened with the `gh` its run carries and the `GH_TOKEN` set
+above; kestrel reasons about no git and never learns which pull request was opened — if there is a
+link there, it is there because the agent named it.
+
+A run whose turns already said their answers adds nothing by saying it succeeded, so those turns are
+all the issue gets. A run that failed says so, and says why, and a run that answered no turn at all
+still says how it ended; that comment names the run and quotes the last thing the agent said:
+
+```
+**kestrel** — run failed: the environment could not be provisioned
 
 Session `01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04` · run `01a07c33-2f88-7a05-bb31-58c0d9e4d7f0`
 ```
 
-The quoted part is the last thing the agent said. The pull request is the agent's own, opened with the
-`gh` its run carries and the `GH_TOKEN` set above; kestrel reasons about no git and never learns
-which pull request was opened — if there is a link there, it is there because the agent named it.
-A run that failed gets a comment too, saying so and saying why.
-
-Exactly one comment per run, whatever happens in between. The comment carries a marker naming the
-run, so a control plane killed between sending it and hearing back reads the issue on the way up,
-recognises its own comment and does not leave a second. A comment GitHub refuses is tried again on
-the next sweep and never changes how the run ended.
+Every comment carries an invisible marker naming the run and, for a turn, the turn, so a control
+plane killed between sending it and hearing back reads the issue on the way up, recognises its own
+comments and does not leave duplicates. A comment GitHub refuses is tried again on the next sweep
+and never changes how the run ended.
 
 Register an integration with `--carries inbound` and kestrel watches the repository without ever
 writing to it.
@@ -912,9 +919,11 @@ agent conversation, on the same supervisor and instance.
 
 If the agent is still working on a turn when the comment arrives, the message waits durably. Every
 message that arrived during the turn becomes the next one, in the order they arrived, once the agent
-answers. A comment on an issue whose session has sealed starts nothing: only a command does, opening
-a new session whose `continues` field names the sealed one, on the sealed session's branch. A command
-is never also posted as a message.
+answers. Only a comment from someone the trigger that opened the session authorizes feeds it: a
+trigger that names its author takes only that author's remarks, while one that admits outsiders
+takes anyone's. A comment on an issue whose session has sealed starts nothing: only a command does,
+opening a new session whose `continues` field names the sealed one, on the sealed session's branch. A
+command is never also posted as a message.
 
 A run ends when you stop it, when its session seals, or when it fails:
 

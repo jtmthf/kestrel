@@ -438,6 +438,15 @@ impl<'a> EventData<'a> {
         self.field(&["actor", "login"])
             .or_else(|| self.field(&["user", "login"]))
             .or_else(|| self.field(&["sender", "login"]))
+            .or_else(|| self.field(&["comment", "user", "login"]))
+            .and_then(serde_json::Value::as_str)
+    }
+
+    /// GitHub's word for the author's standing in the repository, where an Event carries one.
+    pub fn association(&self) -> Option<&str> {
+        self.field(&["author_association"])
+            .or_else(|| self.field(&["issue", "author_association"]))
+            .or_else(|| self.field(&["comment", "author_association"]))
             .and_then(serde_json::Value::as_str)
     }
 
