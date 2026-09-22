@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::agent::{self, NotOffered};
+use crate::declaration;
 use crate::declined::Declined;
 use crate::domain::{
     self, Agent, Connection, CorrelationMiss, Direction, EventRecordId, EventRefusal, Fires,
@@ -37,6 +38,8 @@ use crate::{session, work};
 pub const ORGANIZATIONS: &str = "/operator/organizations";
 pub const WORKSPACES: &str = "/operator/organizations/{organization}/workspaces";
 pub const AGENTS: &str = "/operator/organizations/{organization}/agents";
+pub const DECLARATION: &str = "/operator/organizations/{organization}/declaration";
+pub const DECLARATION_PREVIEW: &str = "/operator/organizations/{organization}/declaration/preview";
 pub const CREDENTIALS: &str = "/operator/organizations/{organization}/credentials";
 pub const CREDENTIAL: &str = "/operator/organizations/{organization}/credentials/{variable}";
 pub const PROFILES: &str = "/operator/organizations/{organization}/profiles";
@@ -110,6 +113,8 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
         .route(ORGANIZATIONS, get(organizations).post(declare_organization))
         .route(WORKSPACES, get(workspaces).post(declare_workspace))
         .route(AGENTS, get(agents).post(declare_agent))
+        .route(DECLARATION, post(apply_declaration))
+        .route(DECLARATION_PREVIEW, post(preview_declaration))
         .route(CREDENTIALS, get(credentials))
         .route(CREDENTIAL, put(hold_credential).delete(forget_credential))
         .route(PROFILES, get(profiles).post(declare_profile))
@@ -513,6 +518,48 @@ async fn declare_agent(
     .await?;
 
     Ok(answered::<_, AgentRecord>(declared))
+}
+
+async fn apply_declaration(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    declaration: Result<Json<declaration::Document>, JsonRejection>,
+) -> Result<Json<declaration::Applied>, Refused> {
+    declared_declaration(
+        control_plane,
+        organization,
+        declaration,
+        declaration::ApplyMode::Apply,
+    )
+    .await
+}
+
+async fn preview_declaration(
+    State(control_plane): State<ControlPlane>,
+    Path(organization): Path<String>,
+    declaration: Result<Json<declaration::Document>, JsonRejection>,
+) -> Result<Json<declaration::Applied>, Refused> {
+    declared_declaration(
+        control_plane,
+        organization,
+        declaration,
+        declaration::ApplyMode::Preview,
+    )
+    .await
+}
+
+async fn declared_declaration(
+    control_plane: ControlPlane,
+    organization: String,
+    declaration: Result<Json<declaration::Document>, JsonRejection>,
+    mode: declaration::ApplyMode,
+) -> Result<Json<declaration::Applied>, Refused> {
+    let Json(declaration) = declaration?;
+    let applied = declaration::apply(&control_plane.store, &organization, &declaration, mode)
+        .await
+        .map_err(declaration_refusal)?;
+
+    Ok(Json(applied))
 }
 
 #[derive(Deserialize)]
@@ -1093,6 +1140,15 @@ fn trigger_refusal(error: anyhow::Error) -> Refused {
         || message.starts_with("no trigger named ")
         || message.starts_with("no event ")
     {
+        return Refused::NotFound(message);
+    }
+
+    Refused::Unprocessable(message)
+}
+
+fn declaration_refusal(error: anyhow::Error) -> Refused {
+    let message = error.to_string();
+    if message.starts_with("no organization ") {
         return Refused::NotFound(message);
     }
 
