@@ -288,6 +288,79 @@
         }
       }
     },
+    "/operator/organizations/{organization}/declaration": {
+      "post": {
+        "operationId": "applyDeclaration",
+        "summary": "Apply a Workspace, Agent and Trigger declaration together.",
+        "description": "The three records converge in one transaction. A Trigger declared here never fires for Events already retained.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DeclarationDocument" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The declaration's diff from the previous state.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AppliedDeclaration" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
+    "/operator/organizations/{organization}/declaration/preview": {
+      "post": {
+        "operationId": "previewDeclaration",
+        "summary": "Preview a declaration without changing control-plane state.",
+        "parameters": [
+          {
+            "name": "organization",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DeclarationDocument" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The declaration's diff from the current state.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AppliedDeclaration" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
     "/operator/organizations/{organization}/credentials": {
       "get": {
         "operationId": "listProviderCredentials",
@@ -1423,6 +1496,56 @@
           "runtime",
           "model"
         ]
+      },
+      "DeclarationDocument": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workspace": { "$ref": "#/components/schemas/WorkspaceDeclaration" },
+          "agent": { "$ref": "#/components/schemas/AgentDeclaration" },
+          "trigger": {
+            "allOf": [
+              { "$ref": "#/components/schemas/TriggerDeclaration" },
+              { "not": { "required": ["every"] } }
+            ]
+          }
+        },
+        "required": ["workspace", "agent", "trigger"]
+      },
+      "AppliedDeclaration": {
+        "type": "object",
+        "properties": {
+          "declarations": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/DeclarationDiff" }
+          },
+          "admitting_outsiders": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["declarations", "admitting_outsiders"]
+      },
+      "DeclarationDiff": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "enum": ["workspace", "agent", "trigger"] },
+          "name": { "type": "string" },
+          "action": { "type": "string", "enum": ["add", "change", "unchanged"] },
+          "differences": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": { "type": "string" },
+                "was": { "type": ["string", "null"] },
+                "becomes": { "type": ["string", "null"] }
+              },
+              "required": ["field", "was", "becomes"]
+            }
+          }
+        },
+        "required": ["kind", "name", "action", "differences"]
       },
       "TriggerDeclaration": {
         "type": "object",

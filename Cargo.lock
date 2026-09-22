@@ -1659,6 +1659,7 @@ dependencies = [
  "serde_json",
  "terminal_size",
  "tokio",
+ "yaml_serde",
 ]
 
 [[package]]

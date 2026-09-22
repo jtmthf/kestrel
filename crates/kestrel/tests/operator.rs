@@ -3,6 +3,7 @@ mod support;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 use kestrel::domain::{EventRecordId, Exit, RunId};
 use kestrel::link;
@@ -11,7 +12,7 @@ use kestrel::operator;
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 use support::client::{self, Client};
-use support::github_stub::GithubStub;
+use support::github_stub::{self, GithubStub};
 use support::{Harness, TOKEN};
 
 async fn an_open_session(harness: &Harness, said: usize) -> (String, kestrel::domain::Run) {
@@ -101,6 +102,25 @@ async fn client_given(harness: &Harness, args: &[&str], input: Option<&str>) -> 
     client::ran_by(harness, args, invocation).await
 }
 
+const DECLARATION: &str = r#"
+workspace:
+  name: kestrel
+  repositories:
+    - https://github.com/jtmthf/kestrel
+  branch: main
+agent:
+  name: builder
+  runtime: opencode
+trigger:
+  name: ready
+  filter:
+    exact:
+      type: com.github.issues.labeled
+  brief: Work on {{ event.data.issue.title }}
+  workspace: kestrel
+  agent: builder
+"#;
+
 fn succeeded(finished: &client::Finished) -> &[String] {
     assert!(
         finished.status.success(),
@@ -186,6 +206,14 @@ fn workspaces_of(organization: &str) -> String {
 
 fn agents_of(organization: &str) -> String {
     operator::AGENTS.replace("{organization}", organization)
+}
+
+fn declaration_of(organization: &str) -> String {
+    operator::DECLARATION.replace("{organization}", organization)
+}
+
+fn declaration_preview_of(organization: &str) -> String {
+    operator::DECLARATION_PREVIEW.replace("{organization}", organization)
 }
 
 fn credentials_of(organization: &str) -> String {
@@ -386,6 +414,350 @@ async fn a_client_declares_and_lists_workspaces_and_agents() {
     assert_eq!(
         opened.workspace.id.to_string(),
         workspace[0]["id"].as_str().expect("an id")
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_client_applies_one_workspace_agent_and_trigger_declaration() {
+    let harness = Harness::boot().await;
+    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+
+    let first = client::ran_by(
+        &harness,
+        &["apply", "--organization", "acme", "-f", "kestrel.yaml"],
+        client::Invocation::default().file("kestrel.yaml", DECLARATION),
+    )
+    .await;
+
+    assert!(
+        first
+            .err
+            .contains("the trigger ready fires for events from people outside"),
+        "{}",
+        first.err
+    );
+    let first = succeeded(&first);
+    assert!(
+        first.contains(&"+ workspace kestrel".to_owned()),
+        "{first:?}"
+    );
+    assert!(first.contains(&"+ agent builder".to_owned()), "{first:?}");
+    assert!(first.contains(&"+ trigger ready".to_owned()), "{first:?}");
+    assert!(first.contains(&"    branch".to_owned()), "{first:?}");
+    let workspace = recorded(
+        &client(
+            &harness,
+            &[
+                "workspace",
+                "list",
+                "--organization",
+                "acme",
+                "--json",
+                WORKSPACE,
+            ],
+        )
+        .await,
+    );
+    let agent = recorded(
+        &client(
+            &harness,
+            &["agent", "list", "--organization", "acme", "--json", AGENT],
+        )
+        .await,
+    );
+    let trigger = recorded(
+        &client(
+            &harness,
+            &[
+                "trigger",
+                "list",
+                "--organization",
+                "acme",
+                "--json",
+                TRIGGER,
+            ],
+        )
+        .await,
+    );
+
+    let again = client::ran_by(
+        &harness,
+        &["apply", "--organization", "acme", "-f", "kestrel.yaml"],
+        client::Invocation::default().file("kestrel.yaml", DECLARATION),
+    )
+    .await;
+
+    assert_eq!(
+        succeeded(&again),
+        ["= workspace kestrel", "= agent builder", "= trigger ready"]
+    );
+    assert_eq!(
+        recorded(
+            &client(
+                &harness,
+                &[
+                    "workspace",
+                    "list",
+                    "--organization",
+                    "acme",
+                    "--json",
+                    WORKSPACE,
+                ],
+            )
+            .await,
+        ),
+        workspace
+    );
+    assert_eq!(
+        recorded(
+            &client(
+                &harness,
+                &["agent", "list", "--organization", "acme", "--json", AGENT,],
+            )
+            .await,
+        ),
+        agent
+    );
+    assert_eq!(
+        recorded(
+            &client(
+                &harness,
+                &[
+                    "trigger",
+                    "list",
+                    "--organization",
+                    "acme",
+                    "--json",
+                    TRIGGER,
+                ],
+            )
+            .await,
+        ),
+        trigger
+    );
+
+    let changed = client::ran_by(
+        &harness,
+        &["apply", "--organization", "acme", "-f", "kestrel.yaml"],
+        client::Invocation::default().file(
+            "kestrel.yaml",
+            &DECLARATION.replace("branch: main", "branch: next"),
+        ),
+    )
+    .await;
+
+    let changed = succeeded(&changed);
+    assert!(
+        changed.contains(&"~ workspace kestrel".to_owned()),
+        "{changed:?}"
+    );
+    assert!(changed.contains(&"      - main".to_owned()), "{changed:?}");
+    assert!(changed.contains(&"      + next".to_owned()), "{changed:?}");
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_declaration_preview_changes_nothing() {
+    let harness = Harness::boot().await;
+    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    let declaration = json!({
+        "workspace": {
+            "name": "kestrel",
+            "repositories": ["https://github.com/jtmthf/kestrel"],
+            "branch": "main",
+        },
+        "agent": { "name": "builder", "runtime": "opencode" },
+        "trigger": {
+            "name": "ready",
+            "filter": { "exact": { "type": "com.github.issues.labeled" } },
+            "brief": "Work on {{ event.data.issue.title }}",
+            "workspace": "kestrel",
+            "agent": "builder",
+        },
+    });
+
+    let (status, preview) = declared(&harness, &declaration_preview_of("acme"), &declaration).await;
+
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert_eq!(preview["declarations"][0]["action"], "add");
+    assert!(
+        recorded(
+            &client(
+                &harness,
+                &[
+                    "workspace",
+                    "list",
+                    "--organization",
+                    "acme",
+                    "--json",
+                    WORKSPACE,
+                ],
+            )
+            .await,
+        )
+        .is_empty()
+    );
+
+    let (status, applied) = declared(&harness, &declaration_of("acme"), &declaration).await;
+
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    assert_eq!(applied["declarations"][0]["action"], "add");
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_trigger_applied_after_an_event_never_fires_for_that_event() {
+    let stub = GithubStub::start();
+    stub.script(github_stub::page(&[github_stub::labelled(
+        7,
+        43,
+        "ready-for-agent",
+    )]));
+    let harness = Harness::boot().await;
+    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    succeeded(
+        &client(
+            &harness,
+            &[
+                "integration",
+                "register",
+                "github",
+                "origin",
+                "--organization",
+                "acme",
+                "--repository",
+                "jtmthf/kestrel",
+                "--token",
+                TOKEN,
+                "--api",
+                &stub.base_url(),
+                "--interval",
+                "1ms",
+            ],
+        )
+        .await,
+    );
+
+    let mut events = Vec::new();
+    for _ in 0..100 {
+        events = recorded(
+            &client(
+                &harness,
+                &["event", "list", "--organization", "acme", "--json", EVENT],
+            )
+            .await,
+        );
+        if !events.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !events.is_empty(),
+        "the integration never recorded its event"
+    );
+
+    succeeded(
+        &client::ran_by(
+            &harness,
+            &["apply", "--organization", "acme", "-f", "kestrel.yaml"],
+            client::Invocation::default().file("kestrel.yaml", DECLARATION),
+        )
+        .await,
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    assert!(
+        recorded(
+            &client(
+                &harness,
+                &[
+                    "session",
+                    "list",
+                    "--organization",
+                    "acme",
+                    "--json",
+                    SESSION,
+                ],
+            )
+            .await,
+        )
+        .is_empty(),
+        "a trigger fired for an event recorded before it was applied"
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn an_inconsistent_declaration_changes_nothing() {
+    let harness = Harness::boot().await;
+    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    let inconsistent = DECLARATION.replace(
+        "workspace: kestrel\n  agent: builder",
+        "workspace: elsewhere\n  agent: builder",
+    );
+
+    let refused = client::ran_by(
+        &harness,
+        &["apply", "--organization", "acme", "-f", "kestrel.yaml"],
+        client::Invocation::default().file("kestrel.yaml", &inconsistent),
+    )
+    .await;
+
+    assert!(!refused.status.success(), "{}", refused.err);
+    assert!(
+        refused.err.contains("not the declared workspace"),
+        "{}",
+        refused.err
+    );
+    assert!(
+        recorded(
+            &client(
+                &harness,
+                &[
+                    "workspace",
+                    "list",
+                    "--organization",
+                    "acme",
+                    "--json",
+                    WORKSPACE,
+                ],
+            )
+            .await,
+        )
+        .is_empty()
+    );
+    assert!(
+        recorded(
+            &client(
+                &harness,
+                &["agent", "list", "--organization", "acme", "--json", AGENT,],
+            )
+            .await,
+        )
+        .is_empty()
+    );
+    assert!(
+        recorded(
+            &client(
+                &harness,
+                &[
+                    "trigger",
+                    "list",
+                    "--organization",
+                    "acme",
+                    "--json",
+                    TRIGGER,
+                ],
+            )
+            .await,
+        )
+        .is_empty()
     );
 
     harness.teardown().await;

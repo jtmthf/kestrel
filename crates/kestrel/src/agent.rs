@@ -62,7 +62,7 @@ fn names(model: Option<&str>) -> Option<&str> {
 /// A model a Run would fail on is refused here instead, where saying so costs nothing. What a
 /// runtime advertises is only ever learned from a Run, so one no Run has reached yet is taken
 /// at its word.
-async fn advertised(
+pub(crate) async fn advertised(
     tx: &mut Tx<'_>,
     organization: &Organization,
     runtime: &str,

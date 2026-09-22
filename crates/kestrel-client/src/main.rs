@@ -12,6 +12,7 @@ use clap::builder::NonEmptyStringValueParser;
 use clap::parser::ValueSource;
 use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 use reqwest::Url;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::api::ControlPlane;
@@ -64,6 +65,8 @@ struct Client {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Preview and apply one Workspace, Agent and Trigger declaration document
+    Apply(Apply),
     /// Declare and list Organizations
     #[command(subcommand)]
     Organization(OrganizationCommand),
@@ -99,10 +102,18 @@ enum Command {
     Status,
 }
 
+#[derive(Debug, Args)]
+struct Apply {
+    /// The declaration file, or `-` for standard input
+    #[arg(short = 'f', long, value_name = "FILE")]
+    file: String,
+}
+
 impl Command {
     fn scoped(&self) -> bool {
         match self {
-            Command::Workspace(_)
+            Command::Apply(_)
+            | Command::Workspace(_)
             | Command::Agent(_)
             | Command::Credential(_)
             | Command::Profile(_)
@@ -489,6 +500,22 @@ async fn main() -> Result<()> {
     let scoping = Scoping::new(&api, named);
 
     match client.command {
+        Command::Apply(Apply { file }) => {
+            let organization = scoping.resolve().await?.organization;
+            let declaration = declaration(&file)?;
+            let preview = api
+                .post(
+                    &["organizations", &organization, "declaration", "preview"],
+                    &declaration,
+                )
+                .await?;
+            show_declaration(&preview)?;
+            api.post(
+                &["organizations", &organization, "declaration"],
+                &declaration,
+            )
+            .await?;
+        }
         Command::Organization(OrganizationCommand::Declare { name }) => {
             show(
                 &presentation,
@@ -936,6 +963,85 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct AppliedDeclaration {
+    declarations: Vec<Declared>,
+    admitting_outsiders: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Declared {
+    kind: String,
+    name: String,
+    action: Action,
+    differences: Vec<Difference>,
+}
+
+#[derive(Deserialize)]
+struct Difference {
+    field: String,
+    was: Option<String>,
+    becomes: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Action {
+    Add,
+    Change,
+    Unchanged,
+}
+
+fn declaration(file: &str) -> Result<Value> {
+    let mut text = String::new();
+    if file == "-" {
+        std::io::stdin()
+            .read_to_string(&mut text)
+            .context("reading the declaration from standard input")?;
+    } else {
+        text = std::fs::read_to_string(file)
+            .with_context(|| format!("reading the declaration file {file}"))?;
+    }
+
+    yaml_serde::from_str(&text).context("reading the declaration file")
+}
+
+fn show_declaration(value: &Value) -> Result<()> {
+    let applied: AppliedDeclaration =
+        serde_json::from_value(value.clone()).context("reading the declaration preview")?;
+    for declared in applied.declarations {
+        let sign = match declared.action {
+            Action::Add => '+',
+            Action::Change => '~',
+            Action::Unchanged => '=',
+        };
+        println!("{sign} {} {}", declared.kind, declared.name);
+        for difference in declared.differences {
+            println!("    {}", difference.field);
+            for (sign, value) in [('-', difference.was), ('+', difference.becomes)] {
+                for line in value.iter().flat_map(|value| value.lines()) {
+                    println!("      {sign} {line}");
+                }
+            }
+        }
+    }
+    for name in applied.admitting_outsiders {
+        warn_of_outsiders(&name);
+    }
+
+    Ok(())
+}
+
+fn warn_of_outsiders(name: &str) {
+    eprintln!(
+        "warning: the trigger {name} fires for events from people outside the organization. \
+         Until 0.4, it is an unsupervised agent with your credentials on your repository, \
+         briefed by whatever a stranger writes. Filter on the author_association GitHub \
+         reports as OWNER, MEMBER or COLLABORATOR to decline strangers, or keep it as a \
+         decision you made on purpose."
+    );
 }
 
 async fn status(
