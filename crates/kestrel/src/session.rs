@@ -4,8 +4,7 @@ use jiff::{SignedDuration, Timestamp};
 use crate::domain::{Exit, Organization, Run, RunId, RunState, Session, SessionId, SessionState};
 use crate::fanout::{self, Change};
 use crate::instance;
-use crate::link;
-use crate::log::{Cursor, Entry, Message, Page, Unreadable, Window};
+use crate::log::{Cursor, Entry, Page, Unreadable, Window};
 use crate::store::session::Opening;
 use crate::store::{Store, Tx};
 use crate::work;
@@ -185,42 +184,37 @@ pub(crate) async fn post_in(
         Some(holding) => Some(tx.sessions().run(holding).await?),
         None => None,
     };
-    let waiting = match &holding {
-        Some(run) => tx.sessions().is_waiting(run).await?,
-        None => false,
-    };
-    if let Some(run) = &holding
-        && run.state != RunState::Queued
-        && !waiting
-    {
-        tx.sessions()
-            .add_pending_message(session, participant, message)
-            .await?;
-        return Ok(None);
+    match holding {
+        None => {
+            said(tx, session, participant, message).await?;
+            Ok(Some(tx.sessions().enqueue_run(session, None).await?))
+        }
+        Some(run) if run.state == RunState::Queued => {
+            said(tx, session, participant, message).await?;
+            Ok(None)
+        }
+        // Held even for a Run between turns: its next turn waits for an active-work slot.
+        Some(run) => {
+            tx.sessions()
+                .add_pending_message(session, participant, message)
+                .await?;
+            Ok(tx.sessions().is_waiting(&run).await?.then_some(run))
+        }
     }
+}
 
-    let said = Message {
-        participant: participant.to_owned(),
-        message: message.to_owned(),
-    };
+async fn said(tx: &mut Tx<'_>, session: &Session, participant: &str, message: &str) -> Result<()> {
     tx.log()
         .append(
             session,
             Entry::Said {
-                participant: said.participant.clone(),
-                message: said.message.clone(),
+                participant: participant.to_owned(),
+                message: message.to_owned(),
             },
         )
         .await?;
 
-    match holding {
-        Some(run) if waiting => {
-            link::prompt(tx, &run, work::follow_up(&[said])).await?;
-            Ok(Some(run))
-        }
-        Some(_) => Ok(None),
-        None => Ok(Some(tx.sessions().enqueue_run(session, None).await?)),
-    }
+    Ok(())
 }
 
 pub async fn transcript(

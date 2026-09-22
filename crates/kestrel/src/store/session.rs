@@ -27,6 +27,15 @@ macro_rules! runs_where {
     };
 }
 
+/// Prompted at least once and every prompt answered, over a `run AS r`. A Run not yet prompted
+/// is still getting to its first turn.
+macro_rules! between_turns {
+    () => {
+        "EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = r.id)
+         AND NOT EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = r.id AND t.answered_at IS NULL)"
+    };
+}
+
 /// What became of a report the link was handed: the next in the supervisor's sequence, one
 /// taken already — where a replay after an answer that never arrived lands — or one that
 /// skips a report the Run has yet to make, which would leave a gap nothing fills.
@@ -481,7 +490,7 @@ impl<'a> Sessions<'a> {
             .bind(run.session.to_string())
             .bind(run.state.as_str())
             .bind(&run.model)
-            .bind(run.enqueued_at.to_string())
+            .bind(due(run.enqueued_at))
             .execute(&mut *self.connection)
             .await
             .with_context(|| format!("enqueueing a run in the session {}", session.id))?;
@@ -514,7 +523,7 @@ impl<'a> Sessions<'a> {
         .bind(session.organization.id.to_string())
         .bind(participant)
         .bind(body)
-        .bind(Timestamp::now().to_string())
+        .bind(due(Timestamp::now()))
         .bind(session.id.to_string())
         .execute(&mut *self.connection)
         .await
@@ -636,6 +645,7 @@ impl<'a> Sessions<'a> {
         &mut self,
         lease_until: Timestamp,
         serialized: &[String],
+        enqueued_before: Option<Timestamp>,
     ) -> Result<Option<Run>> {
         let claimed = sqlx::query(
             "UPDATE run
@@ -662,6 +672,7 @@ impl<'a> Sessions<'a> {
                          AND s.runtime IN (SELECT value FROM json_each(?))
                          AND a.state = ?
                    )
+                   AND (? IS NULL OR r.enqueued_at < ?)
                  ORDER BY r.enqueued_at, r.id
                  LIMIT 1
              )
@@ -675,6 +686,8 @@ impl<'a> Sessions<'a> {
         .bind(Exit::Succeeded.status())
         .bind(serde_json::to_string(serialized)?)
         .bind(RunState::Active.as_str())
+        .bind(enqueued_before.map(due))
+        .bind(enqueued_before.map(due))
         .fetch_optional(&mut *self.connection)
         .await
         .context("claiming a queued run")?;
@@ -1191,23 +1204,62 @@ impl<'a> Sessions<'a> {
         .collect()
     }
 
-    /// Between turns: prompted at least once, and every prompt answered. A Run not yet
-    /// prompted is still getting to its first turn.
+    pub async fn occupying_slots(&mut self) -> Result<usize> {
+        let row = sqlx::query(concat!(
+            "SELECT COUNT(*) AS occupying
+             FROM run AS r
+             WHERE r.state = ? AND NOT (",
+            between_turns!(),
+            ")"
+        ))
+        .bind(RunState::Active.as_str())
+        .fetch_one(&mut *self.connection)
+        .await
+        .context("counting the runs occupying an active-work slot")?;
+
+        Ok(usize::try_from(row.get::<i64, _>("occupying"))?)
+    }
+
+    pub async fn oldest_held_input(&mut self) -> Result<Option<(Run, Timestamp)>> {
+        let row = sqlx::query(concat!(
+            "SELECT r.id, MIN(p.received_at) AS since
+             FROM run AS r
+             JOIN pending_message AS p ON p.session_id = r.session_id
+             WHERE r.state = ? AND ",
+            between_turns!(),
+            " GROUP BY r.id
+             ORDER BY since, r.id
+             LIMIT 1"
+        ))
+        .bind(RunState::Active.as_str())
+        .fetch_optional(&mut *self.connection)
+        .await
+        .context("reading which run between turns has input held longest")?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let since = row.get::<String, _>("since").parse()?;
+
+        Ok(Some((
+            self.run(row.get::<String, _>("id").parse()?).await?,
+            since,
+        )))
+    }
+
     pub async fn is_waiting(&mut self, run: &Run) -> Result<bool> {
-        let row = sqlx::query(
-            "SELECT COUNT(*) AS prompted, COUNT(answered_at) AS answered
-             FROM turn
-             WHERE run_id = ?",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT EXISTS (SELECT 1 FROM run AS r WHERE r.id = ? AND r.state = ? AND ",
+            between_turns!(),
+            ") AS waiting"
+        ))
         .bind(run.id.to_string())
+        .bind(RunState::Active.as_str())
         .fetch_one(&mut *self.connection)
         .await
         .with_context(|| format!("reading whether the run {} is between turns", run.id))?;
-        let prompted: i64 = row.get("prompted");
 
-        Ok(run.state == RunState::Active
-            && prompted > 0
-            && prompted == row.get::<i64, _>("answered"))
+        Ok(row.get("waiting"))
     }
 }
 

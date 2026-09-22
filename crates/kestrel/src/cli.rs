@@ -129,7 +129,7 @@ pub struct Cli {
     #[arg(long, env = "KESTREL_NETWORK", global = true, value_name = "NETWORK")]
     network: Option<String>,
 
-    /// Excess Runs stay queued; zero would leave the backlog unable to make progress
+    /// Runs getting to or mid-turn at once; excess work waits, and zero would never make progress
     #[arg(
         long,
         env = "KESTREL_MAX_ACTIVE_RUNS",
