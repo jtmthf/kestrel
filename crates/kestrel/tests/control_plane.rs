@@ -120,7 +120,7 @@ fn the_image_makes_and_migrates_its_database_on_a_volume_with_nothing_on_it() {
     );
     assert_eq!(
         ran(kestrel.operator(), &["organization", "list"]),
-        format!("{organization}\tacme")
+        format!("{organization}\tacme\t-")
     );
     kestrel.stop();
 }
