@@ -27,6 +27,15 @@ macro_rules! runs_where {
     };
 }
 
+/// Prompted at least once and every prompt answered, over a `run AS r`. A Run not yet prompted
+/// is still getting to its first turn.
+macro_rules! between_turns {
+    () => {
+        "EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = r.id)
+         AND NOT EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = r.id AND t.answered_at IS NULL)"
+    };
+}
+
 /// What became of a report the link was handed: the next in the supervisor's sequence, one
 /// taken already — where a replay after an answer that never arrived lands — or one that
 /// skips a report the Run has yet to make, which would leave a gap nothing fills.
@@ -1196,17 +1205,13 @@ impl<'a> Sessions<'a> {
     }
 
     pub async fn occupying_slots(&mut self) -> Result<usize> {
-        let row = sqlx::query(
+        let row = sqlx::query(concat!(
             "SELECT COUNT(*) AS occupying
              FROM run AS r
-             WHERE r.state = ?
-               AND (
-                   NOT EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = r.id)
-                   OR EXISTS (
-                       SELECT 1 FROM turn AS t WHERE t.run_id = r.id AND t.answered_at IS NULL
-                   )
-               )",
-        )
+             WHERE r.state = ? AND NOT (",
+            between_turns!(),
+            ")"
+        ))
         .bind(RunState::Active.as_str())
         .fetch_one(&mut *self.connection)
         .await
@@ -1216,19 +1221,16 @@ impl<'a> Sessions<'a> {
     }
 
     pub async fn oldest_held_input(&mut self) -> Result<Option<(Run, Timestamp)>> {
-        let row = sqlx::query(
+        let row = sqlx::query(concat!(
             "SELECT r.id, MIN(p.received_at) AS since
              FROM run AS r
              JOIN pending_message AS p ON p.session_id = r.session_id
-             WHERE r.state = ?
-               AND EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = r.id)
-               AND NOT EXISTS (
-                   SELECT 1 FROM turn AS t WHERE t.run_id = r.id AND t.answered_at IS NULL
-               )
-             GROUP BY r.id
+             WHERE r.state = ? AND ",
+            between_turns!(),
+            " GROUP BY r.id
              ORDER BY since, r.id
-             LIMIT 1",
-        )
+             LIMIT 1"
+        ))
         .bind(RunState::Active.as_str())
         .fetch_optional(&mut *self.connection)
         .await
@@ -1245,23 +1247,19 @@ impl<'a> Sessions<'a> {
         )))
     }
 
-    /// Between turns: prompted at least once, and every prompt answered. A Run not yet
-    /// prompted is still getting to its first turn.
     pub async fn is_waiting(&mut self, run: &Run) -> Result<bool> {
-        let row = sqlx::query(
-            "SELECT COUNT(*) AS prompted, COUNT(answered_at) AS answered
-             FROM turn
-             WHERE run_id = ?",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT EXISTS (SELECT 1 FROM run AS r WHERE r.id = ? AND r.state = ? AND ",
+            between_turns!(),
+            ") AS waiting"
+        ))
         .bind(run.id.to_string())
+        .bind(RunState::Active.as_str())
         .fetch_one(&mut *self.connection)
         .await
         .with_context(|| format!("reading whether the run {} is between turns", run.id))?;
-        let prompted: i64 = row.get("prompted");
 
-        Ok(run.state == RunState::Active
-            && prompted > 0
-            && prompted == row.get::<i64, _>("answered"))
+        Ok(row.get("waiting"))
     }
 }
 
