@@ -278,8 +278,6 @@ async fn a_session_with_no_instance_has_nothing_to_release() {
     harness.teardown().await;
 }
 
-/// A Run between turns keeps its conversation open, but not its Session: once idle for the day,
-/// a clean checkout seals and the waiting Run ends with it.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_run_waiting_between_turns_ends_when_its_clean_session_seals_idle() {

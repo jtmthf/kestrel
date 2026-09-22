@@ -1195,7 +1195,6 @@ impl<'a> Sessions<'a> {
         .collect()
     }
 
-    /// Claimed and not yet between turns: getting to its first, or mid-turn.
     pub async fn occupying_slots(&mut self) -> Result<usize> {
         let row = sqlx::query(
             "SELECT COUNT(*) AS occupying
@@ -1216,8 +1215,7 @@ impl<'a> Sessions<'a> {
         Ok(usize::try_from(row.get::<i64, _>("occupying"))?)
     }
 
-    /// The Run between turns whose Session has held input for it longest, and since when.
-    pub async fn longest_held_for(&mut self) -> Result<Option<(Run, Timestamp)>> {
+    pub async fn oldest_held_input(&mut self) -> Result<Option<(Run, Timestamp)>> {
         let row = sqlx::query(
             "SELECT r.id, MIN(p.received_at) AS since
              FROM run AS r

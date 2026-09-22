@@ -5,7 +5,7 @@ mod support;
 
 use std::time::Duration;
 
-use kestrel::domain::{Exit, RunState, Session, SessionId};
+use kestrel::domain::{Exit, RunId, RunState, Session, SessionId};
 use kestrel::log::{Entry, Message};
 use kestrel_scripted_agent::conversed;
 use support::scripted_agent::{self, Script};
@@ -67,7 +67,7 @@ async fn prompted(harness: &Harness, run: kestrel::domain::RunId) {
 }
 
 /// The scripted agent remembers only what its own process was prompted with, so a second
-/// answer naming the first prompt is one conversation that went on, not one rebuilt from a
+/// answer naming the first prompt is one resumed that went on, not one rebuilt from a
 /// Transcript.
 #[tokio::test]
 async fn a_follow_up_is_the_next_turn_of_the_same_agent_conversation() {
@@ -323,7 +323,6 @@ async fn messages_arriving_mid_turn_are_the_next_turn_of_the_same_run() {
     harness.teardown().await;
 }
 
-/// One active-work slot, a builder that answers, and a dawdler whose turn never ends.
 async fn sharing_one_slot() -> Harness {
     let harness = Harness::dispatching_runtimes_up_to(
         supervisor::binary(),
@@ -361,7 +360,7 @@ async fn sharing_one_slot() -> Harness {
 }
 
 /// Long enough that a dispatcher that was going to prompt a Run has had many chances to.
-async fn not_prompted_again(harness: &Harness, run: kestrel::domain::RunId, turns: usize) {
+async fn not_prompted_again(harness: &Harness, run: RunId, turns: usize) {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     assert_eq!(
@@ -418,8 +417,8 @@ async fn a_run_queued_before_a_follow_up_arrived_takes_the_freed_slot_first() {
     let holding = harness.open_session("acme", "kestrel", "dawdler").await;
     let queued = harness.open_session("acme", "kestrel", "dawdler").await;
 
-    let conversation = harness.post(waiting.id, "operator", "start").await;
-    harness.answered(conversation.id, 1).await;
+    let resumed = harness.post(waiting.id, "operator", "start").await;
+    harness.answered(resumed.id, 1).await;
     let busy = harness.post(holding.id, "operator", "work on").await;
     prompted(&harness, busy.id).await;
     let next = harness.post(queued.id, "operator", "then this").await;
@@ -430,11 +429,11 @@ async fn a_run_queued_before_a_follow_up_arrived_takes_the_freed_slot_first() {
 
     harness.stop_run(busy.id).await;
     prompted(&harness, next.id).await;
-    not_prompted_again(&harness, conversation.id, 1).await;
+    not_prompted_again(&harness, resumed.id, 1).await;
 
     harness.stop_run(next.id).await;
-    harness.answered(conversation.id, 2).await;
-    harness.stop_run(conversation.id).await;
+    harness.answered(resumed.id, 2).await;
+    harness.stop_run(resumed.id).await;
     harness.teardown().await;
 }
 
@@ -445,8 +444,8 @@ async fn a_follow_up_held_before_a_run_was_queued_takes_the_freed_slot_first() {
     let holding = harness.open_session("acme", "kestrel", "dawdler").await;
     let queued = harness.open_session("acme", "kestrel", "dawdler").await;
 
-    let conversation = harness.post(waiting.id, "operator", "start").await;
-    harness.answered(conversation.id, 1).await;
+    let resumed = harness.post(waiting.id, "operator", "start").await;
+    harness.answered(resumed.id, 1).await;
     let busy = harness.post(holding.id, "operator", "work on").await;
     prompted(&harness, busy.id).await;
     harness
@@ -456,18 +455,18 @@ async fn a_follow_up_held_before_a_run_was_queued_takes_the_freed_slot_first() {
     let next = harness.post(queued.id, "operator", "then this").await;
 
     harness.stop_run(busy.id).await;
-    harness.answered(conversation.id, 2).await;
+    harness.answered(resumed.id, 2).await;
     prompted(&harness, next.id).await;
 
-    let resumed = harness.turns(conversation.id).await[1]
+    let answered = harness.turns(resumed.id).await[1]
         .answered_at
         .expect("an answered turn");
     assert!(
-        harness.turns(next.id).await[0].prompted_at > resumed,
+        harness.turns(next.id).await[0].prompted_at > answered,
         "the queued run took the slot before the follow-up held ahead of it had its turn"
     );
 
     harness.stop_run(next.id).await;
-    harness.stop_run(conversation.id).await;
+    harness.stop_run(resumed.id).await;
     harness.teardown().await;
 }

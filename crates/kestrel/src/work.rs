@@ -150,7 +150,7 @@ pub async fn occupy(
         return Ok(None);
     }
 
-    let held = tx.sessions().longest_held_for().await?;
+    let held = tx.sessions().oldest_held_input().await?;
     let occupied =
         match claiming(&mut tx, serialized, held.as_ref().map(|(_, since)| *since)).await? {
             Some(claimed) => Occupied::Claimed(claimed),
@@ -501,7 +501,6 @@ async fn continue_pending(tx: &mut Tx<'_>, session: SessionId) -> Result<Option<
     Ok(Some(tx.sessions().enqueue_run(&session, None).await?))
 }
 
-/// Everything held for a Run between turns is its next prompt, in the same conversation.
 async fn prompt_pending(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
     let session = tx.sessions().get(run.session).await?;
     let pending = tx.sessions().take_pending_messages(&session).await?;
