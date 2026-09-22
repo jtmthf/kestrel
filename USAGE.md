@@ -89,10 +89,10 @@ where you declare it rather than where it would be dispatched.
 
 `--runtime` names the agent runtime: `opencode` unless you say otherwise, or `claude` or `codex`.
 The work role maps each name to the command an environment spawns and speaks ACP to, which by
-default is `opencode acp`, `claude-agent-acp` and `codex-acp`; the `kestrel-dev` image carries all
-three. Set `KESTREL_AGENT_RUNTIME` on the control plane, or pass `--agent-runtime NAME=COMMAND`
-repeatedly, to change the table. A run whose agent names a runtime missing from it fails and says
-which.
+default is `opencode acp --print-logs`, `claude-agent-acp` and `codex-acp`; the `kestrel-dev` image
+carries all three. Set `KESTREL_AGENT_RUNTIME` on the control plane, or pass
+`--agent-runtime NAME=COMMAND` repeatedly, to change the table. A run whose agent names a runtime
+missing from it fails and says which.
 
 ```sh
 kestrel agent declare codex --organization acme --runtime codex
@@ -192,6 +192,16 @@ INFO kestrel::role::work: link open run=01a07846-5d97-7230-9315-bfef2a644006
 INFO kestrel::role::work: reported connected run=01a07846-5d97-7230-9315-bfef2a644006
 INFO kestrel::role::work: instruction start 1 run=01a07846-5d97-7230-9315-bfef2a644006
 INFO kestrel::role::work: reported started 1 run=01a07846-5d97-7230-9315-bfef2a644006
+```
+
+Each line the agent runtime writes to stderr joins them as it is written, named for its run and
+never in the transcript: it is the runtime's own diagnostics, not the agent speaking. opencode is
+spawned with `--print-logs`, so its log is there by default; raise its level through the runtime
+table, as `--agent-runtime 'opencode=opencode acp --print-logs --log-level DEBUG'`. A line longer
+than 4 KiB is cut short and says so.
+
+```
+INFO kestrel::work: its agent runtime wrote to stderr run=01a07846-5d97-7230-9315-bfef2a644006 line="timestamp=2026-09-21T22:16:20.783Z level=INFO run=304e054b message=init"
 ```
 
 The agent is now working — reading the repository, running commands, taking turns. It has no task,

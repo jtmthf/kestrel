@@ -45,7 +45,7 @@ docker run --rm \
   --env KESTREL_LINK=http://host.docker.internal:7717 \
   --env KESTREL_RUN=<run> \
   --env KESTREL_RUN_CREDENTIAL=<credential> \
-  --env KESTREL_AGENT_RUNTIME='opencode acp' \
+  --env KESTREL_AGENT_RUNTIME='opencode acp --print-logs' \
   --env KESTREL_AGENT_MODEL=<model, as the runtime advertises it> \
   kestrel-env
 ```

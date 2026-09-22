@@ -59,7 +59,7 @@ Do not do this with `KESTREL_ENV_IMAGE`. Compose builds the `kestrel-env` Docker
 tag, so the base image would overwrite this one.
 
 An Agent names its runtime as `opencode`, `claude` or `codex`, and the work role spawns
-`opencode acp`, `claude-agent-acp` or `codex-acp` for it.
+`opencode acp --print-logs`, `claude-agent-acp` or `codex-acp` for it.
 
 ## No credentials
 

@@ -115,7 +115,7 @@ pub struct Cli {
         global = true,
         value_name = "NAME=COMMAND",
         value_delimiter = ',',
-        default_value = "opencode=opencode acp,claude=claude-agent-acp,codex=codex-acp"
+        default_value = "opencode=opencode acp --print-logs,claude=claude-agent-acp,codex=codex-acp"
     )]
     agent_runtimes: Vec<AgentRuntime>,
 
@@ -955,7 +955,7 @@ mod tests {
         assert_eq!(
             spawned(&dispatch(&[])),
             [
-                ("opencode", "opencode acp"),
+                ("opencode", "opencode acp --print-logs"),
                 ("claude", "claude-agent-acp"),
                 ("codex", "codex-acp"),
             ]

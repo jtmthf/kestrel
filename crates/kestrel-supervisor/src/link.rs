@@ -60,6 +60,7 @@ pub struct Checkout {
 pub enum Report {
     Connected { version: String },
     Heartbeat,
+    Stderr { lines: Vec<String> },
     Started,
     Model { model: String, offered: Vec<String> },
     Said { message: String },
@@ -74,6 +75,7 @@ impl Report {
         match self {
             Report::Connected { .. } => "connected",
             Report::Heartbeat => "heartbeat",
+            Report::Stderr { .. } => "stderr",
             Report::Started => "started",
             Report::Model { .. } => "model",
             Report::Said { .. } => "said",

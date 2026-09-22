@@ -33,6 +33,7 @@ pub struct Claimed {
 pub enum Report {
     Connected { version: String },
     Heartbeat,
+    Stderr { lines: Vec<String> },
     Started,
     Model { model: String, offered: Vec<String> },
     Said { message: String },
@@ -45,7 +46,7 @@ pub enum Report {
 impl Report {
     const fn numbered(&self) -> bool {
         match self {
-            Report::Connected { .. } | Report::Heartbeat => false,
+            Report::Connected { .. } | Report::Heartbeat | Report::Stderr { .. } => false,
             Report::Started
             | Report::Model { .. }
             | Report::Said { .. }
@@ -171,6 +172,15 @@ pub async fn report(
     run: &Run,
     Reported { seq, report }: Reported,
 ) -> Result<(), ReportRefused> {
+    // Relayed without a transaction, whose write lock a chatty runtime would otherwise contend
+    // for with every other Run's reports.
+    if let Report::Stderr { lines } = &report {
+        for line in lines {
+            info!(run = %run.id, line, "its agent runtime wrote to stderr");
+        }
+        return Ok(());
+    }
+
     let mut tx = store.begin().await?;
 
     if report.numbered() {
@@ -196,6 +206,7 @@ pub async fn report(
                 .await?;
             debug!(run = %run.id, "a supervisor reported itself alive");
         }
+        Report::Stderr { .. } => unreachable!("relayed before the transaction began"),
         Report::Started => {
             if tx.sessions().record_started(run).await? {
                 let session = tx.sessions().get(run.session).await?;

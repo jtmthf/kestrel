@@ -321,6 +321,7 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
     let bodies = json!({
         "connected": {"kind": "connected", "version": "0.0.0"},
         "heartbeat": {"kind": "heartbeat"},
+        "stderr": {"kind": "stderr", "lines": ["level=INFO message=init"]},
         "started": {"kind": "started", "seq": 1},
         "model": {
             "kind": "model",
