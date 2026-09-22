@@ -6,8 +6,9 @@ mod support;
 use std::time::Duration;
 
 use kestrel::domain::{Cost, Exit, Run, RunId, RunState, Session, Usage};
-use kestrel_scripted_agent::{DEFAULT_MODEL, OTHER_MODEL};
+use kestrel_scripted_agent::{DEFAULT_MODEL, MUTTERED, OTHER_MODEL, OVERLONG};
 use support::Harness;
+use support::operator_log;
 use support::repository;
 use support::scripted_agent::{self, Script};
 use support::supervisor::{self, Supervisor};
@@ -122,6 +123,48 @@ async fn an_agents_plan_its_tool_calls_and_its_reasoning_reach_no_transcript() {
             "the transcript carries {inside_the_run}, which happened inside the run:\n{transcript}"
         );
     }
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn what_the_agent_writes_to_stderr_reaches_the_operator_log_mid_run_and_no_transcript() {
+    let log = operator_log::capturing();
+    let harness = Harness::dispatching_to(
+        supervisor::binary(),
+        &scripted_agent::playing(Script::Mutters),
+    )
+    .await;
+    let session = a_session(&harness).await;
+    let run = harness.enqueue_run(session.id).await;
+
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let relayed = loop {
+        let relayed: Vec<String> = log
+            .about(run.id)
+            .into_iter()
+            .filter(|line| line.contains("wrote to stderr"))
+            .collect();
+        if relayed.len() == 2 {
+            break relayed;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the run {run} relayed {relayed:?} of what its agent wrote",
+            run = run.id
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+
+    assert_eq!(harness.run(run.id).await.state, RunState::Active);
+    assert!(relayed[0].contains(MUTTERED), "{}", relayed[0]);
+    assert!(
+        relayed[1].contains("[truncated]") && relayed[1].len() < OVERLONG,
+        "the overlong line was relayed {} bytes long",
+        relayed[1].len()
+    );
+    let transcript = transcript(&harness, &session).await.join("\n");
+    assert!(!transcript.contains(MUTTERED), "{transcript}");
 
     harness.teardown().await;
 }

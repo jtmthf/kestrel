@@ -15,6 +15,9 @@ pub const REFRESHED: &str = " refreshed";
 /// The two models the agent offers a client, the first of which it runs on unasked.
 pub const DEFAULT_MODEL: &str = "scripted-mini";
 pub const OTHER_MODEL: &str = "scripted-max";
+/// What the `Mutters` script writes to stderr, followed by a line of `OVERLONG` bytes.
+pub const MUTTERED: &str = "the scripted agent muttered to itself";
+pub const OVERLONG: usize = 64 * 1024;
 pub const FIRST_MEMORY: &str = "the first remembered message";
 pub const LAST_MEMORY: &str = "the last remembered message";
 
@@ -48,6 +51,8 @@ pub enum Script {
     Insists,
     /// Works at a turn that never ends, so nothing the agent does is what ends the Run.
     Dawdles,
+    /// Writes to stderr as it works at a turn that never ends.
+    Mutters,
     /// Speaks, but takes long enough over the turn that the control plane can be killed and
     /// restarted while the Run is still in flight.
     Lingers,
@@ -81,6 +86,7 @@ impl Script {
             Script::Decides => "decides",
             Script::Insists => "insists",
             Script::Dawdles => "dawdles",
+            Script::Mutters => "mutters",
             Script::Lingers => "lingers",
             Script::Locates => "locates",
             Script::Silent => "silent",

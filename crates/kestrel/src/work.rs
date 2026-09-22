@@ -33,6 +33,7 @@ pub struct Claimed {
 pub enum Report {
     Connected { version: String },
     Heartbeat,
+    Stderr { lines: Vec<String> },
     Started,
     Model { model: String, offered: Vec<String> },
     Said { message: String },
@@ -45,7 +46,7 @@ pub enum Report {
 impl Report {
     const fn numbered(&self) -> bool {
         match self {
-            Report::Connected { .. } | Report::Heartbeat => false,
+            Report::Connected { .. } | Report::Heartbeat | Report::Stderr { .. } => false,
             Report::Started
             | Report::Model { .. }
             | Report::Said { .. }
@@ -195,6 +196,11 @@ pub async fn report(
                 .hold_lease(run, Timestamp::now() + LEASE)
                 .await?;
             debug!(run = %run.id, "a supervisor reported itself alive");
+        }
+        Report::Stderr { lines } => {
+            for line in lines {
+                info!(run = %run.id, line, "its agent runtime wrote to stderr");
+            }
         }
         Report::Started => {
             if tx.sessions().record_started(run).await? {

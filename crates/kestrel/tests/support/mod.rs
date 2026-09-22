@@ -19,6 +19,7 @@ pub mod image;
 pub mod lineage;
 pub mod link_client;
 pub mod model;
+pub mod operator_log;
 pub mod repository;
 pub mod scripted_agent;
 pub mod supervisor;

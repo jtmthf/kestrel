@@ -20,8 +20,8 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use clap::Parser;
 use kestrel_scripted_agent::{
-    CONFIDED, DEFAULT_MODEL, FIRST_MEMORY, LAST_MEMORY, LOGIN, OTHER_MODEL, REFRESHED, Script,
-    conversed,
+    CONFIDED, DEFAULT_MODEL, FIRST_MEMORY, LAST_MEMORY, LOGIN, MUTTERED, OTHER_MODEL, OVERLONG,
+    REFRESHED, Script, conversed,
 };
 
 const SESSION: &str = "scripted";
@@ -167,7 +167,11 @@ async fn play(
     located: Option<PathBuf>,
     connection: &ConnectionTo<Client>,
 ) -> Result<StopReason> {
-    if script == Script::Dawdles {
+    if script == Script::Mutters {
+        eprintln!("{MUTTERED}");
+        eprintln!("{}", "a".repeat(OVERLONG));
+    }
+    if matches!(script, Script::Dawdles | Script::Mutters) {
         std::future::pending::<()>().await;
     }
     if script == Script::Lingers {

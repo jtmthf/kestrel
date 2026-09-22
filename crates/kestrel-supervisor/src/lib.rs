@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::mpsc;
+
 use crate::link::{Checkout, Exit, Instruction, Link, Report};
 use crate::runtime::{Conversation, Runtime};
 
@@ -17,6 +19,10 @@ const RECONNECT_AFTER: Duration = Duration::from_millis(250);
 /// Often enough that the control plane keeps its hold on this Environment through a handful
 /// of these going missing, and through the control plane itself restarting under it.
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(2);
+const STDERR_LINES_PER_REPORT: usize = 64;
+const STDERR_REPORT_PATIENCE: Duration = Duration::from_secs(5);
+/// Long enough for the last lines of an agent that has just exited, which are often why.
+const STDERR_DRAINING: Duration = Duration::from_secs(1);
 
 pub trait Diagnostics {
     fn info(&self, message: &str);
@@ -64,21 +70,31 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
             .info("no link to dial: set KESTREL_LINK, KESTREL_RUN and KESTREL_RUN_CREDENTIAL");
         return 1;
     };
+    let link = Arc::new(link);
+    let (stderr, written) = mpsc::unbounded_channel();
     let runtime = Runtime {
         command: set(variables, "KESTREL_AGENT_RUNTIME")
             .unwrap_or_default()
             .to_owned(),
         auth: set(variables, "KESTREL_AGENT_AUTH").map(str::to_owned),
         model: set(variables, "KESTREL_AGENT_MODEL").map(str::to_owned),
+        stderr,
     };
     let home = set(variables, "HOME").map(PathBuf::from);
-    let link = Arc::new(link);
 
     // Nothing else reaches the link while a turn is being worked, so this Environment says it
     // is alive beside the work rather than between the steps of it.
     let alive = tokio::spawn(saying_it_is_alive(Arc::clone(&link)));
+    let mut relaying = tokio::spawn(relaying_stderr(Arc::clone(&link), written));
     let status = attending(&link, &runtime, home.as_deref(), diagnostics).await;
     alive.abort();
+    drop(runtime);
+    if tokio::time::timeout(STDERR_DRAINING, &mut relaying)
+        .await
+        .is_err()
+    {
+        relaying.abort();
+    }
 
     status
 }
@@ -89,6 +105,17 @@ async fn saying_it_is_alive(link: Arc<Link>) {
         // Whether the link is there at all is the attending loop's to notice and reconnect
         // through; this one says what it can, whenever it can.
         let _ = link.report(&Report::Heartbeat, None).await;
+    }
+}
+
+/// A line the link was not there to take in time is lost, never queued behind a reconnect.
+async fn relaying_stderr(link: Arc<Link>, mut written: mpsc::UnboundedReceiver<String>) {
+    let mut lines = Vec::new();
+    while written.recv_many(&mut lines, STDERR_LINES_PER_REPORT).await > 0 {
+        let report = Report::Stderr {
+            lines: std::mem::take(&mut lines),
+        };
+        let _ = tokio::time::timeout(STDERR_REPORT_PATIENCE, link.report(&report, None)).await;
     }
 }
 

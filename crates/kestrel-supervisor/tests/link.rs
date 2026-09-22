@@ -160,6 +160,12 @@ fn everything_it_reports() -> Vec<(Option<i64>, Report)> {
     vec![
         (None, connected()),
         (None, Report::Heartbeat),
+        (
+            None,
+            Report::Stderr {
+                lines: vec!["level=INFO message=init".to_owned()],
+            },
+        ),
         (Some(1), Report::Started),
         (
             Some(2),

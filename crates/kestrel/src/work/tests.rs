@@ -267,6 +267,26 @@ async fn connection_and_heartbeat_reports_ignore_numbers_and_do_not_consume_them
 }
 
 #[tokio::test]
+async fn what_a_runtime_writes_to_stderr_never_enters_the_transcript_or_takes_a_number() {
+    let fixture = Fixture::new().await;
+    let before = fixture.entries().await;
+
+    fixture
+        .report(
+            None,
+            Report::Stderr {
+                lines: vec!["level=INFO message=init".to_owned()],
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(fixture.entries().await, before);
+    fixture.report(Some(1), Report::Started).await.unwrap();
+    assert_eq!(fixture.entries().await.len(), before.len() + 1);
+}
+
+#[tokio::test]
 async fn a_failed_append_rolls_back_the_run_change_and_report_acceptance() {
     let fixture = Fixture::new().await;
     complete(&fixture.store, &fixture.run).await.unwrap();

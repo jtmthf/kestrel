@@ -16,7 +16,7 @@ use agent_client_protocol::schema::v1::{
     SessionConfigValueId, SessionId, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, StopReason, TextContent,
 };
-use agent_client_protocol::{AcpAgent, Client, ConnectionTo, Error};
+use agent_client_protocol::{AcpAgent, Client, ConnectionTo, Error, LineDirection};
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -27,16 +27,22 @@ use crate::permission::{self, Subject};
 /// Nothing on the link carries work for a Run, so every Run asks the same thing.
 const PROMPT: &str = "Do the work this environment was provisioned for.";
 
-/// What this Environment was configured to drive, and what the Run asks of it. Which Agent
-/// Runtime is on the other end is the configuration's business, never this module's.
-#[derive(Debug, Default)]
+/// What this Environment was configured to drive, what the Run asks of it, and where what the
+/// agent writes to stderr goes. Which Agent Runtime is on the other end is the configuration's
+/// business, never this module's.
+#[derive(Debug, Clone)]
 pub struct Runtime {
     pub command: String,
     /// The ACP authentication method to log the agent in with, for an agent that requires one.
     pub auth: Option<String>,
     /// The model the Run named, if it named one.
     pub model: Option<String>,
+    pub stderr: mpsc::UnboundedSender<String>,
 }
+
+/// Long enough for any log line worth reading, and short enough that a runaway one costs the
+/// link little.
+const LINE_LIMIT: usize = 4 * 1024;
 
 /// One turn's account. `failed` says why the conversation is over; without it, the agent
 /// answered and waits for another prompt.
@@ -88,9 +94,7 @@ impl Conversation {
             .send(first)
             .expect("the conversation has not started, so nothing has hung up on it");
         let task = tokio::spawn(conversing(
-            runtime.command.clone(),
-            runtime.auth.clone(),
-            runtime.model.clone(),
+            runtime.clone(),
             provider,
             root,
             prompted,
@@ -136,9 +140,12 @@ impl Drop for Conversation {
 
 /// Everything that can go wrong here ends the conversation, and is its last turn.
 async fn conversing(
-    command: String,
-    auth: Option<String>,
-    model: Option<String>,
+    Runtime {
+        command,
+        auth,
+        model,
+        stderr,
+    }: Runtime,
     provider: BTreeMap<String, String>,
     root: PathBuf,
     mut prompts: mpsc::UnboundedReceiver<String>,
@@ -155,7 +162,12 @@ async fn conversing(
             return;
         }
     };
-    let spawn = AcpAgent::new(spawn.into_config().envs(provider));
+    let spawn =
+        AcpAgent::new(spawn.into_config().envs(provider)).with_debug(move |line, direction| {
+            if direction == LineDirection::Stderr {
+                let _ = stderr.send(bounded(line));
+            }
+        });
 
     let stopped = Client
         .builder()
@@ -431,6 +443,18 @@ fn selectable_values(options: &SessionConfigSelectOptions) -> impl Iterator<Item
     };
 
     values.into_iter()
+}
+
+fn bounded(line: &str) -> String {
+    if line.len() <= LINE_LIMIT {
+        return line.to_owned();
+    }
+
+    let mut end = LINE_LIMIT;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}… [truncated]", &line[..end])
 }
 
 /// Why a turn that stopped for anything but ending it ends the conversation too.
@@ -793,6 +817,25 @@ mod tests {
         let refused = unlogged_in(Error::invalid_params().data("no"), &[]);
 
         assert_eq!(refused.code, ErrorCode::InvalidParams);
+    }
+
+    #[test]
+    fn a_line_within_the_limit_is_carried_whole() {
+        assert_eq!(
+            bounded("level=INFO message=init"),
+            "level=INFO message=init"
+        );
+    }
+
+    #[test]
+    fn an_overlong_line_is_cut_short_and_says_so() {
+        let overlong = "é".repeat(LINE_LIMIT);
+
+        let carried = bounded(&overlong);
+
+        assert!(carried.starts_with(&"é".repeat(LINE_LIMIT / 2)));
+        assert!(carried.ends_with("… [truncated]"));
+        assert!(carried.len() < LINE_LIMIT + 64);
     }
 
     #[test]
