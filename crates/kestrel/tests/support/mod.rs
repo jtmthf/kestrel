@@ -33,8 +33,8 @@ use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
     Agent, CorrelationMiss, Direction, Event, EventRecordId, Exit, Fires, Integration, Occurrence,
-    Organization, Run, RunId, RunState, Session, SessionId, SubscriptionProfile, Templates,
-    Trigger, Turn, Workspace,
+    Organization, Run, RunId, RunState, Schedule, Session, SessionId, SubscriptionProfile,
+    Templates, Trigger, Turn, Workspace,
 };
 use kestrel::instance;
 use kestrel::integration::{self, Connecting, Registration};
@@ -663,7 +663,7 @@ impl Harness {
         &self,
         organization: &str,
         name: &str,
-        every: SignedDuration,
+        schedule: Schedule,
         templates: &Templates,
     ) -> anyhow::Result<Trigger> {
         trigger::declare(
@@ -671,7 +671,7 @@ impl Harness {
             Declaration {
                 organization,
                 name,
-                fires: &Fires::Every(every),
+                fires: &Fires::Scheduled(schedule),
                 templates,
                 on_miss: templates
                     .correlation
