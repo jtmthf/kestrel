@@ -277,3 +277,54 @@ async fn a_session_with_no_instance_has_nothing_to_release() {
 
     harness.teardown().await;
 }
+
+/// A Run between turns keeps its conversation open, but not its Session: once idle for the day,
+/// a clean checkout seals and the waiting Run ends with it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_waiting_between_turns_ends_when_its_clean_session_seals_idle() {
+    let runtime = working("true");
+    let harness = dispatching_to(&runtime).await;
+    let session = a_session(&harness).await;
+    let run = harness.enqueue_run(session.id).await;
+    let waiting = harness.answered(run.id, 1).await;
+    assert_eq!(waiting.state, RunState::Active);
+
+    harness.last_active(&session, a_day_ago()).await;
+
+    let session_id = session.id;
+    eventually("the idle sweep sealing the session", async || {
+        harness.show_session(session_id).await.state == SessionState::Sealed
+    })
+    .await;
+    assert_eq!(harness.run(run.id).await.exit, Some(Exit::Succeeded));
+    archived(&waiting.instance.expect("an instance")).await;
+
+    harness.teardown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_waiting_between_turns_over_unpublished_work_outlasts_the_idle_window() {
+    let runtime = working("echo untracked > kestrel/untracked");
+    let harness = dispatching_to(&runtime).await;
+    let session = a_session(&harness).await;
+    let run = harness.enqueue_run(session.id).await;
+    let waiting = harness.answered(run.id, 1).await;
+
+    harness.last_active(&session, a_day_ago()).await;
+    stays_open(&harness, &session).await;
+
+    assert_eq!(harness.run(run.id).await.state, RunState::Active);
+    let held = harness.held_instances("acme").await;
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].instance, waiting.instance.expect("an instance"));
+    assert!(
+        held[0].because.contains("1 untracked file"),
+        "{}",
+        held[0].because
+    );
+
+    harness.stop_run(run.id).await;
+    harness.teardown().await;
+}

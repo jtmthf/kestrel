@@ -127,9 +127,54 @@ pub async fn enqueue(store: &Store, session: SessionId, model: Option<&str>) -> 
 /// second claimant asking at the same moment is handed something else, or nothing.
 pub async fn claim(store: &Store, serialized: &[String]) -> Result<Option<Claimed>> {
     let mut tx = store.begin().await?;
+    let claimed = claiming(&mut tx, serialized, None).await?;
+    tx.commit().await?;
+
+    Ok(claimed)
+}
+
+pub enum Occupied {
+    Claimed(Claimed),
+    Resumed(Run),
+}
+
+/// A Run between turns holds no slot (ADR-0024), so a free one goes to whichever asked for it
+/// first: a queued Run, or input held for a Run between turns.
+pub async fn occupy(
+    store: &Store,
+    slots: usize,
+    serialized: &[String],
+) -> Result<Option<Occupied>> {
+    let mut tx = store.begin().await?;
+    if tx.sessions().occupying_slots().await? >= slots {
+        return Ok(None);
+    }
+
+    let held = tx.sessions().longest_held_for().await?;
+    let occupied =
+        match claiming(&mut tx, serialized, held.as_ref().map(|(_, since)| *since)).await? {
+            Some(claimed) => Occupied::Claimed(claimed),
+            None => {
+                let Some((run, _)) = held else {
+                    return Ok(None);
+                };
+                prompt_pending(&mut tx, &run).await?;
+                Occupied::Resumed(run)
+            }
+        };
+    tx.commit().await?;
+
+    Ok(Some(occupied))
+}
+
+async fn claiming(
+    tx: &mut Tx<'_>,
+    serialized: &[String],
+    enqueued_before: Option<Timestamp>,
+) -> Result<Option<Claimed>> {
     let Some(run) = tx
         .sessions()
-        .claim_run(Timestamp::now() + LEASE, serialized)
+        .claim_run(Timestamp::now() + LEASE, serialized, enqueued_before)
         .await?
     else {
         return Ok(None);
@@ -143,7 +188,6 @@ pub async fn claim(store: &Store, serialized: &[String]) -> Result<Option<Claime
             Timestamp::now() + CREDENTIAL_LIFETIME,
         )
         .await?;
-    tx.commit().await?;
 
     Ok(Some(Claimed { run, credential }))
 }
@@ -241,7 +285,6 @@ pub async fn report(
                 tx.sessions()
                     .record_active(run.session, Timestamp::now())
                     .await?;
-                prompt_pending(&mut tx, run).await?;
             }
             info!(run = %run.id, "a supervisor reported its agent answered a turn");
         }
@@ -458,11 +501,8 @@ async fn continue_pending(tx: &mut Tx<'_>, session: SessionId) -> Result<Option<
     Ok(Some(tx.sessions().enqueue_run(&session, None).await?))
 }
 
-/// What arrived during the turn just answered is the next one's prompt, in the same Run.
+/// Everything held for a Run between turns is its next prompt, in the same conversation.
 async fn prompt_pending(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
-    if tx.sessions().run(run.id).await?.state != RunState::Active {
-        return Ok(());
-    }
     let session = tx.sessions().get(run.session).await?;
     let pending = tx.sessions().take_pending_messages(&session).await?;
     if pending.is_empty() {

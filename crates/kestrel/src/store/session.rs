@@ -481,7 +481,7 @@ impl<'a> Sessions<'a> {
             .bind(run.session.to_string())
             .bind(run.state.as_str())
             .bind(&run.model)
-            .bind(run.enqueued_at.to_string())
+            .bind(due(run.enqueued_at))
             .execute(&mut *self.connection)
             .await
             .with_context(|| format!("enqueueing a run in the session {}", session.id))?;
@@ -514,7 +514,7 @@ impl<'a> Sessions<'a> {
         .bind(session.organization.id.to_string())
         .bind(participant)
         .bind(body)
-        .bind(Timestamp::now().to_string())
+        .bind(due(Timestamp::now()))
         .bind(session.id.to_string())
         .execute(&mut *self.connection)
         .await
@@ -636,6 +636,7 @@ impl<'a> Sessions<'a> {
         &mut self,
         lease_until: Timestamp,
         serialized: &[String],
+        enqueued_before: Option<Timestamp>,
     ) -> Result<Option<Run>> {
         let claimed = sqlx::query(
             "UPDATE run
@@ -662,6 +663,7 @@ impl<'a> Sessions<'a> {
                          AND s.runtime IN (SELECT value FROM json_each(?))
                          AND a.state = ?
                    )
+                   AND (? IS NULL OR r.enqueued_at < ?)
                  ORDER BY r.enqueued_at, r.id
                  LIMIT 1
              )
@@ -675,6 +677,8 @@ impl<'a> Sessions<'a> {
         .bind(Exit::Succeeded.status())
         .bind(serde_json::to_string(serialized)?)
         .bind(RunState::Active.as_str())
+        .bind(enqueued_before.map(due))
+        .bind(enqueued_before.map(due))
         .fetch_optional(&mut *self.connection)
         .await
         .context("claiming a queued run")?;
@@ -1189,6 +1193,58 @@ impl<'a> Sessions<'a> {
             })
         })
         .collect()
+    }
+
+    /// Claimed and not yet between turns: getting to its first, or mid-turn.
+    pub async fn occupying_slots(&mut self) -> Result<usize> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS occupying
+             FROM run AS r
+             WHERE r.state = ?
+               AND (
+                   NOT EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = r.id)
+                   OR EXISTS (
+                       SELECT 1 FROM turn AS t WHERE t.run_id = r.id AND t.answered_at IS NULL
+                   )
+               )",
+        )
+        .bind(RunState::Active.as_str())
+        .fetch_one(&mut *self.connection)
+        .await
+        .context("counting the runs occupying an active-work slot")?;
+
+        Ok(usize::try_from(row.get::<i64, _>("occupying"))?)
+    }
+
+    /// The Run between turns whose Session has held input for it longest, and since when.
+    pub async fn longest_held_for(&mut self) -> Result<Option<(Run, Timestamp)>> {
+        let row = sqlx::query(
+            "SELECT r.id, MIN(p.received_at) AS since
+             FROM run AS r
+             JOIN pending_message AS p ON p.session_id = r.session_id
+             WHERE r.state = ?
+               AND EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = r.id)
+               AND NOT EXISTS (
+                   SELECT 1 FROM turn AS t WHERE t.run_id = r.id AND t.answered_at IS NULL
+               )
+             GROUP BY r.id
+             ORDER BY since, r.id
+             LIMIT 1",
+        )
+        .bind(RunState::Active.as_str())
+        .fetch_optional(&mut *self.connection)
+        .await
+        .context("reading which run between turns has input held longest")?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let since = row.get::<String, _>("since").parse()?;
+
+        Ok(Some((
+            self.run(row.get::<String, _>("id").parse()?).await?,
+            since,
+        )))
     }
 
     /// Between turns: prompted at least once, and every prompt answered. A Run not yet

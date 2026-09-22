@@ -187,10 +187,12 @@ supervisor in it that clones the workspace's repositories and spawns an agent ru
 over the link. The container is the session's **instance**: every later run in the session starts a
 supervisor of its own in the same one.
 
-The work role dispatches up to two runs at once by default. That conservative default leaves room on
-a laptop for two repository checkouts, supervisors, and agent runtimes. Set
-`KESTREL_MAX_ACTIVE_RUNS` on the control-plane container, or pass `--max-active-runs RUNS`, to choose
-a different positive limit; runs beyond it remain queued until active ones end.
+The work role keeps up to two runs working at once by default. That conservative default leaves
+room on a laptop for two agent runtimes mid-turn. Set `KESTREL_MAX_ACTIVE_RUNS` on the control-plane
+container, or pass `--max-active-runs RUNS`, to choose a different positive limit. Only a run getting
+to its first turn or mid-turn counts against it: a run waiting between turns keeps its agent
+conversation and instance but frees its place, so another session can work meanwhile. Queued runs
+and follow-ups for waiting runs take a freed place in the order they arrived.
 
 ```sh
 kestrel run list --session latest

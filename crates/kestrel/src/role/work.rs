@@ -19,7 +19,7 @@ use crate::provider;
 use crate::session;
 use crate::store::Store;
 use crate::timer;
-use crate::work::{self, Claimed};
+use crate::work::{self, Claimed, Occupied};
 
 /// Nothing subscribes to `Fanout` at 0.1 (ADR-0005), so a queued Run is found by asking
 /// `Store` again rather than by being told.
@@ -118,14 +118,19 @@ async fn dispatching(
     while !shutdown.is_cancelled() {
         stop_left_behind(store, &dispatch.driver).await?;
         archive(store, &dispatch.driver).await?;
-        if active.len() < dispatch.max_active_runs.get()
-            && let Some(claimed) = work::claim(store, &dispatch.serialized).await?
-        {
-            let store = store.clone();
-            let dispatch = dispatch.clone();
-            let shutdown = shutdown.clone();
-            active.spawn(async move { execute(&store, &dispatch, claimed, &shutdown).await });
-            continue;
+        match work::occupy(store, dispatch.max_active_runs.get(), &dispatch.serialized).await? {
+            Some(Occupied::Claimed(claimed)) => {
+                let store = store.clone();
+                let dispatch = dispatch.clone();
+                let shutdown = shutdown.clone();
+                active.spawn(async move { execute(&store, &dispatch, claimed, &shutdown).await });
+                continue;
+            }
+            Some(Occupied::Resumed(run)) => {
+                info!(run = %run.id, "a run between turns was prompted with what was held for it");
+                continue;
+            }
+            None => {}
         }
 
         tokio::select! {

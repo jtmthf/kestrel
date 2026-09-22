@@ -170,7 +170,7 @@ impl Harness {
         Self::dispatching_runtimes_up_to(supervisor, runtimes, 2).await
     }
 
-    async fn dispatching_runtimes_up_to(
+    pub async fn dispatching_runtimes_up_to(
         supervisor: &Path,
         runtimes: &[(&str, &str)],
         maximum: usize,

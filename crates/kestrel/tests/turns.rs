@@ -322,3 +322,152 @@ async fn messages_arriving_mid_turn_are_the_next_turn_of_the_same_run() {
     harness.stop_run(run.id).await;
     harness.teardown().await;
 }
+
+/// One active-work slot, a builder that answers, and a dawdler whose turn never ends.
+async fn sharing_one_slot() -> Harness {
+    let harness = Harness::dispatching_runtimes_up_to(
+        supervisor::binary(),
+        &[
+            (RUNTIME, &scripted_agent::playing(Script::Converses)),
+            ("claude", &scripted_agent::playing(Script::Dawdles)),
+        ],
+        1,
+    )
+    .await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            repository::NAME,
+            &[repository::url().to_owned()],
+            repository::BRANCH,
+        )
+        .await;
+    harness
+        .declare_agent(&organization, "builder", RUNTIME, None)
+        .await;
+    harness
+        .declare_agent(&organization, "dawdler", "claude", None)
+        .await;
+    harness
+        .hold_provider_credential(
+            &organization,
+            support::PROVIDER_KEY,
+            support::A_PROVIDER_KEY,
+        )
+        .await;
+
+    harness
+}
+
+/// Long enough that a dispatcher that was going to prompt a Run has had many chances to.
+async fn not_prompted_again(harness: &Harness, run: kestrel::domain::RunId, turns: usize) {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    assert_eq!(
+        harness.turns(run).await.len(),
+        turns,
+        "the run {run} took a turn while another held the only slot"
+    );
+}
+
+#[tokio::test]
+async fn a_run_waiting_between_turns_leaves_its_slot_to_another_session() {
+    let harness = sharing_one_slot().await;
+    let waiting = harness.open_session("acme", "kestrel", "builder").await;
+    let working = harness.open_session("acme", "kestrel", "dawdler").await;
+
+    let first = harness
+        .post(waiting.id, "operator", "the first thing to do")
+        .await;
+    harness.answered(first.id, 1).await;
+    let second = harness.post(working.id, "operator", "work on").await;
+    prompted(&harness, second.id).await;
+
+    let continued = harness
+        .post_while_busy(waiting.id, "operator", "the second thing to do")
+        .await
+        .expect("a run between turns takes the message as its next prompt");
+    assert_eq!(continued.id, first.id);
+    not_prompted_again(&harness, first.id, 1).await;
+    assert!(harness.has_pending_messages(waiting.id).await);
+
+    harness.stop_run(second.id).await;
+    let answered = harness.answered(first.id, 2).await;
+
+    assert_eq!(answered.state, RunState::Active);
+    assert_eq!(harness.runs(waiting.id).await.len(), 1);
+    let said = said(&harness, waiting.id).await;
+    assert!(
+        said.get(1)
+            .is_some_and(|second| second.starts_with("turn 2, after: ")
+                && second.contains("the first thing to do")),
+        "the resumed run is not the same conversation: {said:?}"
+    );
+
+    harness.stop_run(first.id).await;
+    harness.teardown().await;
+}
+
+/// A freed slot goes to whichever asked for it first, so a chatty conversation cannot starve a
+/// Session that was queued before it spoke.
+#[tokio::test]
+async fn a_run_queued_before_a_follow_up_arrived_takes_the_freed_slot_first() {
+    let harness = sharing_one_slot().await;
+    let waiting = harness.open_session("acme", "kestrel", "builder").await;
+    let holding = harness.open_session("acme", "kestrel", "dawdler").await;
+    let queued = harness.open_session("acme", "kestrel", "dawdler").await;
+
+    let conversation = harness.post(waiting.id, "operator", "start").await;
+    harness.answered(conversation.id, 1).await;
+    let busy = harness.post(holding.id, "operator", "work on").await;
+    prompted(&harness, busy.id).await;
+    let next = harness.post(queued.id, "operator", "then this").await;
+    harness
+        .post_while_busy(waiting.id, "operator", "and one more thing")
+        .await
+        .expect("a run between turns takes the message as its next prompt");
+
+    harness.stop_run(busy.id).await;
+    prompted(&harness, next.id).await;
+    not_prompted_again(&harness, conversation.id, 1).await;
+
+    harness.stop_run(next.id).await;
+    harness.answered(conversation.id, 2).await;
+    harness.stop_run(conversation.id).await;
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_follow_up_held_before_a_run_was_queued_takes_the_freed_slot_first() {
+    let harness = sharing_one_slot().await;
+    let waiting = harness.open_session("acme", "kestrel", "builder").await;
+    let holding = harness.open_session("acme", "kestrel", "dawdler").await;
+    let queued = harness.open_session("acme", "kestrel", "dawdler").await;
+
+    let conversation = harness.post(waiting.id, "operator", "start").await;
+    harness.answered(conversation.id, 1).await;
+    let busy = harness.post(holding.id, "operator", "work on").await;
+    prompted(&harness, busy.id).await;
+    harness
+        .post_while_busy(waiting.id, "operator", "and one more thing")
+        .await
+        .expect("a run between turns takes the message as its next prompt");
+    let next = harness.post(queued.id, "operator", "then this").await;
+
+    harness.stop_run(busy.id).await;
+    harness.answered(conversation.id, 2).await;
+    prompted(&harness, next.id).await;
+
+    let resumed = harness.turns(conversation.id).await[1]
+        .answered_at
+        .expect("an answered turn");
+    assert!(
+        harness.turns(next.id).await[0].prompted_at > resumed,
+        "the queued run took the slot before the follow-up held ahead of it had its turn"
+    );
+
+    harness.stop_run(next.id).await;
+    harness.stop_run(conversation.id).await;
+    harness.teardown().await;
+}
