@@ -20,6 +20,7 @@ impl View {
 pub const ORGANIZATIONS: View = View::Rows(&["id", "name"]);
 pub const WORKSPACES: View = View::Rows(&["id", "name", "branch", "repositories"]);
 pub const AGENTS: View = View::Rows(&["id", "name", "runtime", "model"]);
+pub const AGENT_MODEL: View = View::Value("model");
 pub const CREDENTIAL: View = View::Value("variable");
 pub const CREDENTIALS: View = View::Rows(&["variable", "set_at"]);
 pub const PROFILES: View = View::Rows(&["id", "name", "owner", "holds"]);
@@ -69,6 +70,7 @@ pub const TRIGGER: View = View::Detail(&[
     "name",
     "state",
     "disabled_because",
+    "firing_budget",
     "every",
     "filter",
     "workspace",
@@ -78,6 +80,7 @@ pub const TRIGGER: View = View::Detail(&[
     "branch",
     "correlation",
     "on_miss",
+    "applied",
     "declared_at",
     "brief",
 ]);
@@ -90,6 +93,7 @@ pub const TRIGGER_TEST: View = View::Detail(&[
     "brief",
 ]);
 pub const TRIGGER_STATE: View = View::Value("state");
+pub const FIRED: View = View::Detail(&["outcome", "session", "run", "event", "correlation"]);
 pub const SESSIONS: View = View::Rows(&["id", "name", "state", "workspace", "agent", "started_by"]);
 pub const ENTRIES: View = View::Rows(&["seq", "appended_at", "entry"]);
 pub const SESSION: View = View::Detail(&[
@@ -101,6 +105,8 @@ pub const SESSION: View = View::Detail(&[
     "profile",
     "checkout.base",
     "checkout.branch",
+    "instance",
+    "held",
     "correlation",
     "state",
     "opened_at",
@@ -114,6 +120,7 @@ pub const RUNS: View = View::Rows(&[
     "id",
     "name",
     "state",
+    "waiting",
     "exit.status",
     "exit.because",
     "instance",
@@ -124,6 +131,7 @@ pub const RUN: View = View::Detail(&[
     "name",
     "session",
     "state",
+    "waiting",
     "exit.status",
     "exit.because",
     "instance",
@@ -138,6 +146,9 @@ pub const RUN: View = View::Detail(&[
     "supervisor_version",
     "usage",
 ]);
+pub const STOPPED: View = View::Value("exit.status");
+pub const INSTANCES: View = View::Rows(&["session", "instance", "because"]);
+pub const RELEASED: View = View::Value("instance");
 pub const STATUS: View = View::Detail(&[
     "control_plane",
     "control_plane_source",

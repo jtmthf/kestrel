@@ -282,7 +282,7 @@ async fn status_prints_every_resolved_value_its_source_what_exists_and_what_to_r
     assert_eq!(reported[0]["profiles"], 0);
     assert_eq!(
         reported[0]["next"],
-        "kestrel-client session open --workspace kestrel --agent builder"
+        "kestrel session open --workspace kestrel --agent builder"
     );
     harness.teardown().await;
 }
@@ -340,10 +340,7 @@ async fn status_explains_an_unresolved_scope_instead_of_failing() {
         reported[0]["organizations"],
         serde_json::json!(["acme", "globex"])
     );
-    assert_eq!(
-        reported[0]["next"],
-        "kestrel-client status --organization <name>"
-    );
+    assert_eq!(reported[0]["next"], "kestrel status --organization <name>");
     harness.teardown().await;
 }
 

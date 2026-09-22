@@ -12,24 +12,28 @@ RUN cargo build --locked --release --package kestrel
 FROM debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 
 # The Docker driver provisions an Environment by executing `docker`, so this image carries a
-# client whatever kestrel is linked against (ADR-0008).
+# client whatever kestrel is linked against (ADR-0008). `curl` is how a healthcheck asks the
+# operator boundary, since the image carries no kestrel Client to ask it with (ADR-0015).
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates docker-cli \
+    && apt-get install --yes --no-install-recommends ca-certificates curl docker-cli \
     && rm --recursive --force /var/lib/apt/lists/* \
     && useradd --create-home kestrel \
     && install --directory --owner kestrel --group kestrel /var/lib/kestrel
 
-COPY --from=build /src/target/release/kestrel /usr/local/bin/kestrel
+COPY --from=build /src/target/release/kestrel-control-plane /usr/local/bin/kestrel-control-plane
 
 ENV HOME=/home/kestrel
 ENV KESTREL_DATA_DIR=/var/lib/kestrel
 # Loopback is the right default for a binary on a laptop and unreachable in a container: what
-# dials the link is an Environment outside this one (ADR-0002).
+# dials the link is an Environment outside this one (ADR-0002), and what reaches the operator
+# boundary is a Client outside it. The operator boundary authenticates nobody, so publish it
+# on the host's loopback and nowhere else (ADR-0015).
 ENV KESTREL_LISTEN=0.0.0.0:7717
+ENV KESTREL_OPERATOR_LISTEN=0.0.0.0:7718
 
 VOLUME /var/lib/kestrel
-EXPOSE 7717
+EXPOSE 7717 7718
 USER kestrel
 WORKDIR /var/lib/kestrel
 
-ENTRYPOINT ["kestrel"]
+ENTRYPOINT ["kestrel-control-plane"]

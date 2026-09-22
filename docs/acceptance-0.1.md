@@ -39,7 +39,7 @@ docker compose up -d
 ## 3. Declare the organization, workspace and agent
 
 ```sh
-alias kestrel='docker compose exec kestrel kestrel'
+cargo install --locked --path crates/kestrel-client
 kestrel organization declare acme
 kestrel workspace declare kestrel --organization acme \
   --repository https://github.com/jtmthf/kestrel --branch main

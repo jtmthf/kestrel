@@ -25,7 +25,7 @@ struct Kestrel {
 impl Kestrel {
     fn spawn(args: &[&str]) -> Self {
         let data_dir = TempDir::new().expect("a temporary data directory");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_kestrel"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_kestrel-control-plane"))
             .args(args)
             .env("RUST_LOG", "info")
             .env("KESTREL_DATA_DIR", data_dir.path())

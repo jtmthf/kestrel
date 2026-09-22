@@ -4,7 +4,10 @@ The control plane: one image, every role selected by argv
 ([ADR-0002](../../docs/adr/0002-two-deployables-the-environment-dials-out.md)). With no command it
 starts every role in one process, which at `0.1` is the only supported topology.
 
-It carries the `kestrel` binary and a `docker` client. The client is not a convenience: the default
+It carries the `kestrel-control-plane` binary, a `docker` client, and `curl` for a healthcheck to
+ask the operator boundary with. It does not carry the `kestrel` Client: an operator installs that
+where they are, and it reaches the control plane over the operator boundary rather than from
+inside this container ([ADR-0015](../../docs/adr/0015-the-cli-is-a-client-not-a-role.md)). The client is not a convenience: the default
 `Compute` driver provisions an Environment by executing `docker`, so the work role in a container
 is only as real as the client beside it
 ([ADR-0008](../../docs/adr/0008-the-control-plane-ships-dynamically-linked.md), which also records
@@ -34,8 +37,10 @@ docker run --rm \
   --volume /var/run/docker.sock:/var/run/docker.sock \
   --user root \
   --publish 7717:7717 \
+  --publish 127.0.0.1:7718:7718 \
   --env KESTREL_LINK=http://host.docker.internal:7717 \
   ghcr.io/jtmthf/kestrel
+kestrel status
 ```
 
 **The database is on the volume, and nothing else is.** `KESTREL_DATA_DIR` is `/var/lib/kestrel`,
@@ -53,6 +58,12 @@ container ([ADR-0002](../../docs/adr/0002-two-deployables-the-environment-dials-
 binary's own default is loopback, which is the right default for a binary on a laptop and the wrong
 one in an image.
 
+**So does the operator boundary, and it authenticates nobody.** A Client outside the container is
+the only thing that reaches it, so it listens on every interface the container has, and the control
+plane warns that it does. Publish it on the host's loopback, as above, and on nothing else. Every
+network the container joins can reach it too, and that includes the one an Environment dials the
+link on.
+
 **Reaching the daemon by its socket costs the unprivileged user.** The image runs as `kestrel`, and
 a bind-mounted `/var/run/docker.sock` is root's, so a by-hand run either joins that group or is
 root — which is what `--user root` above is buying, and why it is not what a deployment should do.
@@ -64,10 +75,12 @@ makes and refuses the rest
 ## Roles
 
 ```sh
-docker run --rm … ghcr.io/jtmthf/kestrel serve              # the API and the link
-docker run --rm … ghcr.io/jtmthf/kestrel work               # claim queued Runs and execute them
-docker run --rm … ghcr.io/jtmthf/kestrel organization list  # every other command is the CLI role
+docker run --rm … ghcr.io/jtmthf/kestrel serve  # the operator boundary, the link and the webhooks
+docker run --rm … ghcr.io/jtmthf/kestrel work   # claim queued Runs and execute them
 ```
+
+Those are the only two. Anything an operator asks for goes through the `kestrel` Client to `serve`,
+never through a command run against the database in process.
 
 Splitting the roles across processes needs an out-of-process `Fanout` and `Timer`, which rung one
 does not have; the argv seam exists so that the deployment shapes that split them later need no

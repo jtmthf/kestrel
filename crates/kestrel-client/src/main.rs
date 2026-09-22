@@ -19,7 +19,7 @@ use crate::api::ControlPlane;
 use crate::output::{Presentation, show};
 use crate::scope::{Derived, Scope, Scoping, Source};
 
-const BINARY: &str = "kestrel-client";
+const BINARY: &str = "kestrel";
 const CONTROL_PLANE_VARIABLE: &str = "KESTREL_CONTROL_PLANE";
 const ORGANIZATION_VARIABLE: &str = "KESTREL_ORGANIZATION";
 
@@ -94,9 +94,12 @@ enum Command {
     /// Read Sessions
     #[command(subcommand)]
     Session(SessionCommand),
-    /// Show, enqueue and list Runs
+    /// Show, enqueue, list and stop Runs
     #[command(subcommand)]
     Run(RunCommand),
+    /// List the Instances held for work that exists nowhere else, and release them
+    #[command(subcommand)]
+    Instance(InstanceCommand),
     /// Print the resolved scope, where each value came from, what exists in it, and what to
     /// run next
     Status,
@@ -121,6 +124,7 @@ impl Command {
             | Command::Trigger(_)
             | Command::Session(_)
             | Command::Run(_)
+            | Command::Instance(_)
             | Command::Status => true,
             Command::Organization(_) => false,
             Command::Event(event) => match event {
@@ -282,17 +286,28 @@ enum EventCommand {
 
 #[derive(Debug, Subcommand)]
 enum TriggerCommand {
+    /// Make the Organization's applied Triggers what a declaration file says, printing the diff
+    Apply {
+        /// The declaration file, or `-` for standard input
+        #[arg(short = 'f', long, value_name = "FILE")]
+        file: String,
+        /// Print the diff without making it
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Declare a Trigger, or make the named one what this declaration describes
     Declare {
         /// The name it is referred to by
         name: String,
-        /// The Events it matches: a CloudEvents filter as JSON
+        /// The Events it matches: a CloudEvents filter as JSON; `@FILE` reads it from a file
+        /// and `-` from standard input
         #[arg(long, value_name = "JSON", required_unless_present = "every")]
         filter: Option<String>,
         /// Fire on a schedule in place of a filter
         #[arg(long, value_name = "DURATION", conflicts_with = "filter")]
         every: Option<String>,
-        /// The Brief a firing hands its Session, rendered over an Event
+        /// The Brief a firing hands its Session, rendered over an Event; `@FILE` reads it from
+        /// a file and `-` from standard input
         #[arg(long)]
         brief: String,
         /// The branch a firing's work happens on, rendered from the Event
@@ -327,9 +342,32 @@ enum TriggerCommand {
         /// The Event's record; absent tests the next elapsing of a scheduled Trigger
         #[arg(long)]
         event: Option<String>,
-        /// The instruction a dispatch supplies for the Brief to render
+        /// Test the Trigger as a declaration file declares it rather than as it was applied;
+        /// `-` for standard input
+        #[arg(short = 'f', long, value_name = "FILE")]
+        file: Option<String>,
+        /// The instruction a dispatch supplies for the Brief to render; `@FILE` reads it from a
+        /// file and `-` from standard input
         #[arg(long)]
         instruction: Option<String>,
+    },
+    /// Start a Trigger's work on an issue now, whether or not its filter matches anything
+    Dispatch {
+        /// The Trigger whose work starts
+        name: String,
+        /// The GitHub Integration the issue is read through, and its Outcome said back through
+        #[arg(long)]
+        integration: String,
+        /// The issue to work on
+        #[arg(long, value_name = "NUMBER")]
+        issue: i64,
+        /// The instruction the Brief reads as `instruction`; `@FILE` reads it from a file and
+        /// `-` from standard input
+        #[arg(long)]
+        instruction: Option<String>,
+        /// An Agent the Trigger allows, in place of the one it or a label would choose
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Stop a Trigger firing, without forgetting it
     Disable { name: String },
@@ -379,8 +417,32 @@ enum AgentCommand {
         #[arg(long)]
         model: Option<String>,
     },
+    /// Change the model an Agent works with, leaving every Run in flight on the one it has
+    Model {
+        /// The name it is referred to by
+        name: String,
+        /// The model it works with; left out, it names none and its Agent Runtime's default
+        /// is the answer
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// List every Agent in the Organization, one JSON record a line
     List,
+}
+
+#[derive(Debug, Subcommand)]
+enum InstanceCommand {
+    /// List every Instance kept because it may hold the only copy of its Session's work, and why
+    List,
+    /// Destroy a Session's Instance, discarding whatever it holds that was never pushed
+    Release {
+        /// The Session whose Instance it is, by generated name, identifier, any unambiguous
+        /// prefix of its identifier, or `latest`
+        session: String,
+        /// The participant releasing it
+        #[arg(long, default_value = "operator")]
+        as_participant: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -461,6 +523,11 @@ enum RunCommand {
     },
     /// Show a Run
     Show {
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
+        run: String,
+    },
+    /// End a Run: it succeeds between turns, and fails mid-turn or before it started
+    Stop {
         /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
         run: String,
     },
@@ -577,6 +644,18 @@ async fn main() -> Result<()> {
                 &view::DECLARED,
                 &api.post(&["organizations", &organization, "agents"], &declaration)
                     .await?,
+            )?;
+        }
+        Command::Agent(AgentCommand::Model { name, model }) => {
+            let organization = scoping.resolve().await?.organization;
+            show(
+                &presentation,
+                &view::AGENT_MODEL,
+                &api.put(
+                    &["organizations", &organization, "agents", &name, "model"],
+                    &json!({ "model": model }),
+                )
+                .await?,
             )?;
         }
         Command::Agent(AgentCommand::List) => {
@@ -736,11 +815,16 @@ async fn main() -> Result<()> {
             profile,
         }) => {
             let organization = scoping.resolve().await?.organization;
+            if filter.as_deref() == Some("-") && brief == "-" {
+                bail!("the filter and the brief cannot both be read from standard input");
+            }
             let filter = filter
                 .map(|filter| {
-                    serde_json::from_str::<Value>(&filter).context("a trigger filter is JSON")
+                    serde_json::from_str::<Value>(&given(&filter)?)
+                        .context("a trigger filter is JSON")
                 })
                 .transpose()?;
+            let brief = given(&brief)?;
             let mut declaration = json!({
                 "name": name,
                 "brief": brief,
@@ -761,11 +845,51 @@ async fn main() -> Result<()> {
             if let Some(every) = every {
                 declaration.insert("every".to_owned(), Value::String(every));
             }
+            let declared = api
+                .post(&["organizations", &organization, "triggers"], &declaration)
+                .await?;
+            if declared["admits_outsiders"] == true {
+                warn_of_outsiders(&name);
+            }
+            show(&presentation, &view::DECLARED, &declared)?;
+        }
+        Command::Trigger(TriggerCommand::Apply { file, dry_run }) => {
+            let organization = scoping.resolve().await?.organization;
+            let declarations = trigger_file(&file)?;
+            let mut path = vec!["organizations", organization.as_str(), "applied-triggers"];
+            if dry_run {
+                path.push("preview");
+            }
+            show_applied_triggers(&api.post(&path, &declarations).await?)?;
+        }
+        Command::Trigger(TriggerCommand::Dispatch {
+            name,
+            integration,
+            issue,
+            instruction,
+            agent,
+        }) => {
+            let organization = scoping.resolve().await?.organization;
+            let instruction = instruction.as_deref().map(given).transpose()?;
             show(
                 &presentation,
-                &view::DECLARED,
-                &api.post(&["organizations", &organization, "triggers"], &declaration)
-                    .await?,
+                &view::FIRED,
+                &api.post(
+                    &[
+                        "organizations",
+                        &organization,
+                        "triggers",
+                        &name,
+                        "dispatch",
+                    ],
+                    &json!({
+                        "integration": integration,
+                        "issue": issue,
+                        "instruction": instruction,
+                        "agent": agent,
+                    }),
+                )
+                .await?,
             )?;
         }
         Command::Trigger(TriggerCommand::List) => {
@@ -789,15 +913,23 @@ async fn main() -> Result<()> {
         Command::Trigger(TriggerCommand::Test {
             name,
             event,
+            file,
             instruction,
         }) => {
             let organization = scoping.resolve().await?.organization;
+            if file.as_deref() == Some("-") && instruction.as_deref() == Some("-") {
+                bail!(
+                    "the declaration file and the instruction cannot both be read from standard input"
+                );
+            }
+            let declared = file.as_deref().map(trigger_file).transpose()?;
+            let instruction = instruction.as_deref().map(given).transpose()?;
             show(
                 &presentation,
                 &view::TRIGGER_TEST,
                 &api.post(
                     &["organizations", &organization, "triggers", &name, "test"],
-                    &json!({ "event": event, "instruction": instruction }),
+                    &json!({ "event": event, "instruction": instruction, "declared": declared }),
                 )
                 .await?,
             )?;
@@ -953,6 +1085,49 @@ async fn main() -> Result<()> {
                     .await?,
             )?;
         }
+        Command::Run(RunCommand::Stop { run }) => {
+            let organization = scoping.resolve().await?.organization;
+            show(
+                &presentation,
+                &view::STOPPED,
+                &api.post(
+                    &["organizations", &organization, "runs", &run, "stop"],
+                    &json!({}),
+                )
+                .await?,
+            )?;
+        }
+        Command::Instance(InstanceCommand::List) => {
+            let organization = scoping.resolve().await?.organization;
+            show(
+                &presentation,
+                &view::INSTANCES,
+                &api.get(&["organizations", &organization, "instances"])
+                    .await?,
+            )?;
+        }
+        Command::Instance(InstanceCommand::Release {
+            session,
+            as_participant,
+        }) => {
+            let organization = scoping.resolve().await?.organization;
+            show(
+                &presentation,
+                &view::RELEASED,
+                &api.post(
+                    &[
+                        "organizations",
+                        &organization,
+                        "sessions",
+                        &session,
+                        "instance",
+                        "release",
+                    ],
+                    &json!({ "participant": as_participant }),
+                )
+                .await?,
+            )?;
+        }
         Command::Status => {
             let location = json!({
                 "control_plane": client.control_plane,
@@ -995,17 +1170,103 @@ enum Action {
 }
 
 fn declaration(file: &str) -> Result<Value> {
-    let mut text = String::new();
-    if file == "-" {
-        std::io::stdin()
-            .read_to_string(&mut text)
-            .context("reading the declaration from standard input")?;
-    } else {
-        text = std::fs::read_to_string(file)
-            .with_context(|| format!("reading the declaration file {file}"))?;
+    parsed(&read_file(file)?)
+}
+
+/// An empty file is sent as an empty mapping, so the control plane refuses it for the
+/// `triggers` it lacks rather than for being no mapping at all.
+fn trigger_file(file: &str) -> Result<Value> {
+    let text = read_file(file)?;
+    if text.trim().is_empty() {
+        return Ok(json!({}));
     }
 
-    yaml_serde::from_str(&text).context("reading the declaration file")
+    parsed(&text)
+}
+
+fn parsed(text: &str) -> Result<Value> {
+    yaml_serde::from_str(text).context("reading the declaration file")
+}
+
+fn read_file(file: &str) -> Result<String> {
+    if file == "-" {
+        return standard_input();
+    }
+
+    std::fs::read_to_string(file).with_context(|| format!("reading the declaration file {file}"))
+}
+
+fn given(value: &str) -> Result<String> {
+    if value == "-" {
+        return standard_input();
+    }
+    match value.strip_prefix('@') {
+        Some(path) => std::fs::read_to_string(path).with_context(|| format!("reading {path}")),
+        None => Ok(value.to_owned()),
+    }
+}
+
+fn standard_input() -> Result<String> {
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .context("reading standard input")?;
+
+    Ok(text)
+}
+
+#[derive(Deserialize)]
+struct AppliedTriggers {
+    changes: Vec<TriggerChange>,
+    admitting_outsiders: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct TriggerChange {
+    name: String,
+    action: TriggerAction,
+    differences: Vec<Difference>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TriggerAction {
+    Add,
+    Change,
+    Remove,
+}
+
+fn show_applied_triggers(value: &Value) -> Result<()> {
+    let applied: AppliedTriggers =
+        serde_json::from_value(value.clone()).context("reading the applied triggers")?;
+    if applied.changes.is_empty() {
+        println!("no changes");
+    }
+    for change in applied.changes {
+        let sign = match change.action {
+            TriggerAction::Add => '+',
+            TriggerAction::Change => '~',
+            TriggerAction::Remove => '-',
+        };
+        println!("{sign} {}", change.name);
+        show_differences(change.differences);
+    }
+    for name in applied.admitting_outsiders {
+        warn_of_outsiders(&name);
+    }
+
+    Ok(())
+}
+
+fn show_differences(differences: Vec<Difference>) {
+    for difference in differences {
+        println!("    {}", difference.field);
+        for (sign, value) in [('-', difference.was), ('+', difference.becomes)] {
+            for line in value.iter().flat_map(|value| value.lines()) {
+                println!("      {sign} {line}");
+            }
+        }
+    }
 }
 
 fn show_declaration(value: &Value) -> Result<()> {
@@ -1018,14 +1279,7 @@ fn show_declaration(value: &Value) -> Result<()> {
             Action::Unchanged => '=',
         };
         println!("{sign} {} {}", declared.kind, declared.name);
-        for difference in declared.differences {
-            println!("    {}", difference.field);
-            for (sign, value) in [('-', difference.was), ('+', difference.becomes)] {
-                for line in value.iter().flat_map(|value| value.lines()) {
-                    println!("      {sign} {line}");
-                }
-            }
-        }
+        show_differences(declared.differences);
     }
     for name in applied.admitting_outsiders {
         warn_of_outsiders(&name);

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::{CorrelationMiss, Fires, Templates, Trigger};
 use crate::filter::Filter;
@@ -20,28 +20,29 @@ pub struct Declared {
     pub profile: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Change {
     pub name: String,
     pub action: Action,
     pub differences: Vec<Difference>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Action {
     Add,
     Change,
     Remove,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Difference {
     pub field: &'static str,
     pub was: Option<String>,
     pub becomes: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Applied {
     pub changes: Vec<Change>,
     pub admitting_outsiders: Vec<String>,
@@ -51,7 +52,7 @@ pub struct Applied {
 /// removed; `triggers: {}` says that on purpose.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct File {
+pub struct File {
     triggers: BTreeMap<String, Entry>,
 }
 
@@ -71,8 +72,10 @@ struct Entry {
 }
 
 pub fn parse(text: &str) -> Result<Vec<Declared>> {
-    let file: File = yaml_serde::from_str(text).context("reading the declaration file")?;
+    declarations(yaml_serde::from_str(text).context("reading the declaration file")?)
+}
 
+pub fn declarations(file: File) -> Result<Vec<Declared>> {
     file.triggers
         .into_iter()
         .map(|(name, entry)| {

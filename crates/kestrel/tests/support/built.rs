@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn binary(package: &str) -> PathBuf {
+    named(package, package)
+}
+
+pub fn named(package: &str, binary: &str) -> PathBuf {
     let alongside = alongside_this_test();
     let profile = alongside
         .file_name()
@@ -27,13 +31,13 @@ pub fn binary(package: &str) -> PathBuf {
         String::from_utf8_lossy(&built.stderr)
     );
 
-    let binary = alongside.join(package);
+    let built = alongside.join(binary);
     assert!(
-        binary.exists(),
+        built.exists(),
         "cargo built {package}, but not to {}",
-        binary.display()
+        built.display()
     );
-    binary
+    built
 }
 
 fn alongside_this_test() -> PathBuf {

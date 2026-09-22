@@ -33,7 +33,7 @@ fn one_command_brings_up_a_working_kestrel() {
     let organization = stack.ran(&["organization", "declare", "acme"]);
     assert_eq!(
         stack.ran(&["organization", "list"]),
-        format!("{organization}  acme")
+        format!("{organization}\tacme")
     );
 }
 
@@ -68,6 +68,41 @@ fn the_operator_supplies_nothing() {
     assert_eq!(
         model["services"]["kestrel"]["environment"]["KESTREL_IMAGE"],
         "kestrel-env"
+    );
+    assert_eq!(
+        model["services"]["kestrel"]["ports"],
+        serde_json::json!([{
+            "mode": "ingress",
+            "host_ip": "127.0.0.1",
+            "target": 7718,
+            "published": "7718",
+            "protocol": "tcp",
+        }])
+    );
+}
+
+/// The operator boundary authenticates nobody (ADR-0015), so the port it is published on is
+/// the host's loopback in every rendering, and the healthcheck asks it over HTTP rather than
+/// running a Client the image does not carry.
+#[test]
+#[ignore = "renders the compose file with docker"]
+fn the_operator_boundary_is_published_on_the_hosts_loopback_and_probed_over_http() {
+    let model = model(compose::rendered_with_the_checkout_namespace());
+    let kestrel = &model["services"]["kestrel"];
+
+    let ports = kestrel["ports"].as_array().expect("published ports");
+    assert_eq!(ports.len(), 1, "{ports:?}");
+    assert_eq!(ports[0]["host_ip"], "127.0.0.1");
+    assert_eq!(ports[0]["target"], 7718);
+    let probe = kestrel["healthcheck"]["test"]
+        .as_array()
+        .expect("a healthcheck command");
+    assert_eq!(probe[..2], [Value::from("CMD"), Value::from("curl")]);
+    assert!(
+        probe
+            .iter()
+            .any(|argument| argument == "http://127.0.0.1:7718/operator/organizations"),
+        "{probe:?}"
     );
 }
 
@@ -234,7 +269,7 @@ async fn a_run_provisions_an_instance_and_stops_its_supervisor_through_the_filte
     let run = stack.ran(&["run", "enqueue", "--session", &session]);
 
     let instance = compose::until("the run to reach an instance", || {
-        listed(&stack, &session, &run).instance
+        listed(&stack, &run).instance
     });
     let container = Container::named(&instance);
     assert_eq!(instance, format!("docker/kestrel-{run}"));
@@ -259,9 +294,11 @@ async fn a_run_provisions_an_instance_and_stops_its_supervisor_through_the_filte
     // plane stopping under it rather than anything the agent did.
     stack.comes_back();
 
+    let went = listed(&stack, &run).exit;
+    assert_eq!(went["status"], "failed");
     assert_eq!(
-        listed(&stack, &session, &run).went,
-        "failed: the control plane stopped while this run was in flight"
+        went["because"],
+        "the control plane stopped while this run was in flight"
     );
     let left = container.processes();
     assert!(
@@ -276,62 +313,71 @@ async fn a_run_provisions_an_instance_and_stops_its_supervisor_through_the_filte
 fn the_stack_comes_back_up_with_every_session_it_had() {
     let stack = Stack::up();
     let session = a_session(&stack);
-    let shown = stack.ran(&["session", "show", &session]);
-    let transcript = stack.ran(&["session", "transcript", &session]);
+    let shown = stack.ran(&["session", "show", &session, "--json", SESSION]);
+    let transcript = stack.ran(&["session", "transcript", &session, "--json", "seq,entry"]);
 
     stack.comes_back();
 
-    assert_eq!(stack.ran(&["session", "show", &session]), shown);
-    assert_eq!(stack.ran(&["session", "transcript", &session]), transcript);
+    assert_eq!(
+        stack.ran(&["session", "show", &session, "--json", SESSION]),
+        shown
+    );
+    assert_eq!(
+        stack.ran(&["session", "transcript", &session, "--json", "seq,entry"]),
+        transcript
+    );
     assert!(
         !transcript.is_empty(),
         "nothing was transcribed for the restart to keep"
     );
 }
 
-/// The commands `USAGE.md` walks a reader through, minus the two its neighbours already cover:
-/// `a_run_provisions_an_instance_and_stops_its_supervisor_through_the_filter` covers enqueueing a Run, and
-/// `the_stack_comes_back_up_with_every_session_it_had` covers surviving a restart.
+/// The commands `USAGE.md` walks a reader through, run by the installed Client against the
+/// port the stack publishes, minus the two its neighbours already cover:
+/// `a_run_provisions_an_instance_and_stops_its_supervisor_through_the_filter` covers enqueueing
+/// a Run, and `the_stack_comes_back_up_with_every_session_it_had` covers surviving a restart.
 #[test]
 #[ignore = "builds images and brings a stack up"]
 fn the_commands_usage_documents_are_the_commands_that_work() {
     let stack = Stack::up();
     let session = a_session(&stack);
 
-    let shown = stack.ran(&["session", "show", &session]);
-    for line in [
-        format!("session       {session}"),
-        "organization  acme".to_owned(),
-        "workspace     kestrel".to_owned(),
-        "agent         builder".to_owned(),
-        "runtime       opencode".to_owned(),
-        "state         open".to_owned(),
-        "opened        ".to_owned(),
-    ] {
-        assert!(
-            shown.contains(&line),
-            "USAGE.md shows `{line}`, and `session show` said:\n{shown}"
-        );
-    }
+    let opened = shown(&stack, &session);
+    assert_eq!(opened["id"], session);
+    assert_eq!(opened["organization"], "acme");
+    assert_eq!(opened["workspace"], "kestrel");
+    assert_eq!(opened["agent"], "builder");
+    assert_eq!(opened["state"], "open");
+    assert!(opened["opened_at"].is_string(), "{opened}");
 
-    let transcript = stack.in_the_control_plane(&["kestrel", "session", "transcript", &session]);
+    let transcript = stack.client(&["session", "transcript", "latest"]);
     assert!(
-        transcript.out.contains("participant joined  builder"),
-        "USAGE.md shows the Agent joining as the first entry, and the transcript was:\n{transcript:?}"
+        transcript.out[0]
+            .ends_with("\t{\"kind\":\"participant_joined\",\"participant\":\"builder\"}"),
+        "USAGE.md shows the Agent joining as the first entry, and the transcript was:\n{:?}",
+        transcript.out
     );
     assert!(
         transcript.err.contains(&format!("cursor  {session}:1")),
-        "USAGE.md shows the cursor on stderr, and the transcript was:\n{transcript:?}"
+        "USAGE.md shows the cursor on stderr, and the transcript said:\n{}",
+        transcript.err
     );
 
-    stack.ran(&["session", "seal", &session]);
+    stack.ran(&["session", "seal", "latest"]);
 
-    assert!(
-        stack
-            .ran(&["session", "show", &session])
-            .contains("state         sealed"),
+    assert_eq!(
+        shown(&stack, &session)["state"],
+        "sealed",
         "USAGE.md says sealing is visible on the Session, and it was not"
     );
+}
+
+const SESSION: &str = "id,name,organization,workspace,agent,checkout,state,opened_at";
+
+fn shown(stack: &Stack, session: &str) -> Value {
+    let shown = stack.ran(&["session", "show", session, "--json", SESSION]);
+
+    serde_json::from_str(&shown).unwrap_or_else(|error| panic!("{shown} is no record: {error}"))
 }
 
 fn model(rendered: support::docker::Ran) -> Value {
@@ -345,24 +391,23 @@ fn a_session(stack: &Stack) -> String {
         "workspace",
         "declare",
         "kestrel",
-        "--organization",
-        "acme",
         "--repository",
         REPOSITORY,
         "--branch",
         "main",
     ]);
     // The Agent names no model, so the agent runtime's own default is what a Run would get.
-    stack.ran(&["agent", "declare", "builder", "--organization", "acme"]);
+    stack.ran(&["agent", "declare", "builder"]);
     // A Run reaches no model without one. This value reaches no provider either, which is why
     // nothing here gets further than an Environment.
-    stack.held_a_provider_credential("acme", "OPENCODE_API_KEY", "not-a-key");
+    stack.ran_given(
+        &["credential", "set", "OPENCODE_API_KEY"],
+        Some("not-a-key"),
+    );
 
     stack.ran(&[
         "session",
         "open",
-        "--organization",
-        "acme",
         "--workspace",
         "kestrel",
         "--agent",
@@ -372,22 +417,16 @@ fn a_session(stack: &Stack) -> String {
 
 struct Listed {
     instance: Option<String>,
-    went: String,
+    exit: Value,
 }
 
-/// A Run as `run list` shows it: the Instance it is on, and how it went.
-fn listed(stack: &Stack, session: &str, run: &str) -> Listed {
-    let listed = stack.ran(&["run", "list", "--session", session]);
-    let line = listed
-        .lines()
-        .find(|line| line.starts_with(run))
-        .unwrap_or_else(|| panic!("{run} is not among the session's runs:\n{listed}"));
-    let [_, instance, _model, went] = line.split("  ").collect::<Vec<_>>()[..] else {
-        panic!("a run is listed as {line:?}");
-    };
+fn listed(stack: &Stack, run: &str) -> Listed {
+    let shown = stack.ran(&["run", "show", run, "--json", "instance,exit"]);
+    let shown: Value =
+        serde_json::from_str(&shown).unwrap_or_else(|error| panic!("{shown} is no run: {error}"));
 
     Listed {
-        instance: (instance != "-").then(|| instance.to_owned()),
-        went: went.to_owned(),
+        instance: shown["instance"].as_str().map(str::to_owned),
+        exit: shown["exit"].clone(),
     }
 }
