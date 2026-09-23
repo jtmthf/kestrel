@@ -229,7 +229,7 @@ INFO kestrel::role::work: reported started 1 run=01a07846-5d97-7230-9315-bfef2a6
 Each line the agent runtime writes to stderr joins them as it is written, named for its run and
 never in the transcript: it is the runtime's own diagnostics, not the agent speaking. opencode is
 spawned with `--print-logs`, so its log is there by default; raise its level through the runtime
-table, as `--agent-runtime 'opencode=opencode acp --print-logs --log-level DEBUG'`. A line longer
+table, as `--agent-runtime 'opencode=opencode acp --print-logs --log-level debug'`. A line longer
 than 4 KiB is cut short and says so.
 
 ```
@@ -253,29 +253,45 @@ says plainly what the filter does not buy.
 
 ### Run on your own subscription
 
-A **subscription profile** is one person's login to a subscribed runtime: Codex through a ChatGPT
-plan, Claude Code through a Claude plan, or an OpenCode Go key. kestrel keeps it, so no image,
-checkout or provider account has to. It reaches only the runs of sessions that name it.
+A **subscription profile** is one person's access to a subscribed runtime: an OpenCode Go or Zen
+key, Codex through a ChatGPT plan, or Claude Code through a Claude plan. kestrel keeps it, so no
+image, checkout or provider account has to. It reaches only the runs of sessions that name it.
+
+An OpenCode Go or Zen subscription is an OpenCode-issued key, so it is a **variable** the agent
+runtime reads from its environment:
 
 ```sh
 kestrel profile declare jack --owner jack
+kestrel profile set jack --variable OPENCODE_API_KEY
+```
+
+The command waits for the key: paste it and press Ctrl-D. Each credential is read from standard
+input, sealed with the key beside the database, and never printed again. `kestrel profile list`
+shows a profile's owner and what it holds, by name only. A `--variable` goes into the agent
+runtime's environment.
+
+Codex and Claude log in with OAuth rather than a key, and opencode can too. Those are named as
+files or variables:
+
+```sh
 kestrel profile set jack --file .codex/auth.json < ~/.codex/auth.json
 kestrel profile set jack --file .local/share/opencode/auth.json < ~/.local/share/opencode/auth.json
 kestrel profile set jack --variable CLAUDE_CODE_OAUTH_TOKEN
 ```
 
-The last command waits for the token `claude setup-token` printed: paste it and press Ctrl-D. Each login is read from
-standard input, sealed with the key beside the database, and never printed again. `kestrel profile list` shows a profile's owner and what it holds, by name only. A `--variable`
-goes into the agent runtime's environment. A `--file` is written at that path beneath the agent's
-home when the run starts. When the run ends it is read back and removed from the instance, so a
-login the runtime refreshed there is the one the next run gets, on this instance or a fresh one. A
-profile belongs to the owner it was declared with, and redeclaring it under another owner is
-refused.
+A `--file` is written at that path beneath the agent's home when the run starts. When the run ends
+it is read back and removed from the instance, so a login the runtime refreshed there is the one
+the next run gets, on this instance or a fresh one. A profile belongs to the owner it was declared
+with, and redeclaring it under another owner is refused.
 
-Codex writes `auth.json` only when `cli_auth_credentials_store = "file"` is set where you log in.
-Claude Code keeps a macOS login in the Keychain rather than a file, which is why its token is held
-as a variable. Whether a Claude plan may be used through its ACP adapter is unsettled
-([ADR-0025](docs/adr/0025-subscription-profiles-are-personal.md)).
+opencode 2 keeps its credentials in a SQLite database, so an `auth.json` written there is a
+**seed**: the runtime imports it into a fresh database once and never writes it back. Refreshed
+OAuth tokens stay in the database, which kestrel does not carry, so an opencode OAuth login the
+provider rotates has to be supplied again — log in afresh and re-seed. The subscription key above
+does not rotate. Codex writes `auth.json` only when `cli_auth_credentials_store = "file"` is set
+where you log in. Claude Code keeps a macOS login in the Keychain rather than a file, which is why
+its token is held as a variable. Whether a Claude plan may be used through its ACP adapter is
+unsettled ([ADR-0025](docs/adr/0025-subscription-profiles-are-personal.md)).
 
 Name the profile when you open the session, or give a trigger's declaration `profile: jack`:
 

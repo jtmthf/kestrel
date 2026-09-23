@@ -321,12 +321,12 @@ mod tests {
         assert_eq!(
             spawned(&dispatch(&[
                 "--agent-runtime",
-                "opencode=opencode acp --pure",
+                "opencode=opencode acp --log-level debug",
                 "--agent-runtime",
                 "codex=codex-acp,claude=claude-agent-acp"
             ])),
             [
-                ("opencode", "opencode acp --pure"),
+                ("opencode", "opencode acp --log-level debug"),
                 ("codex", "codex-acp"),
                 ("claude", "claude-agent-acp"),
             ]

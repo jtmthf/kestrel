@@ -21,15 +21,23 @@ docker build --file images/kestrel-env/Dockerfile --tag kestrel-env .
 Almost everything the build pulls in is pinned: both base images by digest, the Rust toolchain by
 `rust-toolchain.toml`, the crates by `Cargo.lock` under `--locked`, and opencode by version and
 SHA-256. The exception is apt, which resolves `git` and `ca-certificates` to whatever the Debian
-release carries on the day — the one thing here that moves without the Dockerfile changing. The release carries no checksums of its own, so bumping `OPENCODE_VERSION` means bumping
-`OPENCODE_SHA256_AMD64` and `OPENCODE_SHA256_ARM64` beside it:
+release carries on the day — the one thing here that moves without the Dockerfile changing.
+
+opencode 2 is a standalone build from
+`https://opencode.ai/files/bin/<version>/opencode-linux-<arch>[-baseline].tar.gz`, not a GitHub
+release. That channel publishes no checksums file, so a bump reads the SHA-256 from upstream's
+update API, which maps each artifact to its URL and digest:
 
 ```sh
-curl --location --silent "https://github.com/sst/opencode/releases/download/v<version>/opencode-linux-x64.tar.gz" | sha256sum
+curl --location --silent "https://opencode.ai/update/api/latest/cli/opencode"
 ```
 
-The x64 release opencode publishes by default requires AVX2. A host without it wants the
-`-baseline` asset instead, which is a longer name in the same URL.
+Take `.version` for `OPENCODE_VERSION`, and `.metadata.files["opencode-linux-x64-baseline.tar.gz"].sha256`
+and `.metadata.files["opencode-linux-arm64.tar.gz"].sha256` for `OPENCODE_SHA256_AMD64` and
+`OPENCODE_SHA256_ARM64`. x64 takes the `-baseline` artifact, which does not require AVX2, so a host
+without it still runs; arm64 has no baseline variant and takes the default. Both are glibc builds,
+matching the Debian base. The documentation page lags the files site, so read the version from the
+update API rather than from it.
 
 CI writes the image's size and build time into every run's summary, so growth is visible in the run
 that causes it. The opencode binary is nearly all of the size.

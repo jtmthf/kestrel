@@ -30,9 +30,19 @@ fn the_supervisor_the_agent_runtime_and_git_are_each_invocable_in_the_image() {
 
     let opencode = image::running(&["opencode", "--version"]);
     assert_eq!(opencode.code, 0, "opencode in the image said {opencode:?}");
-    assert!(
-        !opencode.out.is_empty(),
-        "opencode in the image named no version"
+    // The output format is undocumented; the version is the last whitespace-separated token,
+    // with a leading `v` stripped, the way opencode's own installer reads it.
+    let version = opencode
+        .out
+        .split_whitespace()
+        .last()
+        .map(|token| token.trim_start_matches('v'))
+        .unwrap_or_default();
+    assert_eq!(
+        version.split('.').next(),
+        Some("2"),
+        "opencode in the image is not the major version kestrel ships: {:?}",
+        opencode.out
     );
 
     let supervisor = image::running(&["kestrel-supervisor"]);

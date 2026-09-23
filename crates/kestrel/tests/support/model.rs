@@ -170,7 +170,7 @@ fn calls_a_tool() -> Value {
                 "id": "call-1",
                 "type": "function",
                 "function": {
-                    "name": "bash",
+                    "name": "shell",
                     "arguments": json!({ "command": format!("touch {MARK}"), "description": "leave a mark" }).to_string(),
                 },
             }],
