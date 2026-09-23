@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,7 +22,11 @@ jobs:
         with:
           install_args: rust
 
+      # One cache shared by every job that compiles Rust; only a push to main writes it (ADR-0027).
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-dependencies
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -52,6 +57,9 @@ jobs:
           install_args: rust
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-dependencies
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build the image
         run: |
@@ -85,6 +93,9 @@ jobs:
           install_args: rust
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-dependencies
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       # kestrel_passes_its_own_checks compiles the workspace three times, so the scheduled
       # Development image workflow runs it instead.
@@ -107,6 +118,9 @@ jobs:
           install_args: rust
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-dependencies
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build the image
         run: |
@@ -133,6 +147,9 @@ jobs:
           install_args: rust
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-dependencies
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       # A checkout's compose suite is scoped to a namespace derived from its path, so the
       # stack comes up once at a time per checkout rather than once per machine.
