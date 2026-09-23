@@ -326,9 +326,24 @@ async fn a_delivered_label_opens_a_session_and_the_repository_is_not_polled() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    let requests = stub.requests();
     assert!(
-        stub.requests().is_empty(),
-        "a webhook-delivered repository was polled"
+        requests.iter().all(|request| {
+            !request.url.contains("/issues/events?") && !request.url.contains("/issues/comments?")
+        }),
+        "a webhook-delivered repository was polled: {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.url.ends_with("/issues/43")),
+        "the issue was not checked before start: {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.url.contains("/issues/43/dependencies/blocked_by?")),
+        "the issue's blockers were not checked before start: {requests:?}"
     );
 
     harness.teardown().await;

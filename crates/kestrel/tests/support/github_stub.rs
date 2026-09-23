@@ -81,8 +81,10 @@ pub fn issue(number: i64, labels: &[&str]) -> ScriptedResponse {
     ScriptedResponse::ok(
         serde_json::json!({
             "number": number,
+            "state": "open",
             "title": format!("an issue numbered {number}"),
             "html_url": format!("https://github.com/jtmthf/kestrel/issues/{number}"),
+            "assignees": [{ "login": "kestrel" }],
             "labels": labels
                 .iter()
                 .map(|name| serde_json::json!({ "name": name }))
@@ -279,8 +281,26 @@ fn respond(
         .lock()
         .expect("the endpoint queues should not be poisoned")
         .iter_mut()
-        .find(|endpoint| method == endpoint.method && url.contains(&endpoint.path))
+        .filter(|endpoint| {
+            method == endpoint.method
+                && url.contains(&endpoint.path)
+                && !endpoint.responses.is_empty()
+        })
+        .max_by_key(|endpoint| endpoint.path.len())
         .and_then(|endpoint| endpoint.responses.pop_front());
+    let scripted = scripted.or_else(|| {
+        if method != "GET" {
+            return None;
+        }
+        let tail = url.split("/issues/").nth(1)?;
+        if let Ok(number) = tail.parse::<i64>() {
+            Some(issue(number, &[]))
+        } else if tail.contains("/dependencies/blocked_by?") {
+            Some(page(&[]))
+        } else {
+            None
+        }
+    });
     let scripted = scripted.or_else(|| {
         if method == "GET" && url.contains("/issues/comments?") {
             Some(ScriptedResponse::ok("[]"))

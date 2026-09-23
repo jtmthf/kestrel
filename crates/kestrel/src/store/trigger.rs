@@ -537,6 +537,16 @@ impl<'a> Triggers<'a> {
             .await
     }
 
+    pub async fn record_held_firing(
+        &mut self,
+        trigger: &Trigger,
+        event: &Event,
+        because: &str,
+    ) -> Result<()> {
+        self.record(trigger, event, None, "held", Some(because))
+            .await
+    }
+
     async fn record(
         &mut self,
         trigger: &Trigger,
