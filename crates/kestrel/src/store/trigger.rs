@@ -6,8 +6,8 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 use crate::cron::Cron;
 use crate::domain::{
     Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
-    Organization, Schedule, Session, SessionId, SubscriptionProfile, Templates, Trigger,
-    TriggerId, TriggerState, Workspace,
+    Organization, Schedule, Session, SessionId, SubscriptionProfile, Templates, Trigger, TriggerId,
+    TriggerState, Workspace,
 };
 use crate::filter::{Attribute, Filter};
 use crate::store::{agent, integration, organization, profile, workspace};

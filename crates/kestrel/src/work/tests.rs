@@ -17,7 +17,12 @@ impl Fixture {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).await.unwrap();
         let mut tx = store.begin().await.unwrap();
-        let organization = tx.organizations().declare("acme").await.unwrap().record;
+        let organization = tx
+            .organizations()
+            .declare("acme", None)
+            .await
+            .unwrap()
+            .record;
         tx.workspaces()
             .declare(&organization, "kestrel", &[], "main")
             .await

@@ -195,6 +195,7 @@ mod tests {
         let organization = Organization {
             id: OrganizationId::generate(),
             name: "acme".to_owned(),
+            max_live_instances: None,
         };
 
         Session {
@@ -238,6 +239,7 @@ mod tests {
             organization: session.organization.id,
             session: session.id,
             state: RunState::Ended,
+            waiting_for: None,
             exit: None,
             instance: None,
             supervisor: None,

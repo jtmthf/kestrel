@@ -33,7 +33,7 @@ fn one_command_brings_up_a_working_kestrel() {
     let organization = stack.ran(&["organization", "declare", "acme"]);
     assert_eq!(
         stack.ran(&["organization", "list"]),
-        format!("{organization}\tacme")
+        format!("{organization}\tacme\t-")
     );
 }
 

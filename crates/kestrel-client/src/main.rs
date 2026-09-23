@@ -392,10 +392,13 @@ enum TriggerCommand {
 
 #[derive(Debug, Subcommand)]
 enum OrganizationCommand {
-    /// Declare an Organization; declaring one that exists changes nothing
+    /// Declare an Organization, or change its live Instance limit
     Declare {
         /// The name it is referred to by
         name: String,
+        /// The most Instances the Organization may keep live at once
+        #[arg(long)]
+        max_live_instances: Option<std::num::NonZeroUsize>,
     },
     /// List every Organization, one JSON record a line
     List,
@@ -598,12 +601,18 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
-        Command::Organization(OrganizationCommand::Declare { name }) => {
+        Command::Organization(OrganizationCommand::Declare {
+            name,
+            max_live_instances,
+        }) => {
             show(
                 &presentation,
                 &view::DECLARED,
-                &api.post(&["organizations"], &json!({ "name": name }))
-                    .await?,
+                &api.post(
+                    &["organizations"],
+                    &json!({ "name": name, "max_live_instances": max_live_instances }),
+                )
+                .await?,
             )?;
         }
         Command::Organization(OrganizationCommand::List) => {

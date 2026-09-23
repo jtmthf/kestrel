@@ -65,6 +65,11 @@ With one organization, every command below applies to it without being told. Onc
 each needs `--organization`, `KESTREL_ORGANIZATION`, or a committed `.kestrel/organization` naming
 one, and refuses to guess.
 
+Add `--max-live-instances N` to bound the active, idle, and held Instances the Organization keeps.
+When the bound is full, clean idle Instances are archived oldest-first; work waits visibly when
+every idle Instance may hold unpublished work. A follow-up in an existing Session keeps using its
+Instance regardless of the bound.
+
 A **workspace** is what a session's work happens against — repositories and the base branch each
 session's own branch is cut from. Repeat `--repository` to name more than one.
 

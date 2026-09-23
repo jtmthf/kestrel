@@ -156,6 +156,7 @@ pub async fn occupy(
             Some(claimed) => Occupied::Claimed(claimed),
             None => {
                 let Some((run, _)) = held else {
+                    tx.commit().await?;
                     return Ok(None);
                 };
                 prompt_pending(&mut tx, &run).await?;
@@ -172,24 +173,38 @@ async fn claiming(
     serialized: &[String],
     enqueued_before: Option<Timestamp>,
 ) -> Result<Option<Claimed>> {
-    let Some(run) = tx
+    let claimable = tx
         .sessions()
-        .claim_run(Timestamp::now() + LEASE, serialized, enqueued_before)
-        .await?
-    else {
-        return Ok(None);
-    };
-
-    let credential = Secret::mint();
-    tx.sessions()
-        .issue_credential(
-            &run,
-            &credential.digest(),
-            Timestamp::now() + CREDENTIAL_LIFETIME,
-        )
+        .claimable_runs(serialized, enqueued_before)
         .await?;
+    for queued in claimable {
+        let session = tx.sessions().get(queued.session).await?;
+        match crate::instance::admit(tx, &session).await? {
+            crate::instance::Admission::Available => {
+                let Some(run) = tx
+                    .sessions()
+                    .claim_run(&queued, Timestamp::now() + LEASE)
+                    .await?
+                else {
+                    continue;
+                };
+                let credential = Secret::mint();
+                tx.sessions()
+                    .issue_credential(
+                        &run,
+                        &credential.digest(),
+                        Timestamp::now() + CREDENTIAL_LIFETIME,
+                    )
+                    .await?;
+                return Ok(Some(Claimed { run, credential }));
+            }
+            crate::instance::Admission::Waiting(because) => {
+                tx.sessions().wait_for_instance(&queued, &because).await?;
+            }
+        }
+    }
 
-    Ok(Some(Claimed { run, credential }))
+    Ok(None)
 }
 
 pub async fn run(store: &Store, id: RunId) -> Result<Run> {

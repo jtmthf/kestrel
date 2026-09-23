@@ -55,6 +55,7 @@ identifiers!(
 pub struct Organization {
     pub id: OrganizationId,
     pub name: String,
+    pub max_live_instances: Option<NonZeroUsize>,
 }
 
 #[derive(Debug, Clone)]
@@ -527,6 +528,7 @@ pub struct Run {
     pub organization: OrganizationId,
     pub session: SessionId,
     pub state: RunState,
+    pub waiting_for: Option<String>,
     pub exit: Option<Exit>,
     pub instance: Option<String>,
     pub supervisor: Option<String>,

@@ -271,7 +271,22 @@ impl Harness {
         let mut tx = self.store.begin().await.expect("a transaction");
         let organization = tx
             .organizations()
-            .declare(name)
+            .declare(name, None)
+            .await
+            .expect("the organization should declare")
+            .record;
+        tx.commit().await.expect("the declaration should commit");
+        organization
+    }
+
+    pub async fn declare_limited_organization(&self, name: &str, maximum: usize) -> Organization {
+        let mut tx = self.store.begin().await.expect("a transaction");
+        let organization = tx
+            .organizations()
+            .declare(
+                name,
+                Some(NonZeroUsize::new(maximum).expect("at least one live instance")),
+            )
             .await
             .expect("the organization should declare")
             .record;
@@ -1062,6 +1077,17 @@ impl Harness {
             .expect("the claim should ask")
     }
 
+    pub async fn occupy_run(&self) -> Option<Claimed> {
+        match work::occupy(&self.store, 2, &[SERIALIZED.to_owned()])
+            .await
+            .expect("the occupancy should ask")
+        {
+            Some(work::Occupied::Claimed(claimed)) => Some(claimed),
+            Some(work::Occupied::Resumed(_)) => panic!("no run should resume"),
+            None => None,
+        }
+    }
+
     /// Prompts a Run between turns with what is held for it, the way the work role's sweep does.
     pub async fn prompt_waiting(&self) {
         work::occupy(&self.store, 1, &[SERIALIZED.to_owned()])
@@ -1190,6 +1216,37 @@ impl Harness {
         work::supervised(&self.store, run, supervisor)
             .await
             .expect("the supervisor should be recorded");
+    }
+
+    pub async fn executes_on(&self, run: &Run, instance: &str) {
+        work::executes_on(&self.store, run, instance)
+            .await
+            .expect("the instance should be recorded");
+    }
+
+    pub async fn report_checkout(&self, run: &Run, repositories: Vec<instance::Observed>) {
+        work::report(
+            &self.store,
+            run,
+            work::Reported {
+                seq: Some(1),
+                report: work::Report::Checkout { repositories },
+            },
+        )
+        .await
+        .expect("the checkout should be reported");
+    }
+
+    pub async fn instances_to_archive(&self) -> Vec<String> {
+        instance::to_archive(&self.store)
+            .await
+            .expect("the instances to archive should read")
+    }
+
+    pub async fn instance_archived(&self, instance: &str) {
+        instance::archived(&self.store, instance)
+            .await
+            .expect("the instance should be recorded archived");
     }
 
     pub async fn supervisors_to_stop(&self) -> Vec<(Run, String)> {

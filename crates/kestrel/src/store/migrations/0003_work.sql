@@ -9,6 +9,7 @@ ALTER TABLE run ADD COLUMN heartbeat_at TEXT;
 ALTER TABLE run ADD COLUMN instance TEXT;
 ALTER TABLE run ADD COLUMN exit TEXT;
 ALTER TABLE run ADD COLUMN exit_because TEXT;
+ALTER TABLE run ADD COLUMN waiting_for TEXT;
 
 CREATE TABLE turn (
     run_id TEXT NOT NULL REFERENCES run (id),

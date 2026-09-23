@@ -16,7 +16,7 @@ use crate::store::{agent, due, organization, profile, timestamp, workspace};
 macro_rules! runs_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, name, organization_id, session_id, state, exit, exit_because, instance, supervisor,
+            "SELECT id, name, organization_id, session_id, state, waiting_for, exit, exit_because, instance, supervisor,
                     enqueued_at, started_at, ended_at, lease_expires_at, connected_at,
                     supervisor_version, model, worked_model, context_used, context_size, cost_amount,
                     cost_currency
@@ -466,6 +466,7 @@ impl<'a> Sessions<'a> {
                 organization: session.organization.id,
                 session: session.id,
                 state: RunState::Queued,
+                waiting_for: None,
                 exit: None,
                 instance: None,
                 supervisor: None,
@@ -622,65 +623,51 @@ impl<'a> Sessions<'a> {
     /// but never claimed and never carrying an exit status, because nothing failed. `false`
     /// when the Run was no longer queued, so a claimant that got there first stands.
     pub async fn mark_unreachable(&mut self, run: &Run) -> Result<bool> {
-        let marked =
-            sqlx::query("UPDATE run SET state = ?, ended_at = ? WHERE id = ? AND state = ?")
-                .bind(RunState::Unreachable.as_str())
-                .bind(Timestamp::now().to_string())
-                .bind(run.id.to_string())
-                .bind(RunState::Queued.as_str())
-                .execute(&mut *self.connection)
-                .await
-                .with_context(|| format!("marking the run {} unreachable", run.id))?;
+        let marked = sqlx::query(
+            "UPDATE run SET state = ?, waiting_for = NULL, ended_at = ?
+                 WHERE id = ? AND state = ?",
+        )
+        .bind(RunState::Unreachable.as_str())
+        .bind(Timestamp::now().to_string())
+        .bind(run.id.to_string())
+        .bind(RunState::Queued.as_str())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("marking the run {} unreachable", run.id))?;
 
         Ok(marked.rows_affected() > 0)
     }
 
-    /// One statement, so two claimants cannot both take the same Run: the Run this returns
-    /// was queued when the statement began, and is active and holding its lease by the time
-    /// anyone else looks. A Run with a blocker that has not ended successfully is removed
-    /// from the ready order, never reordered around.
-    /// A Run on a `serialized` runtime waits while another Run on that runtime is active with
-    /// the same Subscription Profile, because two copies of one rotating login race to refresh it.
-    pub async fn claim_run(
+    pub async fn claimable_runs(
         &mut self,
-        lease_until: Timestamp,
         serialized: &[String],
         enqueued_before: Option<Timestamp>,
-    ) -> Result<Option<Run>> {
-        let claimed = sqlx::query(
-            "UPDATE run
-             SET state = ?, claimed_at = ?, lease_expires_at = ?
-             WHERE id = (
-                 SELECT r.id
-                 FROM run AS r
-                 WHERE r.state = ?
-                   AND NOT EXISTS (
-                       SELECT 1
-                       FROM run_dependency AS d
-                       JOIN run AS b ON b.id = d.blocker_id
-                       WHERE d.run_id = r.id
-                         AND NOT (b.state = ? AND b.exit IS ?)
-                   )
-                   AND NOT EXISTS (
-                       SELECT 1
-                       FROM session AS s
-                       JOIN session AS o
-                         ON o.subscription_profile_id = s.subscription_profile_id
-                        AND o.runtime = s.runtime
-                       JOIN run AS a ON a.session_id = o.id
-                       WHERE s.id = r.session_id
-                         AND s.runtime IN (SELECT value FROM json_each(?))
-                         AND a.state = ?
-                   )
-                   AND (? IS NULL OR r.enqueued_at < ?)
-                 ORDER BY r.enqueued_at, r.id
-                 LIMIT 1
-             )
-             RETURNING id",
+    ) -> Result<Vec<Run>> {
+        let ids = sqlx::query(
+            "SELECT r.id
+             FROM run AS r
+             WHERE r.state = ?
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM run_dependency AS d
+                   JOIN run AS b ON b.id = d.blocker_id
+                   WHERE d.run_id = r.id
+                     AND NOT (b.state = ? AND b.exit IS ?)
+               )
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM session AS s
+                   JOIN session AS o
+                     ON o.subscription_profile_id = s.subscription_profile_id
+                    AND o.runtime = s.runtime
+                   JOIN run AS a ON a.session_id = o.id
+                   WHERE s.id = r.session_id
+                     AND s.runtime IN (SELECT value FROM json_each(?))
+                     AND a.state = ?
+               )
+               AND (? IS NULL OR r.enqueued_at < ?)
+             ORDER BY r.enqueued_at, r.id",
         )
-        .bind(RunState::Active.as_str())
-        .bind(Timestamp::now().to_string())
-        .bind(due(lease_until))
         .bind(RunState::Queued.as_str())
         .bind(RunState::Ended.as_str())
         .bind(Exit::Succeeded.status())
@@ -688,16 +675,48 @@ impl<'a> Sessions<'a> {
         .bind(RunState::Active.as_str())
         .bind(enqueued_before.map(due))
         .bind(enqueued_before.map(due))
+        .fetch_all(&mut *self.connection)
+        .await
+        .context("reading claimable runs")?;
+
+        let mut runs = Vec::with_capacity(ids.len());
+        for id in ids {
+            runs.push(self.run(id.get::<String, _>("id").parse()?).await?);
+        }
+        Ok(runs)
+    }
+
+    pub async fn claim_run(&mut self, run: &Run, lease_until: Timestamp) -> Result<Option<Run>> {
+        let claimed = sqlx::query(
+            "UPDATE run
+             SET state = ?, waiting_for = NULL, claimed_at = ?, lease_expires_at = ?
+             WHERE id = ? AND state = ?
+             RETURNING id",
+        )
+        .bind(RunState::Active.as_str())
+        .bind(Timestamp::now().to_string())
+        .bind(due(lease_until))
+        .bind(run.id.to_string())
+        .bind(RunState::Queued.as_str())
         .fetch_optional(&mut *self.connection)
         .await
-        .context("claiming a queued run")?;
+        .with_context(|| format!("claiming the queued run {}", run.id))?;
 
         match claimed {
-            Some(claimed) => Ok(Some(
-                self.run(claimed.get::<String, _>("id").parse()?).await?,
-            )),
+            Some(_) => Ok(Some(self.run(run.id).await?)),
             None => Ok(None),
         }
+    }
+
+    pub async fn wait_for_instance(&mut self, run: &Run, because: &str) -> Result<()> {
+        sqlx::query("UPDATE run SET waiting_for = ? WHERE id = ? AND state = ?")
+            .bind(because)
+            .bind(run.id.to_string())
+            .bind(RunState::Queued.as_str())
+            .execute(&mut *self.connection)
+            .await
+            .with_context(|| format!("recording why the run {} is waiting", run.id))?;
+        Ok(())
     }
 
     pub async fn run(&mut self, id: RunId) -> Result<Run> {
@@ -856,6 +875,44 @@ impl<'a> Sessions<'a> {
             .context("reading the instances waiting to be archived")
     }
 
+    pub async fn live_instance_count(&mut self, organization: &Organization) -> Result<usize> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT
+                 (SELECT COUNT(*) FROM session WHERE organization_id = ? AND instance IS NOT NULL)
+               + (SELECT COUNT(*) FROM instance_archive WHERE organization_id = ?)
+               + (SELECT COUNT(*)
+                  FROM run
+                  JOIN session ON session.id = run.session_id
+                  WHERE run.organization_id = ?
+                    AND run.state = ?
+                    AND session.instance IS NULL)",
+        )
+        .bind(organization.id.to_string())
+        .bind(organization.id.to_string())
+        .bind(organization.id.to_string())
+        .bind(RunState::Active.as_str())
+        .fetch_one(&mut *self.connection)
+        .await
+        .context("counting an organization's live instances")?;
+        Ok(count as usize)
+    }
+
+    pub async fn instance_being_archived(
+        &mut self,
+        organization: &Organization,
+    ) -> Result<Option<String>> {
+        sqlx::query_scalar(
+            "SELECT instance FROM instance_archive
+             WHERE organization_id = ?
+             ORDER BY queued_at, instance
+             LIMIT 1",
+        )
+        .bind(organization.id.to_string())
+        .fetch_optional(&mut *self.connection)
+        .await
+        .context("reading an organization's instance being archived")
+    }
+
     pub async fn instance_archived(&mut self, instance: &str) -> Result<()> {
         sqlx::query("DELETE FROM instance_archive WHERE instance = ?")
             .bind(instance)
@@ -1007,7 +1064,7 @@ impl<'a> Sessions<'a> {
     pub async fn end_run(&mut self, run: &Run, exit: &Exit) -> Result<bool> {
         let ended = sqlx::query(
             "UPDATE run
-             SET state = ?, ended_at = ?, exit = ?, exit_because = ?, lease_expires_at = NULL
+             SET state = ?, waiting_for = NULL, ended_at = ?, exit = ?, exit_because = ?, lease_expires_at = NULL
              WHERE id = ? AND state != ?",
         )
         .bind(RunState::Ended.as_str())
@@ -1370,6 +1427,7 @@ fn run(row: &SqliteRow) -> Result<Run> {
         organization: row.get::<String, _>("organization_id").parse()?,
         session: row.get::<String, _>("session_id").parse()?,
         state: row.get::<String, _>("state").parse()?,
+        waiting_for: row.get("waiting_for"),
         exit: exit
             .map(|status| Exit::read(&status, row.get("exit_because")))
             .transpose()?,
