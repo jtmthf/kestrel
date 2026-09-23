@@ -3,13 +3,17 @@
 # The second agent the conformance suite runs against is reached through an adapter that is a
 # Node program, and the shipped image carries neither (ADR-0007), so it is built into a copy.
 
+# What the run is consuming is what CI built for the change, or a locally built `kestrel-env:test`.
+# Declared before the first stage, because only then does it reach a `FROM`.
+ARG KESTREL_ENV=kestrel-env:test
+
 # node:24-trixie-slim
 FROM node@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0 AS adapter
 
 ARG CODEX_ACP_VERSION=1.10.0
 RUN npm install --global "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}"
 
-FROM kestrel-env:test
+FROM ${KESTREL_ENV}
 
 USER root
 # Merged rather than replaced, so what the shipped image already puts here stays.
