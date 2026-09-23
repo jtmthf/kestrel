@@ -1,5 +1,8 @@
 # A Provider Credential crosses the link at the spawn
 
+> **Amended by [ADR-0028](0028-an-integration-lends-a-run-its-identity.md).** A credential an
+> Integration issues crosses each time it is used, not once at the spawn.
+
 The secret an agent reaches a model provider with belongs to the **Organization**. It is encrypted
 in kestrel's database, decrypted only when an **Environment** says it is about to spawn its **Agent
 Runtime**, carried over the link for that one **Run**, and put into that process's environment.

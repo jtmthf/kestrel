@@ -119,7 +119,8 @@ _Avoid_: dedup key, thread id, subject
 **Integration**:
 A configured, credentialed connection to an external system. Carries events inbound and kestrel's
 requests outbound; an integration may do either direction or both, and declares which. Slack,
-Linear, GitHub and a plain webhook are all integrations.
+Linear, GitHub and a plain webhook are all integrations. It is also the identity kestrel, and the
+agents it runs, act under in that system.
 _Avoid_: connector, provider, app, plugin
 
 **Delegation**:
@@ -245,6 +246,7 @@ words from drifting.
   reviewed.
 - Authority comes from the **authenticated request** that minted an event, never from the event.
   An event kestrel minted for itself is no more trusted than one an integration delivered.
+- An integration never takes what its **own identity** said as input or as a command.
 - A request that does not **authenticate** never becomes an event. One that authenticated and
   matched no trigger is still recorded.
 - **Events expire; a transcript's shared-state entries never do.** An event stream is unbounded
