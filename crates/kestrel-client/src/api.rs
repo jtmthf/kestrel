@@ -1,7 +1,9 @@
-use anyhow::{Context as _, Result, anyhow, bail};
-use reqwest::{Client, RequestBuilder, Response, Url};
+use anyhow::{Context as _, Result, bail};
+use reqwest::{Client, RequestBuilder, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::exit::{Exit, Failed};
 
 #[derive(Deserialize)]
 struct Refusal {
@@ -50,18 +52,19 @@ impl ControlPlane {
     }
 
     async fn answered(&self, request: RequestBuilder) -> Result<Value> {
-        self.sent(request)
-            .await?
-            .json()
-            .await
-            .context("reading the control plane's answer")
+        self.sent(request).await?.json().await.context(Failed::new(
+            Exit::Unavailable,
+            "reading the control plane's answer",
+        ))
     }
 
     async fn sent(&self, request: RequestBuilder) -> Result<Response> {
-        let response = request
-            .send()
-            .await
-            .with_context(|| format!("reaching the control plane at {}", self.base))?;
+        let response = request.send().await.with_context(|| {
+            Failed::new(
+                Exit::Unavailable,
+                format!("reaching the control plane at {}", self.base),
+            )
+        })?;
         let status = response.status();
         if status.is_success() {
             return Ok(response);
@@ -71,17 +74,34 @@ impl ControlPlane {
             .json::<Refusal>()
             .await
             .map_or_else(|_| status.to_string(), |refusal| refusal.message);
-        bail!("the control plane refused: {why}")
+        bail!(Failed::new(
+            refused(status),
+            format!("the control plane refused: {why}")
+        ))
     }
 
     fn url(&self, path: &[&str]) -> Result<Url> {
         let mut url = self.base.clone();
         url.path_segments_mut()
-            .map_err(|()| anyhow!("{} cannot be a base for a path", self.base))?
+            .map_err(|()| {
+                Failed::new(
+                    Exit::Usage,
+                    format!("{} cannot be a base for a path", self.base),
+                )
+            })?
             .pop_if_empty()
             .push("operator")
             .extend(path);
 
         Ok(url)
+    }
+}
+
+/// The operator boundary answers 404 for a reference that resolves to no record or to several.
+pub fn refused(status: StatusCode) -> Exit {
+    match status {
+        StatusCode::NOT_FOUND => Exit::Unresolved,
+        status if status.is_client_error() => Exit::Rejected,
+        _ => Exit::Unavailable,
     }
 }

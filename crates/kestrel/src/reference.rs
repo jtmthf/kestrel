@@ -85,7 +85,7 @@ pub fn ambiguous(
         .collect::<Vec<_>>()
         .join(", ");
 
-    Declined::Unacceptable(format!(
+    Declined::Ambiguous(format!(
         "{reference} is ambiguous: it matches {} {what}s in the organization {organization}: \
          {matched}; name one of them exactly",
         candidates.len()

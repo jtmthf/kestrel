@@ -1,8 +1,9 @@
 use std::io::{IsTerminal as _, Write};
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value};
 
+use crate::exit::{Exit, Failed};
 use crate::view::View;
 
 static ABSENT: Value = Value::Null;
@@ -31,7 +32,10 @@ impl Presentation {
             .map(str::to_owned)
             .collect();
         if fields.is_empty() {
-            bail!("--json names the fields to emit, comma-separated: --json id,name");
+            bail!(Failed::new(
+                Exit::Usage,
+                "--json names the fields to emit, comma-separated: --json id,name"
+            ));
         }
 
         Ok(Presentation::Json(fields))
@@ -133,9 +137,12 @@ fn projected(record: &Value, fields: &[String]) -> Result<Value> {
     for field in fields {
         let value = at(record, field)
             .ok_or_else(|| {
-                anyhow!(
-                    "the control plane answered no {field}; it answered {}",
-                    held(record)
+                Failed::new(
+                    Exit::Usage,
+                    format!(
+                        "the control plane answered no {field}; it answered {}",
+                        held(record)
+                    ),
                 )
             })?
             .clone();
@@ -150,7 +157,12 @@ fn projected(record: &Value, fields: &[String]) -> Result<Value> {
                 .entry(segment)
                 .or_insert_with(|| Value::Object(Map::new()))
                 .as_object_mut()
-                .ok_or_else(|| anyhow!("--json names {field} and the field it reaches through"))?;
+                .ok_or_else(|| {
+                    Failed::new(
+                        Exit::Usage,
+                        format!("--json names {field} and the field it reaches through"),
+                    )
+                })?;
         }
     }
 

@@ -1027,6 +1027,11 @@ async fn a_session_reference_matching_several_is_refused_naming_them() {
     let said = failed(&refused);
 
     assert!(said.contains("ambiguous"), "{said}");
+    assert_eq!(
+        refused.status.code(),
+        Some(3),
+        "an ambiguous prefix is unresolved"
+    );
     for (id, name) in &matching {
         assert!(said.contains(name), "{said} does not name {name}");
         assert!(said.contains(id), "{said} does not name {id}");
