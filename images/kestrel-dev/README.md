@@ -69,7 +69,10 @@ Credentials come in when the Run starts ([ADR-0010](../../docs/adr/0010-a-provid
 A Subscription Profile's files, such as `.codex/auth.json`, are written beneath `/home/kestrel`
 for the length of one Run and removed when it ends
 ([ADR-0025](../../docs/adr/0025-subscription-profiles-are-personal.md)). `gh` reads `GH_TOKEN` from
-its own environment.
+its own environment. The token's scope is the operator's and kestrel does not narrow it: a
+`repo`-scoped token merges pull requests as well as opening them, so a human merge gate needs a
+reviewer identity other than the token's ([USAGE.md](../../USAGE.md) covers it where the credential
+is set).
 
 ## How it is checked
 

@@ -126,9 +126,14 @@ session's one active-run slot forever.
    showed its own earlier, still-open pull request, decided the remaining work was to land it, and
    merged it — nothing kestrel asked it to do. Kestrel supplies the credential and stays out of what
    the run does with it (`ROADMAP.md`: "what happens inside a run is the run's business, not the
-   session's"), so an operator who wants a human merge gate needs a token scoped to opening pull
-   requests without merge rights, or branch protection requiring review, rather than relying on the
-   agent to leave merging to someone else.
+   session's"), so an operator who wants a human merge gate cannot get one from the credential: a
+   required review gates only when the reviewer is a GitHub identity other than the one the token
+   acts as, because GitHub refuses a pull request's author as its reviewer, and this repository's
+   own CI gates its merges instead
+   ([ADR-0027](adr/0027-ci-gates-the-merge-and-a-queue-lands-the-batch.md)). A narrower token is no
+   answer either: a merge writes to the base branch and needs the contents-write authority that
+   pushing the pull request's branch already needs, so a fine-grained token that can push the branch
+   can merge it.
 
 ## What ran, concretely
 
