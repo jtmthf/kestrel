@@ -1,5 +1,5 @@
-//! The `kestrel-env` image as a test drives it: built rather than assumed present, and run
-//! the way an operator running one by hand would run it.
+//! The `kestrel-env` image as a test drives it: the one CI built for this change, or one built
+//! here when nothing named it, and run the way an operator running one by hand would run it.
 
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
@@ -10,31 +10,36 @@ use kestrel::link::credential::Secret;
 
 use super::diagnostics::Diagnostics;
 use super::docker::{self, Ran, removed};
+use super::images;
 
-const IMAGE: &str = "kestrel-env:test";
+const LOCAL: &str = "kestrel-env:test";
 const SCRIPTED: &str = "kestrel-env-scripted:test";
 const CONFORMANCE: &str = "kestrel-env-conformance:test";
 const DEVELOPMENT: &str = "kestrel-dev:test";
 const PATIENCE: Duration = Duration::from_secs(30);
 
+/// The image a test provisions from: what CI built for this change and named, or one built here
+/// for local runs.
 pub fn built() -> &'static str {
-    static BUILT: OnceLock<()> = OnceLock::new();
+    static BUILT: OnceLock<String> = OnceLock::new();
 
-    BUILT.get_or_init(|| {
-        docker::completed(
-            &[
-                "build",
-                "--file",
-                "images/kestrel-env/Dockerfile",
-                "--tag",
-                IMAGE,
-                ".",
-            ],
-            "building the image",
-        );
-    });
-
-    IMAGE
+    BUILT.get_or_init(|| match images::sourced(images::ENV) {
+        Some(image) => image,
+        None => {
+            docker::completed(
+                &[
+                    "build",
+                    "--file",
+                    "images/kestrel-env/Dockerfile",
+                    "--tag",
+                    LOCAL,
+                    ".",
+                ],
+                "building the image",
+            );
+            LOCAL.to_owned()
+        }
+    })
 }
 
 /// The image with the scripted ACP agent in it, which is the only thing an Environment needs

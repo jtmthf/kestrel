@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 
 use super::client::{self, Finished, Invocation};
 use super::docker::{Ran, ran_against, repository};
+use super::images;
 
 pub const CONTROL_PLANE: &str = "kestrel";
 pub const FILTER: &str = "socket-proxy";
@@ -210,19 +211,49 @@ impl Drop for Stack {
     }
 }
 
-/// Every image the compose file names, built once for every test in this binary.
+/// Every image the compose file names. A run CI built for has both images pushed tagged by
+/// commit, so this pulls them into the checkout's namespace rather than building what a sibling
+/// job already built; a local run builds them, once for every test in this binary.
 pub fn built() -> &'static [String] {
     static BUILT: OnceLock<Vec<String>> = OnceLock::new();
 
     BUILT.get_or_init(|| {
         host_lock();
-        completed(&["build"], "building the images the compose file names");
+        match (
+            images::sourced(images::ENV),
+            images::sourced(images::CONTROL_PLANE),
+        ) {
+            (Some(environment), Some(control_plane)) => {
+                pulled(&environment, &control_plane);
+            }
+            _ => {
+                completed(&["build"], "building the images the compose file names");
+            }
+        }
 
         completed(&["config", "--images"], "listing the images")
             .lines()
             .map(str::to_owned)
             .collect()
     })
+}
+
+/// What CI built is named for the repository and the commit, and what the compose file names is
+/// this checkout's namespace, so each is tagged into it rather than referenced directly: the
+/// compose file keeps naming the images an operator's stack uses.
+fn pulled(environment: &str, control_plane: &str) {
+    let namespace = namespace();
+    for (source, named) in [
+        (environment, &namespace.environment),
+        (control_plane, &namespace.control_plane),
+    ] {
+        let tagged = super::docker::ran(&["tag", source, named]);
+        assert_eq!(
+            tagged.code, 0,
+            "tagging {source} as {named} failed:\n{}",
+            tagged.err
+        );
+    }
 }
 
 fn rendered(variables: &[(&str, &str)]) -> Ran {

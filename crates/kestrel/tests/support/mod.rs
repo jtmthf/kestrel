@@ -16,6 +16,7 @@ pub mod docker;
 pub mod environment;
 pub mod github_stub;
 pub mod image;
+pub mod images;
 pub mod lineage;
 pub mod link_client;
 pub mod model;
