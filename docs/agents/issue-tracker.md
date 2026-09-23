@@ -2,8 +2,6 @@
 
 Issues and specs for this repo live as GitHub issues in **jtmthf/kestrel**. Use the `gh` CLI for all operations.
 
-This repo has no git remote configured yet. Until one pointing at `jtmthf/kestrel` is added, pass `--repo jtmthf/kestrel` explicitly on every `gh` call below. Once the remote exists, `gh` infers the repo automatically and `--repo` can be dropped.
-
 ## Conventions
 
 - **Create an issue**: `gh issue create --repo jtmthf/kestrel --title "..." --body "..."`. Use a heredoc for multi-line bodies.
@@ -12,6 +10,42 @@ This repo has no git remote configured yet. Until one pointing at `jtmthf/kestre
 - **Comment on an issue**: `gh issue comment <number> --repo jtmthf/kestrel --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --repo jtmthf/kestrel --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --repo jtmthf/kestrel --comment "..."`
+
+## Projects
+
+The backlog has a GitHub Project, [kestrel](https://github.com/users/jtmthf/projects/3), linked to
+this repository. It is a **projection**: it carries no field, priority or state of its own. Labels,
+milestones and native dependencies are the only state, and every view is a filter over them; the
+built-in `Status` field stays unused. Nothing writes to the Project, and no skill needs to — the
+workflow stays `gh issue edit` and `gh api` against the issues themselves.
+
+Four views, defined by filter:
+
+| View               | Layout | Filter                                                            | Ordered / grouped by   |
+| ------------------ | ------ | ----------------------------------------------------------------- | ---------------------- |
+| Triage             | table  | `is:open is:issue -label:ready-for-agent,ready-for-human,wontfix`  | default                |
+| Ready              | table  | `is:open is:issue label:ready-for-agent`                           | milestone, ascending   |
+| Dispatch frontier  | table  | `is:open is:issue label:ready-for-agent no:assignee`               | milestone, ascending   |
+| By rung            | table  | `is:open is:issue`                                                 | grouped by Milestone   |
+
+Triage uses negation rather than `label:needs-triage` so it also catches issues carrying no label,
+which `/triage` treats as never triaged. The Dispatch frontier view is a *proxy*: Projects documents
+no `is:blocked` qualifier, so it cannot exclude blocked items and the blocked indicator is read off
+the item. The authoritative frontier query is the one under "Wayfinding operations" below.
+
+### Milestones are rungs
+
+Every milestone is a rung of the ladder in `ROADMAP.md`. `0.2`–`0.7` and `v1` exist; `0.1` is not
+created because it is closed.
+
+- **An issue carries a rung once it leaves triage.** `ready-for-agent` and `ready-for-human` issues
+  name a milestone; `needs-triage` and `needs-info` issues may leave it empty, and show up in the By
+  rung view's unplaced group.
+- **Assign at creation**, to the rung the work actually lands in rather than the current one — a
+  `0.6` integration ticket takes `0.6` while the project sits at `0.2`.
+- **Revise during triage** when work belongs to another rung:
+  `gh issue edit <n> --repo jtmthf/kestrel --milestone "<rung>"`.
+- Milestones carry no due dates. The ladder is deliberately dateless.
 
 ## Difficulty
 
