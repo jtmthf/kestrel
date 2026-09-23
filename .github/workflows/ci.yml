@@ -4,8 +4,6 @@ name: CI
 # nothing filters it. `paths:` is impossible on `merge_group`, and a workflow kept from
 # starting leaves its required check pending forever, so which areas run is decided inside,
 # by the `changes` job, rather than by the trigger.
-#
-# Every area on every run is #241: the images are built once and consumed by tag.
 on:
   pull_request:
   merge_group:
@@ -15,7 +13,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   changes:
@@ -201,10 +199,9 @@ jobs:
           docker buildx build --platform linux/arm64 --target gh \
             --output type=cacheonly --file images/kestrel-dev/Dockerfile .
 
-  # The one status branch protection and the merge queue name (#245), and the re-runs the queue
-  # makes cheap rather than skipped (#246). It runs whether an area ran, failed or was skipped:
-  # a job skipped by its condition reports success, and only a check that never reports at all
-  # strands a pull request.
+  # The one status branch protection and the merge queue name. It runs whether an area ran,
+  # failed or was skipped: a job skipped by its condition reports success, and only a check
+  # that never reports at all strands a pull request.
   gate:
     name: gate
     needs:
