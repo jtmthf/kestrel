@@ -1,8 +1,10 @@
 name: CI
 
+# The merge gate (ADR-0027): every pull request and every merge-queue entry runs it, and
+# nothing filters it. `paths:` is impossible on `merge_group`, and a workflow kept from
+# starting leaves its required check pending forever, so which areas run is decided inside,
+# by the `changes` job, rather than by the trigger.
 on:
-  push:
-    branches: [main]
   pull_request:
   merge_group:
 
@@ -14,8 +16,36 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.detect.outputs.rust }}
+      images: ${{ steps.detect.outputs.images }}
+      arm64: ${{ steps.detect.outputs.arm64 }}
+      compose: ${{ steps.detect.outputs.compose }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Work out which areas the change touches
+        id: detect
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${BASE}" && -n "${HEAD}" ]]; then
+            git diff --name-only "${BASE}...${HEAD}" | .github/scripts/changed-areas.sh
+          else
+            .github/scripts/changed-areas.sh < /dev/null
+          fi
+
   workspace:
     name: workspace (rust)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -43,17 +73,14 @@ jobs:
       - name: Test
         run: cargo test --locked --workspace
 
-      - name: Record the supervisor binary's size
-        run: |
-          cargo build --locked --release --package kestrel-supervisor
-          size=$(wc -c < target/release/kestrel-supervisor)
-          echo "kestrel-supervisor: $size bytes ($((size / 1024)) KiB)" >> "$GITHUB_STEP_SUMMARY"
-
   # Each image is built once for the change and pushed tagged by the commit, so every job that
   # needs one pulls rather than builds it (ADR-0027). Layer caching is restored on every run and
-  # written only by a trusted push to main, which is what keeps it warm for everyone else.
+  # written only by a trusted push to main, which is what keeps it warm for everyone else. The
+  # image inputs changed with the Rust sources, so these follow the `images` area.
   build-env:
     name: kestrel-env (build)
+    needs: changes
+    if: needs.changes.outputs.images == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -90,6 +117,8 @@ jobs:
 
   build-control-plane:
     name: kestrel (build)
+    needs: changes
+    if: needs.changes.outputs.images == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -126,7 +155,8 @@ jobs:
 
   image:
     name: kestrel-env (image)
-    needs: build-env
+    needs: [changes, build-env]
+    if: needs.changes.outputs.images == 'true'
     runs-on: ubuntu-latest
     env:
       KESTREL_ENV_IMAGE_SOURCE: ghcr.io/${{ github.repository }}-env:${{ github.sha }}
@@ -157,7 +187,8 @@ jobs:
 
   development:
     name: kestrel-dev (image)
-    needs: build-env
+    needs: [changes, build-env]
+    if: needs.changes.outputs.images == 'true'
     runs-on: ubuntu-latest
     env:
       KESTREL_ENV_IMAGE_SOURCE: ghcr.io/${{ github.repository }}-env:${{ github.sha }}
@@ -188,7 +219,8 @@ jobs:
 
   control-plane:
     name: kestrel (image)
-    needs: build-control-plane
+    needs: [changes, build-control-plane]
+    if: needs.changes.outputs.images == 'true'
     runs-on: ubuntu-latest
     env:
       KESTREL_CONTROL_IMAGE_SOURCE: ghcr.io/${{ github.repository }}:${{ github.sha }}
@@ -212,7 +244,8 @@ jobs:
 
   compose:
     name: kestrel (compose)
-    needs: [build-env, build-control-plane]
+    needs: [changes, build-env, build-control-plane]
+    if: needs.changes.outputs.compose == 'true'
     runs-on: ubuntu-latest
     env:
       KESTREL_ENV_IMAGE_SOURCE: ghcr.io/${{ github.repository }}-env:${{ github.sha }}
@@ -243,6 +276,8 @@ jobs:
   # verifies, and the architecture it selects on.
   architectures:
     name: images (arm64)
+    needs: changes
+    if: needs.changes.outputs.arm64 == 'true'
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v5
@@ -259,29 +294,27 @@ jobs:
           docker buildx build --platform linux/arm64 --target gh \
             --output type=cacheonly --file images/kestrel-dev/Dockerfile .
 
-  # From a clean checkout with no build cache, so what is published is what the Dockerfile
-  # yields on its own.
-  publish:
-    name: kestrel (publish)
-    needs: [workspace, control-plane, compose]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  # The one status branch protection and the merge queue name. It runs whether an area ran,
+  # failed or was skipped: a job skipped by its condition reports success, and only a check
+  # that never reports at all strands a pull request.
+  gate:
+    name: gate
+    needs:
+      - changes
+      - workspace
+      - build-env
+      - build-control-plane
+      - image
+      - development
+      - control-plane
+      - compose
+      - architectures
+    if: always()
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
-      - uses: actions/checkout@v5
+      - name: Fail when an area failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
 
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish the control-plane image
-        run: |
-          docker build --file images/kestrel/Dockerfile \
-            --tag ghcr.io/${{ github.repository }}:latest \
-            --tag ghcr.io/${{ github.repository }}:${{ github.sha }} .
-          docker push ghcr.io/${{ github.repository }}:latest
-          docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
+      - name: Report the gate
+        run: echo "Every area passed or was skipped."
