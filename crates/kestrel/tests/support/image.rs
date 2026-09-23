@@ -18,28 +18,11 @@ const CONFORMANCE: &str = "kestrel-env-conformance:test";
 const DEVELOPMENT: &str = "kestrel-dev:test";
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// The image a test provisions from: what CI built for this change and named, or one built here
-/// for local runs.
 pub fn built() -> &'static str {
     static BUILT: OnceLock<String> = OnceLock::new();
 
-    BUILT.get_or_init(|| match images::sourced(images::ENV) {
-        Some(image) => image,
-        None => {
-            docker::completed(
-                &[
-                    "build",
-                    "--file",
-                    "images/kestrel-env/Dockerfile",
-                    "--tag",
-                    LOCAL,
-                    ".",
-                ],
-                "building the image",
-            );
-            LOCAL.to_owned()
-        }
-    })
+    BUILT
+        .get_or_init(|| images::built_or_named(images::ENV, "images/kestrel-env/Dockerfile", LOCAL))
 }
 
 /// The image with the scripted ACP agent in it, which is the only thing an Environment needs
@@ -48,12 +31,14 @@ pub fn with_the_scripted_agent() -> &'static str {
     static BUILT: OnceLock<()> = OnceLock::new();
 
     BUILT.get_or_init(|| {
-        built();
+        let base = format!("KESTREL_ENV={}", built());
         docker::completed(
             &[
                 "build",
                 "--file",
                 "crates/kestrel/tests/support/scripted-env.Dockerfile",
+                "--build-arg",
+                &base,
                 "--tag",
                 SCRIPTED,
                 ".",
@@ -71,12 +56,14 @@ pub fn with_the_adapter() -> &'static str {
     static BUILT: OnceLock<()> = OnceLock::new();
 
     BUILT.get_or_init(|| {
-        built();
+        let base = format!("KESTREL_ENV={}", built());
         docker::completed(
             &[
                 "build",
                 "--file",
                 "crates/kestrel/tests/support/conformance-env.Dockerfile",
+                "--build-arg",
+                &base,
                 "--tag",
                 CONFORMANCE,
                 ".",

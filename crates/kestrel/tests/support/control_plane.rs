@@ -17,27 +17,11 @@ pub const DATABASE: &str = "/var/lib/kestrel/kestrel.db";
 const DATA_DIR: &str = "/var/lib/kestrel";
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// The image a test runs: what CI built for this change and named, or one built here for local
-/// runs.
 pub fn built() -> &'static str {
     static BUILT: OnceLock<String> = OnceLock::new();
 
-    BUILT.get_or_init(|| match images::sourced(images::CONTROL_PLANE) {
-        Some(image) => image,
-        None => {
-            docker::completed(
-                &[
-                    "build",
-                    "--file",
-                    "images/kestrel/Dockerfile",
-                    "--tag",
-                    LOCAL,
-                    ".",
-                ],
-                "building the image",
-            );
-            LOCAL.to_owned()
-        }
+    BUILT.get_or_init(|| {
+        images::built_or_named(images::CONTROL_PLANE, "images/kestrel/Dockerfile", LOCAL)
     })
 }
 

@@ -212,8 +212,8 @@ impl Drop for Stack {
 }
 
 /// Every image the compose file names. A run CI built for has both images pushed tagged by
-/// commit, so this pulls them into the checkout's namespace rather than building what a sibling
-/// job already built; a local run builds them, once for every test in this binary.
+/// commit, so this tags them into the checkout's namespace rather than building what a sibling
+/// job already built; a local run, which names neither, builds them once for this binary.
 pub fn built() -> &'static [String] {
     static BUILT: OnceLock<Vec<String>> = OnceLock::new();
 
@@ -223,12 +223,17 @@ pub fn built() -> &'static [String] {
             images::sourced(images::ENV),
             images::sourced(images::CONTROL_PLANE),
         ) {
-            (Some(environment), Some(control_plane)) => {
-                pulled(&environment, &control_plane);
-            }
-            _ => {
+            (Some(environment), Some(control_plane)) => pulled(&environment, &control_plane),
+            (None, None) => {
                 completed(&["build"], "building the images the compose file names");
             }
+            // Half a pair means a half-built stack, and the missing half would be built from
+            // source while its sibling is pulled. Fail rather than quietly diverge.
+            (environment, control_plane) => panic!(
+                "one image was named and the other was not: {}={environment:?}, {}={control_plane:?}",
+                images::ENV,
+                images::CONTROL_PLANE
+            ),
         }
 
         completed(&["config", "--images"], "listing the images")
