@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 
 use crate::api::ControlPlane;
+use crate::exit::{Exit, Failed};
 use crate::{BINARY, ORGANIZATION_VARIABLE, names};
 
 const BINDING: &str = ".kestrel/organization";
@@ -51,15 +52,21 @@ impl<'a> Scoping<'a> {
     pub async fn resolve(self) -> Result<Scope> {
         match self.derive().await? {
             Derived::Scope(scope) => Ok(scope),
-            Derived::Unnamed { existing } if existing.is_empty() => bail!(
-                "no Organization is in scope and none exists; declare one with \
-                 `{BINARY} organization declare <name>`"
-            ),
-            Derived::Unnamed { existing } => bail!(
-                "no Organization is in scope and {} exist: {}; pass --organization <name>",
-                existing.len(),
-                existing.join(", ")
-            ),
+            Derived::Unnamed { existing } if existing.is_empty() => bail!(Failed::new(
+                Exit::Unresolved,
+                format!(
+                    "no Organization is in scope and none exists; declare one with \
+                     `{BINARY} organization declare <name>`"
+                )
+            )),
+            Derived::Unnamed { existing } => bail!(Failed::new(
+                Exit::Unresolved,
+                format!(
+                    "no Organization is in scope and {} exist: {}; pass --organization <name>",
+                    existing.len(),
+                    existing.join(", ")
+                )
+            )),
         }
     }
 
@@ -94,7 +101,10 @@ fn bound() -> Result<Option<Scope>> {
         .trim()
         .to_owned();
     if organization.is_empty() {
-        bail!("{} binds no Organization", binding.display());
+        bail!(Failed::new(
+            Exit::Unresolved,
+            format!("{} binds no Organization", binding.display())
+        ));
     }
 
     Ok(Some(Scope {

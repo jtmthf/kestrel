@@ -2,10 +2,11 @@ use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use reqwest::{Client, Url, header};
+use reqwest::{Client, StatusCode, Url, header};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::exit::{Exit, Failed};
 use crate::output::Presentation;
 use crate::sse::Events;
 use crate::view;
@@ -20,7 +21,7 @@ struct Refusal {
 }
 
 enum Cut {
-    Refused(String),
+    Refused(StatusCode, String),
     Lost(anyhow::Error),
     Failed(anyhow::Error),
 }
@@ -49,10 +50,16 @@ pub async fn read(
     loop {
         match streamed(&client, &url, &mut cursor, &mut heard, presentation).await {
             Ok(()) => return Ok(cursor),
-            Err(Cut::Refused(why)) => bail!("the control plane refused the read: {why}"),
+            Err(Cut::Refused(status, why)) => bail!(Failed::new(
+                crate::api::refused(status),
+                format!("the control plane refused the read: {why}")
+            )),
             Err(Cut::Failed(error)) => return Err(error),
             Err(Cut::Lost(error)) if heard.elapsed() > PATIENCE => {
-                return Err(error.context(format!("reading the transcript from {control_plane}")));
+                return Err(error.context(Failed::new(
+                    Exit::Unavailable,
+                    format!("reading the transcript from {control_plane}"),
+                )));
             }
             Err(Cut::Lost(_)) => tokio::time::sleep(RETRY).await,
         }
@@ -80,7 +87,7 @@ async fn streamed(
             .json::<Refusal>()
             .await
             .map_or_else(|_| status.to_string(), |refusal| refusal.message);
-        return Err(Cut::Refused(why));
+        return Err(Cut::Refused(status, why));
     }
     if !status.is_success() {
         return Err(Cut::Lost(anyhow!("the control plane answered {status}")));
@@ -110,7 +117,8 @@ async fn streamed(
 }
 
 fn presented(data: &str, presentation: &Presentation) -> Result<String> {
-    let entry: Value = serde_json::from_str(data).context("reading a transcript entry")?;
+    let entry: Value = serde_json::from_str(data)
+        .context(Failed::new(Exit::Unavailable, "reading a transcript entry"))?;
 
     crate::output::line(presentation, &view::ENTRIES, &entry)
 }
@@ -118,7 +126,12 @@ fn presented(data: &str, presentation: &Presentation) -> Result<String> {
 fn transcript(control_plane: &Url, organization: &str, session: &str, follow: bool) -> Result<Url> {
     let mut url = control_plane.clone();
     url.path_segments_mut()
-        .map_err(|()| anyhow!("{control_plane} cannot be a base for a path"))
+        .map_err(|()| {
+            Failed::new(
+                Exit::Usage,
+                format!("{control_plane} cannot be a base for a path"),
+            )
+        })
         .context("addressing the transcript")?
         .pop_if_empty()
         .extend([

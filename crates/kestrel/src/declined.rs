@@ -6,15 +6,17 @@ use std::fmt;
 pub enum Declined {
     Unacceptable(String),
     Missing(String),
+    Ambiguous(String),
     Taken(String),
 }
 
 impl fmt::Display for Declined {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Declined::Unacceptable(why) | Declined::Missing(why) | Declined::Taken(why) => {
-                f.write_str(why)
-            }
+            Declined::Unacceptable(why)
+            | Declined::Missing(why)
+            | Declined::Ambiguous(why)
+            | Declined::Taken(why) => f.write_str(why),
         }
     }
 }
