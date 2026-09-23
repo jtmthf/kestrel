@@ -1,5 +1,5 @@
-//! The `kestrel-env` image as a test drives it: built rather than assumed present, and run
-//! the way an operator running one by hand would run it.
+//! The `kestrel-env` image as a test drives it: the one CI built for this change, or one built
+//! here when nothing named it, and run the way an operator running one by hand would run it.
 
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
@@ -10,31 +10,19 @@ use kestrel::link::credential::Secret;
 
 use super::diagnostics::Diagnostics;
 use super::docker::{self, Ran, removed};
+use super::images;
 
-const IMAGE: &str = "kestrel-env:test";
+const LOCAL: &str = "kestrel-env:test";
 const SCRIPTED: &str = "kestrel-env-scripted:test";
 const CONFORMANCE: &str = "kestrel-env-conformance:test";
 const DEVELOPMENT: &str = "kestrel-dev:test";
 const PATIENCE: Duration = Duration::from_secs(30);
 
 pub fn built() -> &'static str {
-    static BUILT: OnceLock<()> = OnceLock::new();
+    static BUILT: OnceLock<String> = OnceLock::new();
 
-    BUILT.get_or_init(|| {
-        docker::completed(
-            &[
-                "build",
-                "--file",
-                "images/kestrel-env/Dockerfile",
-                "--tag",
-                IMAGE,
-                ".",
-            ],
-            "building the image",
-        );
-    });
-
-    IMAGE
+    BUILT
+        .get_or_init(|| images::built_or_named(images::ENV, "images/kestrel-env/Dockerfile", LOCAL))
 }
 
 /// The image with the scripted ACP agent in it, which is the only thing an Environment needs
@@ -43,12 +31,14 @@ pub fn with_the_scripted_agent() -> &'static str {
     static BUILT: OnceLock<()> = OnceLock::new();
 
     BUILT.get_or_init(|| {
-        built();
+        let base = format!("KESTREL_ENV={}", built());
         docker::completed(
             &[
                 "build",
                 "--file",
                 "crates/kestrel/tests/support/scripted-env.Dockerfile",
+                "--build-arg",
+                &base,
                 "--tag",
                 SCRIPTED,
                 ".",
@@ -66,12 +56,14 @@ pub fn with_the_adapter() -> &'static str {
     static BUILT: OnceLock<()> = OnceLock::new();
 
     BUILT.get_or_init(|| {
-        built();
+        let base = format!("KESTREL_ENV={}", built());
         docker::completed(
             &[
                 "build",
                 "--file",
                 "crates/kestrel/tests/support/conformance-env.Dockerfile",
+                "--build-arg",
+                &base,
                 "--tag",
                 CONFORMANCE,
                 ".",

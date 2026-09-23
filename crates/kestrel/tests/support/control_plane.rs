@@ -1,5 +1,6 @@
-//! The `kestrel` control-plane image as a test drives it: built rather than assumed present,
-//! run over the volume an operator's database lives on, and reached from outside it.
+//! The `kestrel` control-plane image as a test drives it: the one CI built for this change, or
+//! one built here when nothing named it, run over the volume an operator's database lives on,
+//! and reached from outside it.
 
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
@@ -9,30 +10,19 @@ use std::time::{Duration, Instant};
 
 use super::client;
 use super::docker::{self, Ran, removed};
+use super::images;
 
-const IMAGE: &str = "kestrel:test";
+const LOCAL: &str = "kestrel:test";
 pub const DATABASE: &str = "/var/lib/kestrel/kestrel.db";
 const DATA_DIR: &str = "/var/lib/kestrel";
 const PATIENCE: Duration = Duration::from_secs(30);
 
 pub fn built() -> &'static str {
-    static BUILT: OnceLock<()> = OnceLock::new();
+    static BUILT: OnceLock<String> = OnceLock::new();
 
     BUILT.get_or_init(|| {
-        docker::completed(
-            &[
-                "build",
-                "--file",
-                "images/kestrel/Dockerfile",
-                "--tag",
-                IMAGE,
-                ".",
-            ],
-            "building the image",
-        );
-    });
-
-    IMAGE
+        images::built_or_named(images::CONTROL_PLANE, "images/kestrel/Dockerfile", LOCAL)
+    })
 }
 
 /// Run instead of the control plane the image would otherwise start.
