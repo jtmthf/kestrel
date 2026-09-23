@@ -530,10 +530,10 @@ async fn command_firing(harness: &Harness) -> kestrel::domain::Firing {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
         for event in harness.events("acme").await {
-            if event.occurrence.subject.as_deref() == Some("#43") {
-                if let Some(firing) = harness.firings(event.record_id).await.into_iter().next() {
-                    return firing;
-                }
+            if event.occurrence.subject.as_deref() == Some("#43")
+                && let Some(firing) = harness.firings(event.record_id).await.into_iter().next()
+            {
+                return firing;
             }
         }
         assert!(
