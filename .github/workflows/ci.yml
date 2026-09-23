@@ -175,17 +175,15 @@ jobs:
       - name: Test the compose path
         run: cargo test --locked --package kestrel --test compose -- --ignored --test-threads 1
 
-  # The runner is amd64, so nothing else builds the arm64 half of the image: the release it
-  # pins, the checksum it verifies, and the architecture it selects on.
+  # The only job that builds the arm64 half of the image: the release it pins, the checksum it
+  # verifies, and the architecture it selects on.
   architectures:
     name: images (arm64)
     needs: changes
     if: needs.changes.outputs.arm64 == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v5
-
-      - uses: docker/setup-qemu-action@v3
 
       - uses: docker/setup-buildx-action@v3
 

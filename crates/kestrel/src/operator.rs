@@ -1299,7 +1299,9 @@ async fn dispatch_trigger(
             event: event.to_string(),
             correlation,
         },
-        trigger::Fired::Failed { because, .. } => return Err(Refused::Unprocessable(because)),
+        trigger::Fired::Failed { because, .. } | trigger::Fired::Held { because, .. } => {
+            return Err(Refused::Unprocessable(because));
+        }
     }))
 }
 
@@ -1801,7 +1803,7 @@ impl From<anyhow::Error> for Refused {
         }
         match error.downcast::<Declined>() {
             Ok(Declined::Unacceptable(why)) => Refused::Unprocessable(why),
-            Ok(Declined::Missing(why)) => Refused::NotFound(why),
+            Ok(Declined::Missing(why) | Declined::Ambiguous(why)) => Refused::NotFound(why),
             Ok(Declined::Taken(why)) => Refused::Conflict(why),
             Err(error) => Refused::Unavailable(error),
         }

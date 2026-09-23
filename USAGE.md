@@ -165,7 +165,9 @@ continued by    -
 
 On a terminal the Client prints for a person to read. Piped anywhere else it prints the same fields
 tab-delimited, one record a line; `--json id,state` prints just those fields as JSON, one record a
-line, whatever it is attached to.
+line, whatever it is attached to. A script branches on the exit code rather than on what went to
+stderr: `kestrel exit-codes` lists each one, from `3` for a name that matches nothing to `5` for a
+control plane that did not answer.
 
 It already has a transcript, because opening it put the agent in as a participant:
 

@@ -11,6 +11,7 @@ use tracing::warn;
 
 use crate::declined::Declined;
 use crate::domain::{GithubConnection, Integration, Occurrence};
+use crate::readiness::{Delegation, Readiness, WorkState};
 
 pub const API: &str = "https://api.github.com";
 
@@ -280,6 +281,149 @@ impl Github {
             })?;
 
         answered(response, &format!("{repository}#{number}")).await
+    }
+
+    pub async fn readiness(
+        &self,
+        integration: &Integration,
+        occurrence: &Occurrence,
+    ) -> Result<Readiness, Refused> {
+        let github = integration.github().map_err(Refused::Failed)?;
+        let number = EventData::new(occurrence)
+            .subject_issue()
+            .ok_or_else(|| Refused::Failed(anyhow!("the event names no GitHub issue")))?;
+        let work_item = format!("https://github.com/{}/issues/{number}", github.repository);
+        let issue = self.issue(integration, number).await?;
+        if issue.get("number").and_then(serde_json::Value::as_i64) != Some(number) {
+            return Err(Refused::Failed(anyhow!(
+                "github returned a different issue for {work_item}"
+            )));
+        }
+        let state = match issue.get("state").and_then(serde_json::Value::as_str) {
+            Some("open") => WorkState::Open,
+            Some("closed") => WorkState::Terminal,
+            _ => WorkState::Unknown,
+        };
+        let assigned = issue
+            .get("assignees")
+            .and_then(serde_json::Value::as_array)
+            .map(|assignees| {
+                assignees.iter().any(|assignee| {
+                    assignee
+                        .get("login")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|login| {
+                            login.eq_ignore_ascii_case(MENTION.trim_start_matches('@'))
+                        })
+                })
+            });
+
+        let mut evidence = vec![work_item.clone()];
+        let command = EventData::new(occurrence).command();
+        let live_command = if command.is_some() && assigned != Some(true) {
+            let id = occurrence
+                .id
+                .strip_prefix("comment:")
+                .and_then(|id| id.parse::<i64>().ok());
+            match id {
+                Some(id) => {
+                    let response = self
+                        .request(
+                            reqwest::Method::GET,
+                            github,
+                            &format!(
+                                "repos/{}/issues/comments/{id}",
+                                repository(&github.repository).map_err(Refused::Failed)?
+                            ),
+                        )
+                        .send()
+                        .await
+                        .map_err(|error| {
+                            Refused::Failed(anyhow!(
+                                "the command on {work_item} could not be read: {error}"
+                            ))
+                        })?;
+                    let comment: serde_json::Value =
+                        answered(response, &format!("the command on {work_item}")).await?;
+                    evidence.push(format!("{work_item}#issuecomment-{id}"));
+                    let original = EventData::new(occurrence);
+                    let actor = original.actor();
+                    let mut current = occurrence.clone();
+                    current.data = comment;
+                    let current_actor = current
+                        .data
+                        .get("user")
+                        .and_then(|user| user.get("login"))
+                        .and_then(serde_json::Value::as_str);
+                    let same_issue = current
+                        .data
+                        .get("issue_url")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|url| url.ends_with(&format!("/issues/{number}")));
+                    Some(
+                        actor
+                            .zip(current_actor)
+                            .is_some_and(|(before, now)| before.eq_ignore_ascii_case(now))
+                            && same_issue
+                            && EventData::new(&current).command() == command,
+                    )
+                }
+                None => None,
+            }
+        } else {
+            Some(false)
+        };
+        let delegation = match (assigned, live_command) {
+            (Some(true), _) | (_, Some(true)) => Delegation::Current,
+            (Some(false), Some(false)) => Delegation::Absent,
+            _ => Delegation::Unknown,
+        };
+
+        let repository = repository(&github.repository).map_err(Refused::Failed)?;
+        let mut unresolved_blockers = Vec::new();
+        for page in 1..=PAGES {
+            let response = self
+                .request(
+                    reqwest::Method::GET,
+                    github,
+                    &format!("repos/{repository}/issues/{number}/dependencies/blocked_by?per_page={PER_PAGE}&page={page}"),
+                )
+                .send()
+                .await
+                .map_err(|error| Refused::Failed(anyhow!("the blockers on {work_item} could not be read: {error}")))?;
+            let blockers: Vec<serde_json::Value> =
+                answered(response, &format!("the blockers on {work_item}")).await?;
+            for blocker in &blockers {
+                let url = blocker
+                    .get("html_url")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        Refused::Failed(anyhow!("a blocker on {work_item} has no URL"))
+                    })?;
+                evidence.push(url.to_owned());
+                match blocker.get("state").and_then(serde_json::Value::as_str) {
+                    Some("open") => unresolved_blockers.push(url.to_owned()),
+                    Some("closed") => {}
+                    _ => {
+                        return Err(Refused::Failed(anyhow!(
+                            "a blocker on {work_item} has unknown state"
+                        )));
+                    }
+                }
+            }
+            if blockers.len() < PER_PAGE {
+                return Ok(Readiness {
+                    work_item,
+                    state,
+                    delegation,
+                    unresolved_blockers,
+                    evidence,
+                });
+            }
+        }
+        Err(Refused::Failed(anyhow!(
+            "{work_item} has more blockers than one readiness check reads"
+        )))
     }
 
     fn request(

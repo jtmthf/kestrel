@@ -1478,7 +1478,7 @@
   "components": {
     "responses": {
       "Refused": {
-        "description": "The control plane refused the request.",
+        "description": "The control plane refused the request. 400 is a request it could not read; 404 is a name or reference that resolves to no record, or to more than one; 409 and 422 are an operation it declined; 503 is a control plane that could not answer.",
         "content": {
           "application/json": {
             "schema": {

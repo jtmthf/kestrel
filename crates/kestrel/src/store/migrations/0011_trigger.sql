@@ -33,18 +33,17 @@ CREATE TABLE trigger_agent (
     PRIMARY KEY (trigger_id, agent_id)
 ) STRICT;
 
--- The key makes one trigger-event pair fire at most once, including failures and ignored misses.
 CREATE TABLE firing (
     trigger_id TEXT NOT NULL REFERENCES trigger (id),
     event_record_id TEXT NOT NULL REFERENCES event (record_id),
     organization_id TEXT NOT NULL REFERENCES organization (id),
     session_id TEXT REFERENCES session (id),
-    outcome TEXT NOT NULL CHECK (outcome IN ('opened', 'fed', 'ignored', 'failed')),
+    outcome TEXT NOT NULL CHECK (outcome IN ('opened', 'fed', 'ignored', 'held', 'failed')),
     failure TEXT,
     fired_at TEXT NOT NULL,
     PRIMARY KEY (trigger_id, event_record_id),
     CHECK ((outcome IN ('opened', 'fed')) = (session_id IS NOT NULL)),
-    CHECK ((outcome = 'failed') = (failure IS NOT NULL))
+    CHECK ((outcome IN ('held', 'failed')) = (failure IS NOT NULL))
 ) STRICT;
 
 ALTER TABLE session ADD COLUMN event_record_id TEXT REFERENCES event (record_id);

@@ -1,4 +1,5 @@
 mod api;
+mod exit;
 mod output;
 mod scope;
 mod sse;
@@ -6,6 +7,7 @@ mod transcript;
 mod view;
 
 use std::io::{IsTerminal as _, Read as _};
+use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, bail};
 use clap::builder::NonEmptyStringValueParser;
@@ -16,6 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::api::ControlPlane;
+use crate::exit::{Exit, Failed};
 use crate::output::{Presentation, show};
 use crate::scope::{Derived, Scope, Scoping, Source};
 
@@ -28,6 +31,7 @@ const ORGANIZATION_VARIABLE: &str = "KESTREL_ORGANIZATION";
     name = BINARY,
     version,
     about = "Reach a kestrel control plane over its operator boundary.",
+    after_help = "Exit codes: `kestrel exit-codes` lists each one, what it means, and when to branch on it.",
     disable_help_subcommand = true
 )]
 struct Client {
@@ -103,6 +107,8 @@ enum Command {
     /// Print the resolved scope, where each value came from, what exists in it, and what to
     /// run next
     Status,
+    /// Print every exit code, what it means, and when a script should branch on it
+    ExitCodes,
 }
 
 #[derive(Debug, Args)]
@@ -126,7 +132,7 @@ impl Command {
             | Command::Run(_)
             | Command::Instance(_)
             | Command::Status => true,
-            Command::Organization(_) => false,
+            Command::Organization(_) | Command::ExitCodes => false,
             Command::Event(event) => match event {
                 EventCommand::List { .. } => true,
                 EventCommand::Show { .. } => false,
@@ -552,20 +558,23 @@ enum RunCommand {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
-    let matches = Client::command().get_matches();
-    let client = Client::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
-    let control_plane: Url = client
-        .control_plane
-        .parse()
-        .with_context(|| format!("{} is no control-plane URL", client.control_plane))?;
-    let control_plane_source = match matches.value_source("control_plane") {
-        Some(ValueSource::CommandLine) => "--control-plane",
-        Some(ValueSource::EnvVariable) => CONTROL_PLANE_VARIABLE,
-        _ => "default",
+async fn main() -> ExitCode {
+    let exit = match run().await {
+        Ok(()) => Exit::Success,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            Exit::of(&error)
+        }
     };
 
-    let api = ControlPlane::at(control_plane.clone());
+    ExitCode::from(exit.code())
+}
+
+async fn run() -> Result<()> {
+    let matches = Client::command()
+        .try_get_matches()
+        .unwrap_or_else(|error| exit_after(&error));
+    let client = Client::from_arg_matches(&matches).unwrap_or_else(|error| exit_after(&error));
     let presentation = Presentation::chosen(client.json.as_deref())?;
 
     let named = client.organization.map(|organization| Scope {
@@ -580,14 +589,38 @@ async fn main() -> Result<()> {
         .is_some_and(|scope| matches!(scope.source, Source::Flag))
         && !client.command.scoped()
     {
-        bail!("--organization scopes nothing here; this command names its record directly");
+        bail!(Failed::new(
+            Exit::Usage,
+            "--organization scopes nothing here; this command names its record directly"
+        ));
     }
+    if let Command::ExitCodes = client.command {
+        let catalog = Exit::ALL.map(Exit::record);
+        return show(
+            &presentation,
+            &view::EXIT_CODES,
+            &Value::from(catalog.to_vec()),
+        );
+    }
+
+    let control_plane: Url = client.control_plane.parse().with_context(|| {
+        Failed::new(
+            Exit::Usage,
+            format!("{} is no control-plane URL", client.control_plane),
+        )
+    })?;
+    let control_plane_source = match matches.value_source("control_plane") {
+        Some(ValueSource::CommandLine) => "--control-plane",
+        Some(ValueSource::EnvVariable) => CONTROL_PLANE_VARIABLE,
+        _ => "default",
+    };
+    let api = ControlPlane::at(control_plane.clone());
     let scoping = Scoping::new(&api, named);
 
     match client.command {
         Command::Apply(Apply { file }) => {
-            let organization = scoping.resolve().await?.organization;
             let declaration = declaration(&file)?;
+            let organization = scoping.resolve().await?.organization;
             let preview = api
                 .post(
                     &["organizations", &organization, "declaration", "preview"],
@@ -842,12 +875,15 @@ async fn main() -> Result<()> {
         }) => {
             let organization = scoping.resolve().await?.organization;
             if filter.as_deref() == Some("-") && brief == "-" {
-                bail!("the filter and the brief cannot both be read from standard input");
+                bail!(Failed::new(
+                    Exit::Usage,
+                    "the filter and the brief cannot both be read from standard input"
+                ));
             }
             let filter = filter
                 .map(|filter| {
                     serde_json::from_str::<Value>(&given(&filter)?)
-                        .context("a trigger filter is JSON")
+                        .context(Failed::new(Exit::Usage, "a trigger filter is JSON"))
                 })
                 .transpose()?;
             let brief = given(&brief)?;
@@ -950,9 +986,10 @@ async fn main() -> Result<()> {
         }) => {
             let organization = scoping.resolve().await?.organization;
             if file.as_deref() == Some("-") && instruction.as_deref() == Some("-") {
-                bail!(
+                bail!(Failed::new(
+                    Exit::Usage,
                     "the declaration file and the instruction cannot both be read from standard input"
-                );
+                ));
             }
             let declared = file.as_deref().map(trigger_file).transpose()?;
             let instruction = instruction.as_deref().map(given).transpose()?;
@@ -1167,9 +1204,21 @@ async fn main() -> Result<()> {
             });
             status(&api, &presentation, location, scoping.derive().await?).await?;
         }
+        Command::ExitCodes => unreachable!("the catalog is shown before the control plane is"),
     }
 
     Ok(())
+}
+
+/// Clap's own exit codes would do, but the catalog is what a script was promised.
+fn exit_after(error: &clap::Error) -> ! {
+    let _ = error.print();
+    let exit = if error.use_stderr() {
+        Exit::Usage
+    } else {
+        Exit::Success
+    };
+    std::process::exit(exit.code().into())
 }
 
 #[derive(Deserialize)]
@@ -1217,7 +1266,7 @@ fn trigger_file(file: &str) -> Result<Value> {
 }
 
 fn parsed(text: &str) -> Result<Value> {
-    yaml_serde::from_str(text).context("reading the declaration file")
+    yaml_serde::from_str(text).context(Failed::new(Exit::Usage, "reading the declaration file"))
 }
 
 fn read_file(file: &str) -> Result<String> {
@@ -1225,7 +1274,8 @@ fn read_file(file: &str) -> Result<String> {
         return standard_input();
     }
 
-    std::fs::read_to_string(file).with_context(|| format!("reading the declaration file {file}"))
+    std::fs::read_to_string(file)
+        .with_context(|| Failed::new(Exit::Usage, format!("reading the declaration file {file}")))
 }
 
 fn given(value: &str) -> Result<String> {
@@ -1233,7 +1283,8 @@ fn given(value: &str) -> Result<String> {
         return standard_input();
     }
     match value.strip_prefix('@') {
-        Some(path) => std::fs::read_to_string(path).with_context(|| format!("reading {path}")),
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| Failed::new(Exit::Usage, format!("reading {path}"))),
         None => Ok(value.to_owned()),
     }
 }
@@ -1269,8 +1320,10 @@ enum TriggerAction {
 }
 
 fn show_applied_triggers(value: &Value) -> Result<()> {
-    let applied: AppliedTriggers =
-        serde_json::from_value(value.clone()).context("reading the applied triggers")?;
+    let applied: AppliedTriggers = serde_json::from_value(value.clone()).context(Failed::new(
+        Exit::Unavailable,
+        "reading the applied triggers",
+    ))?;
     if applied.changes.is_empty() {
         println!("no changes");
     }
@@ -1302,8 +1355,9 @@ fn show_differences(differences: Vec<Difference>) {
 }
 
 fn show_declaration(value: &Value) -> Result<()> {
-    let applied: AppliedDeclaration =
-        serde_json::from_value(value.clone()).context("reading the declaration preview")?;
+    let applied: AppliedDeclaration = serde_json::from_value(value.clone()).context(
+        Failed::new(Exit::Unavailable, "reading the declaration preview"),
+    )?;
     for declared in applied.declarations {
         let sign = match declared.action {
             Action::Add => '+',
@@ -1435,7 +1489,10 @@ fn read_the_login(file: bool) -> Result<String> {
     let read = read_standard_input("a login")?;
 
     if read.trim().is_empty() {
-        bail!("a login is read from standard input, and nothing was on it");
+        bail!(Failed::new(
+            Exit::Usage,
+            "a login is read from standard input, and nothing was on it"
+        ));
     }
 
     Ok(if file { read } else { read.trim().to_owned() })
@@ -1449,7 +1506,10 @@ fn read_the_secret() -> Result<String> {
         .to_owned();
 
     if secret.is_empty() {
-        bail!("a provider credential is read from standard input, and nothing was on it");
+        bail!(Failed::new(
+            Exit::Usage,
+            "a provider credential is read from standard input, and nothing was on it"
+        ));
     }
 
     Ok(secret)
