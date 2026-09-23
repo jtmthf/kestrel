@@ -666,8 +666,16 @@ gh auth token | kestrel credential set GH_TOKEN
 The secret travels on standard input rather than in an argument. `GH_TOKEN` is not a name kestrel treats
 specially: it is simply the variable `gh` already looks for, and kestrel hands it to the agent's
 process the way it hands over a Provider Credential
-([ADR-0010](docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md)). The token needs
-`repo` scope to open a pull request.
+([ADR-0010](docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md)). `repo` scope opens
+pull requests and merges them, and `gh` merges with the credential it opened with; kestrel hands the
+credential over and stays out of what the run does with it. A human merge gate has to come from
+outside the credential: a required review gates only when the reviewer is a GitHub identity other than
+the one the token acts as, because GitHub will not let a pull request's author approve it — which is
+why this repository's own CI gates its merges instead
+([ADR-0027](docs/adr/0027-ci-gates-the-merge-and-a-queue-lands-the-batch.md)). A narrower token is no
+answer either: merging writes to the base branch and needs the contents-write authority that pushing
+the pull request's branch already needs, so a fine-grained token that can push the branch can merge
+it.
 
 Comment `@kestrel` on an issue in that repository, and within a poll interval there is a session
 open with a run queued behind it:
