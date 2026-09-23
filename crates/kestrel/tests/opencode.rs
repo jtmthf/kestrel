@@ -28,6 +28,9 @@ const RUNTIME: &str = "opencode acp";
 /// The model the stub endpoint serves, named as the Agent Runtime advertises it: the provider
 /// this Instance is configured with, and the one model in it.
 const MODEL: &str = "kestrel-test/canned";
+/// opencode fixes its model catalog at the first model it sees, and its built-in models are ready
+/// before a configured provider's, so an empty snapshot leaves only the model this Run named.
+const MODEL_SNAPSHOT: &str = "/workspace/models.json";
 
 /// A Run, the Instance executing it, and what the supervisor on it says. Provisioned through
 /// the `Compute` port rather than through the work role, because the model the Agent Runtime is
@@ -64,6 +67,10 @@ impl Driven {
             .instance
             .write_file("opencode.json", configured_with(model).as_bytes())
             .expect("the agent runtime should be configured");
+        driven
+            .instance
+            .write_file("models.json", b"{}")
+            .expect("the runtime's model snapshot should be written");
         harness.start(&driven.run).await;
 
         driven
@@ -117,6 +124,7 @@ fn provisioned(
             ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
             ("KESTREL_AGENT_RUNTIME", RUNTIME),
             ("KESTREL_AGENT_MODEL", model),
+            ("OPENCODE_MODELS_PATH", MODEL_SNAPSHOT),
         ])
         .expect("the supervisor should start");
     let pipe = supervisor
@@ -245,7 +253,7 @@ async fn what_the_agent_says_reaches_the_transcript_and_what_it_does_inside_the_
     );
 
     let transcript = transcript.join("\n");
-    for inside_the_run in ["call-1", "bash", MARK] {
+    for inside_the_run in ["call-1", "shell", MARK] {
         assert!(
             !transcript.contains(inside_the_run),
             "the transcript carries {inside_the_run}, which happened inside the run:\n{transcript}"

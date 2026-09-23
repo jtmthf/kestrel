@@ -4,23 +4,24 @@
 FROM debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS opencode
 
 ARG TARGETARCH
-ARG OPENCODE_VERSION=1.18.29
-ARG OPENCODE_SHA256_AMD64=ea800b7ff56226b70952126c9fc1e2517ca4c4b5682fd9d3f9e87449697a1194
-ARG OPENCODE_SHA256_ARM64=70baf769395ca4e7a68924026530c390eace194f3b7e4919d4efcb2aa2eed3c0
+ARG OPENCODE_VERSION=2.0.14
+ARG OPENCODE_SHA256_AMD64=0da3246c6d22f393739bb85d788055c16e381635cf0c1ceed393c28fd13ea964
+ARG OPENCODE_SHA256_ARM64=c76b4f9490f3d943f0ab9f22707a94082a27ad062abda3da41d8c61ea4b04c04
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates curl \
     && rm --recursive --force /var/lib/apt/lists/*
 
-# The release publishes no checksums of its own, so one is recorded here and the build fails
-# rather than shipping whatever the CDN served.
+# There is no checksums file on the standalone channel; upstream's update API maps each artifact
+# to a URL and a SHA-256, and one is recorded here so the build fails rather than shipping
+# whatever the CDN served.
 RUN set -eu; \
     case "${TARGETARCH}" in \
-    amd64) release=x64; digest="${OPENCODE_SHA256_AMD64}" ;; \
+    amd64) release=x64-baseline; digest="${OPENCODE_SHA256_AMD64}" ;; \
     arm64) release=arm64; digest="${OPENCODE_SHA256_ARM64}" ;; \
     *) echo "kestrel-env is not built for ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    url="https://github.com/sst/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${release}.tar.gz"; \
+    url="https://opencode.ai/files/bin/${OPENCODE_VERSION}/opencode-linux-${release}.tar.gz"; \
     curl --fail --silent --show-error --location --output /tmp/opencode.tar.gz "${url}"; \
     echo "${digest}  /tmp/opencode.tar.gz" | sha256sum --check --strict -; \
     tar --extract --gzip --file /tmp/opencode.tar.gz --directory /usr/local/bin opencode; \
@@ -48,7 +49,11 @@ COPY --from=supervisor /src/target/release/kestrel-supervisor /usr/local/bin/kes
 
 # Docker leaves HOME unset for anyone but root, and an agent runtime with nowhere to keep its
 # state writes to `/`.
-ENV HOME=/home/kestrel
+# A pinned image must not move off its pin, and the credential database keeps one filename
+# across release channels.
+ENV HOME=/home/kestrel \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_CHANNEL_DB=1
 USER kestrel
 WORKDIR /workspace
 

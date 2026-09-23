@@ -10,7 +10,7 @@ work on this repository without setting anything up in its checkout:
 | `gcc` and `libc6-dev`, which link the workspace and compile its C dependencies | Debian's release on the day of the build |
 | `git` | inherited from `kestrel-env` |
 | `gh` | `GH_VERSION` and a SHA-256 per architecture |
-| OpenCode (`opencode acp`) | inherited from `kestrel-env` |
+| OpenCode 2 (`opencode acp`) | inherited from `kestrel-env` |
 | Claude Code (`claude-agent-acp`) and Codex (`codex-acp`) | `package-lock.json`, installed with `npm ci` |
 
 The two Node adapters bring the `node` binary with them, which the base image deliberately leaves
@@ -68,11 +68,14 @@ files `useradd` creates, and no variable in the image's environment names a key,
 Credentials come in when the Run starts ([ADR-0010](../../docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md)).
 A Subscription Profile's files, such as `.codex/auth.json`, are written beneath `/home/kestrel`
 for the length of one Run and removed when it ends
-([ADR-0025](../../docs/adr/0025-subscription-profiles-are-personal.md)). `gh` reads `GH_TOKEN` from
-its own environment. The token's scope is the operator's and kestrel does not narrow it: a
-`repo`-scoped token merges pull requests as well as opening them, so a human merge gate needs a
-reviewer identity other than the token's ([USAGE.md](../../USAGE.md) covers it where the credential
-is set).
+([ADR-0025](../../docs/adr/0025-subscription-profiles-are-personal.md)). An OpenCode Go or Zen
+subscription is a Subscription Profile variable (`OPENCODE_API_KEY`) rather than a file, and an
+opencode `auth.json` is a one-time seed into the runtime's database, not a login kestrel refreshes
+([ADR-0026](../../docs/adr/0026-kestrel-carries-named-credentials-never-a-runtimes-store.md)). `gh`
+reads `GH_TOKEN` from its own environment. The token's scope is the operator's and kestrel does not
+narrow it: a `repo`-scoped token merges pull requests as well as opening them, so a human merge gate
+needs a reviewer identity other than the token's ([USAGE.md](../../USAGE.md) covers it where the
+credential is set).
 
 ## How it is checked
 
