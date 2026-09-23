@@ -48,7 +48,7 @@ pub async fn sweeping(store: &Store, wake: &Wake, shutdown: &CancellationToken) 
         sweeping_leases(store, shutdown),
         polling(store, &github, shutdown),
         elapsing(store, wake, shutdown),
-        firing(store, wake.0.subscribe(), shutdown),
+        firing(store, &github, wake.0.subscribe(), shutdown),
         following_up(store, wake.0.subscribe(), shutdown),
         sealing_idle_sessions(store, shutdown),
         delivering(store, &github, shutdown)
@@ -173,11 +173,12 @@ async fn delivering(store: &Store, github: &Github, shutdown: &CancellationToken
 /// between recording an Event and firing for it finds it on the way back up.
 async fn firing(
     store: &Store,
+    github: &Github,
     mut woken: watch::Receiver<()>,
     shutdown: &CancellationToken,
 ) -> Result<()> {
     while !shutdown.is_cancelled() {
-        match trigger::fire(store).await {
+        match trigger::fire(store, github).await {
             Ok(fired) => {
                 for firing in fired {
                     match firing {
@@ -204,6 +205,13 @@ async fn firing(
                             because,
                         } => {
                             warn!(%event, %trigger, %because, "a trigger fired and opened nothing")
+                        }
+                        trigger::Fired::Held {
+                            event,
+                            trigger,
+                            because,
+                        } => {
+                            info!(%event, %trigger, %because, "a trigger held work")
                         }
                     }
                 }

@@ -16,6 +16,7 @@ use crate::domain::{
 use crate::fanout::{self, Change};
 use crate::integration::github::{self, EventData, Github};
 use crate::log::Entry;
+use crate::readiness::Readiness;
 use crate::session;
 use crate::store::integration::Recorded;
 use crate::store::session::Opening;
@@ -86,6 +87,11 @@ pub enum Fired {
         correlation: String,
     },
     Failed {
+        event: EventRecordId,
+        trigger: String,
+        because: String,
+    },
+    Held {
         event: EventRecordId,
         trigger: String,
         because: String,
@@ -501,7 +507,7 @@ pub async fn elapse(store: &Store, at: Timestamp) -> Result<Vec<Occurrence>> {
 }
 
 /// An Event no Trigger matches opens nothing, and that is not a failure.
-pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
+pub async fn fire(store: &Store, github: &Github) -> Result<Vec<Fired>> {
     let matched = {
         let mut tx = store.begin().await?;
         tx.triggers().unfired_matches(AT_A_TIME).await?
@@ -509,8 +515,37 @@ pub async fn fire(store: &Store) -> Result<Vec<Fired>> {
 
     let mut fired = Vec::with_capacity(matched.len());
     for (trigger, event) in matched {
+        let readiness = if event.occurrence.r#type.starts_with("com.github.") {
+            match event.integration {
+                Some(id) => {
+                    let integration = {
+                        let mut tx = store.begin().await?;
+                        tx.integrations().with_id(id).await
+                    };
+                    match integration {
+                        Ok(integration) if integration.github().is_ok() => Some(
+                            github
+                                .readiness(&integration, &event.occurrence)
+                                .await
+                                .map_err(|error| error.to_string()),
+                        ),
+                        Ok(_) => Some(Err(
+                            "the work item has no GitHub integration to check readiness".to_owned(),
+                        )),
+                        Err(error) => Some(Err(format!(
+                            "the work item's integration could not be read: {error}"
+                        ))),
+                    }
+                }
+                None => Some(Err(
+                    "the work item has no integration to check readiness".to_owned()
+                )),
+            }
+        } else {
+            None
+        };
         let tx = store.begin().await?;
-        fired.push(firing(tx, &trigger, &event, Asked::by(&event)).await?);
+        fired.push(firing(tx, &trigger, &event, Asked::by(&event), readiness).await?);
     }
     Ok(fired)
 }
@@ -557,7 +592,7 @@ pub async fn dispatch(store: &Store, github: &Github, dispatch: Dispatch<'_>) ->
         .recorded_event(&trigger.organization, &occurrence)
         .await?;
 
-    firing(tx, &trigger, &event, dispatch.asked).await
+    firing(tx, &trigger, &event, dispatch.asked, None).await
 }
 
 /// An opening firing atomically commits its Session, first entry, Run and record, so a retry
@@ -567,6 +602,7 @@ async fn firing(
     trigger: &Trigger,
     event: &Event,
     asked: Asked<'_>,
+    readiness: Option<Result<Readiness, String>>,
 ) -> Result<Fired> {
     let rendered = render(trigger, event, asked.instruction);
 
@@ -633,6 +669,15 @@ async fn firing(
         Ok(agent) => agent,
         Err(error) => return failed(tx, trigger, event, format!("{error:#}")).await,
     };
+    if let Some(readiness) = readiness {
+        let because = match readiness {
+            Ok(readiness) => readiness.hold_reason(),
+            Err(error) => Some(format!("readiness could not be checked: {error}")),
+        };
+        if let Some(because) = because {
+            return held(tx, trigger, event, because).await;
+        }
+    }
     let session = tx
         .sessions()
         .open(Opening {
@@ -731,6 +776,19 @@ async fn failed(
     tx.commit().await?;
 
     Ok(Fired::Failed {
+        event: event.record_id,
+        trigger: trigger.name.clone(),
+        because,
+    })
+}
+
+async fn held(mut tx: Tx<'_>, trigger: &Trigger, event: &Event, because: String) -> Result<Fired> {
+    tx.triggers()
+        .record_held_firing(trigger, event, &because)
+        .await?;
+    tx.commit().await?;
+
+    Ok(Fired::Held {
         event: event.record_id,
         trigger: trigger.name.clone(),
         because,
