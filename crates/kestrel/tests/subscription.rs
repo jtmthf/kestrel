@@ -11,10 +11,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use kestrel::domain::{Exit, Run, RunState, Session};
-use kestrel::log::Entry as Said;
-use kestrel::profile::Entry;
+use kestrel::log;
+use kestrel::profile::{Contents, Entry};
 use support::Harness;
-use support::image;
+use support::image::{self, Container};
 
 const PATIENCE: Duration = Duration::from_secs(300);
 /// Asked for something the prompt does not contain, so an error the runtime echoes back as
@@ -39,7 +39,7 @@ struct Subject {
 struct Login {
     path: &'static str,
     host: PathBuf,
-    read: String,
+    as_read: String,
 }
 
 fn required(variable: &str, what: &str) -> String {
@@ -56,7 +56,7 @@ async fn codex_answers_on_a_chatgpt_login_before_and_after_a_restart() {
         "KESTREL_SMOKE_CODEX_AUTH",
         "the path of a file-backed Codex auth.json, which the refreshed login is written back to",
     ));
-    let read = fs::read_to_string(&host).expect("the Codex login should read");
+    let as_read = fs::read_to_string(&host).expect("the Codex login should read");
 
     smoke(Subject {
         runtime: "codex",
@@ -66,7 +66,7 @@ async fn codex_answers_on_a_chatgpt_login_before_and_after_a_restart() {
         files: vec![Login {
             path: ".codex/auth.json",
             host,
-            read,
+            as_read,
         }],
     })
     .await;
@@ -125,8 +125,11 @@ async fn smoke(subject: Subject) {
 
     let first = attempt(&harness, &subject, Round::BeforeTheRestart).await;
     let (harness, second) = match &first {
-        Ok(_) => {
+        Ok(run) => {
             let harness = harness.kill_and_restart().await;
+            if let Some(instance) = &run.instance {
+                Container::named(instance).destroy();
+            }
             let second = attempt(&harness, &subject, Round::AfterTheRestart).await;
             (harness, Some(second))
         }
@@ -172,7 +175,7 @@ async fn declared(harness: &Harness, subject: &Subject) {
     for login in &subject.files {
         let entry = Entry::file(login.path).expect("a file");
         harness
-            .hold_in_profile(ORGANIZATION, PROFILE, &entry, &login.read)
+            .hold_in_profile(ORGANIZATION, PROFILE, &entry, &login.as_read)
             .await;
     }
 }
@@ -236,7 +239,7 @@ async fn said_by_the_agent(harness: &Harness, session: &Session) -> String {
         .await
         .into_iter()
         .filter_map(|entry| match entry.entry {
-            Said::Said {
+            log::Entry::Said {
                 participant,
                 message,
             } if participant == session.agent.name => Some(message),
@@ -248,7 +251,7 @@ async fn said_by_the_agent(harness: &Harness, session: &Session) -> String {
 
 /// Everything the profile held and holds now, because a login refreshed mid-smoke is as much a
 /// secret as the one it replaced.
-async fn secrets(harness: &Harness, subject: &Subject) -> Secrets {
+async fn held_now(harness: &Harness) -> Contents {
     let profile = harness
         .profiles(ORGANIZATION)
         .await
@@ -256,39 +259,35 @@ async fn secrets(harness: &Harness, subject: &Subject) -> Secrets {
         .map(|(profile, _)| profile)
         .find(|profile| profile.name == PROFILE)
         .expect("the smoke's profile");
-    let now = harness.profile_contents(&profile).await;
+
+    harness.profile_contents(&profile).await
+}
+
+async fn secrets(harness: &Harness, subject: &Subject) -> Secrets {
+    let now = held_now(harness).await;
     let held = subject
         .variables
         .iter()
         .map(|(_, value)| value.as_str())
-        .chain(subject.files.iter().map(|login| login.read.as_str()))
+        .chain(subject.files.iter().map(|login| login.as_read.as_str()))
         .chain(now.variables.values().map(String::as_str))
         .chain(now.files.values().map(String::as_str));
 
     Secrets::of(&held.collect::<Vec<_>>())
 }
 
-/// Written back only over the file as it was read, never over a login the person refreshed on
-/// the host while the smoke ran.
 async fn handed_back(harness: &Harness, subject: &Subject) {
-    let profile = harness
-        .profiles(ORGANIZATION)
-        .await
-        .into_iter()
-        .map(|(profile, _)| profile)
-        .find(|profile| profile.name == PROFILE)
-        .expect("the smoke's profile");
-    let now = harness.profile_contents(&profile).await;
+    let now = held_now(harness).await;
 
     for login in &subject.files {
         let Some(refreshed) = now.files.get(login.path) else {
             continue;
         };
-        if *refreshed == login.read {
+        if *refreshed == login.as_read {
             continue;
         }
         let host = &login.host;
-        if fs::read_to_string(host).ok().as_ref() != Some(&login.read) {
+        if fs::read_to_string(host).ok().as_ref() != Some(&login.as_read) {
             eprintln!(
                 "{} changed on the host during the smoke, so the login the runtime refreshed is not written over it",
                 host.display()
@@ -356,19 +355,14 @@ enum Problem {
     Unclassified,
 }
 
-/// Matched against what a runtime says when it fails, which no runtime promises to keep saying.
-/// Checked in this order, because a refused plan can say 401 too.
+/// Checked before authentication, because a refused plan can say 401 too.
 const ENTITLEMENT: &[&str] = &[
     "only authorized for use with",
     "not included in your plan",
     "your plan does not",
     "usage limit",
-    "rate limit",
-    "quota",
-    "upgrade",
     "forbidden",
     "403",
-    "429",
     "not entitled",
     "insufficient credits",
     "credit balance",
@@ -394,11 +388,10 @@ const AUTHENTICATION: &[&str] = &[
 ];
 const LAUNCH: &[&str] = &[
     "no such file",
-    "not found",
+    "command not found",
     "permission denied",
     "exec format error",
     "acp v1",
-    "initialize",
     "exited before",
     "names a runtime",
 ];
@@ -505,7 +498,7 @@ fn a_runtime_that_never_came_up_is_a_launch_problem() {
     for evidence in [
         "No such file or directory (os error 2)",
         "kestrel speaks ACP v1, and this agent answered v0",
-        "the agent runtime exited before it answered initialize",
+        "sh: 1: codex-acp: command not found",
     ] {
         assert_eq!(
             diagnosed(Round::BeforeTheRestart, false, evidence),
@@ -555,5 +548,17 @@ fn a_held_secret_and_every_token_inside_one_are_redacted() {
     assert_eq!(
         said,
         "key [redacted] refused; refreshing with [redacted]; bearer [redacted]"
+    );
+}
+
+#[test]
+fn a_throttle_is_not_a_plan_refusal() {
+    assert_eq!(
+        diagnosed(
+            Round::BeforeTheRestart,
+            true,
+            "429 Too Many Requests: rate limit exceeded, retry later"
+        ),
+        Problem::Unclassified
     );
 }

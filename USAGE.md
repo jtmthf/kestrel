@@ -341,8 +341,8 @@ defaults to `codex`.
 
 To check that a subscription works before relying on it, run the smoke checks. Each makes one real
 model call through its runtime in the `kestrel-dev` image, kills and restarts the control plane,
-and makes another on a fresh instance. Each reads its login from the variables below, and fails
-if they are unset:
+destroys the first instance, and makes another on a fresh one. Each reads its login from the
+variables below, and fails if they are unset:
 
 ```sh
 export KESTREL_SMOKE_CODEX_AUTH=~/.codex/auth.json

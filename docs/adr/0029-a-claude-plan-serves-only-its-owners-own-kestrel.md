@@ -35,7 +35,20 @@ documents `claude setup-token` for scripts and CI, completed through Anthropic's
 offering a login, routing their requests, holding their tokens. In a personal deployment there are
 no such users. The person signs in through Anthropic's flow, stores their own token in
 infrastructure they run, and spends it on their own work in the unmodified binary, which the page
-names as permitted. This is a reading of the guidance, not an approval from Anthropic. The
+names as permitted. Three lines of the same page cut against this, and each is answered by who the
+user is:
+
+- *Developers building products […] including those using the Agent SDK, should use API key
+  authentication.* The operative prohibition that follows it is about users' credentials, and the
+  page separately names ordinary, individual Agent SDK use as what plan limits assume.
+- *Developers may not collect, store, or intermediate Claude.ai credentials.* kestrel does store
+  the token, sealed in its database. In a personal deployment the one storing it is its owner,
+  as a secrets manager would. Holding anyone else's is exactly this prohibition.
+- *The unmodified Claude Code binary.* `claude-agent-acp` drives the Agent SDK, which the
+  [overview](https://code.claude.com/docs/en/agent-sdk/overview) describes as "a library that runs
+  the Claude Code binary". kestrel pins the adapter from npm and patches nothing.
+
+This is a reading of the guidance, not an approval from Anthropic. The
 [contact-sales link](https://www.anthropic.com/contact-sales) on that page is the way to settle
 anything beyond it.
 
