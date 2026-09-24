@@ -4,6 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use sha2::{Digest, Sha256};
+
 #[derive(Debug)]
 pub struct Ran {
     pub code: i32,
@@ -72,10 +74,23 @@ pub fn removed(name: &str) {
 }
 
 /// Every image here builds from the repository root, so that is where a test invokes docker.
+/// Read when the test runs, not when it compiled: checkouts sharing a target directory run
+/// whichever binary compiled last, and each must still build and tag its own source.
 pub fn repository() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+
+    manifest
         .ancestors()
         .nth(2)
         .expect("the crate sits two directories under the repository")
         .to_path_buf()
+}
+
+pub fn checkout_digest(checkout: &Path) -> String {
+    let canonical = std::fs::canonicalize(checkout).unwrap_or_else(|_| checkout.to_path_buf());
+    let mut hashed = Sha256::new();
+    hashed.update(canonical.to_string_lossy().as_bytes());
+
+    kestrel::hex::encode(&hashed.finalize())[..16].to_owned()
 }

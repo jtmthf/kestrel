@@ -1,6 +1,7 @@
 //! The `kestrel-env` image as a test drives it: the one CI built for this change, or one built
 //! here when nothing named it, and run the way an operator running one by hand would run it.
 
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -12,17 +13,54 @@ use super::diagnostics::Diagnostics;
 use super::docker::{self, Ran, removed};
 use super::images;
 
-const LOCAL: &str = "kestrel-env:test";
-const SCRIPTED: &str = "kestrel-env-scripted:test";
-const CONFORMANCE: &str = "kestrel-env-conformance:test";
-const DEVELOPMENT: &str = "kestrel-dev:test";
 const PATIENCE: Duration = Duration::from_secs(30);
+
+/// Two processes in one checkout build the same source to the same tags and never remove them,
+/// so unlike the compose suite they need no lock.
+pub struct Tags {
+    pub environment: String,
+    pub scripted: String,
+    pub conformance: String,
+    pub development: String,
+}
+
+impl Tags {
+    pub fn all(self) -> [String; 4] {
+        [
+            self.environment,
+            self.scripted,
+            self.conformance,
+            self.development,
+        ]
+    }
+}
+
+pub fn tags_for(checkout: &Path) -> Tags {
+    let digest = docker::checkout_digest(checkout);
+
+    Tags {
+        environment: format!("kestrel-env:test-{digest}"),
+        scripted: format!("kestrel-env-scripted:test-{digest}"),
+        conformance: format!("kestrel-env-conformance:test-{digest}"),
+        development: format!("kestrel-dev:test-{digest}"),
+    }
+}
+
+fn tags() -> &'static Tags {
+    static TAGS: OnceLock<Tags> = OnceLock::new();
+    TAGS.get_or_init(|| tags_for(&docker::repository()))
+}
 
 pub fn built() -> &'static str {
     static BUILT: OnceLock<String> = OnceLock::new();
 
-    BUILT
-        .get_or_init(|| images::built_or_named(images::ENV, "images/kestrel-env/Dockerfile", LOCAL))
+    BUILT.get_or_init(|| {
+        images::built_or_named(
+            images::ENV,
+            "images/kestrel-env/Dockerfile",
+            &tags().environment,
+        )
+    })
 }
 
 /// The image with the scripted ACP agent in it, which is the only thing an Environment needs
@@ -40,14 +78,14 @@ pub fn with_the_scripted_agent() -> &'static str {
                 "--build-arg",
                 &base,
                 "--tag",
-                SCRIPTED,
+                &tags().scripted,
                 ".",
             ],
             "building the image with the scripted agent",
         );
     });
 
-    SCRIPTED
+    &tags().scripted
 }
 
 /// The image with the adapter the conformance suite's second agent is reached through, which
@@ -65,14 +103,14 @@ pub fn with_the_adapter() -> &'static str {
                 "--build-arg",
                 &base,
                 "--tag",
-                CONFORMANCE,
+                &tags().conformance,
                 ".",
             ],
             "building the image with the adapter",
         );
     });
 
-    CONFORMANCE
+    &tags().conformance
 }
 
 /// The development image, derived from the `kestrel-env` this suite builds rather than from
@@ -90,14 +128,14 @@ pub fn development() -> &'static str {
                 "--build-arg",
                 &base,
                 "--tag",
-                DEVELOPMENT,
+                &tags().development,
                 ".",
             ],
             "building the development image",
         );
     });
 
-    DEVELOPMENT
+    &tags().development
 }
 
 /// The container behind an Instance a Run recorded.
