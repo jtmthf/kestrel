@@ -1,6 +1,6 @@
 # Subscription authentication for ACP runtimes
 
-Research checked 16 September 2026 against official vendor documentation and the maintained ACP adapter repositories; the OpenCode section was revised 22 September 2026 for OpenCode 2. This is a feasibility note, not a completed authenticated run.
+Research checked 16 September 2026 against official vendor documentation and the maintained ACP adapter repositories; the OpenCode section was revised 22 September 2026 for OpenCode 2. It began as a feasibility note; on 23 September 2026 the smoke checks in `crates/kestrel/tests/subscription.rs` made real subscription-backed calls through Codex, OpenCode Go and Claude, before and after a restart.
 
 ## Codex: feasible on a trusted private host
 
