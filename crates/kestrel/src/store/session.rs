@@ -30,9 +30,36 @@ macro_rules! runs_where {
 /// Prompted at least once and every prompt answered, over a `run AS r`. A Run not yet prompted
 /// is still getting to its first turn.
 macro_rules! between_turns {
+    ($run:literal) => {
+        concat!(
+            "EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = ",
+            $run,
+            ".id)
+             AND NOT EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = ",
+            $run,
+            ".id AND t.answered_at IS NULL)"
+        )
+    };
+}
+
+macro_rules! profile_free {
     () => {
-        "EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = r.id)
-         AND NOT EXISTS (SELECT 1 FROM turn AS t WHERE t.run_id = r.id AND t.answered_at IS NULL)"
+        concat!(
+            "NOT EXISTS (
+             SELECT 1
+             FROM session AS s
+             JOIN session AS o
+               ON o.subscription_profile_id = s.subscription_profile_id
+              AND o.runtime = s.runtime
+             JOIN run AS a ON a.session_id = o.id
+             WHERE s.id = r.session_id
+               AND s.runtime IN (SELECT value FROM json_each(?))
+               AND a.state = ?
+               AND NOT (",
+            between_turns!("a"),
+            ")
+         )"
+        )
     };
 }
 
@@ -643,7 +670,7 @@ impl<'a> Sessions<'a> {
         serialized: &[String],
         enqueued_before: Option<Timestamp>,
     ) -> Result<Vec<Run>> {
-        let ids = sqlx::query(
+        let ids = sqlx::query(concat!(
             "SELECT r.id
              FROM run AS r
              WHERE r.state = ?
@@ -654,20 +681,12 @@ impl<'a> Sessions<'a> {
                    WHERE d.run_id = r.id
                      AND NOT (b.state = ? AND b.exit IS ?)
                )
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM session AS s
-                   JOIN session AS o
-                     ON o.subscription_profile_id = s.subscription_profile_id
-                    AND o.runtime = s.runtime
-                   JOIN run AS a ON a.session_id = o.id
-                   WHERE s.id = r.session_id
-                     AND s.runtime IN (SELECT value FROM json_each(?))
-                     AND a.state = ?
-               )
+               AND ",
+            profile_free!(),
+            "
                AND (? IS NULL OR r.enqueued_at < ?)
-             ORDER BY r.enqueued_at, r.id",
-        )
+             ORDER BY r.enqueued_at, r.id"
+        ))
         .bind(RunState::Queued.as_str())
         .bind(RunState::Ended.as_str())
         .bind(Exit::Succeeded.status())
@@ -1275,7 +1294,7 @@ impl<'a> Sessions<'a> {
             "SELECT COUNT(*) AS occupying
              FROM run AS r
              WHERE r.state = ? AND NOT (",
-            between_turns!(),
+            between_turns!("r"),
             ")"
         ))
         .bind(RunState::Active.as_str())
@@ -1286,17 +1305,25 @@ impl<'a> Sessions<'a> {
         Ok(usize::try_from(row.get::<i64, _>("occupying"))?)
     }
 
-    pub async fn oldest_held_input(&mut self) -> Result<Option<(Run, Timestamp)>> {
+    pub async fn oldest_held_input(
+        &mut self,
+        serialized: &[String],
+    ) -> Result<Option<(Run, Timestamp)>> {
         let row = sqlx::query(concat!(
             "SELECT r.id, MIN(p.received_at) AS since
              FROM run AS r
              JOIN pending_message AS p ON p.session_id = r.session_id
              WHERE r.state = ? AND ",
-            between_turns!(),
-            " GROUP BY r.id
+            between_turns!("r"),
+            " AND ",
+            profile_free!(),
+            "
+             GROUP BY r.id
              ORDER BY since, r.id
              LIMIT 1"
         ))
+        .bind(RunState::Active.as_str())
+        .bind(serde_json::to_string(serialized)?)
         .bind(RunState::Active.as_str())
         .fetch_optional(&mut *self.connection)
         .await
@@ -1316,7 +1343,7 @@ impl<'a> Sessions<'a> {
     pub async fn is_waiting(&mut self, run: &Run) -> Result<bool> {
         let row = sqlx::query(concat!(
             "SELECT EXISTS (SELECT 1 FROM run AS r WHERE r.id = ? AND r.state = ? AND ",
-            between_turns!(),
+            between_turns!("r"),
             ") AS waiting"
         ))
         .bind(run.id.to_string())

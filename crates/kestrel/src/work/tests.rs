@@ -77,6 +77,159 @@ fn usage() -> Usage {
 }
 
 #[tokio::test]
+async fn a_codex_run_waiting_between_turns_yields_its_profile_and_resumes_when_free() {
+    let data_dir = TempDir::new().unwrap();
+    let store = Store::open(data_dir.path()).await.unwrap();
+    let mut tx = store.begin().await.unwrap();
+    let organization = tx
+        .organizations()
+        .declare("acme", None)
+        .await
+        .unwrap()
+        .record;
+    tx.workspaces()
+        .declare(&organization, "kestrel", &[], "main")
+        .await
+        .unwrap();
+    tx.agents()
+        .declare(&organization, "builder", "codex", None)
+        .await
+        .unwrap();
+    tx.profiles()
+        .declare(&organization, "jack", "Jack")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let first = session::open(
+        &store,
+        "acme",
+        "kestrel",
+        "builder",
+        Some("jack"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let second = session::open(
+        &store,
+        "acme",
+        "kestrel",
+        "builder",
+        Some("jack"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let first_queued = enqueue(&store, first.id, None).await.unwrap();
+    let first_run = match occupy(&store, 1, &["codex".to_owned()]).await.unwrap() {
+        Some(Occupied::Claimed(claimed)) => claimed.run,
+        _ => panic!("the first run should claim"),
+    };
+    assert_eq!(first_run.id, first_queued.id);
+    link::start(&store, &first_run).await.unwrap();
+    report(
+        &store,
+        &first_run,
+        Reported {
+            seq: Some(1),
+            report: Report::Answered,
+        },
+    )
+    .await
+    .unwrap();
+
+    let second_queued = enqueue(&store, second.id, None).await.unwrap();
+    let second_run = match occupy(&store, 1, &["codex".to_owned()]).await.unwrap() {
+        Some(Occupied::Claimed(claimed)) => claimed.run,
+        _ => panic!("the waiting run should leave its slot and profile available"),
+    };
+    assert_eq!(second_run.id, second_queued.id);
+
+    session::post(&store, first.id, "operator", "continue")
+        .await
+        .unwrap();
+    assert!(
+        occupy(&store, 2, &["codex".to_owned()])
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .begin()
+            .await
+            .unwrap()
+            .sessions()
+            .is_waiting(&first_run)
+            .await
+            .unwrap()
+    );
+
+    let mut tx = store.begin().await.unwrap();
+    tx.profiles()
+        .declare(&organization, "alex", "Alex")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let alex = session::open(
+        &store,
+        "acme",
+        "kestrel",
+        "builder",
+        Some("alex"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let alex_queued = enqueue(&store, alex.id, None).await.unwrap();
+    let alex_run = match occupy(&store, 2, &["codex".to_owned()]).await.unwrap() {
+        Some(Occupied::Claimed(claimed)) => claimed.run,
+        _ => panic!("another profile should be able to claim while Jack is busy"),
+    };
+    assert_eq!(alex_run.id, alex_queued.id);
+    link::start(&store, &alex_run).await.unwrap();
+    report(
+        &store,
+        &alex_run,
+        Reported {
+            seq: Some(1),
+            report: Report::Answered,
+        },
+    )
+    .await
+    .unwrap();
+    session::post(&store, alex.id, "operator", "continue")
+        .await
+        .unwrap();
+    match occupy(&store, 2, &["codex".to_owned()]).await.unwrap() {
+        Some(Occupied::Resumed(run)) => assert_eq!(run.id, alex_run.id),
+        _ => panic!("an eligible held prompt should pass the blocked one"),
+    }
+
+    complete(&store, &second_run).await.unwrap();
+    match occupy(&store, 2, &["codex".to_owned()]).await.unwrap() {
+        Some(Occupied::Resumed(run)) => assert_eq!(run.id, first_run.id),
+        _ => panic!("the held prompt should resume after the profile is free"),
+    }
+    assert_eq!(
+        store
+            .begin()
+            .await
+            .unwrap()
+            .sessions()
+            .turns(first_run.id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn reports_record_the_run_and_its_transcript_together() {
     let fixture = Fixture::new().await;
     fixture.report(Some(1), Report::Started).await.unwrap();

@@ -150,7 +150,7 @@ pub async fn occupy(
         return Ok(None);
     }
 
-    let held = tx.sessions().oldest_held_input().await?;
+    let held = tx.sessions().oldest_held_input(serialized).await?;
     let occupied =
         match claiming(&mut tx, serialized, held.as_ref().map(|(_, since)| *since)).await? {
             Some(claimed) => Occupied::Claimed(claimed),
