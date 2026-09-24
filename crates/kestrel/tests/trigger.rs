@@ -192,7 +192,7 @@ async fn the_rendered_brief_is_the_sessions_first_transcript_entry() {
             .collect::<Vec<_>>(),
         [
             Entry::Brief {
-                trigger: "ready".to_owned(),
+                trigger: Some("ready".to_owned()),
                 brief: "Work https://github.com/jtmthf/kestrel/issues/43: an issue numbered 43"
                     .to_owned(),
             },
@@ -277,7 +277,7 @@ async fn the_agent_is_first_prompted_with_exactly_the_brief_its_session_preserve
     assert_eq!(
         first_entry(&harness, &session).await,
         Entry::Brief {
-            trigger: "ready".to_owned(),
+            trigger: Some("ready".to_owned()),
             brief: SKILLED.to_owned(),
         }
     );
@@ -386,7 +386,7 @@ async fn a_brief_that_cannot_render_fails_the_firing_and_starts_nothing() {
     let Entry::Brief { trigger, .. } = first_entry(&harness, &sessions[0]).await else {
         panic!("a triggered session opens on its brief");
     };
-    assert_eq!(trigger, "ready");
+    assert_eq!(trigger.as_deref(), Some("ready"));
 
     harness.teardown().await;
 }
@@ -737,7 +737,11 @@ async fn an_event_matching_several_triggers_fires_every_one_of_them() {
 
     let mut fired = Vec::new();
     for session in harness.sessions("acme").await {
-        if let Entry::Brief { trigger, .. } = first_entry(&harness, &session).await {
+        if let Entry::Brief {
+            trigger: Some(trigger),
+            ..
+        } = first_entry(&harness, &session).await
+        {
             fired.push(trigger);
         }
     }
@@ -1342,7 +1346,7 @@ async fn a_schedule_elapsing_opens_a_session_the_way_a_matched_event_does() {
     assert_eq!(
         first_entry(&harness, &session).await,
         Entry::Brief {
-            trigger: "sweep".to_owned(),
+            trigger: Some("sweep".to_owned()),
             brief: "Sweep the backlog for sweep".to_owned(),
         }
     );
@@ -1563,7 +1567,7 @@ async fn a_cron_schedule_elapsing_opens_a_session_the_way_an_interval_does() {
     assert_eq!(
         first_entry(&harness, &session).await,
         Entry::Brief {
-            trigger: "triage".to_owned(),
+            trigger: Some("triage".to_owned()),
             brief: "Triage for triage".to_owned(),
         }
     );

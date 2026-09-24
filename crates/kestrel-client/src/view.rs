@@ -178,5 +178,7 @@ pub const UNRESOLVED: View = View::Detail(&[
 ]);
 pub const EXIT_CODES: View = View::Detail(&["code", "name", "meaning", "branch"]);
 
+pub const STARTED: View = View::Detail(&["organization", "workspace", "agent", "session", "run"]);
+
 /// What a creation answers back is the identifier the next command is given.
 pub const DECLARED: View = View::Value("id");

@@ -1695,6 +1695,102 @@ async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
     harness.teardown().await;
 }
 
+fn a_start(organization: &str, agent_runtime: &str, brief: &str) -> Value {
+    json!({
+        "organization": organization,
+        "workspace": {
+            "name": "kestrel",
+            "repositories": ["https://github.com/jtmthf/kestrel"],
+            "branch": "main",
+        },
+        "agent": { "name": "builder", "runtime": agent_runtime, "model": null },
+        "brief": brief,
+    })
+}
+
+#[tokio::test]
+async fn a_start_declares_its_setup_and_reaches_a_run_carrying_its_brief() {
+    let harness = Harness::boot().await;
+
+    let (status, started) = declared(
+        &harness,
+        operator::STARTS,
+        &a_start("acme", "opencode", "Fix the flaky test"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED, "{started}");
+    for (kind, name) in [
+        ("organization", "acme"),
+        ("workspace", "kestrel"),
+        ("agent", "builder"),
+    ] {
+        assert_eq!(started[kind], json!({ "name": name, "created": true }));
+    }
+    assert_eq!(started["run"]["session"], started["session"]["id"]);
+    assert_eq!(started["run"]["state"], "queued");
+    let session = started["session"]["id"]
+        .as_str()
+        .expect("a session id")
+        .parse()
+        .expect("a session identifier");
+    assert_eq!(
+        harness.transcript(session).await[0].entry,
+        Entry::Brief {
+            trigger: None,
+            brief: "Fix the flaky test".to_owned(),
+        }
+    );
+
+    let (status, again) = declared(
+        &harness,
+        operator::STARTS,
+        &a_start("acme", "opencode", "And another"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{again}");
+    assert_eq!(again["workspace"]["created"], false);
+    assert_ne!(again["session"]["id"], started["session"]["id"]);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_start_that_would_change_a_declaration_leaves_nothing_behind() {
+    let harness = Harness::boot().await;
+    let acme = harness.declare_organization("acme").await;
+    harness
+        .declare_agent(&acme, "builder", "claude", None)
+        .await;
+
+    let mut start = a_start("acme", "opencode", "Fix the flaky test");
+    start["credentials"] = json!([{ "variable": "ANTHROPIC_API_KEY", "secret": "sk-ant" }]);
+    let (status, refused) = declared(&harness, operator::STARTS, &start).await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert!(listed_nothing(&harness, &credentials_of("acme")).await);
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("claude")),
+        "{refused}"
+    );
+    assert!(listed_nothing(&harness, &workspaces_of("acme")).await);
+    assert!(
+        listed_nothing(
+            &harness,
+            &operator::SESSIONS.replace("{organization}", "acme")
+        )
+        .await
+    );
+    assert_eq!(
+        listed(&harness, &agents_of("acme")).await[0]["runtime"],
+        "claude"
+    );
+
+    harness.teardown().await;
+}
+
 #[tokio::test]
 async fn a_changed_workspace_declaration_converges_on_the_workspace_by_that_name() {
     let harness = Harness::boot().await;
@@ -2722,6 +2818,7 @@ fn the_published_operator_document_describes_the_boundary_the_control_plane_serv
     let served = [
         (operator::ORGANIZATIONS, "get"),
         (operator::ORGANIZATIONS, "post"),
+        (operator::STARTS, "post"),
         (operator::WORKSPACES, "get"),
         (operator::WORKSPACES, "post"),
         (operator::AGENTS, "get"),
@@ -2786,7 +2883,7 @@ fn the_published_operator_document_describes_every_transcript_entry() {
             participant: "builder".to_owned(),
         },
         Entry::Brief {
-            trigger: "sweep".to_owned(),
+            trigger: Some("sweep".to_owned()),
             brief: "Sweep the backlog".to_owned(),
         },
         Entry::RunStarted {

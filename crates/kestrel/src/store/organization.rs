@@ -87,7 +87,7 @@ impl<'a> Organizations<'a> {
         })
     }
 
-    async fn find(&mut self, name: &str) -> Result<Option<Organization>> {
+    pub async fn find(&mut self, name: &str) -> Result<Option<Organization>> {
         sqlx::query("SELECT id, name, max_live_instances FROM organization WHERE name = ?")
             .bind(name)
             .fetch_optional(&mut *self.connection)
