@@ -210,6 +210,33 @@ async fn a_missing_workspace_names_the_setup_command_and_keeps_its_category() {
 }
 
 #[tokio::test]
+async fn corrective_command_names_the_unencoded_organization() {
+    let harness = Harness::boot().await;
+    harness.declare_organization("Acme East").await;
+    let finished = ran_by(
+        &harness,
+        &[
+            "session",
+            "open",
+            "--workspace",
+            "absent",
+            "--agent",
+            "agent",
+        ],
+        Invocation::default(),
+    )
+    .await;
+
+    exited(&finished, UNRESOLVED);
+    assert!(
+        finished.err.contains("--organization 'Acme East'"),
+        "{}",
+        finished.err
+    );
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn a_run_in_the_session_names_the_run_to_stop_and_stays_rejected() {
     let harness = an_organization().await;
     let organization = harness.organizations().await.remove(0);

@@ -72,7 +72,12 @@ impl ControlPlane {
                 .collect::<Vec<_>>()
                 .windows(3)
                 .find(|parts| parts[0] == "operator" && parts[1] == "organizations")
-                .map(|parts| parts[2].to_owned())
+                .and_then(|parts| {
+                    percent_encoding::percent_decode_str(parts[2])
+                        .decode_utf8()
+                        .ok()
+                })
+                .map(|name| name.into_owned())
         });
         if status.is_success() {
             return Ok(response);

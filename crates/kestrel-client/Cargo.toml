@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+percent-encoding = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 # Fields come out in the order `--json` asked for them, whatever else the workspace builds.
