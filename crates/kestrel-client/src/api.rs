@@ -3,6 +3,7 @@ use reqwest::{Client, RequestBuilder, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::corrective;
 use crate::exit::{Exit, Failed};
 
 #[derive(Deserialize)]
@@ -66,6 +67,18 @@ impl ControlPlane {
             )
         })?;
         let status = response.status();
+        let organization = response.url().path_segments().and_then(|segments| {
+            segments
+                .collect::<Vec<_>>()
+                .windows(3)
+                .find(|parts| parts[0] == "operator" && parts[1] == "organizations")
+                .and_then(|parts| {
+                    percent_encoding::percent_decode_str(parts[2])
+                        .decode_utf8()
+                        .ok()
+                })
+                .map(|name| name.into_owned())
+        });
         if status.is_success() {
             return Ok(response);
         }
@@ -74,9 +87,21 @@ impl ControlPlane {
             .json::<Refusal>()
             .await
             .map_or_else(|_| status.to_string(), |refusal| refusal.message);
+        let next = corrective::command(&why, organization.as_deref())
+            .map(|command| {
+                let effect = if why.contains(" is still in flight ") {
+                    "\nStopping a run mid-turn marks it failed."
+                } else if why.contains("'s instance ") {
+                    "\nReleasing the instance discards unpublished work."
+                } else {
+                    ""
+                };
+                format!("\nTry: {command}{effect}")
+            })
+            .unwrap_or_default();
         bail!(Failed::new(
             refused(status),
-            format!("the control plane refused: {why}")
+            format!("the control plane refused: {why}{next}")
         ))
     }
 
