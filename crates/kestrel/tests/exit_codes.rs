@@ -101,6 +101,48 @@ fn an_invalid_invocation_is_usage() {
     }
 }
 
+#[test]
+fn guessed_session_and_run_verbs_explain_the_domain_verbs_without_running_them() {
+    for (args, suggested, verbs) in [
+        (
+            &["session", "create"][..],
+            "session open",
+            "open, list, show, post, seal, transcript",
+        ),
+        (
+            &["session", "close"],
+            "session seal",
+            "open, list, show, post, seal, transcript",
+        ),
+        (
+            &["run", "start"],
+            "run enqueue",
+            "enqueue, list, show, stop",
+        ),
+        (
+            &["run", "enqueu"],
+            "run enqueue",
+            "enqueue, list, show, stop",
+        ),
+        (
+            &["session", "opne"],
+            "session open",
+            "open, list, show, post, seal, transcript",
+        ),
+        (
+            &["session", "sael"],
+            "session seal",
+            "open, list, show, post, seal, transcript",
+        ),
+    ] {
+        let finished = ran(&nowhere(), args);
+        exited(&finished, USAGE);
+        assert!(finished.err.contains(suggested), "{}", finished.err);
+        assert!(finished.err.contains(verbs), "{}", finished.err);
+        assert!(finished.out.is_empty());
+    }
+}
+
 #[tokio::test]
 async fn no_organization_in_scope_is_unresolved() {
     let harness = Harness::boot().await;
@@ -108,7 +150,83 @@ async fn no_organization_in_scope_is_unresolved() {
     let finished = ran_by(&harness, &["workspace", "list"], Invocation::default()).await;
 
     exited(&finished, UNRESOLVED);
+    assert!(
+        finished
+            .err
+            .contains("kestrel organization declare default")
+    );
     harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_missing_workspace_names_the_setup_command_and_keeps_its_category() {
+    let harness = an_organization().await;
+    let finished = ran_by(
+        &harness,
+        &[
+            "session",
+            "open",
+            "--workspace",
+            "absent",
+            "--agent",
+            "agent",
+        ],
+        Invocation::default(),
+    )
+    .await;
+
+    exited(&finished, UNRESOLVED);
+    assert!(
+        finished.err.contains("kestrel workspace declare absent"),
+        "{}",
+        finished.err
+    );
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_run_in_the_session_names_the_run_to_stop_and_stays_rejected() {
+    let harness = an_organization().await;
+    let organization = harness.organizations().await.remove(0);
+    let workspace = harness
+        .declare_workspace(
+            &organization,
+            "work",
+            &["https://example.com/repo".to_owned()],
+            "main",
+        )
+        .await;
+    let agent = harness
+        .declare_agent(&organization, "worker", "opencode", None)
+        .await;
+    let session = harness
+        .open_session("acme", &workspace.name, &agent.name)
+        .await;
+    let run = harness.enqueue_run(session.id).await;
+    let finished = ran_by(
+        &harness,
+        &["run", "enqueue", "--session", &session.id.to_string()],
+        Invocation::default(),
+    )
+    .await;
+
+    exited(&finished, REJECTED);
+    assert!(
+        finished
+            .err
+            .contains(&format!("kestrel run stop {}", run.id)),
+        "{}",
+        finished.err
+    );
+    harness.teardown().await;
+}
+
+#[test]
+fn credential_help_presents_set_and_forget_together() {
+    let finished = ran(&nowhere(), &["credential", "--help"]);
+    exited(&finished, SUCCESS);
+    assert!(finished.out.join("\n").contains("credential set"));
+    assert!(finished.out.join("\n").contains("credential forget"));
 }
 
 #[tokio::test]

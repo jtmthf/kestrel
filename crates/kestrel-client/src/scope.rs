@@ -56,7 +56,7 @@ impl<'a> Scoping<'a> {
                 Exit::Unresolved,
                 format!(
                     "no Organization is in scope and none exists; declare one with \
-                     `{BINARY} organization declare <name>`"
+                     `{BINARY} organization declare default`"
                 )
             )),
             Derived::Unnamed { existing } => bail!(Failed::new(

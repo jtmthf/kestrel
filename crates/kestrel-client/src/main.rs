@@ -1,4 +1,5 @@
 mod api;
+mod corrective;
 mod exit;
 mod output;
 mod scope;
@@ -11,6 +12,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, bail};
 use clap::builder::NonEmptyStringValueParser;
+use clap::error::{ContextKind, ContextValue};
 use clap::parser::ValueSource;
 use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 use reqwest::Url;
@@ -142,6 +144,9 @@ impl Command {
 }
 
 #[derive(Debug, Subcommand)]
+#[command(
+    after_help = "Manage a Provider Credential with `kestrel credential set <variable>` and `kestrel credential forget <variable>`."
+)]
 enum CredentialCommand {
     /// Hold a Provider Credential against an Organization, read from standard input
     Set {
@@ -1213,6 +1218,39 @@ async fn run() -> Result<()> {
 /// Clap's own exit codes would do, but the catalog is what a script was promised.
 fn exit_after(error: &clap::Error) -> ! {
     let _ = error.print();
+    if error.kind() == clap::error::ErrorKind::InvalidSubcommand {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if let Some((noun, guessed)) = args
+            .windows(2)
+            .find(|pair| pair[0] == "session" || pair[0] == "run")
+            .map(|pair| (pair[0].as_str(), pair[1].as_str()))
+        {
+            let correct = match (noun, guessed) {
+                ("session", "create" | "new" | "start" | "begin" | "opne") => Some("open"),
+                ("session", "close" | "stop" | "end" | "finish") => Some("seal"),
+                ("run", "start" | "create" | "launch" | "execute" | "queue") => Some("enqueue"),
+                _ => None,
+            }
+            .map(str::to_owned)
+            .or_else(|| match error.get(ContextKind::SuggestedSubcommand) {
+                Some(ContextValue::Strings(suggestions)) if suggestions.len() == 1 => {
+                    suggestions.first().cloned()
+                }
+                _ => None,
+            });
+            if let Some(correct) = correct {
+                eprintln!("Try `kestrel {noun} {correct}`.");
+            }
+            if let Some(command) = Client::command().find_subcommand(noun) {
+                let verbs = command
+                    .get_subcommands()
+                    .map(clap::Command::get_name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                eprintln!("Accepted {noun} verbs: {verbs}");
+            }
+        }
+    }
     let exit = if error.use_stderr() {
         Exit::Usage
     } else {
