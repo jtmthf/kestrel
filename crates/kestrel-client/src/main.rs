@@ -4,6 +4,7 @@ mod exit;
 mod output;
 mod scope;
 mod sse;
+mod start;
 mod transcript;
 mod view;
 
@@ -71,6 +72,9 @@ struct Client {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Go from whatever the control plane holds to a Run carrying a Brief, declaring what is
+    /// missing from what this clone says, and explaining every value before applying it
+    Start(Start),
     /// Preview and apply one Workspace, Agent and Trigger declaration document
     Apply(Apply),
     /// Declare and list Organizations
@@ -120,10 +124,44 @@ struct Apply {
     file: String,
 }
 
+#[derive(Debug, Args)]
+struct Start {
+    /// The Brief the Session starts with; `@FILE` reads it from a file and `-` from standard
+    /// input
+    #[arg(long)]
+    brief: String,
+    /// A repository the work happens against; repeat for many. Without it, the clone's origin
+    #[arg(long = "repository", value_name = "URL")]
+    repositories: Vec<String>,
+    /// The branch the work happens on. Without it, a Workspace's own, then origin's default,
+    /// then the branch checked out
+    #[arg(long)]
+    branch: Option<String>,
+    /// The Workspace, declared if missing. Without it, the one declaring the repositories, then
+    /// the repository's name
+    #[arg(long)]
+    workspace: Option<String>,
+    /// The Agent, declared if missing. Without it, the only one, then its runtime's name
+    #[arg(long)]
+    agent: Option<String>,
+    /// The Agent Runtime a declared Agent is driven by. Without it, the declared Agent's, then
+    /// kestrel's default
+    #[arg(long)]
+    runtime: Option<String>,
+    /// The model a declared Agent works with. Without it, its Agent Runtime's default
+    #[arg(long)]
+    model: Option<String>,
+    /// A Provider Credential for the Organization to hold, read from the environment variable
+    /// of this name; repeat for many
+    #[arg(long = "credential", value_name = "VARIABLE")]
+    credentials: Vec<String>,
+}
+
 impl Command {
     fn scoped(&self) -> bool {
         match self {
-            Command::Apply(_)
+            Command::Start(_)
+            | Command::Apply(_)
             | Command::Workspace(_)
             | Command::Agent(_)
             | Command::Credential(_)
@@ -633,6 +671,9 @@ async fn run() -> Result<()> {
     let scoping = Scoping::new(&api, named);
 
     match client.command {
+        Command::Start(start) => {
+            started(&api, &presentation, scoping, start).await?;
+        }
         Command::Apply(Apply { file }) => {
             let declaration = declaration(&file)?;
             let organization = scoping.resolve().await?.organization;
@@ -1233,6 +1274,130 @@ async fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Every value is explained on stderr before anything changes, so what stdout carries is what
+/// the start reached and nothing else.
+async fn started(
+    api: &ControlPlane,
+    presentation: &Presentation,
+    scoping: Scoping<'_>,
+    start: Start,
+) -> Result<()> {
+    let brief = given(&start.brief)?;
+    let clone =
+        start::LocalClone::of(&std::env::current_dir().context("reading the working directory")?);
+    let (named, existing) = match scoping.derive().await? {
+        Derived::Scope(scope) => (Some(scope), Vec::new()),
+        Derived::Unnamed { existing } => (None, existing),
+    };
+    let organization =
+        start::organization(named, &existing, &clone).map_err(|missing| incomplete(&[missing]))?;
+
+    let declared = names(&api.get(&["organizations"]).await?).contains(&organization.value);
+    let (workspaces, agents, credentials) = if declared {
+        let within = async |records| {
+            api.get(&["organizations", &organization.value, records])
+                .await
+        };
+        tokio::try_join!(
+            within("workspaces"),
+            within("agents"),
+            within("credentials")
+        )?
+    } else {
+        (json!([]), json!([]), json!([]))
+    };
+    let existing = start::Existing::read(&workspaces, &agents, &credentials);
+
+    let secrets = start::secrets(&start.credentials, |variable| std::env::var(variable).ok());
+    let plan = start::plan(
+        organization,
+        start::Given {
+            repositories: start.repositories,
+            branch: start.branch,
+            workspace: start.workspace,
+            agent: start.agent,
+            runtime: start.runtime,
+            model: start.model,
+            credentials: start.credentials,
+        },
+        &clone,
+        &existing,
+    );
+    let (plan, secrets) = match (plan, secrets) {
+        (Ok(plan), Ok(secrets)) => (plan, secrets),
+        (plan, secrets) => {
+            let mut missing = plan.err().unwrap_or_default();
+            missing.extend(secrets.err().unwrap_or_default());
+            return Err(incomplete(&missing));
+        }
+    };
+
+    let explained = plan.explained();
+    let column = explained
+        .iter()
+        .map(|row| row.what.len())
+        .max()
+        .unwrap_or_default();
+    eprintln!("starting work with");
+    for row in &explained {
+        let (what, value, because, flag) = (row.what, &row.value, row.because, row.flag);
+        if row.given {
+            eprintln!("  {what:column$}  {value}  ({because})");
+        } else {
+            eprintln!("  {what:column$}  {value}  ({because}; {flag} overrides it)");
+        }
+    }
+
+    let started = api.post(&["starts"], &plan.body(&brief, &secrets)).await?;
+    for (kind, settled) in [
+        ("organization", &started["organization"]),
+        ("workspace", &started["workspace"]),
+        ("agent", &started["agent"]),
+    ] {
+        if settled["created"] == true {
+            eprintln!("declared the {kind} {}", rendered(&settled["name"]));
+        }
+    }
+    show(
+        presentation,
+        &view::STARTED,
+        &json!({
+            "organization": started["organization"]["name"],
+            "workspace": started["workspace"]["name"],
+            "agent": started["agent"]["name"],
+            "session": started["session"]["name"],
+            "session_id": started["session"]["id"],
+            "run": started["run"]["name"],
+            "run_id": started["run"]["id"],
+        }),
+    )
+}
+
+fn rendered(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_owned)
+}
+
+/// Nothing is asked for: whatever drives the Client may have no terminal to answer on.
+fn incomplete(missing: &[start::Missing]) -> anyhow::Error {
+    let flags: Vec<&str> = missing.iter().map(|missing| missing.flag).collect();
+    let reasons: Vec<String> = missing
+        .iter()
+        .map(|missing| format!("{}: {}", missing.flag, missing.because))
+        .collect();
+
+    Failed::new(
+        Exit::Usage,
+        format!(
+            "nothing says what to start with; pass {} ({})",
+            flags.join(" and "),
+            reasons.join("; ")
+        ),
+    )
+    .into()
 }
 
 /// Clap's own exit codes would do, but the catalog is what a script was promised.

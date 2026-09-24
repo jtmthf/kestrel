@@ -35,9 +35,10 @@ use crate::store::organization::NoSuchOrganization;
 use crate::store::{Declared, Store};
 use crate::template::Template;
 use crate::trigger::{self, apply};
-use crate::{instance, session, work};
+use crate::{instance, session, start, work};
 
 pub const ORGANIZATIONS: &str = "/operator/organizations";
+pub const STARTS: &str = "/operator/starts";
 pub const WORKSPACES: &str = "/operator/organizations/{organization}/workspaces";
 pub const AGENTS: &str = "/operator/organizations/{organization}/agents";
 pub const AGENT_MODEL: &str = "/operator/organizations/{organization}/agents/{agent}/model";
@@ -123,6 +124,7 @@ struct Read {
 pub fn router(store: Store, shutdown: CancellationToken) -> Router {
     Router::new()
         .route(ORGANIZATIONS, get(organizations).post(declare_organization))
+        .route(STARTS, post(start))
         .route(WORKSPACES, get(workspaces).post(declare_workspace))
         .route(AGENTS, get(agents).post(declare_agent))
         .route(AGENT_MODEL, put(set_agent_model))
@@ -514,6 +516,34 @@ impl From<Trigger> for TriggerRecord {
             declared_at: trigger.declared_at,
         }
     }
+}
+
+#[derive(Serialize)]
+struct StartedRecord {
+    organization: start::Settled,
+    workspace: start::Settled,
+    agent: start::Settled,
+    session: SessionRecord,
+    run: RunRecord,
+}
+
+async fn start(
+    State(control_plane): State<ControlPlane>,
+    plan: Result<Json<start::Plan>, JsonRejection>,
+) -> Result<(StatusCode, Json<StartedRecord>), Refused> {
+    let Json(plan) = plan?;
+    let started = start::start(&control_plane.store, &plan).await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(StartedRecord {
+            organization: started.organization,
+            workspace: started.workspace,
+            agent: started.agent,
+            session: SessionRecord::read(&control_plane.store, started.session).await?,
+            run: RunRecord::read(&control_plane.store, started.run).await?,
+        }),
+    ))
 }
 
 async fn organizations(

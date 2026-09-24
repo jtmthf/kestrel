@@ -92,6 +92,35 @@
         }
       }
     },
+    "/operator/starts": {
+      "post": {
+        "operationId": "start",
+        "summary": "Take a control plane from whatever it holds to a Run carrying a Brief, in one step.",
+        "description": "Declares the Organization, Workspace and Agent the plan names where they do not exist, holds the Provider Credentials it carries, opens a Session with the Brief, and enqueues its Run, all in one transaction: a refused plan leaves nothing behind. A start never changes a declaration that exists, and refuses one that would.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/StartPlan" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "What the plan settled on, and the Session and Run it reached.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Started" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "422": { "$ref": "#/components/responses/Refused" },
+          "503": { "$ref": "#/components/responses/Refused" }
+        }
+      }
+    },
     "/operator/organizations/{organization}/workspaces": {
       "get": {
         "operationId": "listWorkspaces",
@@ -1632,6 +1661,56 @@
           "model"
         ]
       },
+      "StartPlan": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "organization": { "type": "string", "minLength": 1 },
+          "workspace": { "$ref": "#/components/schemas/WorkspaceDeclaration" },
+          "agent": { "$ref": "#/components/schemas/AgentDeclaration" },
+          "brief": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The Brief the Session starts with, handed to the agent exactly as given."
+          },
+          "credentials": {
+            "type": "array",
+            "description": "Provider Credentials the Organization holds from this start on, each replacing any it holds under the same variable.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "variable": { "type": "string", "minLength": 1 },
+                "secret": { "type": "string", "minLength": 1 }
+              },
+              "required": ["variable", "secret"]
+            }
+          }
+        },
+        "required": ["organization", "workspace", "agent", "brief"]
+      },
+      "Settled": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "created": {
+            "type": "boolean",
+            "description": "Whether the start declared it, rather than finding it declared."
+          }
+        },
+        "required": ["name", "created"]
+      },
+      "Started": {
+        "type": "object",
+        "properties": {
+          "organization": { "$ref": "#/components/schemas/Settled" },
+          "workspace": { "$ref": "#/components/schemas/Settled" },
+          "agent": { "$ref": "#/components/schemas/Settled" },
+          "session": { "$ref": "#/components/schemas/Session" },
+          "run": { "$ref": "#/components/schemas/Run" }
+        },
+        "required": ["organization", "workspace", "agent", "session", "run"]
+      },
       "DeclarationDocument": {
         "type": "object",
         "additionalProperties": false,
@@ -2503,14 +2582,18 @@
         ]
       },
       "Brief": {
-        "description": "The instruction a Session started with, rendered by the Trigger that fired.",
+        "description": "The instruction a Session started with, rendered by the Trigger that fired or supplied by an operator.",
         "type": "object",
         "properties": {
           "kind": {
             "const": "brief"
           },
           "trigger": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Trigger that rendered it, or null for a Brief an operator supplied."
           },
           "brief": {
             "type": "string"

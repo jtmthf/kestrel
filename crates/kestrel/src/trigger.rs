@@ -762,7 +762,7 @@ async fn firing(
         .append(
             &session,
             Entry::Brief {
-                trigger: trigger.name.clone(),
+                trigger: Some(trigger.name.clone()),
                 brief: rendered.brief,
             },
         )

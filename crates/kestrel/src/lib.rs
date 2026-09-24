@@ -22,6 +22,7 @@ pub mod reference;
 pub mod role;
 pub mod session;
 pub mod shutdown;
+pub mod start;
 pub mod store;
 pub mod telemetry;
 pub mod template;

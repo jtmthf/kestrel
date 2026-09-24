@@ -16,7 +16,7 @@ pub enum Entry {
         participant: String,
     },
     Brief {
-        trigger: String,
+        trigger: Option<String>,
         brief: String,
     },
     RunStarted {
@@ -46,7 +46,14 @@ impl fmt::Display for Entry {
             Entry::ParticipantJoined { participant } => {
                 write!(f, "participant joined  {participant}")
             }
-            Entry::Brief { trigger, brief } => write!(f, "brief  {trigger}  {brief}"),
+            Entry::Brief {
+                trigger: Some(trigger),
+                brief,
+            } => write!(f, "brief  {trigger}  {brief}"),
+            Entry::Brief {
+                trigger: None,
+                brief,
+            } => write!(f, "brief  {brief}"),
             Entry::RunStarted { run } => write!(f, "run started  {run}"),
             Entry::Said {
                 participant,

@@ -19,12 +19,7 @@ pub struct Held {
 }
 
 pub async fn hold(store: &Store, organization: &str, variable: &str, secret: &str) -> Result<Held> {
-    named(variable)?;
-    if secret.is_empty() {
-        bail!(Declined::Unacceptable(
-            "a provider credential with nothing in it is not one".to_owned()
-        ));
-    }
+    holdable(variable, secret)?;
 
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
@@ -62,6 +57,17 @@ pub async fn forget(store: &Store, organization: &str, variable: &str) -> Result
     }
 
     tx.commit().await
+}
+
+pub(crate) fn holdable(variable: &str, secret: &str) -> Result<()> {
+    named(variable)?;
+    if secret.is_empty() {
+        bail!(Declined::Unacceptable(
+            "a provider credential with nothing in it is not one".to_owned()
+        ));
+    }
+
+    Ok(())
 }
 
 /// Asked before an Instance is provisioned, so nothing is decrypted to answer it.

@@ -45,6 +45,7 @@ pub struct Invocation {
     input: Option<String>,
     environment: Vec<(String, String)>,
     files: Vec<(PathBuf, String)>,
+    clones: Vec<(String, PathBuf)>,
     within: PathBuf,
 }
 
@@ -65,6 +66,17 @@ impl Invocation {
         self
     }
 
+    /// A `git clone` of this repository made in the Client's home before it runs, with the
+    /// PATH it needs to read the clone the way an operator's shell would.
+    pub fn cloned(mut self, repository: &str, directory: &str) -> Self {
+        self.clones
+            .push((repository.to_owned(), PathBuf::from(directory)));
+        self.env(
+            "PATH",
+            &std::env::var("PATH").expect("a PATH to find git on"),
+        )
+    }
+
     /// Runs from this directory inside the home rather than the home itself.
     pub fn within(mut self, directory: &str) -> Self {
         self.within = PathBuf::from(directory);
@@ -75,6 +87,7 @@ impl Invocation {
         self.files
             .iter()
             .map(|(path, _)| path)
+            .chain(self.clones.iter().map(|(_, directory)| directory))
             .chain([&self.within])
             .any(|path| path.components().next() == Some(Component::Normal(entry.as_os_str())))
     }
@@ -93,6 +106,20 @@ impl Client {
                 std::fs::create_dir_all(directory).expect("the file's directory should create");
             }
             std::fs::write(&path, contents).expect("the file should write");
+        }
+        for (repository, directory) in &invocation.clones {
+            let cloned = Command::new("git")
+                .arg("clone")
+                .arg("--quiet")
+                .arg(repository)
+                .arg(home.path().join(directory))
+                .output()
+                .expect("git should be reachable");
+            assert!(
+                cloned.status.success(),
+                "cloning {repository} failed:\n{}",
+                String::from_utf8_lossy(&cloned.stderr)
+            );
         }
         let working = home.path().join(&invocation.within);
         std::fs::create_dir_all(&working).expect("the working directory should create");

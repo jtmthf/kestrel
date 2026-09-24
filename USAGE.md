@@ -48,6 +48,34 @@ The stack publishes the control plane's operator boundary on your machine's loop
 published on loopback and nowhere else; reach a control plane on another machine through a tunnel.
 `kestrel status` says which control plane it reached, what exists there, and what to run next.
 
+## Start in one command
+
+From inside a clone of the repository the work is for, one command goes from nothing to a run:
+
+```sh
+ANTHROPIC_API_KEY=… kestrel start --credential ANTHROPIC_API_KEY \
+  --brief "Make the README say what kestrel is"
+```
+
+It reads the clone for what it can: origin is the workspace's repository and names the workspace,
+origin's owner names the organization while none exists, and origin's default branch is the one the
+work happens on. Whatever already exists is used rather than redeclared: the only organization, the
+workspace already declaring that repository, and the only agent. Before it changes anything it
+prints every value on stderr, why it is that value, and the flag that says otherwise. Every value
+has one: `--organization`, `--workspace`, `--repository`, `--branch`, `--agent`, `--runtime`,
+`--model` and `--credential`. `--credential` names an environment variable of the Client's, and the
+organization holds what that variable holds, replacing any credential it held under that name, so
+the key never appears on a command line.
+
+It never asks. A value nothing says and nothing can infer, such as the repository outside a clone,
+fails the command with exit code 2 and names the flag that would say it. Everything it declares,
+the session it opens, and the run it enqueues land together or not at all, and it never changes a
+declaration that exists: an agent or workspace by that name declared differently refuses the start,
+naming the flag that would choose another, and leaves nothing behind. Stdout carries what it reached — the organization, workspace, agent,
+session and run — so `--json session,run` hands a script the names every command below takes.
+
+The sections below reach the same run one declaration at a time.
+
 ## Declare what the work happens against
 
 Three declarations, in this order, because each needs the one before it. Each prints the identifier

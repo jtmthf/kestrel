@@ -77,7 +77,7 @@ impl<'a> Agents<'a> {
         })
     }
 
-    async fn find(&mut self, organization: &Organization, name: &str) -> Result<Option<Agent>> {
+    pub async fn find(&mut self, organization: &Organization, name: &str) -> Result<Option<Agent>> {
         sqlx::query(
             "SELECT id, organization_id, name, runtime, model
              FROM agent

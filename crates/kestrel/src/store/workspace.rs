@@ -102,7 +102,11 @@ impl<'a> Workspaces<'a> {
         })
     }
 
-    async fn find(&mut self, organization: &Organization, name: &str) -> Result<Option<Workspace>> {
+    pub async fn find(
+        &mut self,
+        organization: &Organization,
+        name: &str,
+    ) -> Result<Option<Workspace>> {
         let Some(found) =
             sqlx::query("SELECT id FROM workspace WHERE organization_id = ? AND name = ?")
                 .bind(organization.id.to_string())

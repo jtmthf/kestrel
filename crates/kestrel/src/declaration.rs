@@ -281,7 +281,7 @@ fn check_document(document: &Document) -> Result<()> {
     Ok(())
 }
 
-fn sharing_a_directory(repositories: &[String]) -> Option<String> {
+pub(crate) fn sharing_a_directory(repositories: &[String]) -> Option<String> {
     let mut claimed = std::collections::HashMap::new();
     repositories.iter().find_map(|repository| {
         let name = repository
