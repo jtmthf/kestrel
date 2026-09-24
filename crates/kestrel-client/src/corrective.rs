@@ -33,7 +33,7 @@ pub fn command(message: &str, organization: Option<&str>) -> Option<String> {
         if let Some((session, _)) = rest.split_once(" is open, and work continues") {
             Some(format!("kestrel run enqueue --session {}", quoted(session)))
         } else if let Some((session, _)) = rest.split_once("'s instance ") {
-            Some(format!("kestrel run enqueue --session {}", quoted(session)))
+            Some(format!("kestrel instance release {}", quoted(session)))
         } else {
             None
         }
@@ -46,7 +46,7 @@ pub fn command(message: &str, organization: Option<&str>) -> Option<String> {
     })
 }
 
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     if value
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || "_-./".contains(character))

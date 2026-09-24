@@ -67,12 +67,13 @@ impl ControlPlane {
             )
         })?;
         let status = response.status();
-        let organization = response.url().path_segments().and_then(|mut segments| {
-            (segments.next() == Some("operator") && segments.next() == Some("organizations"))
-                .then(|| segments.next())
-                .flatten()
+        let organization = response.url().path_segments().and_then(|segments| {
+            segments
+                .collect::<Vec<_>>()
+                .windows(3)
+                .find(|parts| parts[0] == "operator" && parts[1] == "organizations")
+                .map(|parts| parts[2].to_owned())
         });
-        let organization = organization.map(str::to_owned);
         if status.is_success() {
             return Ok(response);
         }
@@ -82,7 +83,16 @@ impl ControlPlane {
             .await
             .map_or_else(|_| status.to_string(), |refusal| refusal.message);
         let next = corrective::command(&why, organization.as_deref())
-            .map(|command| format!("\nTry: {command}"))
+            .map(|command| {
+                let effect = if why.contains(" is still in flight ") {
+                    "\nStopping a run mid-turn marks it failed."
+                } else if why.contains("'s instance ") {
+                    "\nReleasing the instance discards unpublished work."
+                } else {
+                    ""
+                };
+                format!("\nTry: {command}{effect}")
+            })
             .unwrap_or_default();
         bail!(Failed::new(
             refused(status),

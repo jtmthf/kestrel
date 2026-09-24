@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 
 use crate::api::ControlPlane;
+use crate::corrective::quoted;
 use crate::exit::{Exit, Failed};
 use crate::{BINARY, ORGANIZATION_VARIABLE, names};
 
@@ -44,6 +45,12 @@ pub struct Scoping<'a> {
     named: Option<Scope>,
 }
 
+enum Binding {
+    Scope(Scope),
+    Empty(PathBuf),
+    None,
+}
+
 impl<'a> Scoping<'a> {
     pub fn new(api: &'a ControlPlane, named: Option<Scope>) -> Self {
         Self { api, named }
@@ -59,14 +66,21 @@ impl<'a> Scoping<'a> {
                      `{BINARY} organization declare default`"
                 )
             )),
-            Derived::Unnamed { existing } => bail!(Failed::new(
-                Exit::Unresolved,
-                format!(
-                    "no Organization is in scope and {} exist: {}; pass --organization <name>",
-                    existing.len(),
-                    existing.join(", ")
-                )
-            )),
+            Derived::Unnamed { existing } => {
+                let choices = existing
+                    .iter()
+                    .map(|name| format!("`{BINARY} status --organization {}`", quoted(name)))
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                bail!(Failed::new(
+                    Exit::Unresolved,
+                    format!(
+                        "no Organization is in scope and {} exist: {}; inspect the intended scope with {choices}, then pass its --organization flag",
+                        existing.len(),
+                        existing.join(", ")
+                    )
+                ));
+            }
         }
     }
 
@@ -74,8 +88,20 @@ impl<'a> Scoping<'a> {
         if let Some(scope) = self.named {
             return Ok(Derived::Scope(scope));
         }
-        if let Some(scope) = bound()? {
-            return Ok(Derived::Scope(scope));
+        match bound()? {
+            Binding::Scope(scope) => return Ok(Derived::Scope(scope)),
+            Binding::Empty(path) => {
+                let existing = names(&self.api.get(&["organizations"]).await?);
+                let next = existing.first().map_or_else(
+                    || format!("`{BINARY} organization declare default`, then `{BINARY} status --organization default`"),
+                    |name| format!("`{BINARY} status --organization {}`", quoted(name)),
+                );
+                bail!(Failed::new(
+                    Exit::Unresolved,
+                    format!("{} binds no Organization; try {next}", path.display())
+                ));
+            }
+            Binding::None => {}
         }
 
         let mut existing = names(&self.api.get(&["organizations"]).await?);
@@ -90,10 +116,10 @@ impl<'a> Scoping<'a> {
     }
 }
 
-fn bound() -> Result<Option<Scope>> {
+fn bound() -> Result<Binding> {
     let working = std::env::current_dir().context("reading the working directory")?;
     let Some(binding) = binding_for(&working) else {
-        return Ok(None);
+        return Ok(Binding::None);
     };
 
     let organization = std::fs::read_to_string(&binding)
@@ -101,13 +127,10 @@ fn bound() -> Result<Option<Scope>> {
         .trim()
         .to_owned();
     if organization.is_empty() {
-        bail!(Failed::new(
-            Exit::Unresolved,
-            format!("{} binds no Organization", binding.display())
-        ));
+        return Ok(Binding::Empty(binding));
     }
 
-    Ok(Some(Scope {
+    Ok(Binding::Scope(Scope {
         organization,
         source: Source::Binding(binding),
     }))

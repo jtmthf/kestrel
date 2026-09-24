@@ -159,6 +159,31 @@ async fn no_organization_in_scope_is_unresolved() {
 }
 
 #[tokio::test]
+async fn ambiguous_and_empty_organization_scope_offer_runnable_choices() {
+    let harness = an_organization().await;
+    harness.declare_organization("globex").await;
+
+    let ambiguous = ran_by(&harness, &["workspace", "list"], Invocation::default()).await;
+    exited(&ambiguous, UNRESOLVED);
+    assert!(ambiguous.err.contains("kestrel status --organization acme"));
+    assert!(
+        ambiguous
+            .err
+            .contains("kestrel status --organization globex")
+    );
+
+    let empty = ran_by(
+        &harness,
+        &["workspace", "list"],
+        Invocation::default().file(".kestrel/organization", ""),
+    )
+    .await;
+    exited(&empty, UNRESOLVED);
+    assert!(empty.err.contains("kestrel status --organization acme"));
+    harness.teardown().await;
+}
+
+#[tokio::test]
 async fn a_missing_workspace_names_the_setup_command_and_keeps_its_category() {
     let harness = an_organization().await;
     let finished = ran_by(

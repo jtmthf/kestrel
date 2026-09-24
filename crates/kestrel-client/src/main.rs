@@ -1218,38 +1218,10 @@ async fn run() -> Result<()> {
 /// Clap's own exit codes would do, but the catalog is what a script was promised.
 fn exit_after(error: &clap::Error) -> ! {
     let _ = error.print();
-    if error.kind() == clap::error::ErrorKind::InvalidSubcommand {
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        if let Some((noun, guessed)) = args
-            .windows(2)
-            .find(|pair| pair[0] == "session" || pair[0] == "run")
-            .map(|pair| (pair[0].as_str(), pair[1].as_str()))
-        {
-            let correct = match (noun, guessed) {
-                ("session", "create" | "new" | "start" | "begin" | "opne") => Some("open"),
-                ("session", "close" | "stop" | "end" | "finish") => Some("seal"),
-                ("run", "start" | "create" | "launch" | "execute" | "queue") => Some("enqueue"),
-                _ => None,
-            }
-            .map(str::to_owned)
-            .or_else(|| match error.get(ContextKind::SuggestedSubcommand) {
-                Some(ContextValue::Strings(suggestions)) if suggestions.len() == 1 => {
-                    suggestions.first().cloned()
-                }
-                _ => None,
-            });
-            if let Some(correct) = correct {
-                eprintln!("Try `kestrel {noun} {correct}`.");
-            }
-            if let Some(command) = Client::command().find_subcommand(noun) {
-                let verbs = command
-                    .get_subcommands()
-                    .map(clap::Command::get_name)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                eprintln!("Accepted {noun} verbs: {verbs}");
-            }
-        }
+    if let Some(explanation) =
+        explain_invalid_subcommand(error, &std::env::args().skip(1).collect::<Vec<_>>())
+    {
+        eprint!("{explanation}");
     }
     let exit = if error.use_stderr() {
         Exit::Usage
@@ -1257,6 +1229,75 @@ fn exit_after(error: &clap::Error) -> ! {
         Exit::Success
     };
     std::process::exit(exit.code().into())
+}
+
+fn explain_invalid_subcommand(error: &clap::Error, args: &[String]) -> Option<String> {
+    if error.kind() != clap::error::ErrorKind::InvalidSubcommand {
+        return None;
+    }
+    let Some(ContextValue::String(guessed)) = error.get(ContextKind::InvalidSubcommand) else {
+        return None;
+    };
+    let noun = args
+        .windows(2)
+        .rev()
+        .find(|pair| (pair[0] == "session" || pair[0] == "run") && pair[1] == *guessed)?[0]
+        .as_str();
+    let correct = match (noun, guessed.as_str()) {
+        ("session", "create" | "new" | "start" | "begin") => Some("open"),
+        ("session", "close" | "stop" | "end" | "finish") => Some("seal"),
+        ("run", "start" | "create" | "launch" | "execute" | "queue") => Some("enqueue"),
+        _ => None,
+    }
+    .map(str::to_owned)
+    .or_else(|| match error.get(ContextKind::SuggestedSubcommand) {
+        Some(ContextValue::Strings(suggestions)) if suggestions.len() == 1 => {
+            suggestions.first().cloned()
+        }
+        _ => None,
+    });
+    let verbs = Client::command()
+        .find_subcommand(noun)?
+        .get_subcommands()
+        .map(clap::Command::get_name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let try_command = correct.map_or_else(String::new, |correct| {
+        format!("Try `kestrel {noun} {correct}`.\n")
+    });
+    Some(format!("{try_command}Accepted {noun} verbs: {verbs}\n"))
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::*;
+
+    #[test]
+    fn an_organization_named_session_does_not_change_the_guessed_noun() {
+        let arguments = ["--organization", "session", "run", "start"];
+        let error = Client::command()
+            .try_get_matches_from(["kestrel"].into_iter().chain(arguments))
+            .expect_err("start is not a run verb");
+        let arguments = arguments.map(str::to_owned);
+        let explanation = explain_invalid_subcommand(&error, &arguments).expect("run help");
+
+        assert!(explanation.contains("kestrel run enqueue"), "{explanation}");
+        assert!(explanation.contains("Accepted run verbs:"), "{explanation}");
+    }
+
+    #[test]
+    fn a_misspelling_uses_the_parsers_suggested_verb() {
+        let error = Client::command()
+            .try_get_matches_from(["kestrel", "session", "sael"])
+            .expect_err("sael is not a session verb");
+        let explanation = explain_invalid_subcommand(&error, &["session".into(), "sael".into()])
+            .expect("session help");
+
+        assert!(
+            explanation.contains("kestrel session seal"),
+            "{explanation}"
+        );
+    }
 }
 
 #[derive(Deserialize)]
