@@ -578,7 +578,7 @@ impl<'a> EventData<'a> {
         Self { occurrence }
     }
 
-    pub fn actor(&self) -> Option<&str> {
+    pub fn actor(&self) -> Option<&'a str> {
         self.field(&["actor", "login"])
             .or_else(|| self.field(&["user", "login"]))
             .or_else(|| self.field(&["sender", "login"]))

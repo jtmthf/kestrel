@@ -426,6 +426,7 @@ pub struct Firing {
     pub outcome: String,
     pub session: Option<SessionId>,
     pub failure: Option<String>,
+    pub worked_ahead: Option<String>,
 }
 
 /// What kestrel calls a schedule elapsing.

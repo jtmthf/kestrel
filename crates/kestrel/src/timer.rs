@@ -213,6 +213,13 @@ async fn firing(
                         } => {
                             info!(%event, %trigger, %because, "a trigger held work")
                         }
+                        trigger::Fired::Canceled {
+                            event,
+                            trigger,
+                            because,
+                        } => {
+                            info!(%event, %trigger, %because, "a trigger canceled held work")
+                        }
                     }
                 }
             }

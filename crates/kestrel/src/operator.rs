@@ -1352,7 +1352,9 @@ async fn dispatch_trigger(
             event: event.to_string(),
             correlation,
         },
-        trigger::Fired::Failed { because, .. } | trigger::Fired::Held { because, .. } => {
+        trigger::Fired::Failed { because, .. }
+        | trigger::Fired::Held { because, .. }
+        | trigger::Fired::Canceled { because, .. } => {
             return Err(Refused::Unprocessable(because));
         }
     }))
