@@ -10,8 +10,8 @@ pub mod apply;
 
 use crate::domain::{
     Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
-    Occurrence, Organization, RunId, Schedule, SessionId, Templates, Trigger, TriggerId,
-    TriggerState,
+    Integration, Occurrence, Organization, RunId, Schedule, SessionId, Templates, Trigger,
+    TriggerId, TriggerState,
 };
 use crate::fanout::{self, Change};
 use crate::integration::github::{self, EventData, Github};
@@ -55,6 +55,18 @@ pub struct Dispatch<'a> {
     pub integration: &'a str,
     pub issue: i64,
     pub asked: Asked<'a>,
+}
+
+/// Nothing a test renders against is recorded.
+#[derive(Clone, Copy)]
+pub enum Against<'a> {
+    Event(EventRecordId),
+    NextElapsing,
+    Issue {
+        github: &'a Github,
+        integration: &'a str,
+        issue: i64,
+    },
 }
 
 pub struct Declaration<'a> {
@@ -328,98 +340,124 @@ pub async fn test(
     store: &Store,
     organization: &str,
     name: &str,
-    event: Option<EventRecordId>,
-    instruction: Option<&str>,
+    against: Against<'_>,
+    asked: Asked<'_>,
 ) -> Result<Tested> {
-    let mut tx = store.begin().await?;
-    let organization = tx.organizations().named(organization).await?;
-    let trigger = tx.triggers().named(&organization, name).await?;
+    let trigger = {
+        let mut tx = store.begin().await?;
+        let organization = tx.organizations().named(organization).await?;
+        tx.triggers().named(&organization, name).await?
+    };
 
-    tested(&mut tx, &trigger, event, instruction).await
+    tested(store, &trigger, against, asked).await
 }
 
 pub async fn test_declared(
     store: &Store,
     organization: &str,
     declared: &apply::Declared,
-    event: Option<EventRecordId>,
-    instruction: Option<&str>,
+    against: Against<'_>,
+    asked: Asked<'_>,
 ) -> Result<Tested> {
-    let mut tx = store.begin().await?;
-    let organization = tx.organizations().named(organization).await?;
-    let trigger = Trigger {
-        id: TriggerId::generate(),
-        workspace: tx
-            .workspaces()
-            .named(&organization, &declared.workspace)
-            .await?,
-        agent: tx.agents().named(&organization, &declared.agent).await?,
-        allows: allowed(&mut tx, &organization, &declared.allows).await?,
-        profile: match &declared.profile {
-            Some(profile) => Some(tx.profiles().named(&organization, profile).await?),
-            None => None,
-        },
-        organization,
-        name: declared.name.clone(),
-        fires: Fires::On(declared.filter.clone()),
-        templates: declared.templates.clone(),
-        on_miss: declared.on_miss,
-        state: TriggerState::Enabled,
-        disabled_because: None,
-        firing_budget: FiringBudget::default(),
-        applied: true,
-        declared_at: jiff::Timestamp::now(),
+    let trigger = {
+        let mut tx = store.begin().await?;
+        let organization = tx.organizations().named(organization).await?;
+        Trigger {
+            id: TriggerId::generate(),
+            workspace: tx
+                .workspaces()
+                .named(&organization, &declared.workspace)
+                .await?,
+            agent: tx.agents().named(&organization, &declared.agent).await?,
+            allows: allowed(&mut tx, &organization, &declared.allows).await?,
+            profile: match &declared.profile {
+                Some(profile) => Some(tx.profiles().named(&organization, profile).await?),
+                None => None,
+            },
+            organization,
+            name: declared.name.clone(),
+            fires: Fires::On(declared.filter.clone()),
+            templates: declared.templates.clone(),
+            on_miss: declared.on_miss,
+            state: TriggerState::Enabled,
+            disabled_because: None,
+            firing_budget: FiringBudget::default(),
+            applied: true,
+            declared_at: jiff::Timestamp::now(),
+        }
     };
 
-    tested(&mut tx, &trigger, event, instruction).await
+    tested(store, &trigger, against, asked).await
 }
 
 async fn tested(
-    tx: &mut Tx<'_>,
+    store: &Store,
     trigger: &Trigger,
-    event: Option<EventRecordId>,
-    instruction: Option<&str>,
+    against: Against<'_>,
+    asked: Asked<'_>,
 ) -> Result<Tested> {
-    let Some(event) = event else {
-        let due = tx.triggers().due_at(trigger).await?.with_context(|| {
-            format!(
-                "the trigger {} fires on events, so a test names one",
-                trigger.name
-            )
-        })?;
+    let unrecorded = |integration, occurrence, elapsing| {
         let event = Event {
             record_id: EventRecordId::generate(),
             organization: trigger.organization.id,
-            integration: None,
-            occurrence: trigger
-                .elapsing(due)
-                .context("a trigger with a due time has a schedule")?,
+            integration,
+            occurrence,
             recorded_at: Timestamp::now(),
         };
-        return Ok(Tested {
+        Tested {
             matches: true,
-            rendered: render(trigger, &event, instruction),
-            agent: chosen_name(trigger, &event, None),
-            elapsing: Some(due),
-        });
+            rendered: render(trigger, &event, asked.instruction),
+            agent: chosen_name(trigger, &event, asked.agent),
+            elapsing,
+        }
     };
 
-    let event = tx.integrations().event(event).await?;
-    if event.organization != trigger.organization.id {
-        bail!(
-            "no event {} in the organization {}",
-            event.record_id,
-            trigger.organization.name
-        );
-    }
+    let mut tx = store.begin().await?;
+    match against {
+        Against::NextElapsing => {
+            let due = tx.triggers().due_at(trigger).await?.with_context(|| {
+                format!(
+                    "the trigger {} fires on events, so a test names one",
+                    trigger.name
+                )
+            })?;
+            let occurrence = trigger
+                .elapsing(due)
+                .context("a trigger with a due time has a schedule")?;
+            Ok(unrecorded(None, occurrence, Some(due)))
+        }
+        Against::Issue {
+            github,
+            integration,
+            issue,
+        } => {
+            let integration = tx
+                .integrations()
+                .named(&trigger.organization, integration)
+                .await?;
+            drop(tx);
+            let occurrence = dispatched(github, trigger, &integration, issue, asked).await?;
+            Ok(unrecorded(Some(integration.id), occurrence, None))
+        }
+        Against::Event(event) => {
+            let event = tx.integrations().event(event).await?;
+            if event.organization != trigger.organization.id {
+                bail!(
+                    "no event {} in the organization {}",
+                    event.record_id,
+                    trigger.organization.name
+                );
+            }
 
-    let asked = Asked::by(&event);
-    Ok(Tested {
-        matches: tx.triggers().matches(trigger, &event).await?,
-        rendered: render(trigger, &event, instruction.or(asked.instruction)),
-        agent: chosen_name(trigger, &event, asked.agent),
-        elapsing: None,
-    })
+            let commanded = Asked::by(&event);
+            Ok(Tested {
+                matches: tx.triggers().matches(trigger, &event).await?,
+                rendered: render(trigger, &event, asked.instruction.or(commanded.instruction)),
+                agent: chosen_name(trigger, &event, asked.agent.or(commanded.agent)),
+                elapsing: None,
+            })
+        }
+    }
 }
 
 fn chosen_name(trigger: &Trigger, event: &Event, asked: Option<&str>) -> Result<String> {
@@ -563,21 +601,14 @@ pub async fn dispatch(store: &Store, github: &Github, dispatch: Dispatch<'_>) ->
                 .await?,
         )
     };
-    let issue = github
-        .issue(&integration, dispatch.issue)
-        .await
-        .map_err(|refused| anyhow!("{refused}"))?;
-    let occurrence = github::dispatched(
-        integration.github()?,
-        DISPATCHED,
+    let occurrence = dispatched(
+        github,
+        &trigger,
+        &integration,
         dispatch.issue,
-        serde_json::json!({
-            "trigger": trigger.name,
-            "instruction": dispatch.asked.instruction,
-            "agent": dispatch.asked.agent,
-            "issue": issue,
-        }),
-    );
+        dispatch.asked,
+    )
+    .await?;
 
     let mut tx = store.begin().await?;
     if let Recorded::Refused { because } = tx
@@ -593,6 +624,38 @@ pub async fn dispatch(store: &Store, github: &Github, dispatch: Dispatch<'_>) ->
         .await?;
 
     firing(tx, &trigger, &event, dispatch.asked, None).await
+}
+
+/// Shared by dispatch and test, so a test renders exactly what the dispatch fires.
+async fn dispatched(
+    github: &Github,
+    trigger: &Trigger,
+    integration: &Integration,
+    issue: i64,
+    asked: Asked<'_>,
+) -> Result<Occurrence> {
+    if let Fires::Scheduled(_) = trigger.fires {
+        bail!(
+            "the trigger {} fires on a schedule, so it cannot be dispatched",
+            trigger.name
+        );
+    }
+    let fetched = github
+        .issue(integration, issue)
+        .await
+        .map_err(|refused| anyhow!("{refused}"))?;
+
+    Ok(github::dispatched(
+        integration.github()?,
+        DISPATCHED,
+        issue,
+        serde_json::json!({
+            "trigger": trigger.name,
+            "instruction": asked.instruction,
+            "agent": asked.agent,
+            "issue": fetched,
+        }),
+    ))
 }
 
 /// An opening firing atomically commits its Session, first entry, Run and record, so a retry

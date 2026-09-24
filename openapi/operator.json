@@ -1744,7 +1744,10 @@
         "type": "object",
         "properties": {
           "event": { "type": ["string", "null"], "format": "uuid" },
+          "integration": { "type": ["string", "null"], "description": "The GitHub Integration the issue is read through; named with `issue`." },
+          "issue": { "type": ["integer", "null"], "description": "Render against the Event a dispatch of this issue would record, recording nothing. Excludes `event`." },
           "instruction": { "type": ["string", "null"] },
+          "agent": { "type": ["string", "null"] },
           "declared": {
             "anyOf": [{ "$ref": "#/components/schemas/TriggerFile" }, { "type": "null" }],
             "description": "A trigger file, to test the Trigger as it declares it rather than as it was applied."

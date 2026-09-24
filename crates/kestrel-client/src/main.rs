@@ -291,10 +291,6 @@ enum EventCommand {
 }
 
 #[derive(Debug, Subcommand)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a command is parsed once per invocation"
-)]
 enum TriggerCommand {
     /// Make the Organization's applied Triggers what a declaration file says, printing the diff
     Apply {
@@ -363,6 +359,17 @@ enum TriggerCommand {
         /// The Event's record; absent tests the next elapsing of a scheduled Trigger
         #[arg(long)]
         event: Option<String>,
+        /// The GitHub Integration the issue is read through
+        #[arg(long, requires = "issue")]
+        integration: Option<String>,
+        /// Test against the Event a dispatch of this issue would record, recording nothing
+        #[arg(
+            long,
+            value_name = "NUMBER",
+            requires = "integration",
+            conflicts_with = "event"
+        )]
+        issue: Option<i64>,
         /// Test the Trigger as a declaration file declares it rather than as it was applied;
         /// `-` for standard input
         #[arg(short = 'f', long, value_name = "FILE")]
@@ -371,6 +378,9 @@ enum TriggerCommand {
         /// file and `-` from standard input
         #[arg(long)]
         instruction: Option<String>,
+        /// An Agent the Trigger allows, in place of the one it or a label would choose
+        #[arg(long)]
+        agent: Option<String>,
     },
     /// Start a Trigger's work on an issue now, whether or not its filter matches anything
     Dispatch {
@@ -981,8 +991,11 @@ async fn run() -> Result<()> {
         Command::Trigger(TriggerCommand::Test {
             name,
             event,
+            integration,
+            issue,
             file,
             instruction,
+            agent,
         }) => {
             let organization = scoping.resolve().await?.organization;
             if file.as_deref() == Some("-") && instruction.as_deref() == Some("-") {
@@ -998,7 +1011,14 @@ async fn run() -> Result<()> {
                 &view::TRIGGER_TEST,
                 &api.post(
                     &["organizations", &organization, "triggers", &name, "test"],
-                    &json!({ "event": event, "instruction": instruction, "declared": declared }),
+                    &json!({
+                        "event": event,
+                        "integration": integration,
+                        "issue": issue,
+                        "instruction": instruction,
+                        "agent": agent,
+                        "declared": declared,
+                    }),
                 )
                 .await?,
             )?;

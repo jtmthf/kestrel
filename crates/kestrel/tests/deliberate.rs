@@ -5,11 +5,11 @@ mod support;
 use std::time::Duration;
 
 use jiff::SignedDuration;
-use kestrel::domain::{Direction, Session, SessionId};
+use kestrel::domain::{Direction, Schedule, Session, SessionId, TriggerState};
 use kestrel::log::Entry;
 use kestrel::trigger::{Asked, Fired};
-use support::Harness;
 use support::github_stub::{self, GithubStub};
+use support::{Harness, templates};
 
 const DOGFOOD: &str = include_str!("../../../.kestrel/triggers.yaml");
 const REPOSITORY: &str = "jtmthf/kestrel";
@@ -487,6 +487,127 @@ async fn a_dispatch_asking_for_an_agent_the_trigger_does_not_allow_starts_nothin
         "the trigger delegated does not allow the agent stranger that was asked for"
     );
     assert!(harness.sessions("acme").await.is_empty());
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_dispatch_test_renders_what_the_dispatch_then_starts_and_records_nothing() {
+    let stub = GithubStub::start();
+    stub.script_answer(
+        "GET",
+        "/issues/60",
+        github_stub::issue(60, &["agent:claude"]),
+    );
+    let harness = Harness::boot().await;
+    dogfooding(&harness, &stub).await;
+    let asked = Asked {
+        instruction: Some("/tdd the parser"),
+        agent: Some("codex"),
+    };
+
+    let tested = harness
+        .test_dispatch("acme", "delegated", 60, asked)
+        .await
+        .expect("the dispatch should test");
+
+    assert!(harness.events("acme").await.is_empty());
+    assert!(harness.sessions("acme").await.is_empty());
+    assert_eq!(
+        harness.show_trigger("acme", "delegated").await.state,
+        TriggerState::Enabled
+    );
+    assert!(tested.matches);
+    let rendered = tested.rendered.expect("the dispatch should render");
+    let agent = tested.agent.expect("the asked agent is allowed");
+
+    let Fired::Opened { event, session, .. } = harness
+        .dispatch("acme", "delegated", 60, asked)
+        .await
+        .expect("the dispatch should fire")
+    else {
+        panic!("the dispatch opened nothing");
+    };
+    assert_eq!(harness.events("acme").await.len(), 1);
+    assert_eq!(harness.firings(event).await.len(), 1);
+    let session = harness.show_session(session).await;
+    assert_eq!(rendered.brief, brief(&harness, session.id).await);
+    assert_eq!(
+        rendered.branch.as_deref(),
+        Some(session.checkout.branch.as_str())
+    );
+    assert_eq!(rendered.correlation, session.correlation);
+    assert_eq!(agent, session.agent.name);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_dispatch_test_refuses_what_the_dispatch_refuses() {
+    let stub = GithubStub::start();
+    stub.script_answer("GET", "/issues/60", github_stub::issue(60, &[]));
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_agent(&organization, "stranger", "opencode", None)
+        .await;
+    dogfooding(&harness, &stub).await;
+
+    let stranger = Asked {
+        instruction: None,
+        agent: Some("stranger"),
+    };
+    let refused = harness
+        .test_dispatch("acme", "delegated", 60, stranger)
+        .await
+        .expect("the dispatch should test")
+        .agent
+        .expect_err("the trigger does not allow the agent");
+    assert_eq!(
+        refused.to_string(),
+        "the trigger delegated does not allow the agent stranger that was asked for"
+    );
+
+    for _ in 0..2 {
+        stub.script_answer(
+            "GET",
+            "/issues/61",
+            github_stub::ScriptedResponse::answering(404),
+        );
+    }
+    let unreadable = harness
+        .test_dispatch("acme", "delegated", 61, Asked::default())
+        .await
+        .expect_err("github returns no issue 61");
+    let undispatched = harness
+        .dispatch("acme", "delegated", 61, Asked::default())
+        .await
+        .expect_err("github returns no issue 61");
+    assert_eq!(unreadable.to_string(), undispatched.to_string());
+
+    harness
+        .try_declare_scheduled_trigger(
+            "acme",
+            "sweep",
+            Schedule::Every(SignedDuration::from_hours(1)),
+            &templates("Sweep", None, None),
+        )
+        .await
+        .expect("an hourly schedule should declare");
+    let scheduled = harness
+        .test_dispatch("acme", "sweep", 60, Asked::default())
+        .await
+        .expect_err("a scheduled trigger cannot be dispatched");
+    assert_eq!(
+        scheduled.to_string(),
+        "the trigger sweep fires on a schedule, so it cannot be dispatched"
+    );
+    let undispatchable = harness
+        .dispatch("acme", "sweep", 60, Asked::default())
+        .await
+        .expect_err("a scheduled trigger cannot be dispatched");
+    assert_eq!(scheduled.to_string(), undispatchable.to_string());
+    assert!(harness.events("acme").await.is_empty());
 
     harness.teardown().await;
 }

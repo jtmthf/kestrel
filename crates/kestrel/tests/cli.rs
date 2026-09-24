@@ -681,6 +681,25 @@ fn a_dispatch_starts_a_triggers_work_on_the_issue_it_names() {
         "builder",
     ]);
 
+    let tested = booted.record(&[
+        "trigger",
+        "test",
+        "delegated",
+        "--integration",
+        "hub",
+        "--issue",
+        "60",
+        "--instruction",
+        "/tdd the parser",
+        "--json",
+        "matches,brief,branch,agent",
+    ]);
+    assert!(
+        booted
+            .records(&["event", "list", "--json", "record"])
+            .is_empty()
+    );
+
     let fired = booted.record(&[
         "trigger",
         "dispatch",
@@ -695,10 +714,40 @@ fn a_dispatch_starts_a_triggers_work_on_the_issue_it_names() {
         "outcome,session,run",
     ]);
 
+    assert_eq!(
+        tested,
+        serde_json::json!({
+            "matches": true,
+            "brief": "/tdd the parser 60",
+            "branch": "kestrel/issue-60",
+            "agent": "builder",
+        })
+    );
     assert_eq!(fired["outcome"], "opened");
     let session = fired["session"].as_str().expect("the session it opened");
     let shown = booted.record(&["session", "show", session, "--json", "checkout"]);
     assert_eq!(shown["checkout"]["branch"], "kestrel/issue-60");
+    for misused in [
+        &["trigger", "test", "delegated", "--issue", "60"][..],
+        &[
+            "trigger",
+            "test",
+            "delegated",
+            "--integration",
+            "hub",
+            "--issue",
+            "60",
+            "--event",
+            "x",
+        ],
+    ] {
+        assert_eq!(
+            booted.client(misused).status.code(),
+            Some(2),
+            "`kestrel {}` is a usage error",
+            misused.join(" ")
+        );
+    }
     assert!(
         booted
             .refused(&[

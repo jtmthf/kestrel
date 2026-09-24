@@ -49,7 +49,7 @@ use kestrel::role::work::{AgentRuntime, Dispatch};
 use kestrel::session;
 use kestrel::store::Store;
 use kestrel::trigger::apply::Applied;
-use kestrel::trigger::{self, Declaration, Tested};
+use kestrel::trigger::{self, Against, Asked, Declaration, Tested};
 use kestrel::work::{self, Claimed};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
@@ -651,7 +651,14 @@ impl Harness {
         name: &str,
         event: EventRecordId,
     ) -> anyhow::Result<Tested> {
-        trigger::test(&self.store, organization, name, Some(event), None).await
+        trigger::test(
+            &self.store,
+            organization,
+            name,
+            Against::Event(event),
+            Asked::default(),
+        )
+        .await
     }
 
     pub async fn dispatch(
@@ -671,6 +678,27 @@ impl Harness {
                 issue,
                 asked,
             },
+        )
+        .await
+    }
+
+    pub async fn test_dispatch(
+        &self,
+        organization: &str,
+        name: &str,
+        issue: i64,
+        asked: Asked<'_>,
+    ) -> anyhow::Result<Tested> {
+        trigger::test(
+            &self.store,
+            organization,
+            name,
+            Against::Issue {
+                github: &kestrel::integration::github::Github::dialling_out()?,
+                integration: "github",
+                issue,
+            },
+            asked,
         )
         .await
     }
@@ -713,7 +741,14 @@ impl Harness {
         organization: &str,
         name: &str,
     ) -> anyhow::Result<Tested> {
-        trigger::test(&self.store, organization, name, None, None).await
+        trigger::test(
+            &self.store,
+            organization,
+            name,
+            Against::NextElapsing,
+            Asked::default(),
+        )
+        .await
     }
 
     /// Stands in for the wheel reaching `at`, which a test cannot wait for.
@@ -736,9 +771,15 @@ impl Harness {
             .find(|declared| declared.name == name)
             .expect("the declaration file should declare the trigger");
 
-        trigger::test_declared(&self.store, organization, declared, Some(event), None)
-            .await
-            .expect("the declared trigger should test")
+        trigger::test_declared(
+            &self.store,
+            organization,
+            declared,
+            Against::Event(event),
+            Asked::default(),
+        )
+        .await
+        .expect("the declared trigger should test")
     }
 
     pub async fn firings(&self, event: EventRecordId) -> Vec<kestrel::domain::Firing> {

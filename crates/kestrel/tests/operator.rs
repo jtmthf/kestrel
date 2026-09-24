@@ -1406,6 +1406,14 @@ async fn the_operator_documents_trigger_answers_and_refusals() {
     let (status, tested) = declared(&harness, &format!("{path}/test"), &json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(tested["matches"], true);
+    for misnamed in [
+        json!({ "issue": 60 }),
+        json!({ "integration": "github" }),
+        json!({ "issue": 60, "integration": "github", "event": EventRecordId::generate().to_string() }),
+    ] {
+        let (status, _) = declared(&harness, &format!("{path}/test"), &misnamed).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{misnamed}");
+    }
     let (status, _) = declared(&harness, &format!("{path}/disable"), &json!({})).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = declared(&harness, &format!("{path}/enable"), &json!({})).await;

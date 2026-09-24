@@ -226,7 +226,10 @@ struct TriggerDeclaration {
 #[derive(Deserialize)]
 struct TriggerTest {
     event: Option<String>,
+    integration: Option<String>,
+    issue: Option<i64>,
     instruction: Option<String>,
+    agent: Option<String>,
     declared: Option<apply::File>,
 }
 
@@ -1156,7 +1159,39 @@ async fn test_trigger(
                 .map_err(|_| Refused::NotFound(format!("no event {event}")))
         })
         .transpose()?;
-    let instruction = tested.instruction.as_deref();
+    let github;
+    let against = match (event, tested.integration.as_deref(), tested.issue) {
+        (Some(_), _, Some(_)) => {
+            return Err(Refused::BadRequest(
+                "a test renders against an event or an issue, not both".to_owned(),
+            ));
+        }
+        (Some(event), _, None) => trigger::Against::Event(event),
+        (None, Some(integration), Some(issue)) => {
+            github = Github::dialling_out()?;
+            trigger::Against::Issue {
+                github: &github,
+                integration,
+                issue,
+            }
+        }
+        (None, None, Some(_)) => {
+            return Err(Refused::BadRequest(
+                "an issue is read through an integration, so a test naming one names both"
+                    .to_owned(),
+            ));
+        }
+        (None, Some(_), None) => {
+            return Err(Refused::BadRequest(
+                "an integration is read for an issue, so a test naming one names both".to_owned(),
+            ));
+        }
+        (None, None, None) => trigger::Against::NextElapsing,
+    };
+    let asked = trigger::Asked {
+        instruction: tested.instruction.as_deref(),
+        agent: tested.agent.as_deref(),
+    };
     let tested = match tested.declared {
         Some(file) => {
             let declarations = apply::declarations(file)
@@ -1173,23 +1208,14 @@ async fn test_trigger(
                 &control_plane.store,
                 &organization,
                 declared,
-                event,
-                instruction,
+                against,
+                asked,
             )
             .await
         }
-        None => {
-            trigger::test(
-                &control_plane.store,
-                &organization,
-                &name,
-                event,
-                instruction,
-            )
-            .await
-        }
+        None => trigger::test(&control_plane.store, &organization, &name, against, asked).await,
     }
-    .map_err(named_refusal)?;
+    .map_err(integration_refusal)?;
     let rendered = tested
         .rendered
         .map_err(|error| Refused::Unprocessable(error.to_string()))?;
@@ -1269,10 +1295,7 @@ async fn dispatch_trigger(
         },
     )
     .await
-    .map_err(|error| match error.to_string() {
-        missing if missing.starts_with("no integration named ") => Refused::NotFound(missing),
-        _ => named_refusal(error),
-    })?;
+    .map_err(integration_refusal)?;
 
     Ok(Json(match fired {
         trigger::Fired::Opened {
@@ -1419,6 +1442,13 @@ fn named_refusal(error: anyhow::Error) -> Refused {
     }
 
     Refused::Unprocessable(message)
+}
+
+fn integration_refusal(error: anyhow::Error) -> Refused {
+    match error.to_string() {
+        missing if missing.starts_with("no integration named ") => Refused::NotFound(missing),
+        _ => named_refusal(error),
+    }
 }
 
 fn declaration_refusal(error: anyhow::Error) -> Refused {
