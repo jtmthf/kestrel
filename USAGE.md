@@ -318,8 +318,11 @@ OAuth tokens stay in the database, which kestrel does not carry, so an opencode 
 provider rotates has to be supplied again — log in afresh and re-seed. The subscription key above
 does not rotate. Codex writes `auth.json` only when `cli_auth_credentials_store = "file"` is set
 where you log in. Claude Code keeps a macOS login in the Keychain rather than a file, which is why
-its token is held as a variable. Whether a Claude plan may be used through its ACP adapter is
-unsettled ([ADR-0025](docs/adr/0025-subscription-profiles-are-personal.md)).
+its token is held as a variable: run `claude setup-token` and paste what it prints. A Claude plan
+may serve only your own kestrel, on sessions you open for yourself. Holding someone else's Claude
+token, or sharing yours with other people's sessions, is the third-party access Anthropic forbids
+([ADR-0029](docs/adr/0029-a-claude-plan-serves-only-its-owners-own-kestrel.md)); give them an API
+key instead.
 
 Name the profile when you open the session, or give a trigger's declaration `profile: jack`:
 
@@ -335,6 +338,25 @@ Codex rotates its login as it refreshes it, and two copies refreshing at once ca
 The work role therefore runs one Codex run per profile at a time and leaves the others queued.
 `--serialized-runtime` (`KESTREL_SERIALIZED_RUNTIME`) names the runtimes handled this way, and
 defaults to `codex`.
+
+To check that a subscription works before relying on it, run the smoke checks. Each makes one real
+model call through its runtime in the `kestrel-dev` image, kills and restarts the control plane,
+and makes another on a fresh instance. Each reads its login from the variables below, and fails
+if they are unset:
+
+```sh
+export KESTREL_SMOKE_CODEX_AUTH=~/.codex/auth.json
+export KESTREL_SMOKE_OPENCODE_API_KEY=... KESTREL_SMOKE_OPENCODE_MODEL=opencode-go/glm-5.3
+export KESTREL_SMOKE_CLAUDE_OAUTH_TOKEN=...
+cargo test --locked --package kestrel --test subscription -- --ignored --test-threads 1
+```
+
+Name one test, such as `codex_answers`, to check one runtime. A Codex login the runtime refreshed is
+written back to `KESTREL_SMOKE_CODEX_AUTH`, unless the file changed while the check ran, so keep
+Codex idle on that login until it finishes. A failure says whether the runtime failed to launch,
+the login was refused (authentication), the plan does not cover the call (entitlement), or the
+login worked before the restart and not after it (persistence). It prints what the runtime said,
+with every credential it was given, and every token inside those, replaced by `[redacted]`.
 
 ## Your sessions survive a restart
 
