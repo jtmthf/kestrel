@@ -184,8 +184,12 @@ impl Harness {
         .await
     }
 
-    /// The Docker driver, on a control plane bound where a container can dial out to it.
     pub async fn dispatching_in(image: &str, runtime: &str) -> Self {
+        Self::dispatching_runtimes_in(image, &[(RUNTIME, runtime)]).await
+    }
+
+    /// The Docker driver, on a control plane bound where a container can dial out to it.
+    pub async fn dispatching_runtimes_in(image: &str, runtimes: &[(&str, &str)]) -> Self {
         let data_dir = TempDir::new().expect("a temporary data directory");
         Self::boot_against(
             data_dir,
@@ -195,7 +199,7 @@ impl Harness {
             },
             Some(Provisions {
                 driver: Driver::Docker(Docker::provisioning_from(image)),
-                runtimes: spawning(&[(RUNTIME, runtime)]),
+                runtimes: spawning(runtimes),
                 max_active_runs: NonZeroUsize::new(2).unwrap(),
             }),
         )

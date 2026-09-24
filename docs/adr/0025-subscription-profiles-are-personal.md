@@ -4,8 +4,8 @@ A person's Subscription Profile persists outside task Instances and authorizes o
 person permits. It is distinct from the Organization's Provider Credentials in
 [ADR-0010](0010-a-provider-credential-crosses-the-link-at-the-spawn.md). The dogfooding path
 cannot depend on separately provisioned metered model-provider API accounts: Codex uses ChatGPT
-account access, OpenCode Go uses its subscription-issued key, and Claude subscription access
-remains conditional on resolving the vendor's conflicting third-party entitlement guidance.
+account access, OpenCode Go uses its subscription-issued key, and a Claude plan serves only its
+owner's own kestrel ([ADR-0029](0029-a-claude-plan-serves-only-its-owners-own-kestrel.md)).
 
 The profile's secret is never baked into a development image, repository, transcript, or issue.
 Persistent private storage is necessary because a runtime may refresh its login across Runs.

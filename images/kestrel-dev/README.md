@@ -90,3 +90,7 @@ compiles the workspace three times, it runs in the scheduled `Development image`
 ```sh
 cargo test --locked --package kestrel --test development -- --ignored kestrel_passes_its_own_checks
 ```
+
+`crates/kestrel/tests/subscription.rs` holds the one check CI cannot run: a real model call through
+each runtime on a person's own subscription, repeated after the control plane and the Instance are
+replaced. It needs that person's login, so it runs only by hand; [USAGE.md](../../USAGE.md) says how.
