@@ -1654,6 +1654,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",
