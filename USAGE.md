@@ -768,6 +768,30 @@ an open session rather than opening a second one, the firing budget still counts
 goes back to the issue. `--instruction` is the brief's `instruction`, and `--agent` chooses among
 the agents the trigger allows. `--instruction` also takes `@FILE` and `-`.
 
+To see what a dispatch would start before starting it, give `trigger test` the same arguments:
+
+```sh
+kestrel trigger test delegated --integration origin --issue 44 \
+  --instruction '/implement' --agent codex
+```
+
+```
+matches      true
+elapsing     -
+agent        codex
+branch       kestrel/issue-44
+correlation  https://github.com/jtmthf/kestrel#44
+brief        /implement https://github.com/jtmthf/kestrel/issues/44
+
+             Read the issue and its comments with `gh issue view --comments` before you start.
+```
+
+It reads the issue and builds the event the dispatch would record, then renders the trigger against
+it without recording anything: no event, no firing, no session, and none of the firing budget.
+`matches` is always true, because a dispatch fires whatever the filter says. `-f` tests the trigger
+as a file declares it, as it does with `--event`. A scheduled trigger cannot be dispatched, so it
+cannot be tested against an issue either.
+
 A brief, branch or correlation that cannot render fails the firing: nothing opens, the control
 plane logs why, and no later sweep tries that trigger on that event again. A correlation is held by
 the session it opened, and is unique among the organization's open sessions. Events arriving while
