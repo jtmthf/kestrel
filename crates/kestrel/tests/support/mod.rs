@@ -1353,6 +1353,16 @@ impl Harness {
         tx.commit().await.expect("the record should commit");
     }
 
+    /// The only way to watch the periodic sweep find what a missed event would have.
+    pub async fn last_considered(&self, event: EventRecordId, at: Timestamp) {
+        let mut tx = self.store.begin().await.expect("a transaction");
+        tx.triggers()
+            .considered(event, at)
+            .await
+            .expect("the held firing should record when it was considered");
+        tx.commit().await.expect("the record should commit");
+    }
+
     /// A second credential for the same Run, with an expiry the caller chooses. The only way
     /// to hold an expired one without waiting out a real credential's life.
     pub async fn issue_credential(&self, run: &Run, expires_at: Timestamp) -> Secret {

@@ -102,7 +102,8 @@ _Avoid_: subscription, listener, automation, matcher
 
 **Firing**:
 One trigger matching one event, and what that match does: opens a session, feeds an open one it
-correlates to, or records an ignored correlation miss.
+correlates to, records an ignored correlation miss, or holds until its work item is ready. A held
+firing is looked at again and either opens, stays held, or is canceled.
 _Avoid_: match, activation, invocation, execution
 
 **Brief**:
@@ -261,6 +262,12 @@ words from drifting.
   agents, or a choice the trigger does not allow, starts **nothing**.
 - A label, `ready-for-agent` included, never starts work, and neither does an ordinary comment. Work
   starts from a **Delegation** or an operator's **dispatch**.
+- An automatic start is **held** while its work item is closed, blocked or of unknown readiness, and
+  is looked at again on the next event from its integration and at least every few minutes. Losing
+  its **Delegation** cancels a held start; a newer request from the same trigger for
+  the same work item supersedes it.
+- An authorized command or an operator's dispatch **works ahead** of blockers, and its firing
+  records which. Once a session is open, a blocker never holds what feeds it.
 - A session's correlation is unique among an organization's **open** sessions. A sealed session
   holds its correlation against nothing.
 - A firing **never** interrupts a run. Events arriving while a run is active are pending, and drain

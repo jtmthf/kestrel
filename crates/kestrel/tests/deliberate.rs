@@ -613,7 +613,7 @@ async fn a_dispatch_test_refuses_what_the_dispatch_refuses() {
 }
 
 #[tokio::test]
-async fn a_blocker_added_after_a_command_holds_the_start() {
+async fn a_command_works_ahead_of_a_blocker_on_an_unassigned_issue_and_says_so() {
     let stub = GithubStub::start();
     stub.script_answer(
         "GET",
@@ -625,26 +625,50 @@ async fn a_blocker_added_after_a_command_holds_the_start() {
             "@kestrel /implement",
         )]),
     );
-    stub.script_answer("GET", "/issues/43", github_stub::issue(43, &[]));
+    unassigned(&stub, 43);
     stub.script_answer(
         "GET",
-        "/issues/43/dependencies/blocked_by",
-        github_stub::page(&[serde_json::json!({
-            "number": 42,
-            "state": "open",
-            "html_url": issue_link(42),
-        })]),
+        "/issues/comments/20",
+        github_stub::ScriptedResponse::ok(
+            github_stub::issue_comment(20, 43, MAINTAINER, "@kestrel /implement").to_string(),
+        ),
     );
+    blocked_by(&stub, 43, 42);
     let harness = Harness::boot().await;
     dogfooding(&harness, &stub).await;
 
     let firing = command_firing(&harness).await;
 
-    assert_eq!(firing.outcome, "held");
-    assert!(firing.failure.unwrap_or_default().contains(&issue_link(42)));
-    assert!(harness.sessions("acme").await.is_empty());
+    assert_eq!(firing.outcome, "opened", "{firing:?}");
+    assert_eq!(
+        firing.worked_ahead.as_deref(),
+        Some(
+            format!(
+                "{} is blocked by {}, and {MAINTAINER} asked to work ahead",
+                issue_link(43),
+                issue_link(42)
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(harness.sessions("acme").await.len(), 1);
 
     harness.teardown().await;
+}
+
+fn unassigned(stub: &GithubStub, issue: i64) {
+    stub.script_answer(
+        "GET",
+        &format!("/issues/{issue}"),
+        github_stub::ScriptedResponse::ok(
+            serde_json::json!({
+                "number": issue,
+                "state": "open",
+                "assignees": [],
+            })
+            .to_string(),
+        ),
+    );
 }
 
 async fn command_firing(harness: &Harness) -> kestrel::domain::Firing {
@@ -727,21 +751,10 @@ async fn an_issue_with_unknown_state_holds_the_start() {
 }
 
 #[tokio::test]
-async fn an_edited_command_without_a_current_assignment_holds_the_start() {
+async fn an_edited_command_without_a_current_assignment_cancels_the_start() {
     let stub = GithubStub::start();
     script_command(&stub);
-    stub.script_answer(
-        "GET",
-        "/issues/43",
-        github_stub::ScriptedResponse::ok(
-            serde_json::json!({
-                "number": 43,
-                "state": "open",
-                "assignees": [],
-            })
-            .to_string(),
-        ),
-    );
+    unassigned(&stub, 43);
     stub.script_answer(
         "GET",
         "/issues/comments/20",
@@ -753,7 +766,7 @@ async fn an_edited_command_without_a_current_assignment_holds_the_start() {
     dogfooding(&harness, &stub).await;
 
     let firing = command_firing(&harness).await;
-    assert_eq!(firing.outcome, "held");
+    assert_eq!(firing.outcome, "canceled");
     assert!(
         firing
             .failure
@@ -791,39 +804,6 @@ async fn a_failed_dependency_query_holds_the_start() {
 }
 
 #[tokio::test]
-async fn a_current_command_can_start_an_unassigned_issue() {
-    let stub = GithubStub::start();
-    script_command(&stub);
-    stub.script_answer(
-        "GET",
-        "/issues/43",
-        github_stub::ScriptedResponse::ok(
-            serde_json::json!({
-                "number": 43,
-                "state": "open",
-                "assignees": [],
-            })
-            .to_string(),
-        ),
-    );
-    stub.script_answer(
-        "GET",
-        "/issues/comments/20",
-        github_stub::ScriptedResponse::ok(
-            github_stub::issue_comment(20, 43, MAINTAINER, "@kestrel").to_string(),
-        ),
-    );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
-
-    let opened = sessions(&harness, 1).await;
-    assert_eq!(opened.len(), 1);
-    assert_eq!(command_firing(&harness).await.outcome, "opened");
-
-    harness.teardown().await;
-}
-
-#[tokio::test]
 async fn a_closed_native_dependency_does_not_hold_the_start() {
     let stub = GithubStub::start();
     script_command(&stub);
@@ -842,6 +822,312 @@ async fn a_closed_native_dependency_does_not_hold_the_start() {
     let opened = sessions(&harness, 1).await;
     assert_eq!(opened.len(), 1);
     assert_eq!(command_firing(&harness).await.outcome, "opened");
+
+    harness.teardown().await;
+}
+
+/// Assignment starts nothing in the dogfood declarations, so the automatic start under test is
+/// declared beside them.
+async fn delegating(harness: &Harness, stub: &GithubStub) {
+    dogfooding(harness, stub).await;
+    harness
+        .declare_trigger_rendering(
+            "acme",
+            "assigned",
+            &format!(
+                r#"{{"all": [{{"exact": {{"source": "https://github.com/{REPOSITORY}"}}}},
+                             {{"exact": {{"type": "com.github.issues.assigned"}}}}]}}"#
+            ),
+            "kestrel",
+            "builder",
+            &templates(
+                "/implement {{ event.subject }}",
+                None,
+                Some("{{ event.source }}{{ event.subject }}"),
+            ),
+        )
+        .await;
+}
+
+fn blocked_by(stub: &GithubStub, issue: i64, blocker: i64) {
+    stub.script_answer(
+        "GET",
+        &format!("/issues/{issue}/dependencies/blocked_by"),
+        github_stub::page(&[serde_json::json!({
+            "number": blocker,
+            "state": "open",
+            "html_url": issue_link(blocker),
+        })]),
+    );
+}
+
+fn unblocked(stub: &GithubStub, issue: i64) {
+    stub.script_answer(
+        "GET",
+        &format!("/issues/{issue}/dependencies/blocked_by"),
+        github_stub::page(&[serde_json::json!({
+            "number": 42,
+            "state": "closed",
+            "html_url": issue_link(42),
+        })]),
+    );
+}
+
+async fn firing_of(harness: &Harness, r#type: &str, outcome: &str) -> kestrel::domain::Firing {
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        for event in harness.events("acme").await {
+            if event.occurrence.r#type == r#type
+                && let Some(firing) = harness
+                    .firings(event.record_id)
+                    .await
+                    .into_iter()
+                    .find(|firing| firing.outcome == outcome)
+            {
+                return firing;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no {type} event was {outcome}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+const ASSIGNED: &str = "com.github.issues.assigned";
+
+#[tokio::test]
+async fn a_held_delegation_starts_once_its_blocker_closes() {
+    let stub = GithubStub::start();
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[github_stub::assigned(14, 43, KESTREL, MAINTAINER)]),
+    );
+    blocked_by(&stub, 43, 42);
+    let harness = Harness::boot().await;
+    delegating(&harness, &stub).await;
+
+    let held = firing_of(&harness, ASSIGNED, "held").await;
+    assert!(held.failure.unwrap_or_default().contains(&issue_link(42)));
+    assert!(harness.sessions("acme").await.is_empty());
+
+    unblocked(&stub, 43);
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[github_stub::issue_event(15, 42, "closed", "")]),
+    );
+
+    let opened = sessions(&harness, 1).await;
+    assert_eq!(opened.len(), 1);
+    assert_eq!(
+        firing_of(&harness, ASSIGNED, "opened").await.trigger,
+        "assigned"
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(harness.sessions("acme").await.len(), 1);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_held_delegation_whose_unblocking_event_was_missed_starts_on_the_sweep() {
+    let stub = GithubStub::start();
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[github_stub::assigned(14, 43, KESTREL, MAINTAINER)]),
+    );
+    blocked_by(&stub, 43, 42);
+    let harness = Harness::boot().await;
+    delegating(&harness, &stub).await;
+    firing_of(&harness, ASSIGNED, "held").await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(harness.sessions("acme").await.is_empty());
+
+    unblocked(&stub, 43);
+    let held = harness
+        .events("acme")
+        .await
+        .into_iter()
+        .find(|event| event.occurrence.r#type == ASSIGNED)
+        .expect("the assignment is recorded");
+    harness
+        .last_considered(
+            held.record_id,
+            jiff::Timestamp::now() - SignedDuration::from_hours(1),
+        )
+        .await;
+
+    assert_eq!(sessions(&harness, 1).await.len(), 1);
+    assert_eq!(
+        firing_of(&harness, ASSIGNED, "opened").await.worked_ahead,
+        None
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn unassigning_a_held_delegation_cancels_it() {
+    let stub = GithubStub::start();
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[github_stub::assigned(14, 43, KESTREL, MAINTAINER)]),
+    );
+    blocked_by(&stub, 43, 42);
+    let harness = Harness::boot().await;
+    delegating(&harness, &stub).await;
+    firing_of(&harness, ASSIGNED, "held").await;
+
+    unassigned(&stub, 43);
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[github_stub::issue_event(15, 43, "unassigned", "")]),
+    );
+
+    let canceled = firing_of(&harness, ASSIGNED, "canceled").await;
+    assert!(
+        canceled
+            .failure
+            .unwrap_or_default()
+            .contains("no longer delegated")
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(harness.sessions("acme").await.is_empty());
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn two_held_delegations_of_one_issue_start_it_once() {
+    let stub = GithubStub::start();
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[
+            github_stub::assigned(15, 43, KESTREL, MAINTAINER),
+            github_stub::assigned(14, 43, KESTREL, MAINTAINER),
+        ]),
+    );
+    blocked_by(&stub, 43, 42);
+    blocked_by(&stub, 43, 42);
+    let harness = Harness::boot().await;
+    delegating(&harness, &stub).await;
+    firing_of(&harness, ASSIGNED, "canceled").await;
+
+    stub.script_answer(
+        "GET",
+        EVENTS,
+        github_stub::page(&[github_stub::issue_event(16, 42, "closed", "")]),
+    );
+
+    let opened = sessions(&harness, 1).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(harness.sessions("acme").await.len(), 1);
+    let mut outcomes = Vec::new();
+    for event in harness.events("acme").await {
+        if event.occurrence.r#type == ASSIGNED {
+            outcomes.extend(
+                harness
+                    .firings(event.record_id)
+                    .await
+                    .into_iter()
+                    .map(|firing| (firing.outcome, firing.session)),
+            );
+        }
+    }
+    outcomes.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        outcomes,
+        vec![
+            ("canceled".to_owned(), None),
+            ("opened".to_owned(), Some(opened[0].id)),
+        ]
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_dispatch_works_ahead_of_a_blocker_and_says_so() {
+    let stub = GithubStub::start();
+    unassigned(&stub, 60);
+    unassigned(&stub, 60);
+    blocked_by(&stub, 60, 42);
+    let harness = Harness::boot().await;
+    dogfooding(&harness, &stub).await;
+
+    let fired = harness
+        .dispatch("acme", "delegated", 60, Asked::default())
+        .await
+        .expect("the dispatch should fire");
+
+    let Fired::Opened { event, .. } = fired else {
+        panic!("the dispatch opened nothing: {fired:?}");
+    };
+    assert_eq!(
+        harness.firings(event).await[0].worked_ahead.as_deref(),
+        Some(
+            format!(
+                "{} is blocked by {}, and an operator's dispatch asked to work ahead",
+                issue_link(60),
+                issue_link(42)
+            )
+            .as_str()
+        )
+    );
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_blocker_added_after_a_session_opens_does_not_freeze_it() {
+    let stub = GithubStub::start();
+    script_command(&stub);
+    let harness = Harness::boot().await;
+    dogfooding(&harness, &stub).await;
+    let session = sessions(&harness, 1).await.remove(0);
+    let first = harness.claim_run().await.expect("the first run").run;
+    harness.complete_run(&first).await;
+
+    for _ in 0..4 {
+        blocked_by(&stub, 43, 42);
+    }
+    stub.script_answer(
+        "GET",
+        COMMENTS,
+        github_stub::page(&[github_stub::issue_comment(
+            21,
+            43,
+            MAINTAINER,
+            "@kestrel /again",
+        )]),
+    );
+
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let next = loop {
+        if let Some(claimed) = harness.claim_run().await {
+            break claimed.run;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the command never reached the open session"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(next.session, session.id);
+    assert_eq!(harness.sessions("acme").await.len(), 1);
+    assert_eq!(
+        firing_of(&harness, "com.github.issue_comment.created", "fed")
+            .await
+            .session,
+        Some(session.id)
+    );
 
     harness.teardown().await;
 }

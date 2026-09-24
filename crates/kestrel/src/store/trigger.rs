@@ -476,9 +476,110 @@ impl<'a> Triggers<'a> {
         Ok(matched)
     }
 
+    /// A blocker closing is an event about another issue, so any event from the integration is
+    /// a reason to look again.
+    pub async fn held_due(
+        &mut self,
+        stale: Timestamp,
+        most: usize,
+    ) -> Result<Vec<(Trigger, Event)>> {
+        let rows = sqlx::query(
+            "SELECT firing.trigger_id, firing.event_record_id
+             FROM firing
+             JOIN trigger ON trigger.id = firing.trigger_id
+             JOIN event held ON held.record_id = firing.event_record_id
+             WHERE firing.outcome = 'held'
+               AND trigger.state = ?
+               AND (firing.considered_at < ?
+                    OR EXISTS (
+                        SELECT 1 FROM event later
+                         WHERE later.integration_id = held.integration_id
+                           AND later.recorded_at > firing.considered_at))
+             ORDER BY firing.considered_at, firing.event_record_id
+             LIMIT ?",
+        )
+        .bind(TriggerState::Enabled.as_str())
+        .bind(stale.to_string())
+        .bind(i64::try_from(most)?)
+        .fetch_all(&mut *self.connection)
+        .await
+        .context("reading the held firings due another look")?;
+
+        let mut due = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let trigger = sqlx::query(triggers_where!("id = ?"))
+                .bind(row.get::<String, _>("trigger_id"))
+                .fetch_one(&mut *self.connection)
+                .await
+                .context("reading the trigger a held firing belongs to")?;
+            let trigger = self::trigger(&mut *self.connection, &trigger).await?;
+            let event = integration::event_with_id(
+                &mut *self.connection,
+                row.get::<String, _>("event_record_id").parse()?,
+            )
+            .await?;
+            due.push((trigger, event));
+        }
+
+        Ok(due)
+    }
+
+    pub async fn considered(&mut self, event: EventRecordId, at: Timestamp) -> Result<()> {
+        sqlx::query(
+            "UPDATE firing SET considered_at = ?
+             WHERE event_record_id = ? AND outcome = 'held'",
+        )
+        .bind(at.to_string())
+        .bind(event.to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("recording when the event {event} was last considered"))?;
+
+        Ok(())
+    }
+
+    pub async fn still_held(&mut self, trigger: &Trigger, event: &Event) -> Result<bool> {
+        Ok(sqlx::query(
+            "SELECT 1 FROM firing
+             WHERE trigger_id = ? AND event_record_id = ? AND outcome = 'held'",
+        )
+        .bind(trigger.id.to_string())
+        .bind(event.record_id.to_string())
+        .fetch_optional(&mut *self.connection)
+        .await
+        .context("reading whether a firing is still held")?
+        .is_some())
+    }
+
+    pub async fn supersede_held(
+        &mut self,
+        trigger: &Trigger,
+        correlation: &str,
+        by: &Event,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE firing
+             SET outcome = 'canceled', failure = ?, considered_at = NULL
+             WHERE outcome = 'held'
+               AND trigger_id = ?
+               AND correlation = ?
+               AND event_record_id <> ?",
+        )
+        .bind(format!("superseded by the event {}", by.record_id))
+        .bind(trigger.id.to_string())
+        .bind(correlation)
+        .bind(by.record_id.to_string())
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("superseding the requests held for {correlation}"))?;
+
+        Ok(())
+    }
+
     pub async fn firings_of(&mut self, event: EventRecordId) -> Result<Vec<Firing>> {
         sqlx::query(
-            "SELECT trigger.name, firing.outcome, firing.session_id, firing.failure
+            "SELECT trigger.name, firing.outcome, firing.session_id, firing.failure,
+                    firing.worked_ahead
              FROM firing
              JOIN trigger ON trigger.id = firing.trigger_id
              WHERE firing.event_record_id = ?
@@ -498,6 +599,7 @@ impl<'a> Triggers<'a> {
                     .map(|session| session.parse())
                     .transpose()?,
                 failure: row.get("failure"),
+                worked_ahead: row.get("worked_ahead"),
             })
         })
         .collect()
@@ -508,9 +610,19 @@ impl<'a> Triggers<'a> {
         trigger: &Trigger,
         event: &Event,
         session: &Session,
+        worked_ahead: Option<&str>,
     ) -> Result<()> {
-        self.record(trigger, event, Some(session), "opened", None)
-            .await
+        self.record(
+            trigger,
+            event,
+            Recording {
+                session: Some(session),
+                outcome: "opened",
+                worked_ahead,
+                ..Recording::default()
+            },
+        )
+        .await
     }
 
     pub async fn record_fed_firing(
@@ -519,12 +631,28 @@ impl<'a> Triggers<'a> {
         event: &Event,
         session: &Session,
     ) -> Result<()> {
-        self.record(trigger, event, Some(session), "fed", None)
-            .await
+        self.record(
+            trigger,
+            event,
+            Recording {
+                session: Some(session),
+                outcome: "fed",
+                ..Recording::default()
+            },
+        )
+        .await
     }
 
     pub async fn record_ignored_firing(&mut self, trigger: &Trigger, event: &Event) -> Result<()> {
-        self.record(trigger, event, None, "ignored", None).await
+        self.record(
+            trigger,
+            event,
+            Recording {
+                outcome: "ignored",
+                ..Recording::default()
+            },
+        )
+        .await
     }
 
     pub async fn record_failed_firing(
@@ -533,8 +661,16 @@ impl<'a> Triggers<'a> {
         event: &Event,
         because: &str,
     ) -> Result<()> {
-        self.record(trigger, event, None, "failed", Some(because))
-            .await
+        self.record(
+            trigger,
+            event,
+            Recording {
+                outcome: "failed",
+                because: Some(because),
+                ..Recording::default()
+            },
+        )
+        .await
     }
 
     pub async fn record_held_firing(
@@ -542,30 +678,71 @@ impl<'a> Triggers<'a> {
         trigger: &Trigger,
         event: &Event,
         because: &str,
+        correlation: Option<&str>,
+        considered_at: Timestamp,
     ) -> Result<()> {
-        self.record(trigger, event, None, "held", Some(because))
-            .await
+        self.record(
+            trigger,
+            event,
+            Recording {
+                outcome: "held",
+                because: Some(because),
+                correlation,
+                considered_at: Some(considered_at),
+                ..Recording::default()
+            },
+        )
+        .await
     }
 
+    pub async fn record_canceled_firing(
+        &mut self,
+        trigger: &Trigger,
+        event: &Event,
+        because: &str,
+    ) -> Result<()> {
+        self.record(
+            trigger,
+            event,
+            Recording {
+                outcome: "canceled",
+                because: Some(because),
+                ..Recording::default()
+            },
+        )
+        .await
+    }
+
+    /// Only a held firing is recorded again, so a second sweep that found it held is refused.
     async fn record(
         &mut self,
         trigger: &Trigger,
         event: &Event,
-        session: Option<&Session>,
-        outcome: &str,
-        failure: Option<&str>,
+        recording: Recording<'_>,
     ) -> Result<()> {
-        sqlx::query(
+        let recorded = sqlx::query(
             "INSERT INTO firing
-                 (trigger_id, event_record_id, organization_id, session_id, outcome, failure, fired_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (trigger_id, event_record_id, organization_id, session_id, outcome, failure,
+                  worked_ahead, correlation, considered_at, fired_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (trigger_id, event_record_id) DO UPDATE SET
+                 session_id = excluded.session_id,
+                 outcome = excluded.outcome,
+                 failure = excluded.failure,
+                 worked_ahead = excluded.worked_ahead,
+                 correlation = excluded.correlation,
+                 considered_at = excluded.considered_at
+             WHERE firing.outcome = 'held'",
         )
         .bind(trigger.id.to_string())
         .bind(event.record_id.to_string())
         .bind(trigger.organization.id.to_string())
-        .bind(session.map(|session| session.id.to_string()))
-        .bind(outcome)
-        .bind(failure)
+        .bind(recording.session.map(|session| session.id.to_string()))
+        .bind(recording.outcome)
+        .bind(recording.because)
+        .bind(recording.worked_ahead)
+        .bind(recording.correlation)
+        .bind(recording.considered_at.map(|at| at.to_string()))
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.connection)
         .await
@@ -575,6 +752,13 @@ impl<'a> Triggers<'a> {
                 trigger.name, event.record_id
             )
         })?;
+        if recorded.rows_affected() == 0 {
+            anyhow::bail!(
+                "the trigger {} already fired for the event {}",
+                trigger.name,
+                event.record_id
+            );
+        }
 
         Ok(())
     }
@@ -587,6 +771,16 @@ impl<'a> Triggers<'a> {
 
         Ok(triggers)
     }
+}
+
+#[derive(Default)]
+struct Recording<'a> {
+    session: Option<&'a Session>,
+    outcome: &'a str,
+    because: Option<&'a str>,
+    worked_ahead: Option<&'a str>,
+    correlation: Option<&'a str>,
+    considered_at: Option<Timestamp>,
 }
 
 fn matching(query: &mut QueryBuilder<Sqlite>, trigger: &Trigger) {

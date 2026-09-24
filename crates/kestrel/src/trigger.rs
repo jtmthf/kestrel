@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 
 pub mod apply;
 
@@ -16,7 +16,7 @@ use crate::domain::{
 use crate::fanout::{self, Change};
 use crate::integration::github::{self, EventData, Github};
 use crate::log::Entry;
-use crate::readiness::Readiness;
+use crate::readiness::{Decision, Readiness, Request};
 use crate::session;
 use crate::store::integration::Recorded;
 use crate::store::session::Opening;
@@ -25,6 +25,10 @@ use crate::store::{Store, Tx};
 /// A sweep takes a bounded bite rather than every Event a Trigger declared over a busy repository
 /// matches at once.
 const AT_A_TIME: usize = 32;
+
+/// How long a held request waits for an event before its work item is asked about again, so a
+/// missed event delays its start rather than stranding it.
+const RECONSIDER: SignedDuration = SignedDuration::from_mins(5);
 
 pub const AGENT_LABEL: &str = "agent:";
 
@@ -104,6 +108,11 @@ pub enum Fired {
         because: String,
     },
     Held {
+        event: EventRecordId,
+        trigger: String,
+        because: String,
+    },
+    Canceled {
         event: EventRecordId,
         trigger: String,
         because: String,
@@ -546,46 +555,75 @@ pub async fn elapse(store: &Store, at: Timestamp) -> Result<Vec<Occurrence>> {
 
 /// An Event no Trigger matches opens nothing, and that is not a failure.
 pub async fn fire(store: &Store, github: &Github) -> Result<Vec<Fired>> {
-    let matched = {
+    let (matched, held) = {
         let mut tx = store.begin().await?;
-        tx.triggers().unfired_matches(AT_A_TIME).await?
+        (
+            tx.triggers().unfired_matches(AT_A_TIME).await?,
+            tx.triggers()
+                .held_due(Timestamp::now() - RECONSIDER, AT_A_TIME)
+                .await?,
+        )
     };
 
-    let mut fired = Vec::with_capacity(matched.len());
-    for (trigger, event) in matched {
+    let mut fired = Vec::with_capacity(matched.len() + held.len());
+    let considered = matched
+        .into_iter()
+        .map(|matched| (matched, false))
+        .chain(held.into_iter().map(|held| (held, true)));
+    for ((trigger, event), reconsidering) in considered {
+        let consideration = Consideration {
+            at: Timestamp::now(),
+            reconsidering,
+        };
         let readiness = if event.occurrence.r#type.starts_with("com.github.") {
-            match event.integration {
-                Some(id) => {
-                    let integration = {
-                        let mut tx = store.begin().await?;
-                        tx.integrations().with_id(id).await
-                    };
-                    match integration {
-                        Ok(integration) if integration.github().is_ok() => Some(
-                            github
-                                .readiness(&integration, &event.occurrence)
-                                .await
-                                .map_err(|error| error.to_string()),
-                        ),
-                        Ok(_) => Some(Err(
-                            "the work item has no GitHub integration to check readiness".to_owned(),
-                        )),
-                        Err(error) => Some(Err(format!(
-                            "the work item's integration could not be read: {error}"
-                        ))),
-                    }
-                }
-                None => Some(Err(
-                    "the work item has no integration to check readiness".to_owned()
-                )),
-            }
+            Some(readiness(store, github, &event).await?)
         } else {
             None
         };
-        let tx = store.begin().await?;
-        fired.push(firing(tx, &trigger, &event, Asked::by(&event), readiness).await?);
+        let mut tx = store.begin().await?;
+        // An earlier firing in this sweep may have opened or superseded it.
+        if reconsidering && !tx.triggers().still_held(&trigger, &event).await? {
+            continue;
+        }
+        fired.push(
+            firing(
+                tx,
+                &trigger,
+                &event,
+                Asked::by(&event),
+                readiness,
+                consideration,
+            )
+            .await?,
+        );
     }
     Ok(fired)
+}
+
+async fn readiness(
+    store: &Store,
+    github: &Github,
+    event: &Event,
+) -> Result<Result<Readiness, String>> {
+    let Some(id) = event.integration else {
+        return Ok(Err(
+            "the work item has no integration to check readiness".to_owned()
+        ));
+    };
+    let integration = {
+        let mut tx = store.begin().await?;
+        tx.integrations().with_id(id).await
+    };
+    Ok(match integration {
+        Ok(integration) if integration.github().is_ok() => github
+            .readiness(&integration, &event.occurrence)
+            .await
+            .map_err(|error| error.to_string()),
+        Ok(_) => Err("the work item has no GitHub integration to check readiness".to_owned()),
+        Err(error) => Err(format!(
+            "the work item's integration could not be read: {error}"
+        )),
+    })
 }
 
 /// Fires one Trigger for an issue an operator names, whether or not its filter would match: the
@@ -609,6 +647,14 @@ pub async fn dispatch(store: &Store, github: &Github, dispatch: Dispatch<'_>) ->
         dispatch.asked,
     )
     .await?;
+    // Refused rather than held: an operator waiting on the answer can ask again, and a dispatch
+    // that started later would be work nobody is waiting on.
+    let readiness = github
+        .readiness(&integration, &occurrence)
+        .await
+        .map_err(|refused| {
+            anyhow!("the blockers the dispatch works ahead of are unknown: {refused}")
+        })?;
 
     let mut tx = store.begin().await?;
     if let Recorded::Refused { because } = tx
@@ -623,7 +669,18 @@ pub async fn dispatch(store: &Store, github: &Github, dispatch: Dispatch<'_>) ->
         .recorded_event(&trigger.organization, &occurrence)
         .await?;
 
-    firing(tx, &trigger, &event, dispatch.asked, None).await
+    firing(
+        tx,
+        &trigger,
+        &event,
+        dispatch.asked,
+        Some(Ok(readiness)),
+        Consideration {
+            at: Timestamp::now(),
+            reconsidering: false,
+        },
+    )
+    .await
 }
 
 /// Shared by dispatch and test, so a test renders exactly what the dispatch fires.
@@ -666,6 +723,7 @@ async fn firing(
     event: &Event,
     asked: Asked<'_>,
     readiness: Option<Result<Readiness, String>>,
+    consideration: Consideration,
 ) -> Result<Fired> {
     let rendered = render(trigger, event, asked.instruction);
 
@@ -678,10 +736,12 @@ async fn firing(
         )
         .await;
     }
-    if tx
-        .triggers()
-        .firing_budget_is_exhausted(trigger, jiff::Timestamp::now())
-        .await?
+    // A held firing was counted against the budget when it was first recorded.
+    if !consideration.reconsidering
+        && tx
+            .triggers()
+            .firing_budget_is_exhausted(trigger, jiff::Timestamp::now())
+            .await?
     {
         let because = trigger.firing_budget_exhausted_because();
         tx.triggers()
@@ -732,15 +792,23 @@ async fn firing(
         Ok(agent) => agent,
         Err(error) => return failed(tx, trigger, event, format!("{error:#}")).await,
     };
-    if let Some(readiness) = readiness {
-        let because = match readiness {
-            Ok(readiness) => readiness.hold_reason(),
-            Err(error) => Some(format!("readiness could not be checked: {error}")),
-        };
-        if let Some(because) = because {
-            return held(tx, trigger, event, because).await;
+    let correlation = rendered.correlation.as_deref();
+    let worked_ahead = match readiness
+        .map(|readiness| readiness.map(|readiness| readiness.decide(request(event))))
+    {
+        None => None,
+        Some(Ok(Decision::Start { worked_ahead })) => worked_ahead,
+        Some(Ok(Decision::Hold { because })) => {
+            return held(tx, trigger, event, because, correlation, consideration).await;
         }
-    }
+        Some(Ok(Decision::Cancel { because })) => {
+            return canceled(tx, trigger, event, because).await;
+        }
+        Some(Err(error)) => {
+            let because = format!("readiness could not be checked: {error}");
+            return held(tx, trigger, event, because, correlation, consideration).await;
+        }
+    };
     let session = tx
         .sessions()
         .open(Opening {
@@ -778,8 +846,13 @@ async fn firing(
 
     let run = tx.sessions().enqueue_run(&session, None).await?;
     tx.triggers()
-        .record_opened_firing(trigger, event, &session)
+        .record_opened_firing(trigger, event, &session, worked_ahead.as_deref())
         .await?;
+    if let Some(correlation) = &rendered.correlation {
+        tx.triggers()
+            .supersede_held(trigger, correlation, event)
+            .await?;
+    }
     tx.commit().await?;
     fanout::publish(Change::SessionOpened(&session));
 
@@ -845,13 +918,65 @@ async fn failed(
     })
 }
 
-async fn held(mut tx: Tx<'_>, trigger: &Trigger, event: &Event, because: String) -> Result<Fired> {
+#[derive(Debug, Clone, Copy)]
+struct Consideration {
+    /// Before readiness was asked, so an event recorded while it was answering is newer.
+    at: Timestamp,
+    reconsidering: bool,
+}
+
+fn request(event: &Event) -> Request<'_> {
+    let data = EventData::new(&event.occurrence);
+    if event.occurrence.r#type == DISPATCHED {
+        Request::Dispatched
+    } else if data.command().is_some() {
+        Request::Commanded {
+            by: data.actor().unwrap_or("a commenter"),
+        }
+    } else {
+        Request::Automatic
+    }
+}
+
+async fn held(
+    mut tx: Tx<'_>,
+    trigger: &Trigger,
+    event: &Event,
+    because: String,
+    correlation: Option<&str>,
+    consideration: Consideration,
+) -> Result<Fired> {
     tx.triggers()
-        .record_held_firing(trigger, event, &because)
+        .record_held_firing(trigger, event, &because, correlation, consideration.at)
         .await?;
+    if let Some(correlation) = correlation
+        && !consideration.reconsidering
+    {
+        tx.triggers()
+            .supersede_held(trigger, correlation, event)
+            .await?;
+    }
     tx.commit().await?;
 
     Ok(Fired::Held {
+        event: event.record_id,
+        trigger: trigger.name.clone(),
+        because,
+    })
+}
+
+async fn canceled(
+    mut tx: Tx<'_>,
+    trigger: &Trigger,
+    event: &Event,
+    because: String,
+) -> Result<Fired> {
+    tx.triggers()
+        .record_canceled_firing(trigger, event, &because)
+        .await?;
+    tx.commit().await?;
+
+    Ok(Fired::Canceled {
         event: event.record_id,
         trigger: trigger.name.clone(),
         because,
