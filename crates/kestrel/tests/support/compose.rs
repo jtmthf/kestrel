@@ -11,10 +11,8 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
-
 use super::client::{self, Finished, Invocation};
-use super::docker::{Ran, ran_against, repository};
+use super::docker::{Ran, checkout_digest, ran_against, repository};
 use super::images;
 
 pub const CONTROL_PLANE: &str = "kestrel";
@@ -58,10 +56,7 @@ fn namespace() -> &'static Namespace {
 /// The namespace one checkout's suite runs under, from the checkout's canonical path: the
 /// same path derives the same names, and a different path derives none of the same ones.
 pub fn namespace_for(checkout: &Path) -> Namespace {
-    let canonical = std::fs::canonicalize(checkout).unwrap_or_else(|_| checkout.to_path_buf());
-    let mut hashed = Sha256::new();
-    hashed.update(canonical.to_string_lossy().as_bytes());
-    let digest = &kestrel::hex::encode(&hashed.finalize())[..16];
+    let digest = checkout_digest(checkout);
 
     Namespace {
         project: format!("kestrel-{digest}"),

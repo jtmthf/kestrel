@@ -6,6 +6,7 @@
 
 mod support;
 
+use std::path::Path;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
@@ -17,6 +18,41 @@ use support::image::{self, Environment};
 const PATIENCE: Duration = Duration::from_secs(30);
 
 const KILLED: i32 = 137;
+
+#[test]
+fn a_checkout_tags_every_image_it_builds_apart_from_every_other_checkout() {
+    let a_checkout = image::tags_for(Path::new("/work/kestrel")).all();
+    let the_same_checkout = image::tags_for(Path::new("/work/kestrel")).all();
+    let another_checkout = image::tags_for(Path::new("/work/kestrel-elsewhere")).all();
+
+    assert_eq!(the_same_checkout, a_checkout);
+    for tag in &a_checkout {
+        assert!(
+            !another_checkout.contains(tag),
+            "{tag} is shared with another checkout"
+        );
+        assert!(
+            ![
+                "kestrel-env",
+                "kestrel-env:latest",
+                "kestrel-dev",
+                "kestrel-dev:latest"
+            ]
+            .contains(&tag.as_str()),
+            "{tag} is a tag an operator builds"
+        );
+        let (_, version) = tag
+            .split_once(':')
+            .unwrap_or_else(|| panic!("{tag} names no tag"));
+        assert!(
+            version.len() <= 128
+                && version
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)),
+            "{tag} is not a tag docker accepts"
+        );
+    }
+}
 
 #[test]
 #[ignore = "builds and runs the kestrel-env image"]

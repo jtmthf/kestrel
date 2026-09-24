@@ -27,7 +27,8 @@ docker build --file images/kestrel-dev/Dockerfile --tag kestrel-dev .
 
 `--build-arg KESTREL_ENV=<image>` derives it from a different base tag. The tests use it to derive
 from the `kestrel-env` image the run is consuming: what CI built for the change, or the
-`kestrel-env:test` the tests built themselves when nothing named one.
+`kestrel-env:test-<checkout>` the tests built themselves when nothing named one, tagged per
+checkout so two checkouts on one daemon never build over each other's.
 
 To bump an adapter, change its exact version in `package.json`, then regenerate the lockfile in the
 same Node image the build uses so the Linux optional dependencies are recorded:

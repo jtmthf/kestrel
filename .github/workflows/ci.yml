@@ -214,7 +214,8 @@ jobs:
           started=$(date +%s)
           cargo test --locked --package kestrel --test development -- --ignored \
             --skip kestrel_passes_its_own_checks
-          size=$(docker image inspect kestrel-dev:test --format '{{.Size}}')
+          image=$(docker image ls --filter 'reference=kestrel-dev:test-*' --format '{{.Repository}}:{{.Tag}}' | head -n 1)
+          size=$(docker image inspect "$image" --format '{{.Size}}')
           echo "kestrel-dev: $((size / 1024 / 1024)) MiB, built and tested in $(($(date +%s) - started))s" >> "$GITHUB_STEP_SUMMARY"
 
   control-plane:
