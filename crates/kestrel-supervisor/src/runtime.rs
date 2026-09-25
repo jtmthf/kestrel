@@ -158,7 +158,6 @@ impl Recovery {
     }
 }
 
-/// What outlives any one of the agent's processes.
 #[derive(Default)]
 struct Continuity {
     conversed: Option<SessionId>,
@@ -170,6 +169,16 @@ struct Continuity {
 }
 
 impl Continuity {
+    fn opened(&mut self, conversed: SessionId, recovery: Option<Recovery>) {
+        self.conversed = Some(conversed);
+        self.recovery = recovery;
+    }
+
+    fn answered(&mut self) {
+        self.in_flight = None;
+        self.recovered = false;
+    }
+
     /// Never `session/new` again: a conversation standing in for the lost one would be passed
     /// off as its continuation (ADR-0024).
     fn recovering(&mut self, lost: String) -> Result<(), String> {
@@ -184,8 +193,8 @@ impl Continuity {
         }
         if self.recovered {
             return Err(format!(
-                "the agent's process was lost again ({lost}) before it answered in the \
-                 conversation it was brought back into"
+                "the agent's process was lost again ({lost}), with no turn answered since it \
+                 was brought back"
             ));
         }
         self.recovered = true;
@@ -241,7 +250,7 @@ async fn conversing(
     let _ = turns.send(taken(&heard).worked(Some(because)));
 }
 
-/// One of the agent's processes. An `Err` is the connection itself failing, which is a loss.
+/// An `Err` is the connection itself failing, which is a loss.
 async fn living(
     runtime: &Runtime,
     provider: &BTreeMap<String, String>,
@@ -323,8 +332,7 @@ async fn living(
                     }
                     _ => match set_up(&connection, runtime, root, heard).await {
                         Ok((conversed, recovery)) => {
-                            continuity.conversed = Some(conversed.clone());
-                            continuity.recovery = recovery;
+                            continuity.opened(conversed.clone(), recovery);
                             conversed
                         }
                         Err(error) => return Ok(ended(&error)),
@@ -358,8 +366,7 @@ async fn living(
                         Ok(answered) => answered,
                         Err(error) => return Ok(ended(&error)),
                     };
-                    continuity.in_flight = None;
-                    continuity.recovered = false;
+                    continuity.answered();
 
                     if let Some(because) = stopped_short(answered.stop_reason) {
                         return Ok(Ended::Over(because));
@@ -391,7 +398,7 @@ fn described(error: &Error) -> String {
     data.and_then(|data| data.get("data"))
         .or(data)
         .and_then(serde_json::Value::as_str)
-        .map_or_else(|| error.message.clone(), str::to_owned)
+        .map_or_else(|| error.to_string(), str::to_owned)
 }
 
 fn taken(heard: &Mutex<Heard>) -> Heard {
@@ -458,22 +465,17 @@ async fn set_up(
         .await
         .map_err(|error| unlogged_in(error, &initialized.auth_methods))?;
 
-    if let Some(selects) = selects_the_model(
-        set_up.config_options.as_deref().unwrap_or_default(),
+    let on = select(
+        connection,
+        &set_up.session_id,
+        set_up.config_options.as_deref(),
         runtime.model.as_deref(),
-    )? {
-        select(
-            connection,
-            &set_up.session_id,
-            selects.id.as_ref(),
-            &selects.on,
-        )
-        .await?;
-        heard
-            .lock()
-            .expect("what the agent said should not be poisoned")
-            .on = Some(selects.on);
-    }
+    )
+    .await?;
+    heard
+        .lock()
+        .expect("what the agent said should not be poisoned")
+        .on = on;
 
     Ok((
         set_up.session_id,
@@ -481,9 +483,8 @@ async fn set_up(
     ))
 }
 
-/// A new process of the agent, back in the conversation the lost one held. What the lost process
-/// was saying mid-turn is dropped, because that turn is prompted again, and so is whatever a
-/// loaded conversation replays of the conversation.
+/// What the lost process said mid-turn is dropped, because that turn is prompted again, and so
+/// is whatever a loaded conversation replays; what it used and was allowed still happened.
 async fn recover(
     connection: &ConnectionTo<agent_client_protocol::Agent>,
     runtime: &Runtime,
@@ -493,6 +494,7 @@ async fn recover(
     recovery: Recovery,
 ) -> Result<(), Error> {
     initialized(connection, runtime.auth.as_deref()).await?;
+    let lost = taken(heard);
 
     let config_options = match recovery {
         Recovery::Resume => {
@@ -515,17 +517,20 @@ async fn recover(
             .lock()
             .expect("what the agent said should not be poisoned");
         *heard = Heard {
-            on: heard.on.take(),
+            on: lost.on,
+            usage: lost.usage,
+            allowed: lost.allowed,
             ..Heard::default()
         };
     }
 
-    if let Some(selects) = selects_the_model(
-        config_options.as_deref().unwrap_or_default(),
+    select(
+        connection,
+        conversed,
+        config_options.as_deref(),
         runtime.model.as_deref(),
-    )? {
-        select(connection, conversed, selects.id.as_ref(), &selects.on).await?;
-    }
+    )
+    .await?;
 
     Ok(())
 }
@@ -533,22 +538,24 @@ async fn recover(
 async fn select(
     connection: &ConnectionTo<agent_client_protocol::Agent>,
     conversed: &SessionId,
-    id: Option<&SessionConfigId>,
-    on: &On,
-) -> Result<(), Error> {
-    let Some(id) = id else {
-        return Ok(());
+    offered: Option<&[SessionConfigOption]>,
+    model: Option<&str>,
+) -> Result<Option<On>, Error> {
+    let Some(selects) = selects_the_model(offered.unwrap_or_default(), model)? else {
+        return Ok(None);
     };
-    connection
-        .send_request(SetSessionConfigOptionRequest::new(
-            conversed.clone(),
-            id.clone(),
-            SessionConfigValueId::new(on.model.clone()),
-        ))
-        .block_task()
-        .await?;
+    if let Some(id) = selects.id {
+        connection
+            .send_request(SetSessionConfigOptionRequest::new(
+                conversed.clone(),
+                id,
+                SessionConfigValueId::new(selects.on.model.clone()),
+            ))
+            .block_task()
+            .await?;
+    }
 
-    Ok(())
+    Ok(Some(selects.on))
 }
 
 pub fn prompt(entries: &[crate::link::Entry]) -> String {

@@ -33,7 +33,7 @@ const ALLOW_ONCE: &str = "allow-once";
 /// Where `Revives` keeps its session, outside the checkout as a runtime's own store would be.
 const KEPT: &str = ".scripted-session";
 const DIED: &str = ".scripted-session-died";
-const KEPT_APART: char = '\u{1e}';
+const PROMPT_SEPARATOR: char = '\u{1e}';
 const VANISHING: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Parser)]
@@ -379,7 +379,7 @@ fn refreshed() -> String {
 fn kept() -> Vec<String> {
     std::fs::read_to_string(KEPT)
         .map(|kept| {
-            kept.split(KEPT_APART)
+            kept.split(PROMPT_SEPARATOR)
                 .filter(|prompted| !prompted.is_empty())
                 .map(str::to_owned)
                 .collect()
@@ -394,7 +394,7 @@ fn keep(prompted: &str) -> Result<()> {
         .create(true)
         .append(true)
         .open(KEPT)
-        .and_then(|mut kept| write!(kept, "{prompted}{KEPT_APART}"))
+        .and_then(|mut kept| write!(kept, "{prompted}{PROMPT_SEPARATOR}"))
         .map_err(Error::into_internal_error)
 }
 
