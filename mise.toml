@@ -4,3 +4,7 @@ idiomatic_version_file_enable_tools = ["rust"]
 
 [tools]
 bun = "1.3.14"
+
+[env]
+# Must be absolute: the tests' nested `cargo build` runs from another directory.
+CARGO_TARGET_DIR = "{{config_root}}/target"
