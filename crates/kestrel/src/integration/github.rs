@@ -20,6 +20,29 @@ pub const API: &str = "https://api.github.com";
 pub const LABELLED: &str = "com.github.issues.labeled";
 pub const COMMENTED: &str = "com.github.issue_comment.created";
 
+pub fn at_or_after(event: &Occurrence, origin: &Occurrence) -> bool {
+    match event.time.cmp(&origin.time) {
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Equal => {
+            if event.r#type == COMMENTED && origin.r#type == COMMENTED {
+                let comment_id = |occurrence: &Occurrence| {
+                    occurrence
+                        .id
+                        .strip_prefix("comment:")
+                        .and_then(|id| id.parse::<i64>().ok())
+                };
+                match (comment_id(event), comment_id(origin)) {
+                    (Some(event), Some(origin)) => event >= origin,
+                    _ => true,
+                }
+            } else {
+                true
+            }
+        }
+    }
+}
+
 /// A comment that opens with it is a command to kestrel rather than a remark to the Session.
 pub const MENTION: &str = "@kestrel";
 const AGENT: &str = "agent=";

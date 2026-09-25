@@ -49,7 +49,17 @@ async fn receiving(store: &Store, event: &Event) -> Result<Received> {
         _ => None,
     };
     if let Some(holding) = holding {
-        session = tx.sessions().get(holding).await?;
+        let open = tx.sessions().get(holding).await?;
+        let after_opening_event = match open.started_by {
+            Some(origin) => {
+                let origin = tx.integrations().event(origin).await?;
+                github::at_or_after(&event.occurrence, &origin.occurrence)
+            }
+            None => true,
+        };
+        if after_opening_event {
+            session = open;
+        }
     }
 
     let data = github::EventData::new(&event.occurrence);
