@@ -1,3 +1,5 @@
+mod support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,10 +10,6 @@ const WORK: &str = "src/work.rs";
 const TIMER: &str = "src/timer.rs";
 const COMPUTE: &str = "src/compute";
 const ROLES: &str = "src/role";
-
-fn crate_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
 
 fn rust_files(directory: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -32,7 +30,7 @@ fn rust_files(directory: &Path) -> Vec<PathBuf> {
 fn store_log_fanout_work_timer_and_compute_are_modules_you_can_grep_for() {
     for boundary in [STORE, LOG, FANOUT, WORK, TIMER, COMPUTE] {
         assert!(
-            crate_root().join(boundary).exists(),
+            support::crate_root().join(boundary).exists(),
             "{boundary} is a port ADR-0005 says is a named module, and it is not there"
         );
     }
@@ -40,10 +38,10 @@ fn store_log_fanout_work_timer_and_compute_are_modules_you_can_grep_for() {
 
 #[test]
 fn no_sql_is_issued_from_anywhere_but_store_and_log() {
-    let store = crate_root().join(STORE);
-    let log = crate_root().join(LOG);
+    let store = support::crate_root().join(STORE);
+    let log = support::crate_root().join(LOG);
 
-    for file in rust_files(&crate_root().join("src")) {
+    for file in rust_files(&support::crate_root().join("src")) {
         if file.starts_with(&store) || file == log {
             continue;
         }
@@ -61,7 +59,7 @@ fn no_sql_is_issued_from_anywhere_but_store_and_log() {
 /// configuration: a role that named one would be a second place to decide it.
 #[test]
 fn no_role_names_a_compute_driver() {
-    for file in rust_files(&crate_root().join(ROLES)) {
+    for file in rust_files(&support::crate_root().join(ROLES)) {
         let source = fs::read_to_string(&file).expect("a readable source file");
         for driver in ["Docker", "LocalExec"] {
             assert!(

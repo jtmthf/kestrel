@@ -2,7 +2,6 @@ mod support;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
 use std::time::Duration;
 
 use kestrel::domain::{EventRecordId, Exit, RunId};
@@ -2937,7 +2936,7 @@ fn the_published_operator_document_describes_every_transcript_entry() {
 }
 
 fn published() -> Value {
-    let document = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../openapi/operator.json");
+    let document = support::crate_root().join("../../openapi/operator.json");
 
     serde_json::from_str(&fs::read_to_string(document).expect("a readable openapi document"))
         .expect("valid json")

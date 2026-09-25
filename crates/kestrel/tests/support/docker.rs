@@ -77,10 +77,7 @@ pub fn removed(name: &str) {
 /// Read when the test runs, not when it compiled: checkouts sharing a target directory run
 /// whichever binary compiled last, and each must still build and tag its own source.
 pub fn repository() -> PathBuf {
-    let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
-        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
-
-    manifest
+    super::crate_root()
         .ancestors()
         .nth(2)
         .expect("the crate sits two directories under the repository")

@@ -17,7 +17,6 @@
 mod support;
 
 use std::fmt;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver, Instance, Supervisor};
@@ -243,8 +242,7 @@ fn record(lineage: Lineage, model: &str, usage: Option<&Usage>) {
         Some(usage) => usage.to_string(),
         None => "nothing it reported".to_owned(),
     };
-    let ledger =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/conformance-spend.md");
+    let ledger = support::crate_root().join("../../target/conformance-spend.md");
 
     let mut line = format!("- {lineage:?} (`{model}`): {spent}\n");
     if let Ok(existing) = std::fs::read_to_string(&ledger) {

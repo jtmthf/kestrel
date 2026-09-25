@@ -1,6 +1,8 @@
 //! The courier carries no cargo (ADR-0002), as something you can fail a build on: the
 //! supervisor forwards, blocks, relays and holds a cursor, and never reasons about the domain.
 
+mod support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +25,7 @@ const ALSO_THE_WIRE_S: [&str; 1] = ["session"];
 
 #[test]
 fn nothing_in_the_supervisor_names_a_thing_only_the_control_plane_may_reason_about() {
-    let sources = sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    let sources = sources(&support::crate_root().join("src"));
     assert!(!sources.is_empty(), "the supervisor should have sources");
 
     for source in sources {
@@ -50,7 +52,7 @@ fn nothing_in_the_supervisor_names_a_thing_only_the_control_plane_may_reason_abo
 /// it is not something the supervisor may look at.
 #[test]
 fn nothing_in_the_supervisor_names_an_agent_it_might_be_driving() {
-    for source in sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
+    for source in sources(&support::crate_root().join("src")) {
         let spoken = spoken(&source);
 
         for agent in ["opencode", "claude", "codex", "gemini"] {
