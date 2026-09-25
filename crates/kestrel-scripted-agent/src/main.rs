@@ -8,14 +8,14 @@ use std::time::Duration;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodTerminal, AvailableCommandsUpdate,
-    ContentBlock, ContentChunk, Cost, InitializeRequest, InitializeResponse, MessageId,
-    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind, Plan, PlanEntry,
-    PlanEntryPriority, PlanEntryStatus, PromptCapabilities, PromptRequest, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, SessionConfigKind, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigSelect, SessionConfigSelectOption,
-    SessionConfigValueId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, StopReason, TextContent, ToolCall, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
+    ContentBlock, ContentChunk, Cost, InitializeRequest, InitializeResponse, LoadSessionRequest,
+    LoadSessionResponse, MessageId, NewSessionRequest, NewSessionResponse, PermissionOption,
+    PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, PromptCapabilities,
+    PromptRequest, PromptResponse, RequestPermissionOutcome, RequestPermissionRequest,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelect,
+    SessionConfigSelectOption, SessionConfigValueId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason, TextContent,
+    ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, Result, Stdio};
 use clap::Parser;
@@ -30,6 +30,11 @@ const LINGER: Duration = Duration::from_secs(3);
 const TOOL_CALL: &str = "call-1";
 const MODEL_OPTION: &str = "model";
 const ALLOW_ONCE: &str = "allow-once";
+/// Where `Revives` keeps its session, outside the checkout as a runtime's own store would be.
+const KEPT: &str = ".scripted-session";
+const DIED: &str = ".scripted-session-died";
+const KEPT_APART: char = '\u{1e}';
+const VANISHING: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Parser)]
 #[command(name = "kestrel-scripted-agent", version)]
@@ -86,7 +91,9 @@ async fn main() -> Result<()> {
 
                 responder.respond(
                     InitializeResponse::new(ProtocolVersion::V1).agent_capabilities(
-                        AgentCapabilities::new().prompt_capabilities(PromptCapabilities::new()),
+                        AgentCapabilities::new()
+                            .prompt_capabilities(PromptCapabilities::new())
+                            .load_session(script == Script::Revives),
                     ),
                 )
             },
@@ -107,6 +114,31 @@ async fn main() -> Result<()> {
                         NewSessionResponse::new(SESSION).config_options(vec![models(DEFAULT_MODEL)])
                     }
                 })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |load: LoadSessionRequest, responder, connection| {
+                if script != Script::Revives || load.session_id.0.as_ref() != SESSION {
+                    return responder.respond_with_error(
+                        Error::invalid_params().data("this agent kept no such session"),
+                    );
+                }
+
+                let kept = kept();
+                for (turn, prompted) in kept.iter().enumerate() {
+                    update(
+                        &connection,
+                        SessionUpdate::UserMessageChunk(chunk(None, prompted)),
+                    )?;
+                    say(
+                        &connection,
+                        &format!("replayed-{turn}"),
+                        &conversed(turn + 1, &kept[..turn]),
+                    )?;
+                }
+                responder
+                    .respond(LoadSessionResponse::new().config_options(vec![models(DEFAULT_MODEL)]))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -238,6 +270,24 @@ async fn play(
         permission_to_use_a_tool(connection).await?;
         return Ok(StopReason::EndTurn);
     }
+    if script == Script::Revives {
+        let kept = kept();
+        if kept.len() == 1 && !std::path::Path::new(DIED).exists() {
+            std::fs::write(DIED, "").map_err(Error::into_internal_error)?;
+            std::process::exit(9);
+        }
+        keep(prompted)?;
+        say(connection, "message-1", &conversed(kept.len() + 1, &kept))?;
+        return Ok(StopReason::EndTurn);
+    }
+    if script == Script::Vanishes {
+        say(connection, "message-1", "answered, and about to vanish")?;
+        tokio::spawn(async {
+            tokio::time::sleep(VANISHING).await;
+            std::process::exit(0);
+        });
+        return Ok(StopReason::EndTurn);
+    }
     if script == Script::Lapses {
         if earlier.is_empty() {
             say(connection, "message-1", "the first turn is answered")?;
@@ -324,6 +374,28 @@ fn refreshed() -> String {
         },
         Err(_) => "no login was found".to_owned(),
     }
+}
+
+fn kept() -> Vec<String> {
+    std::fs::read_to_string(KEPT)
+        .map(|kept| {
+            kept.split(KEPT_APART)
+                .filter(|prompted| !prompted.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn keep(prompted: &str) -> Result<()> {
+    use std::io::Write as _;
+
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(KEPT)
+        .and_then(|mut kept| write!(kept, "{prompted}{KEPT_APART}"))
+        .map_err(Error::into_internal_error)
 }
 
 fn say(connection: &ConnectionTo<Client>, message: &str, said: &str) -> Result<()> {

@@ -68,6 +68,11 @@ pub enum Script {
     Asks,
     /// Answers its first turn, then produces nothing on the turns after it.
     Lapses,
+    /// Converses, keeping its session on disk where a new process can load it, and dies the first
+    /// time it is prompted for a second turn.
+    Revives,
+    /// Answers its turn, then exits between turns with nothing asked of it.
+    Vanishes,
 }
 
 impl Script {
@@ -93,6 +98,8 @@ impl Script {
             Script::Works => "works",
             Script::Asks => "asks",
             Script::Lapses => "lapses",
+            Script::Revives => "revives",
+            Script::Vanishes => "vanishes",
         }
     }
 }
