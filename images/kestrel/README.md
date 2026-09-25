@@ -26,8 +26,9 @@ by `Cargo.lock` under `--locked`. The exception is apt, which resolves `ca-certi
 `docker-cli` to whatever the Debian release carries on the day — the one thing here that moves
 without the Dockerfile changing.
 
-CI writes the image's size and build time into every run's summary, and publishes
-`ghcr.io/jtmthf/kestrel` from a clean checkout of `main`.
+CI writes the image's size and build time into the summary of the run that builds it, and publishes
+`ghcr.io/jtmthf/kestrel` from a clean checkout: `latest` and the built commit when the image's
+inputs change on `main`, and its version on a release tag.
 
 ## Running one by hand
 

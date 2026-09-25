@@ -1,12 +1,14 @@
 name: Main
 
-# What a push to main does that a pull request does not (ADR-0027): it records the supervisor's
-# size and publishes the control-plane image. It is not a required check, so it may name the
-# branch it runs on, and it builds from a clean checkout so what is published is what the
-# Dockerfile yields on its own.
+# What a push to main does that a pull request does not (ADR-0027): it publishes the control-plane
+# image when the image's inputs changed — `latest` tracks those inputs, not every commit that
+# lands — and publishes it under its version on a release tag. It is not a required check, so it
+# may name the branches and tags it runs on, and it builds from a clean checkout so what is
+# published is what the Dockerfile yields on its own.
 on:
   push:
     branches: [main]
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -16,8 +18,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.detect.outputs.images }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Work out whether the image's inputs changed
+        id: detect
+        env:
+          BASE: ${{ github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # A release tag and a newly created branch name a tree with nothing in front of it,
+          # and reading that as a change to every area publishes rather than silently skipping.
+          if [[ -n "${BASE}" && ! "${BASE}" =~ ^0+$ ]]; then
+            git diff --name-only "${BASE}...${HEAD}" | .github/scripts/changed-areas.sh
+          else
+            .github/scripts/changed-areas.sh < /dev/null
+          fi
+
   supervisor-size:
     name: supervisor size
+    if: github.ref_type == 'branch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -36,6 +64,8 @@ jobs:
 
   publish:
     name: kestrel (publish)
+    needs: changes
+    if: needs.changes.outputs.images == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -50,9 +80,21 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish the control-plane image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
         run: |
-          docker build --file images/kestrel/Dockerfile \
-            --tag ghcr.io/${{ github.repository }}:latest \
-            --tag ghcr.io/${{ github.repository }}:${{ github.sha }} .
-          docker push ghcr.io/${{ github.repository }}:latest
-          docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
+          set -euo pipefail
+          # A release is published under its version; a push to main moves `latest` and pins the
+          # commit it was built from.
+          image_refs=("${IMAGE}:latest" "${IMAGE}:${GITHUB_SHA}")
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            image_refs=("${IMAGE}:${GITHUB_REF_NAME}")
+          fi
+          tags=()
+          for ref in "${image_refs[@]}"; do
+            tags+=(--tag "$ref")
+          done
+          docker build --file images/kestrel/Dockerfile "${tags[@]}" .
+          for ref in "${image_refs[@]}"; do
+            docker push "$ref"
+          done
