@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -11,6 +10,8 @@ use std::time::Duration;
 use kestrel_supervisor::link::{
     Error, Exit, Git, INSTRUCTIONS, Instruction, Link, Observed, REPORTS, Report, Reported,
 };
+
+mod support;
 
 #[derive(Debug, Clone)]
 struct Asked {
@@ -435,7 +436,7 @@ fn every_report_the_client_sends_carries_what_the_published_document_requires() 
 }
 
 fn published() -> serde_json::Value {
-    let document = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../openapi/link.json");
+    let document = support::crate_root().join("../../openapi/link.json");
 
     serde_json::from_str(&fs::read_to_string(document).expect("a readable openapi document"))
         .expect("valid json")

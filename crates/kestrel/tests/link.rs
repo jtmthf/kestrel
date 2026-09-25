@@ -5,7 +5,6 @@
 mod support;
 
 use std::fs;
-use std::path::Path;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
@@ -391,7 +390,7 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
 }
 
 fn published() -> serde_json::Value {
-    let document = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../openapi/link.json");
+    let document = support::crate_root().join("../../openapi/link.json");
 
     serde_json::from_str(&fs::read_to_string(document).expect("a readable openapi document"))
         .expect("valid json")
