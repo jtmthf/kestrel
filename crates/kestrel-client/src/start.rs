@@ -21,6 +21,7 @@ pub struct Given {
 
 #[derive(Default)]
 pub struct Existing {
+    pub organization_declared: bool,
     pub workspaces: Vec<Workspace>,
     pub agents: Vec<Agent>,
     pub credentials: Vec<String>,
@@ -35,8 +36,14 @@ pub struct LocalClone {
 }
 
 impl Existing {
-    pub fn read(workspaces: &Value, agents: &Value, credentials: &Value) -> Self {
+    pub fn read(
+        organization_declared: bool,
+        workspaces: &Value,
+        agents: &Value,
+        credentials: &Value,
+    ) -> Self {
         Self {
+            organization_declared,
             workspaces: records(workspaces, |record| {
                 Some(Workspace {
                     name: record["name"].as_str()?.to_owned(),
@@ -480,6 +487,58 @@ impl Plan {
         ]
     }
 
+    pub fn applying(&self, existing: &Existing) -> Vec<String> {
+        let organization = &self.organization.value;
+        let workspace = &self.workspace.value;
+        let agent = &self.agent.value;
+        let mut applying = Vec::new();
+
+        if !existing.organization_declared {
+            applying.push(format!(
+                "declare the Organization {organization}, the boundary everything below belongs to"
+            ));
+        }
+        if !existing
+            .workspaces
+            .iter()
+            .any(|declared| &declared.name == workspace)
+        {
+            applying.push(format!(
+                "declare the Workspace {workspace}, where work on {} happens on {}",
+                self.repositories.value.join(", "),
+                self.branch.value
+            ));
+        }
+        if !existing
+            .agents
+            .iter()
+            .any(|declared| &declared.name == agent)
+        {
+            let model = self
+                .model
+                .value
+                .as_deref()
+                .map_or("its default model".to_owned(), |model| {
+                    format!("the model {model}")
+                });
+            applying.push(format!(
+                "declare the Agent {agent}, an actor driven by the Agent Runtime {} with {model}",
+                self.runtime.value
+            ));
+        }
+        if self.credentials.given {
+            applying.extend(self.credentials.value.iter().map(|variable| {
+                format!("hold {variable} as a Provider Credential of {organization}")
+            }));
+        }
+        applying.push(format!(
+            "open a Session in {workspace} carrying the Brief, and enqueue a Run of {agent} to \
+             work on it"
+        ));
+
+        applying
+    }
+
     /// Only what was given is sent: what the Organization already holds stays where it is.
     pub fn body(&self, brief: &str, secrets: &[(String, String)]) -> Value {
         json!({
@@ -873,6 +932,61 @@ mod tests {
         .expect("the plan is refused");
 
         assert_eq!(missing[0].flag, "--agent");
+    }
+
+    #[test]
+    fn applying_a_plan_to_nothing_declares_everything_before_the_run() {
+        let plan = planned(
+            Given {
+                credentials: vec!["ANTHROPIC_API_KEY".to_owned()],
+                ..Given::default()
+            },
+            &a_clone("https://github.com/acme/widgets.git"),
+            &Existing::default(),
+        );
+
+        assert_eq!(
+            plan.applying(&Existing::default()),
+            [
+                "declare the Organization acme, the boundary everything below belongs to",
+                "declare the Workspace widgets, where work on \
+                 https://github.com/acme/widgets.git happens on main",
+                "declare the Agent opencode, an actor driven by the Agent Runtime opencode \
+                 with its default model",
+                "hold ANTHROPIC_API_KEY as a Provider Credential of acme",
+                "open a Session in widgets carrying the Brief, and enqueue a Run of opencode \
+                 to work on it",
+            ]
+        );
+    }
+
+    #[test]
+    fn applying_a_plan_redeclares_nothing_that_exists() {
+        let existing = Existing {
+            organization_declared: true,
+            workspaces: vec![widgets_declared_against(
+                "https://github.com/acme/widgets.git",
+            )],
+            agents: vec![Agent {
+                name: "builder".to_owned(),
+                runtime: "claude".to_owned(),
+                model: Some("opus".to_owned()),
+            }],
+            credentials: vec!["ANTHROPIC_API_KEY".to_owned()],
+        };
+        let plan = planned(
+            Given::default(),
+            &a_clone("https://github.com/acme/widgets.git"),
+            &existing,
+        );
+
+        assert_eq!(
+            plan.applying(&existing),
+            [
+                "open a Session in widgets carrying the Brief, and enqueue a Run of builder to \
+              work on it"
+            ]
+        );
     }
 
     #[test]

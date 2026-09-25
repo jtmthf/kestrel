@@ -155,6 +155,10 @@ struct Start {
     /// of this name; repeat for many
     #[arg(long = "credential", value_name = "VARIABLE")]
     credentials: Vec<String>,
+    /// Apply the plan without asking. A start asks only when standard input and standard error
+    /// are both a terminal
+    #[arg(long, short)]
+    yes: bool,
 }
 
 impl Command {
@@ -1308,7 +1312,7 @@ async fn started(
     } else {
         (json!([]), json!([]), json!([]))
     };
-    let existing = start::Existing::read(&workspaces, &agents, &credentials);
+    let existing = start::Existing::read(declared, &workspaces, &agents, &credentials);
 
     let secrets = start::secrets(&start.credentials, |variable| std::env::var(variable).ok());
     let plan = start::plan(
@@ -1350,6 +1354,17 @@ async fn started(
         }
     }
 
+    if !start.yes && std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        eprintln!("applying it will");
+        for step in plan.applying(&existing) {
+            eprintln!("  {step}");
+        }
+        if !confirmed()? {
+            eprintln!("nothing was applied");
+            return Ok(());
+        }
+    }
+
     let started = api.post(&["starts"], &plan.body(&brief, &secrets)).await?;
     for (kind, settled) in [
         ("organization", &started["organization"]),
@@ -1373,6 +1388,26 @@ async fn started(
             "run_id": started["run"]["id"],
         }),
     )
+}
+
+fn confirmed() -> Result<bool> {
+    loop {
+        eprint!("apply this plan? [Y/n] ");
+        let mut answer = String::new();
+        if std::io::stdin()
+            .read_line(&mut answer)
+            .context("reading the answer")?
+            == 0
+        {
+            eprintln!();
+            return Ok(false);
+        }
+        match answer.trim().to_lowercase().as_str() {
+            "" | "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => {}
+        }
+    }
 }
 
 fn rendered(value: &Value) -> String {

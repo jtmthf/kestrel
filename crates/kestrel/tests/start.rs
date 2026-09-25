@@ -2,12 +2,14 @@ mod support;
 
 use kestrel::domain::{Exit, RunId, SessionId};
 use kestrel::log::Entry;
-use support::client::{Finished, Invocation, ran_by};
+use serde_json::Value;
+use support::client::{Finished, Invocation, Shown, ran_by, ran_on_a_terminal_by};
 use support::scripted_agent::{self, Script};
 use support::{A_PROVIDER_KEY, Harness, PROVIDER_KEY, repository, supervisor};
 
 const BRIEF: &str = "Make the README say what kestrel is";
 const STARTED: &str = "organization,workspace,agent,session,session_id,run,run_id";
+const QUESTION: &str = "apply this plan?";
 
 fn in_a_fresh_clone() -> Invocation {
     Invocation::default()
@@ -30,6 +32,54 @@ fn refused_naming(finished: &Finished, flags: &[&str]) {
             finished.err
         );
     }
+}
+
+/// Each explained value without its reason, which names the directory the clone was made in.
+fn resolved(said: &str) -> Vec<String> {
+    said.lines()
+        .skip_while(|line| *line != "starting work with")
+        .skip(1)
+        .take(8)
+        .map(|line| line.split("  (").next().unwrap_or(line).to_owned())
+        .collect()
+}
+
+fn reached(shown: &Shown) -> Value {
+    let record = shown
+        .lines()
+        .into_iter()
+        .find(|line| line.starts_with('{'))
+        .unwrap_or_else(|| panic!("no record reached the terminal:\n{}", shown.said));
+
+    serde_json::from_str(record).expect("a record")
+}
+
+async fn declared(harness: &Harness) -> Vec<String> {
+    let mut declared = Vec::new();
+    for organization in harness.organizations().await {
+        declared.push(format!("organization {}", organization.name));
+        for workspace in harness.workspaces(&organization).await {
+            declared.push(format!(
+                "workspace {} {:?} {}",
+                workspace.name, workspace.repositories, workspace.branch
+            ));
+        }
+        for agent in harness.agents(&organization).await {
+            declared.push(format!(
+                "agent {} {} {:?}",
+                agent.name, agent.runtime, agent.model
+            ));
+        }
+        for held in harness.provider_credentials_held(&organization).await {
+            declared.push(format!("credential {}", held.variable));
+        }
+        declared.push(format!(
+            "sessions {}",
+            harness.sessions(&organization.name).await.len()
+        ));
+    }
+
+    declared
 }
 
 #[tokio::test]
@@ -272,6 +322,141 @@ async fn a_declaration_the_plan_would_change_is_named_before_anything_is_sent() 
 
     refused_naming(&refused, &["--workspace"]);
     assert!(harness.sessions("acme").await.is_empty());
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn on_a_terminal_confirming_once_applies_the_plan_the_noninteractive_start_applies() {
+    let args = [
+        "start",
+        "--brief",
+        BRIEF,
+        "--credential",
+        PROVIDER_KEY,
+        "--json",
+        STARTED,
+    ];
+    let invocation = in_a_fresh_clone().env(PROVIDER_KEY, A_PROVIDER_KEY);
+    let (interactive, noninteractive) = (Harness::boot().await, Harness::boot().await);
+
+    let confirmed = ran_on_a_terminal_by(&interactive, &args, invocation.clone(), "y\n").await;
+    let applied = ran_by(&noninteractive, &args, invocation).await;
+
+    assert!(confirmed.status.success(), "{}", confirmed.said);
+    assert_eq!(
+        confirmed.said.matches(QUESTION).count(),
+        1,
+        "the start asked something other than one confirmation:\n{}",
+        confirmed.said
+    );
+    assert!(
+        !applied.err.contains(QUESTION),
+        "a start with no terminal asked:\n{}",
+        applied.err
+    );
+    assert_eq!(resolved(&confirmed.said), resolved(&applied.err));
+    let (confirmed, applied) = (reached(&confirmed), applied.records().remove(0));
+    for field in ["organization", "workspace", "agent"] {
+        assert_eq!(confirmed[field], applied[field], "{field}");
+    }
+    assert_eq!(
+        declared(&interactive).await,
+        declared(&noninteractive).await
+    );
+
+    interactive.teardown().await;
+    noninteractive.teardown().await;
+}
+
+#[tokio::test]
+async fn on_a_terminal_the_plan_is_explained_and_taught_and_declining_it_changes_nothing() {
+    let harness = Harness::boot().await;
+
+    let shown = ran_on_a_terminal_by(
+        &harness,
+        &["start", "--brief", BRIEF],
+        in_a_fresh_clone(),
+        "n\n",
+    )
+    .await;
+
+    assert!(shown.status.success(), "{}", shown.said);
+    assert!(harness.organizations().await.is_empty());
+    let before: Vec<&str> = shown
+        .lines()
+        .into_iter()
+        .take_while(|line| !line.contains(QUESTION))
+        .collect();
+    assert_eq!(resolved(&before.join("\n")).len(), 8, "{}", shown.said);
+    for flag in [
+        "--organization",
+        "--workspace",
+        "--repository",
+        "--branch",
+        "--agent",
+        "--runtime",
+        "--model",
+        "--credential",
+    ] {
+        assert!(
+            before
+                .iter()
+                .any(|line| line.ends_with(&format!("{flag} overrides it)"))),
+            "no value names {flag}:\n{}",
+            shown.said
+        );
+    }
+    for taught in [
+        "declare the Organization default",
+        &format!("declare the Workspace {}", repository::NAME),
+        "declare the Agent opencode",
+        "open a Session",
+    ] {
+        assert!(
+            before.iter().any(|line| line.contains(taught)),
+            "the plan does not say it will {taught}:\n{}",
+            shown.said
+        );
+    }
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn on_a_terminal_yes_applies_the_plan_without_asking() {
+    let harness = Harness::boot().await;
+
+    let applied = ran_on_a_terminal_by(
+        &harness,
+        &["start", "--brief", BRIEF, "--yes"],
+        in_a_fresh_clone(),
+        "",
+    )
+    .await;
+
+    assert!(applied.status.success(), "{}", applied.said);
+    assert!(!applied.said.contains(QUESTION), "{}", applied.said);
+    assert_eq!(harness.sessions("default").await.len(), 1);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn with_output_on_a_terminal_and_input_piped_nothing_is_asked() {
+    let harness = Harness::boot().await;
+
+    let applied = ran_on_a_terminal_by(
+        &harness,
+        &["start", "--brief", BRIEF],
+        in_a_fresh_clone().given(""),
+        "",
+    )
+    .await;
+
+    assert!(applied.status.success(), "{}", applied.said);
+    assert!(!applied.said.contains(QUESTION), "{}", applied.said);
+    assert_eq!(harness.sessions("default").await.len(), 1);
 
     harness.teardown().await;
 }

@@ -83,6 +83,35 @@ impl Invocation {
         self
     }
 
+    fn prepared(&self) -> (TempDir, PathBuf) {
+        let home = TempDir::new().expect("a temporary home");
+        for (path, contents) in &self.files {
+            let path = home.path().join(path);
+            if let Some(directory) = path.parent() {
+                std::fs::create_dir_all(directory).expect("the file's directory should create");
+            }
+            std::fs::write(&path, contents).expect("the file should write");
+        }
+        for (repository, directory) in &self.clones {
+            let cloned = Command::new("git")
+                .arg("clone")
+                .arg("--quiet")
+                .arg(repository)
+                .arg(home.path().join(directory))
+                .output()
+                .expect("git should be reachable");
+            assert!(
+                cloned.status.success(),
+                "cloning {repository} failed:\n{}",
+                String::from_utf8_lossy(&cloned.stderr)
+            );
+        }
+        let working = home.path().join(&self.within);
+        std::fs::create_dir_all(&working).expect("the working directory should create");
+
+        (home, working)
+    }
+
     fn placed(&self, entry: &Path) -> bool {
         self.files
             .iter()
@@ -99,30 +128,7 @@ impl Client {
     }
 
     pub fn spawn_as(control_plane: &str, args: &[&str], invocation: Invocation) -> Self {
-        let home = TempDir::new().expect("a temporary home");
-        for (path, contents) in &invocation.files {
-            let path = home.path().join(path);
-            if let Some(directory) = path.parent() {
-                std::fs::create_dir_all(directory).expect("the file's directory should create");
-            }
-            std::fs::write(&path, contents).expect("the file should write");
-        }
-        for (repository, directory) in &invocation.clones {
-            let cloned = Command::new("git")
-                .arg("clone")
-                .arg("--quiet")
-                .arg(repository)
-                .arg(home.path().join(directory))
-                .output()
-                .expect("git should be reachable");
-            assert!(
-                cloned.status.success(),
-                "cloning {repository} failed:\n{}",
-                String::from_utf8_lossy(&cloned.stderr)
-            );
-        }
-        let working = home.path().join(&invocation.within);
-        std::fs::create_dir_all(&working).expect("the working directory should create");
+        let (home, working) = invocation.prepared();
 
         let mut child = Command::new(binary())
             .args(args)
@@ -283,25 +289,46 @@ impl Shown {
 
 /// A pty rather than a pipe, because what the Client decides is exactly what it finds there.
 pub fn ran_on_a_terminal(control_plane: &str, args: &[&str], columns: u16, typed: &str) -> Shown {
-    let home = TempDir::new().expect("a temporary home");
+    ran_on_a_terminal_as(control_plane, args, Invocation::default(), columns, typed)
+}
+
+/// Input an invocation is `given` arrives through a pipe, leaving only the output on the pty.
+pub fn ran_on_a_terminal_as(
+    control_plane: &str,
+    args: &[&str],
+    invocation: Invocation,
+    columns: u16,
+    typed: &str,
+) -> Shown {
+    let (home, working) = invocation.prepared();
     let (controller, device) = a_terminal(columns);
     let mut child = {
         let mut command = Command::new(binary());
         command
             .args(args)
-            .current_dir(home.path())
+            .current_dir(&working)
             .env_clear()
             .env("HOME", home.path())
             .env("KESTREL_CONTROL_PLANE", control_plane)
-            .stdin(Stdio::from(
-                device.try_clone().expect("the device should clone"),
-            ))
+            .envs(invocation.environment.iter().cloned())
+            .stdin(match invocation.input {
+                Some(_) => Stdio::piped(),
+                None => Stdio::from(device.try_clone().expect("the device should clone")),
+            })
             .stdout(Stdio::from(
                 device.try_clone().expect("the device should clone"),
             ))
             .stderr(Stdio::from(device));
         command.spawn().expect("the client should spawn")
     };
+    if let Some(input) = &invocation.input {
+        child
+            .stdin
+            .take()
+            .expect("stdin should be piped")
+            .write_all(input.as_bytes())
+            .expect("the input should reach the client");
+    }
 
     let mut typing = controller.try_clone().expect("the controller should clone");
     typing
@@ -317,6 +344,24 @@ pub fn ran_on_a_terminal(control_plane: &str, args: &[&str], columns: u16, typed
             .expect("the terminal should drain")
             .replace('\r', ""),
     }
+}
+
+pub async fn ran_on_a_terminal_by(
+    harness: &Harness,
+    args: &[&str],
+    invocation: Invocation,
+    typed: &str,
+) -> Shown {
+    let operator = harness.operator();
+    let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
+    let typed = typed.to_owned();
+
+    tokio::task::spawn_blocking(move || {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        ran_on_a_terminal_as(&operator, &args, invocation, 80, &typed)
+    })
+    .await
+    .expect("the client should run")
 }
 
 fn a_terminal(columns: u16) -> (File, File) {
