@@ -139,6 +139,7 @@ pub const RUN: View = View::Detail(&[
     "waiting_for",
     "exit.status",
     "exit.because",
+    "outcome_message",
     "instance",
     "supervisor",
     "model",

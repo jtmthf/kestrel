@@ -138,6 +138,7 @@ async fn clean_research_work_seals_when_idle_and_its_instance_is_archived() {
     let harness = dispatching_to(&runtime).await;
     let session = a_session(&harness).await;
     let run = over(&harness, &session).await;
+    assert_eq!(run.exit, Some(Exit::Succeeded));
     let instance = run.instance.expect("an instance");
     assert!(harness.held_instances("acme").await.is_empty());
 
@@ -184,6 +185,7 @@ async fn unpublished_work_outlasts_the_idle_window_held_with_a_reason_until_rele
     let harness = dispatching_to(&runtime).await;
     let session = a_session(&harness).await;
     let run = over(&harness, &session).await;
+    assert_eq!(run.exit, Some(Exit::Succeeded));
     let instance = run.instance.expect("an instance");
 
     harness.last_active(&session, a_day_ago()).await;

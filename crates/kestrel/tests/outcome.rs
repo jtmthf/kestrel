@@ -306,6 +306,37 @@ async fn a_session_no_event_started_says_nothing_and_that_is_not_an_error() {
     harness.teardown().await;
 }
 
+#[tokio::test]
+async fn a_later_runs_outcome_does_not_reuse_an_earlier_runs_message() {
+    let stub = GithubStub::start();
+    let harness = Harness::boot().await;
+    watching(&harness, &stub, BOTH).await;
+
+    let session = harness.open_session("acme", "kestrel", "builder").await;
+    let (first, _) = harness.dispatch_run(session.id).await;
+    harness
+        .said(&first, "The first investigation finished.")
+        .await;
+    harness.complete_run(&first).await;
+    assert_eq!(
+        harness.run(first.id).await.outcome_message.as_deref(),
+        Some("The first investigation finished.")
+    );
+
+    let second = harness.enqueue_run(session.id).await;
+    harness.fail_run(&second, "the environment stopped").await;
+    let ended = harness.run(second.id).await;
+    assert_eq!(
+        ended.exit,
+        Some(Exit::Failed {
+            because: "the environment stopped".to_owned()
+        })
+    );
+    assert_eq!(ended.outcome_message, None);
+
+    harness.teardown().await;
+}
+
 /// The direction an Integration declares is what it does, rather than a label beside it.
 #[tokio::test]
 async fn an_integration_that_carries_only_inbound_says_nothing() {

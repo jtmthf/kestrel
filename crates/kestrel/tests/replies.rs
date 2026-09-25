@@ -183,7 +183,122 @@ async fn a_turns_response_reaches_the_issue_before_the_run_ends() {
     assert_eq!(harness.run(run.id).await.state, RunState::Active);
 
     harness.stop_run(run.id).await;
+    let ended = harness.run(run.id).await;
+    assert_eq!(ended.exit, Some(Exit::Succeeded));
+    assert_eq!(ended.outcome_message.as_deref(), Some("the first answer"));
     nothing_more_is_said(&stub, 1).await;
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn a_final_message_repeating_a_combined_turn_response_is_not_posted_again() {
+    let stub = GithubStub::start();
+    stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
+    let harness = Harness::boot().await;
+    let session = a_session_from_the_issue(&harness, &stub).await;
+    let (run, credential) = a_working_run(&harness, session.id).await;
+    let link = Link::to(&harness.link());
+
+    report(&link, &run, &credential, 1, Report::Started).await;
+    for (seq, message) in [(2, "The investigation is complete."), (3, "CI is green.")] {
+        report(
+            &link,
+            &run,
+            &credential,
+            seq,
+            Report::Said {
+                message: message.to_owned(),
+            },
+        )
+        .await;
+    }
+    report(&link, &run, &credential, 4, Report::Answered).await;
+    replies(&stub, 1).await;
+    report(
+        &link,
+        &run,
+        &credential,
+        5,
+        Report::Said {
+            message: "The investigation is complete.\n\nCI is green.".to_owned(),
+        },
+    )
+    .await;
+    report(
+        &link,
+        &run,
+        &credential,
+        6,
+        Report::Finished {
+            exit: Exit::Succeeded,
+        },
+    )
+    .await;
+
+    assert_eq!(harness.run(run.id).await.exit, Some(Exit::Succeeded));
+    nothing_more_is_said(&stub, 1).await;
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn new_final_information_after_a_turn_is_saved_and_reported_once() {
+    let stub = GithubStub::start();
+    stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
+    let harness = Harness::boot().await;
+    let session = a_session_from_the_issue(&harness, &stub).await;
+    let (run, credential) = a_working_run(&harness, session.id).await;
+    let link = Link::to(&harness.link());
+
+    report(&link, &run, &credential, 1, Report::Started).await;
+    report(
+        &link,
+        &run,
+        &credential,
+        2,
+        Report::Said {
+            message: "The investigation is complete.".to_owned(),
+        },
+    )
+    .await;
+    report(&link, &run, &credential, 3, Report::Answered).await;
+    replies(&stub, 1).await;
+
+    report(
+        &link,
+        &run,
+        &credential,
+        4,
+        Report::Said {
+            message: "The follow-up found a regression.".to_owned(),
+        },
+    )
+    .await;
+    report(
+        &link,
+        &run,
+        &credential,
+        5,
+        Report::Finished {
+            exit: Exit::Succeeded,
+        },
+    )
+    .await;
+
+    let ended = harness.run(run.id).await;
+    assert_eq!(ended.exit, Some(Exit::Succeeded));
+    assert_eq!(
+        ended.outcome_message.as_deref(),
+        Some("The follow-up found a regression.")
+    );
+    let bodies = replies(&stub, 2).await;
+    assert!(bodies[1].contains("The follow-up found a regression."));
+    harness.complete_run(&run).await;
+    assert_eq!(
+        harness.run(run.id).await.outcome_message.as_deref(),
+        Some("The follow-up found a regression.")
+    );
+    nothing_more_is_said(&stub, 2).await;
 
     harness.teardown().await;
 }
@@ -243,7 +358,26 @@ async fn each_turn_of_one_run_says_its_own_response_once() {
         "a turn was prompted more than once"
     );
 
-    harness.stop_run(run.id).await;
+    report(
+        &link,
+        &run,
+        &credential,
+        6,
+        Report::Said {
+            message: "the first answer".to_owned(),
+        },
+    )
+    .await;
+    report(
+        &link,
+        &run,
+        &credential,
+        7,
+        Report::Finished {
+            exit: Exit::Succeeded,
+        },
+    )
+    .await;
     nothing_more_is_said(&stub, 2).await;
 
     harness.teardown().await;

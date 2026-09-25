@@ -447,8 +447,9 @@ async fn end(store: &Store, run: &Run, exit: Exit) -> Result<Exit> {
 /// claimant finding it gone, `timer` finding its lease expired — decides the exit status, and
 /// what comes back is the one that stands.
 pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exit> {
-    let stands = if tx.sessions().end_run(run, &exit).await? {
-        let session = tx.sessions().get(run.session).await?;
+    let session = tx.sessions().get(run.session).await?;
+    let said = tx.log().last_said_for_run(&session).await?;
+    let stands = if tx.sessions().end_run(run, &exit, said.as_deref()).await? {
         tx.log()
             .append(
                 &session,
@@ -459,7 +460,7 @@ pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exi
             )
             .await?;
         tx.sessions().invalidate_credentials(run).await?;
-        delivery::record_outcome(tx, run, &session, &exit).await?;
+        delivery::record_outcome(tx, run, &session, &exit, said.as_deref()).await?;
         if let Exit::Failed { .. } = exit {
             cascade_unreachable(tx, run.id).await?;
         }
