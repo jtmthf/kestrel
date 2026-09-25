@@ -16,7 +16,7 @@ use crate::store::{agent, due, organization, profile, timestamp, workspace};
 macro_rules! runs_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, name, organization_id, session_id, state, waiting_for, exit, exit_because, instance, supervisor,
+            "SELECT id, name, organization_id, session_id, state, waiting_for, exit, exit_because, outcome_message, instance, supervisor,
                     enqueued_at, started_at, ended_at, lease_expires_at, connected_at,
                     supervisor_version, model, worked_model, context_used, context_size, cost_amount,
                     cost_currency
@@ -495,6 +495,7 @@ impl<'a> Sessions<'a> {
                 state: RunState::Queued,
                 waiting_for: None,
                 exit: None,
+                outcome_message: None,
                 instance: None,
                 supervisor: None,
                 model: model.map(str::to_owned),
@@ -1080,16 +1081,17 @@ impl<'a> Sessions<'a> {
     }
 
     /// `false` when the Run had already ended: whoever ends it first decides its exit status.
-    pub async fn end_run(&mut self, run: &Run, exit: &Exit) -> Result<bool> {
+    pub async fn end_run(&mut self, run: &Run, exit: &Exit, message: Option<&str>) -> Result<bool> {
         let ended = sqlx::query(
             "UPDATE run
-             SET state = ?, waiting_for = NULL, ended_at = ?, exit = ?, exit_because = ?, lease_expires_at = NULL
+             SET state = ?, waiting_for = NULL, ended_at = ?, exit = ?, exit_because = ?, outcome_message = ?, lease_expires_at = NULL
              WHERE id = ? AND state != ?",
         )
         .bind(RunState::Ended.as_str())
         .bind(Timestamp::now().to_string())
         .bind(exit.status())
         .bind(exit.because())
+        .bind(message)
         .bind(run.id.to_string())
         .bind(RunState::Ended.as_str())
         .execute(&mut *self.connection)
@@ -1458,6 +1460,7 @@ fn run(row: &SqliteRow) -> Result<Run> {
         exit: exit
             .map(|status| Exit::read(&status, row.get("exit_because")))
             .transpose()?,
+        outcome_message: row.get("outcome_message"),
         instance: row.get("instance"),
         supervisor: row.get("supervisor"),
         model: row.get("model"),

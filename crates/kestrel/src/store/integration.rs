@@ -467,6 +467,7 @@ impl<'a> Integrations<'a> {
         event: &Event,
         turn: Option<i64>,
         body: &str,
+        turn_messages: Option<&[String]>,
     ) -> Result<()> {
         let subject = crate::integration::github::EventData::new(&event.occurrence)
             .subject_issue()
@@ -479,9 +480,9 @@ impl<'a> Integrations<'a> {
 
         sqlx::query(
             "INSERT INTO delivery
-                 (run_id, turn, organization_id, integration_id, event_record_id, subject, body,
+                 (run_id, turn, organization_id, integration_id, event_record_id, subject, body, turn_messages,
                   due_at, recorded_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (run_id, turn) DO NOTHING",
         )
         .bind(run.id.to_string())
@@ -491,6 +492,7 @@ impl<'a> Integrations<'a> {
         .bind(event.record_id.to_string())
         .bind(subject)
         .bind(body)
+        .bind(turn_messages.map(serde_json::to_string).transpose()?)
         .bind(due(Timestamp::now()))
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.connection)
@@ -500,18 +502,16 @@ impl<'a> Integrations<'a> {
         Ok(())
     }
 
-    /// Whether any of a Run's Turns has already said its response: a Run whose Turns did adds
-    /// nothing by saying its own success over again (ADR-0024).
-    pub async fn has_turn_deliveries(&mut self, run: RunId) -> Result<bool> {
-        let row = sqlx::query(
-            "SELECT EXISTS (SELECT 1 FROM delivery WHERE run_id = ? AND turn > 0) AS said",
-        )
-        .bind(run.to_string())
-        .fetch_one(&mut *self.connection)
-        .await
-        .with_context(|| format!("reading what run {run} has said back"))?;
+    pub async fn turn_responses(&mut self, run: RunId) -> Result<Vec<Vec<String>>> {
+        let rows = sqlx::query("SELECT turn_messages FROM delivery WHERE run_id = ? AND turn > 0")
+            .bind(run.to_string())
+            .fetch_all(&mut *self.connection)
+            .await
+            .with_context(|| format!("reading what run {run} has said back"))?;
 
-        Ok(row.get("said"))
+        rows.iter()
+            .map(|row| Ok(serde_json::from_str(row.get("turn_messages"))?))
+            .collect()
     }
 
     pub async fn deliveries_due(&mut self, at: Timestamp) -> Result<Vec<Delivery>> {

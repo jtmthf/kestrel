@@ -2017,6 +2017,7 @@
           "waiting": { "type": "boolean", "description": "Whether an active Run has answered its turn and waits for the next one." },
           "waiting_for": { "type": ["string", "null"] },
           "exit": { "anyOf": [{ "$ref": "#/components/schemas/Exit" }, { "type": "null" }] },
+          "outcome_message": { "type": ["string", "null"] },
           "instance": { "type": ["string", "null"] },
           "supervisor": { "type": ["string", "null"] },
           "model": { "type": ["string", "null"] },
@@ -2029,7 +2030,7 @@
           "supervisor_version": { "type": ["string", "null"] },
           "usage": { "anyOf": [{ "$ref": "#/components/schemas/Usage" }, { "type": "null" }] }
         },
-        "required": ["id", "name", "session", "state", "waiting", "waiting_for", "exit", "instance", "supervisor", "model", "worked_model", "enqueued_at", "started_at", "ended_at", "lease_expires_at", "connected_at", "supervisor_version", "usage"]
+        "required": ["id", "name", "session", "state", "waiting", "waiting_for", "exit", "outcome_message", "instance", "supervisor", "model", "worked_model", "enqueued_at", "started_at", "ended_at", "lease_expires_at", "connected_at", "supervisor_version", "usage"]
       },
       "Exit": {
         "oneOf": [

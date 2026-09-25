@@ -12,6 +12,7 @@ CREATE TABLE delivery (
     event_record_id TEXT NOT NULL REFERENCES event (record_id),
     subject INTEGER NOT NULL,
     body TEXT NOT NULL,
+    turn_messages TEXT,
     attempted_at TEXT,
     due_at TEXT,
     delivered_at TEXT,

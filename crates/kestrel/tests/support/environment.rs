@@ -21,7 +21,13 @@ impl Environment {
 
         let directory = TempDir::new().expect("a temporary directory");
         let path = directory.path().join("environment");
-        fs::write(&path, format!("#!/bin/sh\n{shell}\n")).expect("the environment should write");
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nexport GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false\n{shell}\n"
+            ),
+        )
+        .expect("the environment should write");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
             .expect("the environment should be executable");
 

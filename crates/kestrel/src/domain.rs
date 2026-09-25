@@ -531,6 +531,7 @@ pub struct Run {
     pub state: RunState,
     pub waiting_for: Option<String>,
     pub exit: Option<Exit>,
+    pub outcome_message: Option<String>,
     pub instance: Option<String>,
     pub supervisor: Option<String>,
     /// What this Run names, or none for its Agent's or Agent Runtime's default.

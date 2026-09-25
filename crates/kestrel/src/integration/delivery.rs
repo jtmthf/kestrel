@@ -59,30 +59,37 @@ pub(crate) async fn record_turn(
 
     let body = format!("{}\n\n{}\n", said.join("\n\n"), marker(run.id, Some(turn)));
     tx.integrations()
-        .record_delivery(run, &integration, &event, Some(turn), &body)
+        .record_delivery(run, &integration, &event, Some(turn), &body, Some(said))
         .await
 }
 
-/// A Run's own ending. A successful Run whose Turns already said their responses adds nothing,
-/// so only an abnormal ending — or one where no Turn was published at all — is said (ADR-0024).
 pub(crate) async fn record_outcome(
     tx: &mut Tx<'_>,
     run: &Run,
     session: &Session,
     exit: &Exit,
+    said: Option<&str>,
 ) -> Result<()> {
-    if matches!(exit, Exit::Succeeded) && tx.integrations().has_turn_deliveries(run.id).await? {
-        return Ok(());
+    if matches!(exit, Exit::Succeeded) {
+        let responses = tx.integrations().turn_responses(run.id).await?;
+        if !responses.is_empty()
+            && said.is_none_or(|said| {
+                responses.iter().any(|messages| {
+                    messages.iter().any(|message| message == said) || messages.join("\n\n") == said
+                })
+            })
+        {
+            return Ok(());
+        }
     }
     let Some((integration, event)) = surface(tx, session).await? else {
         return Ok(());
     };
 
-    let said = tx.log().last_said(session).await?;
-    let body = body(session, run, exit, said.as_deref());
+    let body = body(session, run, exit, said);
 
     tx.integrations()
-        .record_delivery(run, &integration, &event, None, &body)
+        .record_delivery(run, &integration, &event, None, &body, None)
         .await
 }
 
@@ -241,6 +248,7 @@ mod tests {
             state: RunState::Ended,
             waiting_for: None,
             exit: None,
+            outcome_message: None,
             instance: None,
             supervisor: None,
             model: None,
