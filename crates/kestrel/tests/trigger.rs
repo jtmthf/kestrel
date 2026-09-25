@@ -630,7 +630,18 @@ async fn correlated_events_arriving_during_a_run_drain_into_one_entry_and_one_ru
         github_stub::labelled(8, 43, READY),
     ]));
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while !harness.has_pending_messages(session.id).await {
+    while {
+        let mut fed = 0;
+        for event in harness.events("acme").await {
+            fed += harness
+                .firings(event.record_id)
+                .await
+                .into_iter()
+                .filter(|firing| firing.outcome == "fed")
+                .count();
+        }
+        fed < 2
+    } {
         assert!(
             tokio::time::Instant::now() < deadline,
             "correlated events never arrived"
