@@ -87,10 +87,13 @@ impl Model {
             .clone()
     }
 
-    /// True once the Agent Runtime has had its tool call answered and come back for the rest
+    /// How often the Agent Runtime has had its tool call answered and come back for the rest
     /// of the turn, which is where it is certainly still working at one.
-    pub fn is_working_at_the_rest_of_a_turn(&self) -> bool {
-        self.asked().iter().any(has_answered_a_tool_call)
+    pub fn times_working_at_the_rest_of_a_turn(&self) -> usize {
+        self.asked()
+            .iter()
+            .filter(|asked| has_answered_a_tool_call(asked))
+            .count()
     }
 }
 

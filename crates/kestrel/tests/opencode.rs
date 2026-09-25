@@ -175,10 +175,10 @@ async fn ended(harness: &Harness, run: RunId) -> Run {
 
 /// The supervisor says how it answered a permission request only once the turn is over, so
 /// what the model has been asked for is the only sight of a turn still in flight.
-async fn working_at_a_turn(model: &Model) {
+async fn working_at_a_turn(model: &Model, times: usize) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
-    while !model.is_working_at_the_rest_of_a_turn() {
+    while model.times_working_at_the_rest_of_a_turn() < times {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the agent runtime never came back for the rest of a turn"
@@ -300,7 +300,10 @@ async fn an_agent_runtime_that_dies_mid_run_ends_the_run_with_an_exit_status() {
     let model = Model::dawdling();
     let mut driven = Driven::in_an_environment(&harness, &model).await;
 
-    working_at_a_turn(&model).await;
+    // Killed twice, because opencode can resume its session and is brought back from the first.
+    working_at_a_turn(&model, 1).await;
+    driven.kill_the_agent_runtime();
+    working_at_a_turn(&model, 2).await;
     driven.kill_the_agent_runtime();
 
     let ended = ended(&harness, driven.run.id).await;
