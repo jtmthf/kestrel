@@ -336,10 +336,16 @@ async fn a_command_on_an_open_sessions_issue_is_not_also_heard_as_a_remark() {
 #[tokio::test]
 async fn a_comment_on_a_sealed_sessions_issue_starts_nothing_and_a_command_continues_it() {
     let stub = GithubStub::start();
+    let mut before_first_command =
+        github_stub::issue_comment(9, 43, MAINTAINER, "before the first command");
+    before_first_command["created_at"] = serde_json::json!("2026-09-02T12:00:10Z");
     stub.script_answer(
         "GET",
         COMMENTS,
-        github_stub::page(&[github_stub::issue_comment(10, 43, MAINTAINER, "@kestrel")]),
+        github_stub::page(&[
+            github_stub::issue_comment(10, 43, MAINTAINER, "@kestrel"),
+            before_first_command,
+        ]),
     );
     let harness = Harness::boot().await;
     dogfooding(&harness, &stub).await;
@@ -351,10 +357,12 @@ async fn a_comment_on_a_sealed_sessions_issue_starts_nothing_and_a_command_conti
     stub.script_answer(
         "GET",
         COMMENTS,
-        github_stub::page(&[
-            github_stub::issue_comment(21, 43, MAINTAINER, "@kestrel /again"),
-            github_stub::issue_comment(20, 43, MAINTAINER, "still broken"),
-        ]),
+        github_stub::page(&[github_stub::issue_comment(
+            21,
+            43,
+            MAINTAINER,
+            "@kestrel /again",
+        )]),
     );
     let opened = sessions(&harness, 2).await;
 
@@ -370,7 +378,32 @@ async fn a_comment_on_a_sealed_sessions_issue_starts_nothing_and_a_command_conti
             .await
             .starts_with("/again ")
     );
-    assert!(said(&harness, continuation.id).await.is_empty());
+    let mut older = github_stub::issue_comment(22, 43, MAINTAINER, "still broken");
+    older["created_at"] = serde_json::json!("2026-09-02T12:00:20Z");
+    let mut newer = github_stub::issue_comment(23, 43, MAINTAINER, "now please add a test");
+    newer["created_at"] = serde_json::json!("2026-09-02T12:00:21Z");
+    stub.script_answer("GET", COMMENTS, github_stub::page(&[newer, older]));
+
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let heard = loop {
+        let heard = said(&harness, continuation.id).await;
+        if heard
+            .iter()
+            .any(|(_, message)| message == "now please add a test")
+        {
+            break heard;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the newer remark was never heard: {heard:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(
+        heard,
+        vec![(MAINTAINER.to_owned(), "now please add a test".to_owned())]
+    );
+    assert!(!harness.has_pending_messages(continuation.id).await);
 
     harness.teardown().await;
 }

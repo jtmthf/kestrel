@@ -10,6 +10,7 @@ use crate::domain::{
     RunId, Session,
 };
 use crate::integration::credential::Token;
+use crate::integration::github;
 use crate::integration::webhook::Verifier;
 use crate::keyring::Keyring;
 use crate::link::credential::Secret;
@@ -398,11 +399,19 @@ impl<'a> Integrations<'a> {
                      AND origin.integration_id = event.integration_id
                      AND origin.source = event.source
                      AND origin.subject = event.subject
-                     AND origin.time <= event.time
+                     AND (
+                         origin.time < event.time
+                         OR (origin.time = event.time AND (
+                             origin.type != ?
+                             OR CAST(substr(origin.id, 9) AS INTEGER)
+                                <= CAST(substr(event.id, 9) AS INTEGER)
+                         ))
+                     )
                )
              ORDER BY event.time, event.id
              LIMIT ?",
         )
+        .bind(r#type)
         .bind(r#type)
         .bind(i64::try_from(limit)?)
         .fetch_all(&mut *self.connection)
@@ -413,8 +422,8 @@ impl<'a> Integrations<'a> {
     }
 
     pub async fn session_for_follow_up(&mut self, event: &Event) -> Result<Option<Session>> {
-        let found = sqlx::query(
-            "SELECT session.id
+        let candidates = sqlx::query(
+            "SELECT session.id AS session_id, origin.*
              FROM session
              JOIN event AS origin ON origin.record_id = session.event_record_id
              WHERE session.organization_id = ?
@@ -422,23 +431,25 @@ impl<'a> Integrations<'a> {
                AND origin.source = ?
                AND origin.subject = ?
                AND origin.time <= ?
-             ORDER BY session.opened_at DESC, session.id DESC
-             LIMIT 1",
+             ORDER BY session.opened_at DESC, session.id DESC",
         )
         .bind(event.organization.to_string())
         .bind(event.integration.map(|integration| integration.to_string()))
         .bind(&event.occurrence.source)
         .bind(event.occurrence.subject.as_deref())
         .bind(event.occurrence.time.to_string())
-        .fetch_optional(&mut *self.connection)
+        .fetch_all(&mut *self.connection)
         .await?;
 
-        match found {
-            Some(row) => Ok(Some(
-                session::read(self.connection, row.get::<String, _>("id").parse()?).await?,
-            )),
-            None => Ok(None),
+        for row in candidates {
+            if github::at_or_after(&event.occurrence, &self::event(&row)?.occurrence) {
+                return Ok(Some(
+                    session::read(self.connection, row.get::<String, _>("session_id").parse()?)
+                        .await?,
+                ));
+            }
         }
+        Ok(None)
     }
 
     pub async fn record_follow_up(&mut self, event: &Event, session: &Session) -> Result<()> {
