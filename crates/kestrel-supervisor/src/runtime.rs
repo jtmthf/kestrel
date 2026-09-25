@@ -2,21 +2,24 @@
 //! Runtime is on the other end of one.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AuthMethod, AuthenticateRequest, ContentBlock, ContentChunk, ErrorCode, InitializeRequest,
-    NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigId, SessionConfigKind,
+    AgentCapabilities, AuthMethod, AuthenticateRequest, ContentBlock, ContentChunk, ErrorCode,
+    InitializeRequest, InitializeResponse, LoadSessionRequest, NewSessionRequest, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigId, SessionConfigKind,
     SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOptions,
     SessionConfigValueId, SessionId, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, StopReason, TextContent,
 };
-use agent_client_protocol::{AcpAgent, Client, ConnectionTo, Error, LineDirection};
+use agent_client_protocol::{
+    AcpAgent, Client, ConnectionTo, Error, LineDirection, is_incoming_transport_closed,
+};
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -138,43 +141,149 @@ impl Drop for Conversation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recovery {
+    Resume,
+    Load,
+}
+
+impl Recovery {
+    /// Resume is preferred because it goes on without replaying the conversation back.
+    fn offered(capabilities: &AgentCapabilities) -> Option<Self> {
+        if capabilities.session_capabilities.resume.is_some() {
+            return Some(Self::Resume);
+        }
+
+        capabilities.load_session.then_some(Self::Load)
+    }
+}
+
+#[derive(Default)]
+struct Continuity {
+    conversed: Option<SessionId>,
+    recovery: Option<Recovery>,
+    in_flight: Option<String>,
+    /// Cleared by an answered turn, so an agent that dies as soon as it is brought back is not
+    /// brought back forever.
+    recovered: bool,
+}
+
+impl Continuity {
+    fn opened(&mut self, conversed: SessionId, recovery: Option<Recovery>) {
+        self.conversed = Some(conversed);
+        self.recovery = recovery;
+    }
+
+    fn answered(&mut self) {
+        self.in_flight = None;
+        self.recovered = false;
+    }
+
+    /// Never `session/new` again: a conversation standing in for the lost one would be passed
+    /// off as its continuation (ADR-0024).
+    fn recovering(&mut self, lost: String) -> Result<(), String> {
+        if self.conversed.is_none() {
+            return Err(lost);
+        }
+        if self.recovery.is_none() {
+            return Err(format!(
+                "the agent's process was lost ({lost}), and its runtime cannot resume the \
+                 conversation it held"
+            ));
+        }
+        if self.recovered {
+            return Err(format!(
+                "the agent's process was lost again ({lost}), with no turn answered since it \
+                 was brought back"
+            ));
+        }
+        self.recovered = true;
+
+        Ok(())
+    }
+}
+
+enum Ended {
+    HungUp,
+    Over(String),
+    Lost(String),
+}
+
 /// Everything that can go wrong here ends the conversation, and is its last turn.
 async fn conversing(
-    Runtime {
-        command,
-        auth,
-        model,
-        stderr,
-    }: Runtime,
+    runtime: Runtime,
     provider: BTreeMap<String, String>,
     root: PathBuf,
     mut prompts: mpsc::UnboundedReceiver<String>,
     turns: mpsc::UnboundedSender<Worked>,
 ) {
     let heard = Arc::new(Mutex::new(Heard::default()));
+    let mut continuity = Continuity::default();
 
-    let spawn = match AcpAgent::from_str(&command) {
-        Ok(spawn) => spawn,
-        Err(error) => {
-            let _ = turns.send(Heard::default().worked(Some(format!(
-                "the agent runtime {command:?} could not be spawned: {error}"
-            ))));
-            return;
+    let because = loop {
+        let lost = match living(
+            &runtime,
+            &provider,
+            &root,
+            &mut prompts,
+            &turns,
+            &heard,
+            &mut continuity,
+        )
+        .await
+        {
+            Ok(Ended::HungUp) => return,
+            Ok(Ended::Over(because)) => break because,
+            Ok(Ended::Lost(because)) => because,
+            Err(error) => described(&error),
+        };
+        match continuity.recovering(lost.clone()) {
+            Ok(()) => {
+                let _ = runtime.stderr.send(format!(
+                    "kestrel: the agent's process was lost ({lost}); bringing it back into its \
+                     conversation"
+                ));
+            }
+            Err(because) => break because,
         }
     };
-    let spawn =
-        AcpAgent::new(spawn.into_config().envs(provider)).with_debug(move |line, direction| {
+    let _ = turns.send(taken(&heard).worked(Some(because)));
+}
+
+/// An `Err` is the connection itself failing, which is a loss.
+async fn living(
+    runtime: &Runtime,
+    provider: &BTreeMap<String, String>,
+    root: &Path,
+    prompts: &mut mpsc::UnboundedReceiver<String>,
+    turns: &mpsc::UnboundedSender<Worked>,
+    heard: &Arc<Mutex<Heard>>,
+    continuity: &mut Continuity,
+) -> Result<Ended, Error> {
+    let spawn = match AcpAgent::from_str(&runtime.command) {
+        Ok(spawn) => spawn,
+        Err(error) => {
+            return Ok(Ended::Over(format!(
+                "the agent runtime {:?} could not be spawned: {error}",
+                runtime.command
+            )));
+        }
+    };
+    let stderr = runtime.stderr.clone();
+    let spawn = AcpAgent::new(spawn.into_config().envs(provider.clone())).with_debug(
+        move |line, direction| {
             if direction == LineDirection::Stderr {
                 let _ = stderr.send(bounded(line));
             }
-        });
+        },
+    );
 
-    let stopped = Client
+    Client
         .builder()
         .name("kestrel")
         .on_receive_notification(
             {
-                let heard = Arc::clone(&heard);
+                let heard = Arc::clone(heard);
                 async move |notification: SessionNotification, _connection| {
                     heard
                         .lock()
@@ -187,7 +296,7 @@ async fn conversing(
         )
         .on_receive_request(
             {
-                let heard = Arc::clone(&heard);
+                let heard = Arc::clone(heard);
                 async move |request: RequestPermissionRequest, responder, _connection| {
                     let mut heard = heard
                         .lock()
@@ -209,44 +318,87 @@ async fn conversing(
             },
             agent_client_protocol::on_receive_request!(),
         )
-        .connect_with(spawn, {
-            let heard = Arc::clone(&heard);
-            let turns = turns.clone();
+        .connect_with(
+            spawn,
+            async |connection: ConnectionTo<agent_client_protocol::Agent>| {
+                let conversed = match (continuity.conversed.clone(), continuity.recovery) {
+                    (Some(conversed), Some(recovery)) => {
+                        if let Err(error) =
+                            recover(&connection, runtime, root, heard, &conversed, recovery).await
+                        {
+                            return Ok(ended(&error));
+                        }
+                        conversed
+                    }
+                    _ => match set_up(&connection, runtime, root, heard).await {
+                        Ok((conversed, recovery)) => {
+                            continuity.opened(conversed.clone(), recovery);
+                            conversed
+                        }
+                        Err(error) => return Ok(ended(&error)),
+                    },
+                };
 
-            async move |connection: ConnectionTo<agent_client_protocol::Agent>| {
-                let conversed = set_up(&connection, auth, model, root, &heard).await?;
-
-                while let Some(prompt) = prompts.recv().await {
-                    let answered = connection
+                loop {
+                    let prompt = match continuity.in_flight.clone() {
+                        Some(prompt) => prompt,
+                        None => tokio::select! {
+                            prompt = prompts.recv() => match prompt {
+                                Some(prompt) => prompt,
+                                None => return Ok(Ended::HungUp),
+                            },
+                            () = connection.incoming_closed() => {
+                                return Ok(Ended::Lost(
+                                    "it closed its connection between turns".to_owned(),
+                                ));
+                            }
+                        },
+                    };
+                    continuity.in_flight = Some(prompt.clone());
+                    let answered = match connection
                         .send_request(PromptRequest::new(
                             conversed.clone(),
                             vec![ContentBlock::Text(TextContent::new(prompt))],
                         ))
                         .block_task()
-                        .await?;
+                        .await
+                    {
+                        Ok(answered) => answered,
+                        Err(error) => return Ok(ended(&error)),
+                    };
+                    continuity.answered();
+
                     if let Some(because) = stopped_short(answered.stop_reason) {
-                        return Ok(Some(because));
+                        return Ok(Ended::Over(because));
                     }
-                    let this_turn = taken(&heard);
+                    let this_turn = taken(heard);
                     let failed = this_turn
                         .produced_nothing()
                         .then(|| "the agent answered the prompt with nothing".to_owned());
                     if turns.send(this_turn.worked(failed)).is_err() {
-                        return Ok(None);
+                        return Ok(Ended::HungUp);
                     }
                 }
+            },
+        )
+        .await
+}
 
-                Ok(None)
-            }
-        })
-        .await;
+fn ended(error: &Error) -> Ended {
+    match is_incoming_transport_closed(error) {
+        true => Ended::Lost(described(error)),
+        false => Ended::Over(error.to_string()),
+    }
+}
 
-    let because = match stopped {
-        Ok(None) => return,
-        Ok(Some(because)) => because,
-        Err(error) => error.to_string(),
-    };
-    let _ = turns.send(taken(&heard).worked(Some(because)));
+/// What the agent's end of a lost connection said, without the library's own bookkeeping
+/// around it.
+fn described(error: &Error) -> String {
+    let data = error.data.as_ref();
+    data.and_then(|data| data.get("data"))
+        .or(data)
+        .and_then(serde_json::Value::as_str)
+        .map_or_else(|| error.to_string(), str::to_owned)
 }
 
 fn taken(heard: &Mutex<Heard>) -> Heard {
@@ -257,15 +409,10 @@ fn taken(heard: &Mutex<Heard>) -> Heard {
     )
 }
 
-/// Everything kestrel asks of an agent before its first prompt, in the order ACP has a client
-/// ask it.
-async fn set_up(
+async fn initialized(
     connection: &ConnectionTo<agent_client_protocol::Agent>,
-    auth: Option<String>,
-    model: Option<String>,
-    root: PathBuf,
-    heard: &Mutex<Heard>,
-) -> Result<SessionId, Error> {
+    auth: Option<&str>,
+) -> Result<InitializeResponse, Error> {
     let initialized = connection
         .send_request(InitializeRequest::new(ProtocolVersion::V1))
         .block_task()
@@ -294,10 +441,23 @@ async fn set_up(
             )));
         }
         connection
-            .send_request(AuthenticateRequest::new(method))
+            .send_request(AuthenticateRequest::new(method.to_owned()))
             .block_task()
             .await?;
     }
+
+    Ok(initialized)
+}
+
+/// Everything kestrel asks of an agent before its first prompt, in the order ACP has a client
+/// ask it.
+async fn set_up(
+    connection: &ConnectionTo<agent_client_protocol::Agent>,
+    runtime: &Runtime,
+    root: &Path,
+    heard: &Mutex<Heard>,
+) -> Result<(SessionId, Option<Recovery>), Error> {
+    let initialized = initialized(connection, runtime.auth.as_deref()).await?;
 
     let set_up = connection
         .send_request(NewSessionRequest::new(root))
@@ -305,27 +465,97 @@ async fn set_up(
         .await
         .map_err(|error| unlogged_in(error, &initialized.auth_methods))?;
 
-    if let Some(selects) = selects_the_model(
-        set_up.config_options.as_deref().unwrap_or_default(),
-        model.as_deref(),
-    )? {
-        if let Some(id) = selects.id {
+    let on = select(
+        connection,
+        &set_up.session_id,
+        set_up.config_options.as_deref(),
+        runtime.model.as_deref(),
+    )
+    .await?;
+    heard
+        .lock()
+        .expect("what the agent said should not be poisoned")
+        .on = on;
+
+    Ok((
+        set_up.session_id,
+        Recovery::offered(&initialized.agent_capabilities),
+    ))
+}
+
+/// What the lost process said mid-turn is dropped, because that turn is prompted again, and so
+/// is whatever a loaded conversation replays; what it used and was allowed still happened.
+async fn recover(
+    connection: &ConnectionTo<agent_client_protocol::Agent>,
+    runtime: &Runtime,
+    root: &Path,
+    heard: &Mutex<Heard>,
+    conversed: &SessionId,
+    recovery: Recovery,
+) -> Result<(), Error> {
+    initialized(connection, runtime.auth.as_deref()).await?;
+    let lost = taken(heard);
+
+    let config_options = match recovery {
+        Recovery::Resume => {
             connection
-                .send_request(SetSessionConfigOptionRequest::new(
-                    set_up.session_id.clone(),
-                    id,
-                    SessionConfigValueId::new(selects.on.model.clone()),
-                ))
+                .send_request(ResumeSessionRequest::new(conversed.clone(), root))
                 .block_task()
-                .await?;
+                .await?
+                .config_options
         }
-        heard
+        Recovery::Load => {
+            connection
+                .send_request(LoadSessionRequest::new(conversed.clone(), root))
+                .block_task()
+                .await?
+                .config_options
+        }
+    };
+    {
+        let mut heard = heard
             .lock()
-            .expect("what the agent said should not be poisoned")
-            .on = Some(selects.on);
+            .expect("what the agent said should not be poisoned");
+        *heard = Heard {
+            on: lost.on,
+            usage: lost.usage,
+            allowed: lost.allowed,
+            ..Heard::default()
+        };
     }
 
-    Ok(set_up.session_id)
+    select(
+        connection,
+        conversed,
+        config_options.as_deref(),
+        runtime.model.as_deref(),
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn select(
+    connection: &ConnectionTo<agent_client_protocol::Agent>,
+    conversed: &SessionId,
+    offered: Option<&[SessionConfigOption]>,
+    model: Option<&str>,
+) -> Result<Option<On>, Error> {
+    let Some(selects) = selects_the_model(offered.unwrap_or_default(), model)? else {
+        return Ok(None);
+    };
+    if let Some(id) = selects.id {
+        connection
+            .send_request(SetSessionConfigOptionRequest::new(
+                conversed.clone(),
+                id,
+                SessionConfigValueId::new(selects.on.model.clone()),
+            ))
+            .block_task()
+            .await?;
+    }
+
+    Ok(Some(selects.on))
 }
 
 pub fn prompt(entries: &[crate::link::Entry]) -> String {
@@ -561,9 +791,9 @@ impl Heard {
 mod tests {
     use agent_client_protocol::schema::v1::{
         AuthMethodAgent, AuthMethodTerminal, AvailableCommandsUpdate, ConfigOptionUpdate,
-        CurrentModeUpdate, Plan, SessionConfigSelect, SessionConfigSelectGroup,
-        SessionConfigSelectOption, SessionModeId, ToolCall, ToolCallUpdate, ToolCallUpdateFields,
-        UsageUpdate,
+        CurrentModeUpdate, Plan, SessionCapabilities, SessionConfigSelect,
+        SessionConfigSelectGroup, SessionConfigSelectOption, SessionModeId,
+        SessionResumeCapabilities, ToolCall, ToolCallUpdate, ToolCallUpdateFields, UsageUpdate,
     };
 
     use super::*;
@@ -850,5 +1080,73 @@ mod tests {
         ] {
             assert!(stopped_short(stop).is_some(), "{stop:?}");
         }
+    }
+
+    #[test]
+    fn an_agent_that_can_both_resume_and_load_a_session_is_resumed() {
+        let capabilities = AgentCapabilities::new()
+            .load_session(true)
+            .session_capabilities(
+                SessionCapabilities::new().resume(SessionResumeCapabilities::new()),
+            );
+
+        assert_eq!(Recovery::offered(&capabilities), Some(Recovery::Resume));
+    }
+
+    #[test]
+    fn an_agent_that_can_only_load_a_session_is_loaded() {
+        let capabilities = AgentCapabilities::new().load_session(true);
+
+        assert_eq!(Recovery::offered(&capabilities), Some(Recovery::Load));
+    }
+
+    #[test]
+    fn an_agent_that_can_do_neither_cannot_be_recovered() {
+        assert_eq!(Recovery::offered(&AgentCapabilities::new()), None);
+    }
+
+    fn conversing_with(recovery: Option<Recovery>) -> Continuity {
+        Continuity {
+            conversed: Some(SessionId::new("a-conversation")),
+            recovery,
+            ..Continuity::default()
+        }
+    }
+
+    #[test]
+    fn a_process_lost_before_it_opened_a_session_has_nothing_to_recover() {
+        let mut continuity = Continuity {
+            recovery: Some(Recovery::Load),
+            ..Continuity::default()
+        };
+
+        assert_eq!(
+            continuity.recovering("it exited".to_owned()),
+            Err("it exited".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_runtime_that_cannot_resume_a_session_ends_the_conversation_saying_so() {
+        let refused = conversing_with(None)
+            .recovering("it exited".to_owned())
+            .expect_err("nothing to recover with");
+
+        assert!(
+            refused.contains("it exited") && refused.contains("cannot resume"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn an_agent_lost_again_before_it_answers_is_not_brought_back_twice() {
+        let mut continuity = conversing_with(Some(Recovery::Load));
+        assert_eq!(continuity.recovering("it exited".to_owned()), Ok(()));
+
+        let refused = continuity
+            .recovering("it exited".to_owned())
+            .expect_err("a second loss without an answer between");
+
+        assert!(refused.contains("again"), "{refused}");
     }
 }
