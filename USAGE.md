@@ -67,7 +67,10 @@ has one: `--organization`, `--workspace`, `--repository`, `--branch`, `--agent`,
 organization holds what that variable holds, replacing any credential it held under that name, so
 the key never appears on a command line.
 
-It never asks. A value nothing says and nothing can infer, such as the repository outside a clone,
+At a terminal it then says what applying the plan will declare, open and enqueue, and asks once
+whether to apply it; declining changes nothing and exits 0. That is the only question it asks, and
+`--yes` skips it. When standard input or standard error is not a terminal it never asks. A value
+nothing says and nothing can infer, such as the repository outside a clone,
 fails the command with exit code 2 and names the flag that would say it. Everything it declares,
 the session it opens, and the run it enqueues land together or not at all, and it never changes a
 declaration that exists: an agent or workspace by that name declared differently refuses the start,
