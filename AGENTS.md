@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues are tracked in GitHub (`jtmthf/kestrel`). See `docs/agents/issue-tracker.md`.
+Issues are tracked in GitHub (`openkestrel/kestrel`). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

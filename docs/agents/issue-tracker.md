@@ -1,15 +1,15 @@
 # Issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues in **jtmthf/kestrel**. Use the `gh` CLI for all operations.
+Issues and specs for this repo live as GitHub issues in **openkestrel/kestrel**. Use the `gh` CLI for all operations.
 
 ## Conventions
 
-- **Create an issue**: `gh issue create --repo jtmthf/kestrel --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --repo jtmthf/kestrel --comments`, filtering comments by `jq` and also fetching labels.
-- **List issues**: `gh issue list --repo jtmthf/kestrel --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
-- **Comment on an issue**: `gh issue comment <number> --repo jtmthf/kestrel --body "..."`
-- **Apply / remove labels**: `gh issue edit <number> --repo jtmthf/kestrel --add-label "..."` / `--remove-label "..."`
-- **Close**: `gh issue close <number> --repo jtmthf/kestrel --comment "..."`
+- **Create an issue**: `gh issue create --repo openkestrel/kestrel --title "..." --body "..."`. Use a heredoc for multi-line bodies.
+- **Read an issue**: `gh issue view <number> --repo openkestrel/kestrel --comments`, filtering comments by `jq` and also fetching labels.
+- **List issues**: `gh issue list --repo openkestrel/kestrel --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
+- **Comment on an issue**: `gh issue comment <number> --repo openkestrel/kestrel --body "..."`
+- **Apply / remove labels**: `gh issue edit <number> --repo openkestrel/kestrel --add-label "..."` / `--remove-label "..."`
+- **Close**: `gh issue close <number> --repo openkestrel/kestrel --comment "..."`
 
 ## Projects
 
@@ -44,16 +44,16 @@ created because it is closed.
 - **Assign at creation**, to the rung the work actually lands in rather than the current one — a
   `0.6` integration ticket takes `0.6` while the project sits at `0.2`.
 - **Revise during triage** when work belongs to another rung:
-  `gh issue edit <n> --repo jtmthf/kestrel --milestone "<rung>"`.
+  `gh issue edit <n> --repo openkestrel/kestrel --milestone "<rung>"`.
 - Milestones carry no due dates. The ladder is deliberately dateless.
 
 ## Difficulty
 
 A ticket an agent will pick up carries exactly one `difficulty:` label: a spec, a `to-tickets` ticket, or a wayfinder AFK ticket. External PRs and HITL-only tickets do not. The five rungs and what each means are in `triage-labels.md`; this section is how they travel and what dispatch does with them.
 
-- **Assign at creation.** Publishing a ticket is where the rung is chosen: propose one and let the user confirm it. Apply it with `gh issue edit <number> --repo jtmthf/kestrel --add-label difficulty:<rung>`. A ticket that arrives carrying none is treated as `difficulty:moderate`, and dispatch names that assumption rather than letting it pass silently.
+- **Assign at creation.** Publishing a ticket is where the rung is chosen: propose one and let the user confirm it. Apply it with `gh issue edit <number> --repo openkestrel/kestrel --add-label difficulty:<rung>`. A ticket that arrives carrying none is treated as `difficulty:moderate`, and dispatch names that assumption rather than letting it pass silently.
 - **Revise during triage.** When the work turns out harder or easier than it read, move it: `--remove-label` the old rung as you `--add-label` the new, so the ticket never carries two.
-- **Query by rung.** `gh issue list --repo jtmthf/kestrel --label difficulty:<rung>`.
+- **Query by rung.** `gh issue list --repo openkestrel/kestrel --label difficulty:<rung>`.
 
 ### Dispatching by difficulty
 
@@ -101,7 +101,7 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 
 - **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
 - **Child ticket**: an issue linked to the map as a GitHub sub-issue (`gh api` on the sub-issues endpoint). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
-- **Blocking**: GitHub's **native issue dependencies**, the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/jtmthf/kestrel/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/jtmthf/kestrel/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only, the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
+- **Blocking**: GitHub's **native issue dependencies**, the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/openkestrel/kestrel/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/openkestrel/kestrel/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only, the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
 - **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
 - **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write.
 - **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.

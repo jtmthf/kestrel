@@ -37,7 +37,7 @@ for where the project actually is.
 ## Running it
 
 ```sh
-git clone https://github.com/jtmthf/kestrel
+git clone https://github.com/openkestrel/kestrel
 cd kestrel
 docker compose up
 ```
