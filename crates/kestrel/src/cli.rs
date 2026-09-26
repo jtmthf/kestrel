@@ -101,7 +101,7 @@ pub struct Cli {
     harnesses: Vec<HarnessCommand>,
 
     /// The ACP authentication method a Harness is logged in with, for one that requires
-    /// being logged in before it will open a workspace
+    /// being logged in before it will open an ACP session
     #[arg(long, env = "KESTREL_AGENT_AUTH", global = true, value_name = "METHOD")]
     agent_auth: Option<String>,
 

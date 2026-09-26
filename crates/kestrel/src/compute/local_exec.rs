@@ -131,7 +131,7 @@ impl Provisioned for Directory {
 
         #[cfg(unix)]
         {
-            // A fresh workspace makes this process its own process-group leader, so every
+            // `setsid` makes this process its own process-group leader, so every
             // child it forks inherits the same group and `killpg` reaches all of them.
             #[allow(unsafe_code)]
             unsafe {
