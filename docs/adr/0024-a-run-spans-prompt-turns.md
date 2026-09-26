@@ -18,3 +18,6 @@ holds Unpublished Work, even if the one-day idle deadline passes. A pull request
 required result nor the Run's end condition; research, CI repair, and conflict resolution can
 finish without one. A final Outcome is recorded separately from Turn responses and is not posted
 as a duplicate success comment.
+
+A waiting instruction is editable by its author until a Turn takes it, and a person may interrupt
+the active Turn through ACP's `session/cancel` without ending the Run.

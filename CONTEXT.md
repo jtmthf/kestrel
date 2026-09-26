@@ -47,6 +47,11 @@ One prompt and response within a run's continuing agent conversation. Its respon
 to the work source when the turn finishes, without ending the run.
 _Avoid_: run, session
 
+**Interruption**:
+Ending a run's active turn at a person's request, keeping the run and its conversation. It names who
+interrupted and does not make them a participant.
+_Avoid_: cancel, abort, stop
+
 **Unpublished Work**:
 Checkout changes or commits that exist only on an instance and cannot be recovered from a remote
 repository. Its presence says nothing about whether a run succeeded or the requested work is good.
@@ -305,8 +310,10 @@ words from drifting.
   re-dispatches it.
 - A run may wait between prompt turns with its ACP conversation and instance intact. Waiting holds
   no active-work slot; the next prompt continues that same run. A turn ending does not end a run.
-- A turn in which the agent produced no message, narration or detail **fails** its run: a prompt
-  that never became work is not an answer.
+- A turn that **ended on its own** with no message, narration or detail **fails** its run: a
+  prompt that never became work is not an answer. An interrupted turn never fails its run.
+- Messages posted during a turn **wait** as session state, editable by their author, and drain into
+  **one** turn when it ends; the transcript records them only when taken.
 - A run's agent conversation is rooted in the checkout of the **first** repository its session
   fixed; the session's other repositories sit beside it.
 - What an agent runtime writes as diagnostics reaches the **operator**, never the transcript: it is

@@ -150,6 +150,8 @@ committed but unpushed, uncommitted and untracked work. It shows the requested a
 and reports ACP conversation continuity separately from the durable kestrel Session: losing runtime
 context must not look like successful resume. The queue shows FIFO order, active limits and wait
 reasons without inventing an estimated start time.
+A person can interrupt a turn without ending its run, and sees, edits or withdraws the messages
+waiting for the next one.
 Feedback is prompt, work state is clear, and the view is accessible and responsive. The same event
 stream serves the CLI and browser Client through the operator boundary
 ([ADR-0015](docs/adr/0015-the-cli-is-a-client-not-a-role.md)). Presence is best-effort, never a
