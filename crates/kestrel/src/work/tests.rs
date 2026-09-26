@@ -140,6 +140,10 @@ async fn a_waiting_codex_run_yields_its_profile_and_resumes_when_free() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        run(&store, first_run.id).await.unwrap().state,
+        RunState::Waiting
+    );
 
     let second_queued = enqueue(&store, second.id, None).await.unwrap();
     let second_run = match occupy(&store, 1, &["codex".to_owned()]).await.unwrap() {

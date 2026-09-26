@@ -717,3 +717,23 @@ impl fmt::Display for SessionState {
         f.write_str(self.as_str())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopping_succeeds_only_a_waiting_run() {
+        assert!(matches!(
+            RunState::Queued.stop_exit(),
+            Some(Exit::Failed { .. })
+        ));
+        assert!(matches!(
+            RunState::Working.stop_exit(),
+            Some(Exit::Failed { .. })
+        ));
+        assert_eq!(RunState::Waiting.stop_exit(), Some(Exit::Succeeded));
+        assert_eq!(RunState::Ended.stop_exit(), None);
+        assert_eq!(RunState::Unreachable.stop_exit(), None);
+    }
+}

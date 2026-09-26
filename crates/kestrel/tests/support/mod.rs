@@ -6,7 +6,6 @@
 // Every integration-test binary compiles all of this; a helper one of them does not reach for
 // is not dead, it belongs to a sibling.
 #![allow(dead_code)]
-use sqlx::Connection;
 
 pub mod built;
 pub mod client;
@@ -1080,18 +1079,17 @@ impl Harness {
     }
 
     pub async fn has_pending_messages(&self, id: SessionId) -> bool {
-        let database = self.data_dir().join("kestrel.db");
-        let options = sqlx::sqlite::SqliteConnectOptions::new().filename(database);
-        let mut connection = sqlx::SqliteConnection::connect_with(&options)
-            .await
-            .expect("the database should open");
-        sqlx::query_scalar::<_, bool>(
+        let pool = database(self.data_dir()).await;
+        let pending = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (SELECT 1 FROM pending_message WHERE session_id = ?)",
         )
         .bind(id.to_string())
-        .fetch_one(&mut connection)
+        .fetch_one(&pool)
         .await
-        .expect("pending messages should read")
+        .expect("pending messages should read");
+
+        pool.close().await;
+        pending
     }
 
     pub async fn enqueue_run(&self, session: SessionId) -> Run {
@@ -1255,10 +1253,7 @@ impl Harness {
     /// scheduling. `end_run` always records an exit, so nothing reachable through the store
     /// produces one.
     pub async fn end_run_without_an_exit(&self, run: &Run) {
-        let database = self.data_dir().join("kestrel.db");
-        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
-            .await
-            .expect("the database should open");
+        let pool = database(self.data_dir()).await;
 
         sqlx::query("UPDATE run SET state = 'ended', ended_at = ?, exit = NULL WHERE id = ?")
             .bind(jiff::Timestamp::now().to_string())
@@ -1427,16 +1422,20 @@ impl Harness {
     }
 }
 
+async fn database(data_dir: &Path) -> sqlx::SqlitePool {
+    let database = data_dir.join("kestrel.db");
+    sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
+        .await
+        .expect("the database should open")
+}
+
 /// An Instance outlives every Run on it and nothing here seals a Session into releasing one,
 /// so a test's Instances go with the test.
 async fn destroy_instances(data_dir: &Path, provisions: Option<&Provisions>) {
     let Some(provisions) = provisions else {
         return;
     };
-    let database = data_dir.join("kestrel.db");
-    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
-        .await
-        .expect("the database should open");
+    let pool = database(data_dir).await;
     let instances: Vec<String> =
         sqlx::query_scalar("SELECT DISTINCT instance FROM run WHERE instance IS NOT NULL")
             .fetch_all(&pool)
