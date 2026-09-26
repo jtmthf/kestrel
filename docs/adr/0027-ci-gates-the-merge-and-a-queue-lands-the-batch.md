@@ -8,7 +8,7 @@ red run stop meaning anything. So CI stops being a report and becomes **the gate
 workflow, on `pull_request` and on `merge_group`, whose green permits a merge, and a **merge queue**
 that validates a batch of pull requests against the latest `main` without a person serialising them.
 
-Three platform constraints shape the design, and each is recorded because a reader will otherwise
+Four platform constraints shape the design, and each is recorded because a reader will otherwise
 "fix" it back:
 
 - **Change detection is a job, never a path filter.** `merge_group` accepts no `paths:` filter, so the
@@ -23,6 +23,10 @@ Three platform constraints shape the design, and each is recorded because a read
   read-only cache tokens, so the trusted `push` to `main` is what keeps caches warm for everyone else.
   Letting the queue write its own caches would let pull-request code seed what `main` later restores,
   which a public repository will not accept.
+- **A queue entry is keyed to its own merge group, never to the branch.** Build concurrency builds
+  several entries at once, and a cancelled required check is not a passing one, so a concurrency
+  group shared between siblings would cancel one entry's run and dequeue the wrong pull request.
+  The workflow's group is the entry's head commit; the branch is never the key.
 
 ## Considered options
 
@@ -60,3 +64,11 @@ Three platform constraints shape the design, and each is recorded because a read
   review; and carries no bypass actor, so an administrator is bound too. Branches are deliberately
   not required to be up to date: the merge queue validates each entry against the latest `main`,
   and requiring it would restore the rebase chore the queue exists to remove.
+- The queue lives on the same ruleset as the gate: squash merges, every entry in a group required to
+  pass (`ALLGREEN`), groups of one to four pull requests, and build concurrency of four — the number
+  of worktrees kept in flight — so a batch validates in parallel rather than one at a time. An entry
+  that fails or conflicts is dropped with the reason on its pull request, and the entries behind it
+  are rebuilt without it.
+- The merge queue exists only on a branch of an **organization-owned** repository. That is why
+  kestrel is hosted under an organization rather than a personal account: a user-owned repository
+  rejects the rule outright.

@@ -23,7 +23,7 @@ takes seconds.
 ## Bring it up
 
 ```sh
-git clone https://github.com/jtmthf/kestrel
+git clone https://github.com/openkestrel/kestrel
 cd kestrel
 docker compose up -d
 ```
@@ -106,7 +106,7 @@ session's own branch is cut from. Repeat `--repository` to name more than one.
 
 ```sh
 kestrel workspace declare kestrel \
-  --repository https://github.com/jtmthf/kestrel \
+  --repository https://github.com/openkestrel/kestrel \
   --branch main
 ```
 
@@ -446,7 +446,7 @@ session                               instance                                  
 ```
 
 A reason read from git names the repository, the branch and what it found, such as
-`https://github.com/jtmthf/kestrel on kestrel/01a07846-… has 2 unpushed commits, 1 untracked file`.
+`https://github.com/openkestrel/kestrel on kestrel/01a07846-… has 2 unpushed commits, 1 untracked file`.
 To keep that work, post a message asking the agent to push it. To discard it, release the instance.
 The release destroys the instance and is recorded in the session's transcript:
 
@@ -498,7 +498,7 @@ requests outbound, or both:
 
 ```sh
 kestrel integration register github origin \
-  --repository jtmthf/kestrel \
+  --repository openkestrel/kestrel \
   --token ghp_your_token
 ```
 
@@ -544,7 +544,7 @@ kestrel event list
 
 ```
 record                                time                  source                             type                             subject
-01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77  2026-09-07T14:01:58Z  https://github.com/jtmthf/kestrel  com.github.issue_comment.created  #44
+01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77  2026-09-07T14:01:58Z  https://github.com/openkestrel/kestrel  com.github.issue_comment.created  #44
 ```
 
 `kestrel event show <record>` prints one event whole, its payload included.
@@ -560,7 +560,7 @@ triggers:
   delegated:
     filter:
       all:
-        - exact: {source: "https://github.com/jtmthf/kestrel"}
+        - exact: {source: "https://github.com/openkestrel/kestrel"}
         - exact: {type: com.github.issue_comment.created}
         - any:
             - all:
@@ -598,7 +598,7 @@ kestrel trigger apply -f .kestrel/triggers.yaml
 ```
 + delegated
     matches
-      + source = "https://github.com/jtmthf/kestrel" and type = "com.github.issue_comment.created" and ((data.user.login = "jtmthf" and data.body starts with "@kestrel") or (data.comment.user.login = "jtmthf" and data.comment.body starts with "@kestrel"))
+      + source = "https://github.com/openkestrel/kestrel" and type = "com.github.issue_comment.created" and ((data.user.login = "jtmthf" and data.body starts with "@kestrel") or (data.comment.user.login = "jtmthf" and data.comment.body starts with "@kestrel"))
     workspace
       + kestrel
     agent
@@ -670,7 +670,7 @@ For a trigger you are trying out, the same declaration goes on the command line:
 ```sh
 kestrel trigger declare ready \
   --filter '{"all": [
-    {"exact": {"source": "https://github.com/jtmthf/kestrel"}},
+    {"exact": {"source": "https://github.com/openkestrel/kestrel"}},
     {"exact": {"type": "com.github.issue_comment.created"}},
     {"exact": {"data.user.login": "jtmthf"}},
     {"prefix": {"data.body": "@kestrel ready"}}
@@ -766,7 +766,7 @@ branch from the workspace's when the repository does not have it yet. The render
 first transcript entry:
 
 ```
-1  2026-09-07T14:02:03.118Z  {"kind":"brief","trigger":"delegated","brief":"/implement https://github.com/jtmthf/kestrel/issues/44\n\nRead the issue and its comments with `gh issue view --comments` before you start."}
+1  2026-09-07T14:02:03.118Z  {"kind":"brief","trigger":"delegated","brief":"/implement https://github.com/openkestrel/kestrel/issues/44\n\nRead the issue and its comments with `gh issue view --comments` before you start."}
 2  2026-09-07T14:02:03.118Z  {"kind":"participant_joined","participant":"builder"}
 ```
 
@@ -833,8 +833,8 @@ matches      true
 elapsing     -
 agent        codex
 branch       kestrel/issue-44
-correlation  https://github.com/jtmthf/kestrel#44
-brief        /implement https://github.com/jtmthf/kestrel/issues/44
+correlation  https://github.com/openkestrel/kestrel#44
+brief        /implement https://github.com/openkestrel/kestrel/issues/44
 
              Read the issue and its comments with `gh issue view --comments` before you start.
 ```
@@ -873,7 +873,7 @@ pick which agent's credentials the run gets
 
 ```
 id                                    name       state    workspace  agent    every  cron  filter
-01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel    builder  -      -     {"all":[{"exact":{"source":"https://github.com/jtmthf/kestrel"}},…]}
+01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel    builder  -      -     {"all":[{"exact":{"source":"https://github.com/openkestrel/kestrel"}},…]}
 ```
 
 Before trusting a trigger with work, ask it about an event kestrel already recorded. A test starts
@@ -891,8 +891,8 @@ matches      true
 elapsing     -
 agent        builder
 branch       kestrel/issue-44
-correlation  https://github.com/jtmthf/kestrel#44
-brief        /implement https://github.com/jtmthf/kestrel/issues/44
+correlation  https://github.com/openkestrel/kestrel#44
+brief        /implement https://github.com/openkestrel/kestrel/issues/44
 
              Read the issue and its comments with `gh issue view --comments` before you start.
 ```
@@ -991,7 +991,7 @@ registered above declares both. Each completed turn of a run posts the agent's a
 that started it, promptly, before the run is over:
 
 ```
-Opened https://github.com/jtmthf/kestrel/pull/92 with the fix and a regression test.
+Opened https://github.com/openkestrel/kestrel/pull/92 with the fix and a regression test.
 
 <!-- kestrel run 01a07c33-2f88-7a05-bb31-58c0d9e4d7f0 turn 1 -->
 ```

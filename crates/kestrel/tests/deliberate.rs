@@ -12,7 +12,7 @@ use support::github_stub::{self, GithubStub};
 use support::{Harness, templates};
 
 const DOGFOOD: &str = include_str!("../../../.kestrel/triggers.yaml");
-const REPOSITORY: &str = "jtmthf/kestrel";
+const REPOSITORY: &str = "openkestrel/kestrel";
 const MAINTAINER: &str = "jtmthf";
 const KESTREL: &str = "kestrel";
 const EVENTS: &str = "/issues/events?";

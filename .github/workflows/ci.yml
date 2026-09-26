@@ -8,8 +8,10 @@ on:
   pull_request:
   merge_group:
 
+# A queue entry is keyed to its own merge group, never the branch, so parallel siblings cannot
+# cancel one another (ADR-0027).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.merge_group.head_sha || github.ref }}
   cancel-in-progress: true
 
 permissions:

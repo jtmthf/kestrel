@@ -7,7 +7,7 @@ triggers:
   delegated:
     filter:
       all:
-        - exact: {source: "https://github.com/jtmthf/kestrel"}
+        - exact: {source: "https://github.com/openkestrel/kestrel"}
         - exact: {type: com.github.issue_comment.created}
         - any:
             - all:

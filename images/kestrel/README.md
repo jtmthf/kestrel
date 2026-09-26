@@ -27,7 +27,7 @@ by `Cargo.lock` under `--locked`. The exception is apt, which resolves `ca-certi
 without the Dockerfile changing.
 
 CI writes the image's size and build time into the summary of the run that builds it, and publishes
-`ghcr.io/jtmthf/kestrel` from a clean checkout: `latest` and the built commit when the image's
+`ghcr.io/openkestrel/kestrel` from a clean checkout: `latest` and the built commit when the image's
 inputs change on `main`, and its version on a release tag.
 
 ## Running one by hand
@@ -40,7 +40,7 @@ docker run --rm \
   --publish 7717:7717 \
   --publish 127.0.0.1:7718:7718 \
   --env KESTREL_LINK=http://host.docker.internal:7717 \
-  ghcr.io/jtmthf/kestrel
+  ghcr.io/openkestrel/kestrel
 kestrel status
 ```
 
@@ -76,8 +76,8 @@ makes and refuses the rest
 ## Roles
 
 ```sh
-docker run --rm … ghcr.io/jtmthf/kestrel serve  # the operator boundary, the link and the webhooks
-docker run --rm … ghcr.io/jtmthf/kestrel work   # claim queued Runs and execute them
+docker run --rm … ghcr.io/openkestrel/kestrel serve  # the operator boundary, the link and the webhooks
+docker run --rm … ghcr.io/openkestrel/kestrel work   # claim queued Runs and execute them
 ```
 
 Those are the only two. Anything an operator asks for goes through the `kestrel` Client to `serve`,
