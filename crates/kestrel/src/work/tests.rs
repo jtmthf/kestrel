@@ -237,7 +237,6 @@ async fn reports_record_the_run_and_its_transcript_together() {
             Some(2),
             Report::Model {
                 model: "scripted-mini".to_owned(),
-                offered: vec!["scripted-mini".to_owned(), "scripted-max".to_owned()],
             },
         )
         .await
@@ -343,7 +342,6 @@ async fn numbered_reports_refuse_missing_and_invalid_numbers_without_effects() {
         Report::Started,
         Report::Model {
             model: "unexpected".to_owned(),
-            offered: vec!["unexpected".to_owned()],
         },
         Report::Said {
             message: "refused".to_owned(),

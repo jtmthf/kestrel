@@ -128,8 +128,8 @@ on the model it was dispatched with:
 kestrel agent model builder --model anthropic/claude-opus-4-5
 ```
 
-kestrel remembers what a runtime advertised once a run has worked, but never refuses a model
-against that record: a subscription profile added since can widen what the runtime offers.
+kestrel takes a named model at its word: a run on a model its runtime cannot honour fails when
+it starts rather than falling back to another.
 
 `--runtime` names the agent runtime: `opencode` unless you say otherwise, or `claude` or `codex`.
 The work role maps each name to the command an environment spawns and speaks ACP to, which by

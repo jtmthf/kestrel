@@ -1994,7 +1994,7 @@ async fn a_declaration_that_describes_nothing_declarable_is_refused() {
 #[tokio::test]
 async fn an_agent_names_a_model_a_newly_added_profile_could_offer() {
     let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
+    harness.declare_organization("acme").await;
     let (built, _) = declared(
         &harness,
         &agents_of("acme"),
@@ -2002,9 +2002,6 @@ async fn an_agent_names_a_model_a_newly_added_profile_could_offer() {
     )
     .await;
     assert_eq!(built, StatusCode::CREATED);
-    harness
-        .advertised(&organization, "opencode", &["opencode/gpt-5.2"])
-        .await;
 
     let (subscribed, _) = declared(
         &harness,

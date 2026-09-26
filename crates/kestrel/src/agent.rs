@@ -1,6 +1,4 @@
-//! An Agent's model is configuration rather than a rebuild: declared, changed, and taken at
-//! its word, because what a runtime offers is only learned from a Run, and a Subscription
-//! Profile added since can widen it (ADR-0007).
+//! An Agent's model is configuration rather than a rebuild (ADR-0007).
 
 use anyhow::Result;
 

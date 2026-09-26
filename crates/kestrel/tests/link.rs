@@ -326,7 +326,6 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
             "kind": "model",
             "seq": 1,
             "model": "scripted-mini",
-            "offered": ["scripted-mini", "scripted-max"],
         },
         "said": {"kind": "said", "seq": 1, "message": "what the agent said"},
         "used": {

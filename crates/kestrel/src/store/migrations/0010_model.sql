@@ -9,11 +9,3 @@ ALTER TABLE session ADD COLUMN model TEXT;
 
 ALTER TABLE run ADD COLUMN model TEXT;
 ALTER TABLE run ADD COLUMN worked_model TEXT;
-
-CREATE TABLE runtime_model (
-    organization_id TEXT NOT NULL REFERENCES organization (id),
-    runtime TEXT NOT NULL,
-    model TEXT NOT NULL,
-    advertised_at TEXT NOT NULL,
-    PRIMARY KEY (organization_id, runtime, model)
-) STRICT;

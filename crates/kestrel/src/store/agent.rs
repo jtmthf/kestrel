@@ -3,7 +3,7 @@ use jiff::Timestamp;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
-use crate::domain::{Agent, AgentId, Organization, OrganizationId};
+use crate::domain::{Agent, AgentId, Organization};
 use crate::store::Declared;
 
 pub struct Agents<'a> {
@@ -121,34 +121,6 @@ impl<'a> Agents<'a> {
             model: model.map(str::to_owned),
             ..agent.clone()
         })
-    }
-
-    /// What one Agent Runtime advertised, kept per Organization because an installation of it
-    /// offers what that organization's own configuration reaches — and never a gate, since a
-    /// Subscription Profile added since can widen what the runtime offers.
-    pub async fn record_models_advertised(
-        &mut self,
-        organization: OrganizationId,
-        runtime: &str,
-        models: &[String],
-    ) -> Result<()> {
-        for model in models {
-            sqlx::query(
-                "INSERT INTO runtime_model (organization_id, runtime, model, advertised_at)
-                 VALUES (?, ?, ?, ?)
-                 ON CONFLICT (organization_id, runtime, model)
-                 DO UPDATE SET advertised_at = excluded.advertised_at",
-            )
-            .bind(organization.to_string())
-            .bind(runtime)
-            .bind(model)
-            .bind(Timestamp::now().to_string())
-            .execute(&mut *self.connection)
-            .await
-            .with_context(|| format!("recording that {runtime} advertises {model}"))?;
-        }
-
-        Ok(())
     }
 }
 

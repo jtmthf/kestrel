@@ -539,7 +539,7 @@
         ]
       },
       "Model": {
-        "description": "Which model the Agent Runtime is on for this turn — the one the Run's Agent named, or the runtime's own default when it named none — and every model it offered to be set to. Absent for a runtime that lets no client select one at all.",
+        "description": "Which model the Agent Runtime is on for this turn — the one the Run's Agent named, or the runtime's own default when it named none. Absent for a runtime that lets no client select one at all.",
         "type": "object",
         "properties": {
           "kind": {
@@ -548,13 +548,6 @@
           "model": {
             "type": "string"
           },
-          "offered": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Every model the runtime advertised at session setup."
-          },
           "seq": {
             "$ref": "#/components/schemas/Seq"
           }
@@ -562,8 +555,7 @@
         "required": [
           "kind",
           "seq",
-          "model",
-          "offered"
+          "model"
         ]
       },
       "Said": {

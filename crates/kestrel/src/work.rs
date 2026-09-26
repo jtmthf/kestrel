@@ -35,7 +35,7 @@ pub enum Report {
     Heartbeat,
     Stderr { lines: Vec<String> },
     Started,
-    Model { model: String, offered: Vec<String> },
+    Model { model: String },
     Said { message: String },
     Used { usage: Usage },
     Answered,
@@ -270,12 +270,8 @@ pub async fn report(
             }
             info!(run = %run.id, "a supervisor reported its run started");
         }
-        Report::Model { model, offered } => {
-            let session = tx.sessions().get(run.session).await?;
+        Report::Model { model } => {
             tx.sessions().record_worked_model(run, &model).await?;
-            tx.agents()
-                .record_models_advertised(session.organization.id, &session.agent.runtime, &offered)
-                .await?;
             info!(run = %run.id, model, "a supervisor reported the model its agent is on");
         }
         Report::Said { message } => {
