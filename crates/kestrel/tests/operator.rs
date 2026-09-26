@@ -1704,8 +1704,8 @@ async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_n
     harness.complete_run(&claimed).await;
 
     let session_id = session.id.to_string();
-    let (status, refusal) = declared(&harness, &session_seal_at("acme", &session_id), &json!({}))
-        .await;
+    let (status, refusal) =
+        declared(&harness, &session_seal_at("acme", &session_id), &json!({})).await;
 
     assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
     let message = refusal["message"].as_str().expect("a message");
