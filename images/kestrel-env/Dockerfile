@@ -47,7 +47,7 @@ RUN apt-get update \
 COPY --from=opencode /usr/local/bin/opencode /usr/local/bin/opencode
 COPY --from=supervisor /src/target/release/kestrel-supervisor /usr/local/bin/kestrel-supervisor
 
-# Docker leaves HOME unset for anyone but root, and an agent runtime with nowhere to keep its
+# Docker leaves HOME unset for anyone but root, and a harness with nowhere to keep its
 # state writes to `/`.
 # A pinned image must not move off its pin, and the credential database keeps one filename
 # across release channels.

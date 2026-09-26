@@ -6,9 +6,9 @@
 //! it is logged in and how it is configured live in `support::lineage`, which is the setup; a
 //! failure in this file names the promise ACP makes that kestrel relied on and did not get.
 //!
-//! Both agents here advertise a model a client may select, so the runtime that advertises none
+//! Both agents here advertise a model a client may select, so the harness that advertises none
 //! is the scripted ACP agent's to play, in `tests/acp.rs`; what this suite has instead is each
-//! runtime naming the same model differently, and refusing the other's name for it.
+//! harness naming the same model differently, and refusing the other's name for it.
 //!
 //! It costs network and model spend, so it is gated to nightly and to a release rather than run
 //! per commit, and every test is ignored by default. What each Run spent is written to
@@ -85,7 +85,7 @@ impl Driven {
     ///
     /// The image carries no `ps` and no `pkill`, so the process is found where the kernel keeps
     /// it. Matched from the front so the shell doing the matching is not itself a hit.
-    async fn kill_the_agent_runtime(&mut self) {
+    async fn kill_the_harness(&mut self) {
         let deadline = tokio::time::Instant::now() + PATIENCE;
 
         loop {
@@ -98,7 +98,7 @@ impl Driven {
                     "sh",
                     self.lineage.process(),
                 ])
-                .expect("the agent runtime should be signalled")
+                .expect("the harness should be signalled")
                 .finish()
                 .expect("the signal should land");
 
@@ -107,7 +107,7 @@ impl Driven {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "no agent runtime ever started to be killed. {self}"
+                "no harness ever started to be killed. {self}"
             );
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -171,10 +171,7 @@ fn provisioned(
             "KESTREL_RUN_CREDENTIAL".to_owned(),
             credential.as_str().to_owned(),
         ),
-        (
-            "KESTREL_AGENT_RUNTIME".to_owned(),
-            lineage.command().to_owned(),
-        ),
+        ("KESTREL_HARNESS".to_owned(), lineage.command().to_owned()),
         ("KESTREL_AGENT_AUTH".to_owned(), auth.to_owned()),
         (
             "KESTREL_AGENT_MODEL".to_owned(),
@@ -368,7 +365,7 @@ async fn an_agent_that_dies(lineage: Lineage) {
         .diagnostics
         .wait_until_it_says("reported started")
         .await;
-    driven.kill_the_agent_runtime().await;
+    driven.kill_the_harness().await;
 
     let ended = ended(&kestrel, &driven).await;
     let Some(Exit::Failed { because }) = &ended.exit else {
@@ -384,9 +381,9 @@ async fn an_agent_that_dies(lineage: Lineage) {
     kestrel.teardown().await;
 }
 
-/// A model config option is optional and a runtime advertises the values it will honour, so an
+/// A model config option is optional and a harness advertises the values it will honour, so an
 /// Agent naming one outside them is a Run that fails rather than one that quietly runs on the
-/// runtime's default (ADR-0007).
+/// harness's default (ADR-0007).
 async fn a_model_the_agent_does_not_offer(lineage: Lineage) {
     let kestrel = Kestrel::boot_reachable_from_an_environment().await;
     let driven = Driven::started(&kestrel, lineage, &lineage.unoffered_model()).await;
@@ -394,7 +391,7 @@ async fn a_model_the_agent_does_not_offer(lineage: Lineage) {
     let ended = ended(&kestrel, &driven).await;
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
-            "the run ended {:?}, and its agent named a model the runtime does not offer. {driven}",
+            "the run ended {:?}, and its agent named a model the harness does not offer. {driven}",
             ended.exit
         );
     };

@@ -17,7 +17,7 @@ use support::Kestrel;
 use support::image::{self, Container};
 
 const PATIENCE: Duration = Duration::from_secs(300);
-/// Asked for something the prompt does not contain, so an error the runtime echoes back as
+/// Asked for something the prompt does not contain, so an error the harness echoes back as
 /// its answer is never mistaken for a model's.
 const PROMPT: &str = "Reply with the word harrier spelled backwards, in lowercase, and nothing else. Do not use any tools.";
 const ANSWER: &str = "reirrah";
@@ -27,7 +27,7 @@ const AGENT: &str = "smoke";
 const PROFILE: &str = "smoke";
 
 struct Subject {
-    runtime: &'static str,
+    harness: &'static str,
     command: &'static str,
     model: Option<String>,
     variables: Vec<(&'static str, String)>,
@@ -35,7 +35,7 @@ struct Subject {
 }
 
 /// A login file read from the host, handed back there once the smoke is over so a refresh the
-/// runtime made does not leave the person holding a token it revoked.
+/// harness made does not leave the person holding a token it revoked.
 struct Login {
     path: &'static str,
     host: PathBuf,
@@ -59,7 +59,7 @@ async fn codex_answers_on_a_chatgpt_login_before_and_after_a_restart() {
     let as_read = fs::read_to_string(&host).expect("the Codex login should read");
 
     smoke(Subject {
-        runtime: "codex",
+        harness: "codex",
         command: "codex-acp",
         model: None,
         variables: Vec::new(),
@@ -86,7 +86,7 @@ async fn opencode_answers_on_an_opencode_go_key_before_and_after_a_restart() {
     );
 
     smoke(Subject {
-        runtime: "opencode",
+        harness: "opencode",
         command: "opencode acp --print-logs",
         model: Some(model),
         variables: vec![("OPENCODE_API_KEY", key)],
@@ -104,7 +104,7 @@ async fn claude_answers_on_a_claude_plan_token_before_and_after_a_restart() {
     );
 
     smoke(Subject {
-        runtime: "claude",
+        harness: "claude",
         command: "claude-agent-acp",
         model: None,
         variables: vec![("CLAUDE_CODE_OAUTH_TOKEN", token)],
@@ -116,9 +116,9 @@ async fn claude_answers_on_a_claude_plan_token_before_and_after_a_restart() {
 /// The login is handed back and the fixture torn down before anything is asserted, so a
 /// failing smoke still leaves the person's login where it found it.
 async fn smoke(subject: Subject) {
-    let kestrel = Kestrel::dispatching_runtimes_in(
+    let kestrel = Kestrel::dispatching_harnesses_in(
         image::development(),
-        &[(subject.runtime, subject.command)],
+        &[(subject.harness, subject.command)],
     )
     .await;
     declared(&kestrel, &subject).await;
@@ -138,14 +138,14 @@ async fn smoke(subject: Subject) {
     handed_back(&kestrel, &subject).await;
     kestrel.teardown().await;
 
-    let runtime = subject.runtime;
-    let first = first.unwrap_or_else(|failure| panic!("{runtime} {failure}"));
+    let harness = subject.harness;
+    let first = first.unwrap_or_else(|failure| panic!("{harness} {failure}"));
     let second = second
         .expect("a second attempt follows a first that worked")
-        .unwrap_or_else(|failure| panic!("{runtime} {failure}"));
+        .unwrap_or_else(|failure| panic!("{harness} {failure}"));
     assert_ne!(
         first.instance, second.instance,
-        "{runtime} answered after the restart on the Instance it answered on before it"
+        "{harness} answered after the restart on the Instance it answered on before it"
     );
 }
 
@@ -158,7 +158,7 @@ async fn declared(kestrel: &Kestrel, subject: &Subject) {
         .declare_agent(
             &organization,
             AGENT,
-            subject.runtime,
+            subject.harness,
             subject.model.as_deref(),
         )
         .await;
@@ -289,7 +289,7 @@ async fn handed_back(kestrel: &Kestrel, subject: &Subject) {
         let host = &login.host;
         if fs::read_to_string(host).ok().as_ref() != Some(&login.as_read) {
             eprintln!(
-                "{} changed on the host during the smoke, so the login the runtime refreshed is not written over it",
+                "{} changed on the host during the smoke, so the login the harness refreshed is not written over it",
                 host.display()
             );
             continue;
@@ -327,7 +327,7 @@ impl fmt::Display for Failure {
             Round::AfterTheRestart => "after the restart",
         };
         let problem = match self.problem {
-            Problem::RuntimeLaunch => "a runtime launch problem",
+            Problem::HarnessLaunch => "a harness launch problem",
             Problem::Authentication => "an authentication problem",
             Problem::Entitlement => "an entitlement problem",
             Problem::Persistence => "a persistence problem: the login worked before the restart",
@@ -348,7 +348,7 @@ enum Round {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Problem {
-    RuntimeLaunch,
+    HarnessLaunch,
     Authentication,
     Entitlement,
     Persistence,
@@ -393,7 +393,7 @@ const LAUNCH: &[&str] = &[
     "exec format error",
     "acp v1",
     "exited before",
-    "names a runtime",
+    "names a harness",
 ];
 
 fn diagnosed(round: Round, answered: bool, evidence: &str) -> Problem {
@@ -408,7 +408,7 @@ fn diagnosed(round: Round, answered: bool, evidence: &str) -> Problem {
             Round::AfterTheRestart => Problem::Persistence,
         }
     } else if !answered && says(LAUNCH) {
-        Problem::RuntimeLaunch
+        Problem::HarnessLaunch
     } else {
         Problem::Unclassified
     }
@@ -426,7 +426,7 @@ fn mentions(text: &str, phrase: &str) -> bool {
 struct Secrets(Vec<String>);
 
 impl Secrets {
-    /// A login file is redacted as a whole and token by token, because a runtime that logs one
+    /// A login file is redacted as a whole and token by token, because a harness that logs one
     /// logs a token out of it rather than the file.
     fn of(values: &[&str]) -> Self {
         let mut secrets = Vec::new();
@@ -494,7 +494,7 @@ fn a_login_the_plan_does_not_cover_is_an_entitlement_problem() {
 }
 
 #[test]
-fn a_runtime_that_never_came_up_is_a_launch_problem() {
+fn a_harness_that_never_came_up_is_a_launch_problem() {
     for evidence in [
         "No such file or directory (os error 2)",
         "kestrel speaks ACP v1, and this agent answered v0",
@@ -502,7 +502,7 @@ fn a_runtime_that_never_came_up_is_a_launch_problem() {
     ] {
         assert_eq!(
             diagnosed(Round::BeforeTheRestart, false, evidence),
-            Problem::RuntimeLaunch,
+            Problem::HarnessLaunch,
             "{evidence}"
         );
     }
@@ -520,7 +520,7 @@ fn a_login_refused_only_after_the_restart_is_a_persistence_problem() {
     );
     assert_eq!(
         diagnosed(Round::AfterTheRestart, false, "No such file or directory"),
-        Problem::RuntimeLaunch
+        Problem::HarnessLaunch
     );
 }
 

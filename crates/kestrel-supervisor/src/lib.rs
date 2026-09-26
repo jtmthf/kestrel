@@ -1,8 +1,8 @@
 pub mod checkout;
+pub mod harness;
 pub mod link;
 pub mod login;
 pub mod permission;
-pub mod runtime;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Write as _};
@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
+use crate::harness::{Conversation, Harness};
 use crate::link::{Checkout, Exit, Instruction, Link, Report};
-use crate::runtime::{Conversation, Runtime};
 
 const RECONNECT_AFTER: Duration = Duration::from_millis(250);
 /// Often enough that the control plane keeps its hold on this Environment through a handful
@@ -72,8 +72,8 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
     };
     let link = Arc::new(link);
     let (stderr, written) = mpsc::unbounded_channel();
-    let runtime = Runtime {
-        command: set(variables, "KESTREL_AGENT_RUNTIME")
+    let harness = Harness {
+        command: set(variables, "KESTREL_HARNESS")
             .unwrap_or_default()
             .to_owned(),
         auth: set(variables, "KESTREL_AGENT_AUTH").map(str::to_owned),
@@ -86,9 +86,9 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
     // is alive beside the work rather than between the steps of it.
     let alive = tokio::spawn(saying_it_is_alive(Arc::clone(&link)));
     let mut relaying = tokio::spawn(relaying_stderr(Arc::clone(&link), written));
-    let status = attending(&link, &runtime, home.as_deref(), diagnostics).await;
+    let status = attending(&link, &harness, home.as_deref(), diagnostics).await;
     alive.abort();
-    drop(runtime);
+    drop(harness);
     if tokio::time::timeout(STDERR_DRAINING, &mut relaying)
         .await
         .is_err()
@@ -121,12 +121,12 @@ async fn relaying_stderr(link: Arc<Link>, mut written: mpsc::UnboundedReceiver<S
 
 async fn attending(
     link: &Link,
-    runtime: &Runtime,
+    harness: &Harness,
     home: Option<&Path>,
     diagnostics: &dyn Diagnostics,
 ) -> i32 {
     let mut attending = Attending::default();
-    let status = attended(link, runtime, home, &mut attending, diagnostics).await;
+    let status = attended(link, harness, home, &mut attending, diagnostics).await;
     if let Some(conversation) = attending.conversation.take() {
         conversation.end().await;
     }
@@ -136,13 +136,13 @@ async fn attending(
 
 async fn attended(
     link: &Link,
-    runtime: &Runtime,
+    harness: &Harness,
     home: Option<&Path>,
     attending: &mut Attending,
     diagnostics: &dyn Diagnostics,
 ) -> i32 {
     loop {
-        match attend(link, runtime, home, attending, diagnostics).await {
+        match attend(link, harness, home, attending, diagnostics).await {
             Ok(Attended::Stopped) => {
                 diagnostics.info("supervisor stopped");
                 return 0;
@@ -165,7 +165,7 @@ async fn attended(
 
 async fn attend(
     link: &Link,
-    runtime: &Runtime,
+    harness: &Harness,
     home: Option<&Path>,
     attending: &mut Attending,
     diagnostics: &dyn Diagnostics,
@@ -205,7 +205,7 @@ async fn attend(
         }
         if attending.started && attending.conversation.is_none() {
             attending.conversation =
-                conversation(link, runtime, home, attending, diagnostics).await?;
+                conversation(link, harness, home, attending, diagnostics).await?;
         }
 
         tokio::select! {
@@ -262,7 +262,7 @@ async fn attend(
                 for subject in &worked.allowed {
                     diagnostics.info(&format!("allowed once  {subject}"));
                 }
-                // Handed back after every turn, not only a finishing one: a login the runtime
+                // Handed back after every turn, not only a finishing one: a login the harness
                 // rotates mid-conversation is refreshed while the run's credential still lets it
                 // through, not saved up for a Stop that arrives once that credential is gone.
                 if let Some(written) = &attending.written {
@@ -290,20 +290,20 @@ async fn attend(
 
 async fn conversation(
     link: &Link,
-    runtime: &Runtime,
+    harness: &Harness,
     home: Option<&Path>,
     attending: &mut Attending,
     diagnostics: &dyn Diagnostics,
 ) -> Result<Option<Conversation>, link::Error> {
     let prompt = match attending.prompt.clone() {
         Some(prompt) => prompt,
-        None => runtime::prompt(&all_entries(link).await?),
+        None => harness::prompt(&all_entries(link).await?),
     };
     let credentials = link.credentials().await?;
     let provider = credentials.variables;
     if !provider.is_empty() {
         diagnostics.info(&format!(
-            "carrying {} into the agent runtime",
+            "carrying {} into the harness",
             provider.keys().cloned().collect::<Vec<_>>().join(", ")
         ));
     }
@@ -312,7 +312,7 @@ async fn conversation(
         Ok(written) => {
             attending.written = written;
             Ok(Some(Conversation::open(
-                runtime,
+                harness,
                 provider,
                 prompt,
                 checkout::root(attending.checkout.as_ref()),
@@ -329,7 +329,7 @@ async fn conversation(
     }
 }
 
-async fn turn(conversation: &mut Option<Conversation>) -> runtime::Worked {
+async fn turn(conversation: &mut Option<Conversation>) -> harness::Worked {
     match conversation {
         Some(conversation) => conversation.turn().await,
         None => std::future::pending().await,
@@ -397,7 +397,7 @@ async fn say(
 }
 
 fn everything_left_to_say(
-    worked: runtime::Worked,
+    worked: harness::Worked,
     observed: Option<Vec<link::Observed>>,
 ) -> impl Iterator<Item = Report> {
     worked

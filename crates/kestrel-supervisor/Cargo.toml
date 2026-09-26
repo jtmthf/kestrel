@@ -1,6 +1,6 @@
 [package]
 name = "kestrel-supervisor"
-description = "The supervisor that runs inside an Environment alongside the agent runtime."
+description = "The supervisor that runs inside an Environment alongside the harness."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,5 +1,5 @@
 //! Provider Credentials: held by an Organization, encrypted with the key beside the database,
-//! and reaching the Agent Runtime's own process for the length of one Run and no longer.
+//! and reaching the Harness's own process for the length of one Run and no longer.
 
 mod support;
 
@@ -66,7 +66,7 @@ async fn transcript(kestrel: &Kestrel, session: &Session) -> String {
 /// The agent playing `Confides` says what its own process was spawned with, which is the only
 /// place a credential is observable from outside kestrel.
 #[tokio::test]
-async fn a_run_carries_the_credential_its_organization_holds_into_the_agent_runtime() {
+async fn a_run_carries_the_credential_its_organization_holds_into_the_harness() {
     let kestrel = confiding().await;
     let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
 

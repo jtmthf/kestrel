@@ -19,7 +19,7 @@ impl View {
 
 pub const ORGANIZATIONS: View = View::Rows(&["id", "name", "max_live_instances"]);
 pub const PROJECTS: View = View::Rows(&["id", "name", "branch", "repositories"]);
-pub const AGENTS: View = View::Rows(&["id", "name", "runtime", "model"]);
+pub const AGENTS: View = View::Rows(&["id", "name", "harness", "model"]);
 pub const AGENT_MODEL: View = View::Value("model");
 pub const CREDENTIAL: View = View::Value("variable");
 pub const CREDENTIALS: View = View::Rows(&["variable", "set_at"]);

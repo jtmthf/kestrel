@@ -48,7 +48,7 @@ async fn a_session(kestrel: &Kestrel) -> Session {
     kestrel.open_session("acme", "kestrel", "builder").await
 }
 
-/// Stands in for the Agent Runtime: does something to the checkout, then hands over to the agent.
+/// Stands in for the Harness: does something to the checkout, then hands over to the agent.
 #[cfg(unix)]
 fn working(shell: &str) -> Environment {
     Environment::executing(&format!(
@@ -58,10 +58,10 @@ fn working(shell: &str) -> Environment {
 }
 
 #[cfg(unix)]
-async fn dispatching_to(runtime: &Environment) -> Kestrel {
+async fn dispatching_to(harness: &Environment) -> Kestrel {
     Kestrel::dispatching_to(
         supervisor::binary(),
-        &format!("\"{}\"", runtime.path().display()),
+        &format!("\"{}\"", harness.path().display()),
     )
     .await
 }
@@ -131,11 +131,11 @@ async fn stays_open(kestrel: &Kestrel, session: &Session) {
 #[cfg(unix)]
 #[tokio::test]
 async fn clean_research_work_seals_when_idle_and_its_instance_is_archived() {
-    let runtime = working(
+    let harness = working(
         "echo target/ >> kestrel/.git/info/exclude; mkdir -p kestrel/target; \
          echo built > kestrel/target/output",
     );
-    let kestrel = dispatching_to(&runtime).await;
+    let kestrel = dispatching_to(&harness).await;
     let session = a_session(&kestrel).await;
     let run = over(&kestrel, &session).await;
     assert_eq!(run.exit, Some(Exit::Succeeded));
@@ -158,11 +158,11 @@ async fn clean_research_work_seals_when_idle_and_its_instance_is_archived() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_pushed_checkout_is_archived_when_its_session_seals() {
-    let runtime = working(&format!(
+    let harness = working(&format!(
         "echo committed > kestrel/committed; git -C kestrel add committed; \
          {COMMIT} --message 'pushed work'; git -C kestrel push --quiet origin HEAD"
     ));
-    let kestrel = dispatching_to(&runtime).await;
+    let kestrel = dispatching_to(&harness).await;
     let session = a_session(&kestrel).await;
     let run = over(&kestrel, &session).await;
     assert_eq!(run.exit, Some(Exit::Succeeded));
@@ -177,12 +177,12 @@ async fn a_pushed_checkout_is_archived_when_its_session_seals() {
 #[cfg(unix)]
 #[tokio::test]
 async fn unpublished_work_outlasts_the_idle_window_held_with_a_reason_until_released() {
-    let runtime = working(&format!(
+    let harness = working(&format!(
         "echo committed > kestrel/committed; git -C kestrel add committed; \
          {COMMIT} --message 'work only this instance has'; \
          echo uncommitted >> kestrel/README.md; echo untracked > kestrel/untracked"
     ));
-    let kestrel = dispatching_to(&runtime).await;
+    let kestrel = dispatching_to(&harness).await;
     let session = a_session(&kestrel).await;
     let run = over(&kestrel, &session).await;
     assert_eq!(run.exit, Some(Exit::Succeeded));
@@ -283,8 +283,8 @@ async fn a_session_with_no_instance_has_nothing_to_release() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_waiting_run_ends_when_its_clean_session_seals_idle() {
-    let runtime = working("true");
-    let kestrel = dispatching_to(&runtime).await;
+    let harness = working("true");
+    let kestrel = dispatching_to(&harness).await;
     let session = a_session(&kestrel).await;
     let run = kestrel.enqueue_run(session.id).await;
     let waiting = kestrel.answered(run.id, 1).await;
@@ -306,8 +306,8 @@ async fn a_waiting_run_ends_when_its_clean_session_seals_idle() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_waiting_run_over_unpublished_work_outlasts_the_idle_window() {
-    let runtime = working("echo untracked > kestrel/untracked");
-    let kestrel = dispatching_to(&runtime).await;
+    let harness = working("echo untracked > kestrel/untracked");
+    let kestrel = dispatching_to(&harness).await;
     let session = a_session(&kestrel).await;
     let run = kestrel.enqueue_run(session.id).await;
     let waiting = kestrel.answered(run.id, 1).await;

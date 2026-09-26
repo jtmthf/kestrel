@@ -29,8 +29,8 @@
     "/link/runs/{run}/credentials": {
       "get": {
         "operationId": "credentials",
-        "summary": "Take what the Run's Agent Runtime is spawned with.",
-        "description": "Answered as the Environment spawns its Agent Runtime, and asked at no other moment: the control plane decrypts them here. Every Provider Credential the Run's Organization holds, and the variables and files of the Subscription Profile its Session names, which no other Session's Run is handed. Variables reach that process's environment and nothing else; files are written beneath the agent's home for the length of the Run. The credential a Run authenticates with is invalidated when the Run ends, so an Environment that outlives its Run is refused.",
+        "summary": "Take what the Run's Harness is spawned with.",
+        "description": "Answered as the Environment spawns its Harness, and asked at no other moment: the control plane decrypts them here. Every Provider Credential the Run's Organization holds, and the variables and files of the Subscription Profile its Session names, which no other Session's Run is handed. Variables reach that process's environment and nothing else; files are written beneath the agent's home for the length of the Run. The credential a Run authenticates with is invalidated when the Run ends, so an Environment that outlives its Run is refused.",
         "parameters": [
           {
             "$ref": "#/components/parameters/run"
@@ -38,7 +38,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The variables and files the Agent Runtime is spawned with.",
+            "description": "The variables and files the Harness is spawned with.",
             "content": {
               "application/json": {
                 "schema": {
@@ -63,8 +63,8 @@
       },
       "patch": {
         "operationId": "refreshCredentials",
-        "summary": "Hand back the files the Agent Runtime rewrote.",
-        "description": "A runtime refreshes its login where it keeps it, and a refresh may revoke the login it replaced, so the Environment hands back every file it was given that changed before it reports the Run finished. Only files the Session's Subscription Profile already holds are taken; any other path is ignored.",
+        "summary": "Hand back the files the Harness rewrote.",
+        "description": "A harness refreshes its login where it keeps it, and a refresh may revoke the login it replaced, so the Environment hands back every file it was given that changed before it reports the Run finished. Only files the Session's Subscription Profile already holds are taken; any other path is ignored.",
         "parameters": [
           {
             "$ref": "#/components/parameters/run"
@@ -289,7 +289,7 @@
     },
     "schemas": {
       "Credentials": {
-        "description": "What an Agent Runtime is spawned with to reach a model: the Provider Credentials of the Run's Organization and the Subscription Profile its Session names.",
+        "description": "What a Harness is spawned with to reach a model: the Provider Credentials of the Run's Organization and the Subscription Profile its Session names.",
         "type": "object",
         "properties": {
           "variables": {
@@ -504,7 +504,7 @@
         ]
       },
       "Stderr": {
-        "description": "Lines the Agent Runtime wrote to stderr, oldest first, sent as it writes them. They are the operator's diagnostics, never anything the agent said, and a line the link was not there to take in time is not sent again.",
+        "description": "Lines the Harness wrote to stderr, oldest first, sent as it writes them. They are the operator's diagnostics, never anything the agent said, and a line the link was not there to take in time is not sent again.",
         "type": "object",
         "properties": {
           "kind": {
@@ -539,7 +539,7 @@
         ]
       },
       "Model": {
-        "description": "Which model the Agent Runtime is on for this turn — the one the Run's Agent named, or the runtime's own default when it named none. Absent for a runtime that lets no client select one at all.",
+        "description": "Which model the Harness is on for this turn — the one the Run's Agent named, or the harness's own default when it named none. Absent for a harness that lets no client select one at all.",
         "type": "object",
         "properties": {
           "kind": {
@@ -559,7 +559,7 @@
         ]
       },
       "Said": {
-        "description": "What the Agent Runtime said, coalesced into one message at the end of a turn. An Agent's reasoning and its tool calls are the Run's business and are never reported.",
+        "description": "What the Harness said, coalesced into one message at the end of a turn. An Agent's reasoning and its tool calls are the Run's business and are never reported.",
         "type": "object",
         "properties": {
           "kind": {
@@ -579,7 +579,7 @@
         ]
       },
       "Used": {
-        "description": "What the Agent Runtime has spent so far. Recorded on the Run, and never in a Transcript.",
+        "description": "What the Harness has spent so far. Recorded on the Run, and never in a Transcript.",
         "type": "object",
         "properties": {
           "kind": {
@@ -781,7 +781,7 @@
           },
           "cost": {
             "type": "object",
-            "description": "What it has cost so far. Absent when the runtime does not say.",
+            "description": "What it has cost so far. Absent when the harness does not say.",
             "properties": {
               "amount": {
                 "type": "number"

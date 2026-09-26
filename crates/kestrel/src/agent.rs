@@ -9,7 +9,7 @@ pub async fn declare(
     store: &Store,
     organization: &str,
     name: &str,
-    runtime: &str,
+    harness: &str,
     model: Option<&str>,
 ) -> Result<Declared<Agent>> {
     let model = names(model);
@@ -18,7 +18,7 @@ pub async fn declare(
 
     let declared = tx
         .agents()
-        .declare(&organization, name, runtime, model)
+        .declare(&organization, name, harness, model)
         .await?;
     tx.commit().await?;
 

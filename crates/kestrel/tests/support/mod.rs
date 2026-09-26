@@ -54,7 +54,7 @@ use kestrel::log::{Cursor, Entry, Page, TranscriptEntry, Unreadable, Window};
 use kestrel::profile::{self, Contents};
 use kestrel::provider::{self, Held};
 use kestrel::role::serve::Listen;
-use kestrel::role::work::{AgentRuntime, Dispatch};
+use kestrel::role::work::{Dispatch, Harness};
 use kestrel::session;
 use kestrel::store::Store;
 use kestrel::trigger::apply::Applied;
@@ -111,19 +111,19 @@ pub struct Kestrel {
 #[derive(Clone)]
 pub struct Provisions {
     driver: Driver,
-    runtimes: Vec<AgentRuntime>,
+    harnesses: Vec<Harness>,
     max_active_runs: NonZeroUsize,
 }
 
-/// The runtime an Agent names unless a test says otherwise, spawned as whatever the test plays.
-pub const RUNTIME: &str = "opencode";
-/// The runtime whose Runs on one Subscription Profile the work role dispatches one at a time.
+/// The harness an Agent names unless a test says otherwise, spawned as whatever the test plays.
+pub const HARNESS: &str = "opencode";
+/// The harness whose Runs on one Subscription Profile the work role dispatches one at a time.
 pub const SERIALIZED: &str = "codex";
 
-fn spawning(runtimes: &[(&str, &str)]) -> Vec<AgentRuntime> {
-    runtimes
+fn spawning(harnesses: &[(&str, &str)]) -> Vec<Harness> {
+    harnesses
         .iter()
-        .map(|&(name, command)| AgentRuntime {
+        .map(|&(name, command)| Harness {
             name: name.to_owned(),
             command: command.to_owned(),
         })
@@ -168,37 +168,37 @@ impl Kestrel {
         .await
     }
 
-    pub async fn dispatching_to(supervisor: &Path, runtime: &str) -> Self {
-        Self::dispatching_up_to(supervisor, runtime, 2).await
+    pub async fn dispatching_to(supervisor: &Path, harness: &str) -> Self {
+        Self::dispatching_up_to(supervisor, harness, 2).await
     }
 
-    pub async fn dispatching_up_to(supervisor: &Path, runtime: &str, maximum: usize) -> Self {
-        Self::dispatching_runtimes_up_to(supervisor, &[(RUNTIME, runtime)], maximum).await
+    pub async fn dispatching_up_to(supervisor: &Path, harness: &str, maximum: usize) -> Self {
+        Self::dispatching_harnesses_up_to(supervisor, &[(HARNESS, harness)], maximum).await
     }
 
-    pub async fn dispatching_runtimes(supervisor: &Path, runtimes: &[(&str, &str)]) -> Self {
-        Self::dispatching_runtimes_up_to(supervisor, runtimes, 2).await
+    pub async fn dispatching_harnesses(supervisor: &Path, harnesses: &[(&str, &str)]) -> Self {
+        Self::dispatching_harnesses_up_to(supervisor, harnesses, 2).await
     }
 
-    pub async fn dispatching_runtimes_up_to(
+    pub async fn dispatching_harnesses_up_to(
         supervisor: &Path,
-        runtimes: &[(&str, &str)],
+        harnesses: &[(&str, &str)],
         maximum: usize,
     ) -> Self {
         Self::booted(Some(Provisions {
             driver: Driver::LocalExec(LocalExec::running(supervisor)),
-            runtimes: spawning(runtimes),
+            harnesses: spawning(harnesses),
             max_active_runs: NonZeroUsize::new(maximum).expect("at least one active run"),
         }))
         .await
     }
 
-    pub async fn dispatching_in(image: &str, runtime: &str) -> Self {
-        Self::dispatching_runtimes_in(image, &[(RUNTIME, runtime)]).await
+    pub async fn dispatching_in(image: &str, harness: &str) -> Self {
+        Self::dispatching_harnesses_in(image, &[(HARNESS, harness)]).await
     }
 
     /// The Docker driver, on a control plane bound where a container can dial out to it.
-    pub async fn dispatching_runtimes_in(image: &str, runtimes: &[(&str, &str)]) -> Self {
+    pub async fn dispatching_harnesses_in(image: &str, harnesses: &[(&str, &str)]) -> Self {
         let data_dir = TempDir::new().expect("a temporary data directory");
         Self::boot_against(
             data_dir,
@@ -208,7 +208,7 @@ impl Kestrel {
             },
             Some(Provisions {
                 driver: Driver::Docker(Docker::provisioning_from(image)),
-                runtimes: spawning(runtimes),
+                harnesses: spawning(harnesses),
                 max_active_runs: NonZeroUsize::new(2).unwrap(),
             }),
         )
@@ -248,7 +248,7 @@ impl Kestrel {
                 Driver::LocalExec(_) => format!("http://{address}"),
             },
             driver: provisions.driver,
-            runtimes: provisions.runtimes,
+            harnesses: provisions.harnesses,
             auth: None,
             max_active_runs: provisions.max_active_runs,
             serialized: vec![SERIALIZED.to_owned()],
@@ -346,10 +346,10 @@ impl Kestrel {
         &self,
         organization: &Organization,
         name: &str,
-        runtime: &str,
+        harness: &str,
         model: Option<&str>,
     ) -> Agent {
-        self.try_declare_agent(organization, name, runtime, model)
+        self.try_declare_agent(organization, name, harness, model)
             .await
             .expect("the agent should declare")
     }
@@ -358,10 +358,10 @@ impl Kestrel {
         &self,
         organization: &Organization,
         name: &str,
-        runtime: &str,
+        harness: &str,
         model: Option<&str>,
     ) -> anyhow::Result<Agent> {
-        agent::declare(&self.store, &organization.name, name, runtime, model)
+        agent::declare(&self.store, &organization.name, name, harness, model)
             .await
             .map(|declared| declared.record)
     }

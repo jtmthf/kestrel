@@ -83,7 +83,7 @@ carry the whole product, and they are defined precisely in [`CONTEXT.md`](CONTEX
   them round-trips, so the surface that started a session receives the result there.
 - **Session**: the durable, joinable thread of work. It owns its history and its participants,
   survives restarts, and contains many runs over its life.
-- **Run**: one execution of an agent runtime inside one environment, with a start, an end, and an
+- **Run**: one execution of a harness inside one environment, with a start, an end, and an
   exit status. At most one run is active in a session at a time, which is what makes turn-taking a
   correctness property.
 - **Environment**: the isolated compute a run executes in. Disposable, provisioned by a pluggable
@@ -132,7 +132,7 @@ deprecation policy. The day it lands is the day this project is willing to stop 
 which puts it deliberately far out; the `0.x` line carries real, recommended releases and is where
 people will live for a long time.
 
-The gate is an internal one. kestrel drives an agent runtime by speaking the Agent Client Protocol
+The gate is an internal one. kestrel drives a harness by speaking the Agent Client Protocol
 to it, so the seam is proven against two ACP agents of different lineages — one that speaks the
 protocol natively and one reached through an adapter — because that line is where resume behaviour,
 permission granularity and declared capabilities all differ, and a client with opencode-shaped
@@ -160,13 +160,13 @@ the project controls. Twelve capabilities are the content of that freeze:
    kestrel defines rather than a layer kestrel owns. An authorized operator can inspect live files
    and unpublished work, including committed but unpushed, uncommitted and untracked changes; a
    Policy-governed interactive Instance shell is audited rather than a raw compute-backend escape.
-4. **Model choice**: any provider the configured runtime supports, selectable per agent, with keys
+4. **Model choice**: any provider the configured harness supports, selectable per agent, with keys
    held per organization and reaching an environment only when a run needs them. Uniform behavior
-   across models is not promised, and neither is model availability across runtimes: "any model" is
-   scoped to whichever runtime you are running, and to whether that runtime lets a client select one
-   at all. A run whose agent names a model the runtime cannot honour fails rather than quietly
+   across models is not promised, and neither is model availability across harnesses: "any model" is
+   scoped to whichever harness you are running, and to whether that harness lets a client select one
+   at all. A run whose agent names a model the harness cannot honour fails rather than quietly
    running a different one. The Client shows the requested and effective model and explains a
-   runtime capability mismatch.
+   harness capability mismatch.
 5. **Persistent sessions**: a session survives everything except deliberate deletion, and an
    environment survives nothing. Process restart, environment teardown, and control-plane upgrade all
    preserve the session and its full transcript, and a run interrupted by a restart ends with an
@@ -174,7 +174,7 @@ the project controls. Twelve capabilities are the content of that freeze:
    without deleting it — a sealed session is readable and is never reopened, and work that would have
    continued it starts a new session that records the sealed one. Nothing expires a transcript entry
    at any age; there is no retention knob, only deletion you asked for. The Client distinguishes that
-   durable Session from the Agent Runtime's ACP conversation continuity, and shows the branch, pull
+   durable Session from the Harness's ACP conversation continuity, and shows the branch, pull
    request or merge request, and unpublished work that can be recovered or reviewed.
 6. **Pluggable storage**: SQLite for the single-machine path, Postgres for production.
 7. **Multiplayer**: one uniform promise, designed to the weakest transport kestrel supports, so every
@@ -204,17 +204,17 @@ the project controls. Twelve capabilities are the content of that freeze:
     work and administration after initial installation, with prompt feedback, accessible and
     responsive interaction. The CLI remains useful for scripting and power use.
 11. **Managed Skills**: an Organization catalog holds versioned Skills selected by Projects and
-    Agents. kestrel stages them at the Agent Runtime's filesystem convention; the runtime chooses
+    Agents. kestrel stages them at the Harness's filesystem convention; the harness chooses
     when to load one or invoke it as a command. A repository Skill of the same name wins unless
     Policy denies it, and the effective source is visible without overwriting repository files. A
     Run fails visibly if a selected Skill cannot be staged. It retains the exact managed versions
     delivered to it and records Skills the agent advertises using, without inventing a use claim
     when the agent reports none.
 12. **MCP extensibility**: kestrel supplies its own MCP tools and Organization-managed external MCP
-    servers selected by Projects and Agents. Stdio works across supported runtimes; HTTP is used
-    when the runtime advertises it, with SSE compatibility where needed. Unsupported transport
+    servers selected by Projects and Agents. Stdio works across supported harnesses; HTTP is used
+    when the harness advertises it, with SSE compatibility where needed. Unsupported transport
     fails visibly. kestrel mediates external tool calls under Policy, records them in the Audit
-    Record, and supplies per-server, per-Run credentials without ambient secrets in the runtime.
+    Record, and supplies per-server, per-Run credentials without ambient secrets in the harness.
     Event data and unreviewed repository MCP configuration cannot grant tool authority.
 
 Underneath all of it sits one pluggability rule: every pluggable layer ships at least two real

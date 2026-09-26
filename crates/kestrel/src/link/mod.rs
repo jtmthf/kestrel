@@ -218,8 +218,8 @@ async fn instructions(
 }
 
 /// The Provider Credentials of the Run's Organization and the Subscription Profile its Session
-/// names, decrypted here and held nowhere else: a supervisor asks as it spawns its Agent
-/// Runtime, and an idle one never asks.
+/// names, decrypted here and held nowhere else: a supervisor asks as it spawns its
+/// Harness, and an idle one never asks.
 async fn credentials(
     State(control_plane): State<ControlPlane>,
     Path(run): Path<String>,
@@ -266,7 +266,7 @@ async fn refresh_credentials(
         run = %run.id,
         profile = %named.name,
         files = taken.join(", "),
-        "an environment handed back the logins its runtime refreshed"
+        "an environment handed back the logins its harness refreshed"
     );
 
     Ok(StatusCode::NO_CONTENT)

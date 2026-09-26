@@ -56,7 +56,7 @@ fn a_checkout_tags_every_image_it_builds_apart_from_every_other_checkout() {
 
 #[test]
 #[ignore = "builds and runs the kestrel-env image"]
-fn the_supervisor_the_agent_runtime_and_git_are_each_invocable_in_the_image() {
+fn the_supervisor_the_harness_and_git_are_each_invocable_in_the_image() {
     let git = image::running(&["git", "--version"]);
     assert!(
         git.out.starts_with("git version"),

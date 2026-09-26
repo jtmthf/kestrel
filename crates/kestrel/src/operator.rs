@@ -182,7 +182,7 @@ struct ProjectDeclaration {
 #[derive(Deserialize)]
 struct AgentDeclaration {
     name: String,
-    runtime: String,
+    harness: String,
     model: Option<String>,
 }
 
@@ -277,7 +277,7 @@ struct ProjectRecord {
 struct AgentRecord {
     id: String,
     name: String,
-    runtime: String,
+    harness: String,
     model: Option<String>,
 }
 
@@ -391,7 +391,7 @@ impl From<Agent> for AgentRecord {
         Self {
             id: agent.id.to_string(),
             name: agent.name,
-            runtime: agent.runtime,
+            harness: agent.harness,
             model: agent.model,
         }
     }
@@ -647,9 +647,9 @@ async fn declare_agent(
 ) -> Result<Response, Refused> {
     let Json(declaration) = declaration?;
     named(&declaration.name)?;
-    if declaration.runtime.is_empty() {
+    if declaration.harness.is_empty() {
         return Err(Refused::Unprocessable(
-            "an agent names the agent runtime that drives it".to_owned(),
+            "an agent names the harness that drives it".to_owned(),
         ));
     }
 
@@ -657,7 +657,7 @@ async fn declare_agent(
         &control_plane.store,
         &organization,
         &declaration.name,
-        &declaration.runtime,
+        &declaration.harness,
         declaration.model.as_deref(),
     )
     .await?;

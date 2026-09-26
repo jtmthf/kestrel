@@ -23,7 +23,7 @@ async fn playing(script: Script) -> Kestrel {
 
 /// An Organization holding no Provider Credential, so a model is reached through a profile or
 /// not at all.
-async fn declared(kestrel: &Kestrel, runtime: &str) {
+async fn declared(kestrel: &Kestrel, harness: &str) {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(
@@ -34,7 +34,7 @@ async fn declared(kestrel: &Kestrel, runtime: &str) {
         )
         .await;
     kestrel
-        .declare_agent(&organization, "builder", runtime, None)
+        .declare_agent(&organization, "builder", harness, None)
         .await;
 }
 
@@ -140,7 +140,7 @@ async fn one_persons_profile_reaches_no_session_that_does_not_name_it() {
     kestrel.teardown().await;
 }
 
-/// The scripted agent rewrites its login the way a runtime refreshes one, and a second Session
+/// The scripted agent rewrites its login the way a harness refreshes one, and a second Session
 /// is a fresh Instance: what it finds is what the first Run handed back.
 #[tokio::test]
 async fn a_login_refreshed_on_one_instance_is_the_one_the_next_instance_starts_from() {
@@ -317,7 +317,7 @@ async fn a_run_whose_profile_holds_no_login_fails_before_an_instance() {
 
 /// Two copies of one rotating login race to refresh it, so the second Run waits for the first.
 #[tokio::test]
-async fn runs_on_a_serialized_runtime_sharing_a_profile_are_dispatched_one_at_a_time() {
+async fn runs_on_a_serialized_harness_sharing_a_profile_are_dispatched_one_at_a_time() {
     let kestrel = Kestrel::boot().await;
     declared(&kestrel, SERIALIZED).await;
     let organization = kestrel.organizations().await.remove(0);
@@ -329,13 +329,13 @@ async fn runs_on_a_serialized_runtime_sharing_a_profile_are_dispatched_one_at_a_
     let open = |agent: &'static str, profile: &'static str| {
         kestrel.open_session_with("acme", repository::NAME, agent, profile)
     };
-    let (jacks, jacks_again, alexs, jacks_other_runtime) = (
+    let (jacks, jacks_again, alexs, jacks_other_harness) = (
         open("builder", "jack").await,
         open("builder", "jack").await,
         open("builder", "alex").await,
         open("reviewer", "jack").await,
     );
-    for session in [&jacks, &jacks_again, &alexs, &jacks_other_runtime] {
+    for session in [&jacks, &jacks_again, &alexs, &jacks_other_harness] {
         kestrel.enqueue_run(session.id).await;
     }
 
@@ -345,7 +345,7 @@ async fn runs_on_a_serialized_runtime_sharing_a_profile_are_dispatched_one_at_a_
     }
 
     let sessions: Vec<_> = claimed.iter().map(|run| run.session).collect();
-    assert_eq!(sessions, [jacks.id, alexs.id, jacks_other_runtime.id]);
+    assert_eq!(sessions, [jacks.id, alexs.id, jacks_other_harness.id]);
 
     kestrel.complete_run(&claimed[0]).await;
     assert_eq!(

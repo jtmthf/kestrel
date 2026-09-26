@@ -66,7 +66,7 @@ async fn a_pipe_gets_no_header_to_strip_and_no_styling_to_strip_it_from() {
 
     let said = listed.out.join("\n");
     assert!(
-        !said.contains("name\truntime"),
+        !said.contains("name\tharness"),
         "a pipe was given a header:\n{said}"
     );
     assert!(
@@ -87,7 +87,7 @@ async fn a_terminal_gets_the_records_under_the_fields_they_fill() {
         panic!("a terminal was shown {:?}", listed.lines());
     };
     assert!(header.starts_with("id "), "{header:?}");
-    assert!(header.contains("name") && header.contains("runtime") && header.contains("model"));
+    assert!(header.contains("name") && header.contains("harness") && header.contains("model"));
     assert_eq!(
         builder.find("opencode"),
         reviewer.find("opencode"),

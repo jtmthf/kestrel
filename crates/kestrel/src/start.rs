@@ -101,14 +101,14 @@ pub async fn start(store: &Store, plan: &Plan) -> Result<Started> {
         .find(&organization.record, &plan.agent.name)
         .await?;
     if let Some(found) =
-        found.filter(|found| found.runtime != plan.agent.runtime || found.model.as_deref() != model)
+        found.filter(|found| found.harness != plan.agent.harness || found.model.as_deref() != model)
     {
         return Err(Declined::Taken(format!(
-            "the agent {} is declared on the runtime {} with the model {}, and a start changes \
+            "the agent {} is declared on the harness {} with the model {}, and a start changes \
              no declaration",
             found.name,
-            found.runtime,
-            found.model.as_deref().unwrap_or("its runtime's default")
+            found.harness,
+            found.model.as_deref().unwrap_or("its harness's default")
         ))
         .into());
     }
@@ -117,7 +117,7 @@ pub async fn start(store: &Store, plan: &Plan) -> Result<Started> {
         .declare(
             &organization.record,
             &plan.agent.name,
-            &plan.agent.runtime,
+            &plan.agent.harness,
             model,
         )
         .await?;
@@ -194,8 +194,8 @@ fn checked(plan: &Plan) -> Result<()> {
     if plan.project.branch.is_empty() {
         return unacceptable("a project names the branch its work happens on");
     }
-    if plan.agent.runtime.is_empty() {
-        return unacceptable("an agent names the agent runtime that drives it");
+    if plan.agent.harness.is_empty() {
+        return unacceptable("an agent names the harness that drives it");
     }
     if plan.brief.trim().is_empty() {
         return unacceptable("a start carries a brief");

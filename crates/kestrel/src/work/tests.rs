@@ -406,7 +406,7 @@ async fn connection_and_heartbeat_reports_ignore_numbers_and_do_not_consume_them
 }
 
 #[tokio::test]
-async fn what_a_runtime_writes_to_stderr_never_enters_the_transcript_or_takes_a_number() {
+async fn what_a_harness_writes_to_stderr_never_enters_the_transcript_or_takes_a_number() {
     let fixture = Fixture::new().await;
     let before = fixture.entries().await;
 

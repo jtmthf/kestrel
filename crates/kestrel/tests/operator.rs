@@ -110,7 +110,7 @@ project:
   branch: main
 agent:
   name: builder
-  runtime: opencode
+  harness: opencode
 trigger:
   name: ready
   filter:
@@ -143,7 +143,7 @@ fn recorded(finished: &client::Finished) -> Vec<Value> {
 /// reaches none of these assertions.
 const ORGANIZATION: &str = "id,name,max_live_instances";
 const PROJECT: &str = "id,name,repositories,branch";
-const AGENT: &str = "id,name,runtime,model";
+const AGENT: &str = "id,name,harness,model";
 const CREDENTIAL: &str = "variable";
 const INTEGRATION: &str = "id,kind,repository,carries,polled_every,webhook_path,last_event_refusal";
 const EVENT: &str = "record,integration,event";
@@ -433,7 +433,7 @@ async fn a_client_declares_and_lists_projects_and_agents() {
     );
     assert_eq!(projects[0]["branch"], "main");
     assert_eq!(agents, agent);
-    assert_eq!(agents[0]["runtime"], "opencode");
+    assert_eq!(agents[0]["harness"], "opencode");
     assert_eq!(agents[0]["model"], "claude-opus-5");
 
     let opened = kestrel.open_session("acme", "kestrel", "builder").await;
@@ -592,7 +592,7 @@ async fn a_declaration_preview_changes_nothing() {
             "repositories": ["https://github.com/jtmthf/kestrel"],
             "branch": "main",
         },
-        "agent": { "name": "builder", "runtime": "opencode" },
+        "agent": { "name": "builder", "harness": "opencode" },
         "trigger": {
             "name": "ready",
             "filter": { "exact": { "type": "com.github.issues.labeled" } },
@@ -1752,7 +1752,7 @@ async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
         "repositories": ["https://github.com/jtmthf/kestrel"],
         "branch": "main",
     });
-    let agent = json!({ "name": "builder", "runtime": "opencode", "model": "claude-opus-5" });
+    let agent = json!({ "name": "builder", "harness": "opencode", "model": "claude-opus-5" });
 
     let declarations = [
         (
@@ -1778,7 +1778,7 @@ async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
     kestrel.teardown().await;
 }
 
-fn a_start(organization: &str, agent_runtime: &str, brief: &str) -> Value {
+fn a_start(organization: &str, harness: &str, brief: &str) -> Value {
     json!({
         "organization": organization,
         "project": {
@@ -1786,7 +1786,7 @@ fn a_start(organization: &str, agent_runtime: &str, brief: &str) -> Value {
             "repositories": ["https://github.com/jtmthf/kestrel"],
             "branch": "main",
         },
-        "agent": { "name": "builder", "runtime": agent_runtime, "model": null },
+        "agent": { "name": "builder", "harness": harness, "model": null },
         "brief": brief,
     })
 }
@@ -1867,7 +1867,7 @@ async fn a_start_that_would_change_a_declaration_leaves_nothing_behind() {
         .await
     );
     assert_eq!(
-        listed(&kestrel, &agents_of("acme")).await[0]["runtime"],
+        listed(&kestrel, &agents_of("acme")).await[0]["harness"],
         "claude"
     );
 
@@ -1932,25 +1932,25 @@ async fn a_changed_agent_declaration_converges_on_the_agent_by_that_name() {
     let (_, first) = declared(
         &kestrel,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "opencode", "model": "claude-opus-5" }),
+        &json!({ "name": "builder", "harness": "opencode", "model": "claude-opus-5" }),
     )
     .await;
 
     let (_, changed) = declared(
         &kestrel,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "claude-code", "model": "claude-sonnet-5" }),
+        &json!({ "name": "builder", "harness": "claude-code", "model": "claude-sonnet-5" }),
     )
     .await;
     let (status, unnamed) = declared(
         &kestrel,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "claude-code" }),
+        &json!({ "name": "builder", "harness": "claude-code" }),
     )
     .await;
 
     assert_eq!(changed["id"], first["id"]);
-    assert_eq!(changed["runtime"], "claude-code");
+    assert_eq!(changed["harness"], "claude-code");
     assert_eq!(changed["model"], "claude-sonnet-5");
     assert_eq!(status, StatusCode::OK, "{unnamed}");
     assert_eq!(unnamed["id"], first["id"]);
@@ -1982,7 +1982,7 @@ async fn a_client_declaring_into_no_such_organization_is_refused() {
     let (status, refusal) = declared(
         &kestrel,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "opencode" }),
+        &json!({ "name": "builder", "harness": "opencode" }),
     )
     .await;
 
@@ -2062,7 +2062,7 @@ async fn an_agent_names_a_model_a_newly_added_profile_could_offer() {
     let (built, _) = declared(
         &kestrel,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "opencode" }),
+        &json!({ "name": "builder", "harness": "opencode" }),
     )
     .await;
     assert_eq!(built, StatusCode::CREATED);
@@ -2095,7 +2095,7 @@ async fn an_agent_names_a_model_a_newly_added_profile_could_offer() {
         &agents_of("acme"),
         &json!({
             "name": "reviewer",
-            "runtime": "opencode",
+            "harness": "opencode",
             "model": "opencode-go/glm-5.3"
         }),
     )

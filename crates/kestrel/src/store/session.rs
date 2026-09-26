@@ -35,10 +35,10 @@ macro_rules! profile_free {
              FROM session AS s
              JOIN session AS o
                ON o.subscription_profile_id = s.subscription_profile_id
-              AND o.runtime = s.runtime
+              AND o.harness = s.harness
              JOIN run AS a ON a.session_id = o.id
              WHERE s.id = r.session_id
-               AND s.runtime IN (SELECT value FROM json_each(?))
+               AND s.harness IN (SELECT value FROM json_each(?))
                AND a.state = ?
          )"
         )
@@ -117,7 +117,7 @@ impl<'a> Sessions<'a> {
 
             let inserted = sqlx::query(
                 "INSERT INTO session
-                     (id, name, organization_id, project_id, agent_id, runtime, model,
+                     (id, name, organization_id, project_id, agent_id, harness, model,
                       subscription_profile_id, base, branch, correlation, state, opened_at,
                       last_active_at, continues, event_record_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -128,7 +128,7 @@ impl<'a> Sessions<'a> {
             .bind(session.organization.id.to_string())
             .bind(session.project.id.to_string())
             .bind(session.agent.id.to_string())
-            .bind(&session.agent.runtime)
+            .bind(&session.agent.harness)
             .bind(&session.agent.model)
             .bind(
                 session
@@ -1362,7 +1362,7 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
 
 async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option<Session>> {
     let Some(row) = sqlx::query(
-        "SELECT name, organization_id, project_id, agent_id, runtime, model, subscription_profile_id,
+        "SELECT name, organization_id, project_id, agent_id, harness, model, subscription_profile_id,
                 base, branch, correlation, state, opened_at, last_active_at, sealed_at,
                 continues, event_record_id
          FROM session
@@ -1385,7 +1385,7 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
     .await?;
     // What the Agent was declared as when the session opened, not what it has been redeclared as.
     let agent = Agent {
-        runtime: row.get("runtime"),
+        harness: row.get("harness"),
         model: row.get("model"),
         ..agent::with_id(
             connection,

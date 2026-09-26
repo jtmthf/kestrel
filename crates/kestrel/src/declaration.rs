@@ -27,7 +27,7 @@ pub struct Project {
 #[serde(deny_unknown_fields)]
 pub struct Agent {
     pub name: String,
-    pub runtime: String,
+    pub harness: String,
     pub model: Option<String>,
 }
 
@@ -175,7 +175,7 @@ pub async fn apply(
         .declare(
             &organization,
             &document.agent.name,
-            &document.agent.runtime,
+            &document.agent.harness,
             model,
         )
         .await?
@@ -259,8 +259,8 @@ fn check_document(document: &Document) -> Result<()> {
     if document.project.branch.is_empty() {
         bail!("a project names the branch its work happens on");
     }
-    if document.agent.runtime.is_empty() {
-        bail!("an agent names the agent runtime that drives it");
+    if document.agent.harness.is_empty() {
+        bail!("an agent names the harness that drives it");
     }
     if document.trigger.project != document.project.name {
         bail!(
@@ -352,12 +352,12 @@ fn agent_change(
     compared(
         agent.map(|agent| {
             vec![
-                ("runtime", Some(agent.runtime.clone())),
+                ("harness", Some(agent.harness.clone())),
                 ("model", agent.model.clone()),
             ]
         }),
         vec![
-            ("runtime", Some(declaration.runtime.clone())),
+            ("harness", Some(declaration.harness.clone())),
             ("model", model.map(str::to_owned)),
         ],
     )

@@ -67,7 +67,7 @@ async fn declared(kestrel: &Kestrel) -> Vec<String> {
         for agent in kestrel.agents(&organization).await {
             declared.push(format!(
                 "agent {} {} {:?}",
-                agent.name, agent.runtime, agent.model
+                agent.name, agent.harness, agent.model
             ));
         }
         for held in kestrel.provider_credentials_held(&organization).await {
@@ -161,7 +161,7 @@ async fn every_inferred_value_is_explained_before_anything_is_applied() {
         ("repository", "--repository"),
         ("branch", "--branch"),
         ("agent", "--agent"),
-        ("runtime", "--runtime"),
+        ("harness", "--harness"),
         ("model", "--model"),
         ("credentials", "--credential"),
     ]) {
@@ -205,7 +205,7 @@ async fn flags_say_every_value_nothing_needs_inferring() {
             repository::EXISTING_BRANCH,
             "--agent",
             "builder",
-            "--runtime",
+            "--harness",
             "opencode",
             "--json",
             STARTED,
@@ -395,7 +395,7 @@ async fn on_a_terminal_the_plan_is_explained_and_taught_and_declining_it_changes
         "--repository",
         "--branch",
         "--agent",
-        "--runtime",
+        "--harness",
         "--model",
         "--credential",
     ] {

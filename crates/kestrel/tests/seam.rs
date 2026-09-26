@@ -132,7 +132,7 @@ async fn declaring_a_project_and_an_agent_lists_them_back() {
     assert_eq!(projects[0].branch, "main");
     assert_eq!(agents.len(), 1);
     assert_eq!(agents[0].id, agent.id);
-    assert_eq!(agents[0].runtime, "opencode");
+    assert_eq!(agents[0].harness, "opencode");
 
     kestrel.teardown().await;
 }

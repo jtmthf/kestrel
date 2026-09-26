@@ -9,8 +9,8 @@ use jiff::SignedDuration;
 use kestrel::domain::{Direction, Exit, Run, RunState, Session, SessionId};
 use kestrel::link::credential::Secret;
 use kestrel::work::{Report, Reported};
+use support::HARNESS;
 use support::Kestrel;
-use support::RUNTIME;
 use support::github_stub::{self, GithubStub, RecordedRequest, ScriptedResponse};
 use support::link_client::Link;
 
@@ -85,7 +85,7 @@ async fn a_session_from_the_issue(kestrel: &Kestrel, stub: &GithubStub) -> Sessi
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
     kestrel
-        .declare_agent(&organization, "builder", RUNTIME, None)
+        .declare_agent(&organization, "builder", HARNESS, None)
         .await;
     kestrel
         .declare_trigger(

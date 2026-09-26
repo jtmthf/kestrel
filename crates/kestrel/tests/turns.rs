@@ -9,7 +9,7 @@ use kestrel::domain::{Exit, RunId, RunState, Session, SessionId};
 use kestrel::log::{Entry, Message};
 use kestrel_scripted_agent::conversed;
 use support::scripted_agent::{self, Script};
-use support::{Kestrel, RUNTIME, repository, supervisor};
+use support::{HARNESS, Kestrel, repository, supervisor};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -26,7 +26,7 @@ async fn conversing(script: Script) -> (Kestrel, Session) {
         )
         .await;
     kestrel
-        .declare_agent(&organization, "builder", RUNTIME, None)
+        .declare_agent(&organization, "builder", HARNESS, None)
         .await;
     kestrel
         .hold_provider_credential(
@@ -324,10 +324,10 @@ async fn messages_arriving_mid_turn_are_the_next_turn_of_the_same_run() {
 }
 
 async fn sharing_one_slot() -> Kestrel {
-    let kestrel = Kestrel::dispatching_runtimes_up_to(
+    let kestrel = Kestrel::dispatching_harnesses_up_to(
         supervisor::binary(),
         &[
-            (RUNTIME, &scripted_agent::playing(Script::Converses)),
+            (HARNESS, &scripted_agent::playing(Script::Converses)),
             ("claude", &scripted_agent::playing(Script::Dawdles)),
         ],
         1,
@@ -343,7 +343,7 @@ async fn sharing_one_slot() -> Kestrel {
         )
         .await;
     kestrel
-        .declare_agent(&organization, "builder", RUNTIME, None)
+        .declare_agent(&organization, "builder", HARNESS, None)
         .await;
     kestrel
         .declare_agent(&organization, "dawdler", "claude", None)

@@ -142,7 +142,7 @@ pub struct Cost {
     pub currency: String,
 }
 
-/// What the Agent Runtime is spawned with to reach a model: variables for its environment, and
+/// What the Harness is spawned with to reach a model: variables for its environment, and
 /// a Subscription Profile's files for beneath its home.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Credentials {

@@ -24,13 +24,13 @@ async fn dogfooding(kestrel: &Kestrel, stub: &GithubStub) {
     kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    for (agent, runtime) in [
+    for (agent, harness) in [
         ("builder", "opencode"),
         ("codex", "codex"),
         ("claude", "claude"),
     ] {
         kestrel
-            .declare_agent(&organization, agent, runtime, None)
+            .declare_agent(&organization, agent, harness, None)
             .await;
     }
     let applied = kestrel.apply_triggers("acme", DOGFOOD).await;

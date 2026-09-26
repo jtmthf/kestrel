@@ -45,7 +45,7 @@ that causes it. The opencode binary is nearly all of the size.
 ## Running one by hand
 
 A Run's supervisor is the image's entrypoint, and it needs the control plane's address, the Run it is
-executing, that Run's credential, and the command to spawn as the agent runtime.
+executing, that Run's credential, and the command to spawn as the harness.
 
 ```sh
 docker run --rm \
@@ -53,14 +53,14 @@ docker run --rm \
   --env KESTREL_LINK=http://host.docker.internal:7717 \
   --env KESTREL_RUN=<run> \
   --env KESTREL_RUN_CREDENTIAL=<credential> \
-  --env KESTREL_AGENT_RUNTIME='opencode acp --print-logs' \
-  --env KESTREL_AGENT_MODEL=<model, as the runtime advertises it> \
+  --env KESTREL_HARNESS='opencode acp --print-logs' \
+  --env KESTREL_AGENT_MODEL=<model, as the harness advertises it> \
   kestrel-env
 ```
 
 `KESTREL_AGENT_MODEL` is the model the Run's Agent named, set over ACP once the session is open; an
-empty one leaves the runtime on its own default. `KESTREL_AGENT_AUTH` names the ACP authentication
-method to log the agent in with, for a runtime that will not open a session until something has.
+empty one leaves the harness on its own default. `KESTREL_AGENT_AUTH` names the ACP authentication
+method to log the agent in with, for a harness that will not open a session until something has.
 
 **No provider key is among them.** The **Provider Credentials** the Run's Organization holds arrive
 over the link as the supervisor spawns the agent, and reach that process's environment and nothing

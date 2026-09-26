@@ -234,7 +234,7 @@ async fn a_finished_runs_supervisor_is_stopped_and_its_instance_kept_for_the_ses
     kestrel.teardown().await;
 }
 
-/// Stands in for the Agent Runtime, so what it finds is what the supervisor checked out
+/// Stands in for the Harness, so what it finds is what the supervisor checked out
 /// before spawning one, and then hands over to the agent it stands in for.
 #[cfg(unix)]
 fn noting_the_checkout() -> Environment {
@@ -247,10 +247,10 @@ fn noting_the_checkout() -> Environment {
 }
 
 #[cfg(unix)]
-async fn noted(runtime: &Environment, maximum: usize) -> Kestrel {
+async fn noted(harness: &Environment, maximum: usize) -> Kestrel {
     Kestrel::dispatching_up_to(
         supervisor::binary(),
-        &format!("\"{}\"", runtime.path().display()),
+        &format!("\"{}\"", harness.path().display()),
         maximum,
     )
     .await
@@ -259,8 +259,8 @@ async fn noted(runtime: &Environment, maximum: usize) -> Kestrel {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_session_declares_a_branch_of_its_own_and_the_run_starts_on_it() {
-    let runtime = noting_the_checkout();
-    let kestrel = noted(&runtime, 1).await;
+    let harness = noting_the_checkout();
+    let kestrel = noted(&harness, 1).await;
     let session = a_session(&kestrel).await;
 
     let run = kestrel.enqueue_run(session.id).await;
@@ -270,7 +270,7 @@ async fn a_session_declares_a_branch_of_its_own_and_the_run_starts_on_it() {
     assert_eq!(session.checkout.branch, format!("kestrel/{}", session.id));
     assert_eq!(session.checkout.base, repository::BRANCH);
     assert_eq!(
-        runtime.wrote("found"),
+        harness.wrote("found"),
         format!("{} a project's repository", session.checkout.branch),
         "the agent did not start on its session's branch"
     );
@@ -281,8 +281,8 @@ async fn a_session_declares_a_branch_of_its_own_and_the_run_starts_on_it() {
 #[cfg(unix)]
 #[tokio::test]
 async fn parallel_sessions_work_on_distinct_branches() {
-    let runtime = noting_the_checkout();
-    let kestrel = noted(&runtime, 2).await;
+    let harness = noting_the_checkout();
+    let kestrel = noted(&harness, 2).await;
     let first = a_session(&kestrel).await;
     let second = kestrel.open_session("acme", "kestrel", "builder").await;
 
@@ -295,7 +295,7 @@ async fn parallel_sessions_work_on_distinct_branches() {
     }
 
     assert_ne!(first.checkout.branch, second.checkout.branch);
-    let mut found: Vec<String> = runtime.wrote("found").lines().map(str::to_owned).collect();
+    let mut found: Vec<String> = harness.wrote("found").lines().map(str::to_owned).collect();
     found.sort();
     let mut expected = vec![
         format!("{} a project's repository", first.checkout.branch),
@@ -310,8 +310,8 @@ async fn parallel_sessions_work_on_distinct_branches() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_session_on_a_branch_its_operator_named_starts_on_that_branchs_work() {
-    let runtime = noting_the_checkout();
-    let kestrel = noted(&runtime, 1).await;
+    let harness = noting_the_checkout();
+    let kestrel = noted(&harness, 1).await;
     a_session(&kestrel).await;
     let session = kestrel
         .open_session_on("acme", "kestrel", "builder", repository::EXISTING_BRANCH)
@@ -321,7 +321,7 @@ async fn a_session_on_a_branch_its_operator_named_starts_on_that_branchs_work() 
     ended(&kestrel, run.id).await;
 
     assert_eq!(
-        runtime.wrote("found"),
+        harness.wrote("found"),
         format!("{} an existing branch's work", repository::EXISTING_BRANCH)
     );
 
@@ -331,8 +331,8 @@ async fn a_session_on_a_branch_its_operator_named_starts_on_that_branchs_work() 
 #[cfg(unix)]
 #[tokio::test]
 async fn a_branch_the_remote_does_not_have_is_cut_from_the_projects() {
-    let runtime = noting_the_checkout();
-    let kestrel = noted(&runtime, 1).await;
+    let harness = noting_the_checkout();
+    let kestrel = noted(&harness, 1).await;
     a_session(&kestrel).await;
     let session = kestrel
         .open_session_on("acme", "kestrel", "builder", "kestrel/issue-43")
@@ -342,7 +342,7 @@ async fn a_branch_the_remote_does_not_have_is_cut_from_the_projects() {
     ended(&kestrel, run.id).await;
 
     assert_eq!(
-        runtime.wrote("found"),
+        harness.wrote("found"),
         "kestrel/issue-43 a project's repository"
     );
 
@@ -462,7 +462,7 @@ async fn redeclaring_the_project_does_not_move_where_an_open_sessions_agent_is_r
     kestrel.teardown().await;
 }
 
-/// Stands in for the Agent Runtime. On a checkout it has not been on before it leaves work only
+/// Stands in for the Harness. On a checkout it has not been on before it leaves work only
 /// this Instance has, and a process behind it; on one it has, it notes what it finds.
 #[cfg(unix)]
 fn leaving_work_behind() -> Environment {
@@ -506,8 +506,8 @@ async fn enqueued_once_free(kestrel: &Kestrel, session: &Session) -> Run {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_later_run_finds_the_checkout_exactly_as_the_run_before_it_left_it() {
-    let runtime = leaving_work_behind();
-    let kestrel = noted(&runtime, 1).await;
+    let harness = leaving_work_behind();
+    let kestrel = noted(&harness, 1).await;
     let session = a_session(&kestrel).await;
 
     let first = kestrel.enqueue_run(session.id).await;
@@ -519,7 +519,7 @@ async fn a_later_run_finds_the_checkout_exactly_as_the_run_before_it_left_it() {
     assert_eq!(second.exit, Some(Exit::Succeeded));
     assert_eq!(first.instance, second.instance);
     assert_eq!(
-        runtime.wrote("found"),
+        harness.wrote("found"),
         "fresh\n\
          work only this instance has\n \
          M README.md\n\
@@ -533,13 +533,13 @@ async fn a_later_run_finds_the_checkout_exactly_as_the_run_before_it_left_it() {
 #[cfg(unix)]
 #[tokio::test]
 async fn each_run_has_a_supervisor_of_its_own_and_leaves_no_process_to_the_next() {
-    let runtime = leaving_work_behind();
-    let kestrel = noted(&runtime, 1).await;
+    let harness = leaving_work_behind();
+    let kestrel = noted(&harness, 1).await;
     let session = a_session(&kestrel).await;
 
     let first = kestrel.enqueue_run(session.id).await;
     let first = ended(&kestrel, first.id).await;
-    Environment::process(&runtime.wrote("lingering"))
+    Environment::process(&harness.wrote("lingering"))
         .is_gone()
         .await;
     let first_supervisor = first.supervisor.expect("a supervisor");
@@ -557,8 +557,8 @@ async fn each_run_has_a_supervisor_of_its_own_and_leaves_no_process_to_the_next(
 #[cfg(unix)]
 #[tokio::test]
 async fn a_run_whose_instance_is_gone_fails_saying_so_and_the_next_starts_from_the_remote() {
-    let runtime = leaving_work_behind();
-    let kestrel = noted(&runtime, 1).await;
+    let harness = leaving_work_behind();
+    let kestrel = noted(&harness, 1).await;
     let session = a_session(&kestrel).await;
 
     let first = kestrel.enqueue_run(session.id).await;
@@ -588,7 +588,7 @@ async fn a_run_whose_instance_is_gone_fails_saying_so_and_the_next_starts_from_t
     assert_eq!(third.exit, Some(Exit::Succeeded));
     assert_ne!(third.instance.as_ref(), Some(&lost));
     assert_eq!(
-        runtime.wrote("found"),
+        harness.wrote("found"),
         "fresh\nfresh",
         "the run after a lost instance found work that was lost with it"
     );

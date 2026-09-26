@@ -72,8 +72,8 @@ pub struct Agent {
     pub id: AgentId,
     pub organization: OrganizationId,
     pub name: String,
-    pub runtime: String,
-    /// None when the Agent names none, and the Agent Runtime's own default is the answer.
+    pub harness: String,
+    /// None when the Agent names none, and the Harness's own default is the answer.
     pub model: Option<String>,
 }
 
@@ -534,9 +534,9 @@ pub struct Run {
     pub outcome_message: Option<String>,
     pub instance: Option<String>,
     pub supervisor: Option<String>,
-    /// What this Run names, or none for its Agent's or Agent Runtime's default.
+    /// What this Run names, or none for its Agent's or Harness's default.
     pub model: Option<String>,
-    /// What the Agent Runtime reported it worked on.
+    /// What the Harness reported it worked on.
     pub worked_model: Option<String>,
     pub enqueued_at: Timestamp,
     pub started_at: Option<Timestamp>,
@@ -553,7 +553,7 @@ pub struct Turn {
     pub answered_at: Option<Timestamp>,
 }
 
-/// What the Agent Runtime has spent on behalf of a Run, cumulative rather than per turn.
+/// What the Harness has spent on behalf of a Run, cumulative rather than per turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     pub context_used: u64,

@@ -30,19 +30,19 @@ const LEAVING: SignedDuration = SignedDuration::from_secs(3);
 pub struct Dispatch {
     pub link: String,
     pub driver: Driver,
-    pub runtimes: Vec<AgentRuntime>,
+    pub harnesses: Vec<Harness>,
     pub auth: Option<String>,
     pub max_active_runs: NonZeroUsize,
     pub serialized: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentRuntime {
+pub struct Harness {
     pub name: String,
     pub command: String,
 }
 
-impl FromStr for AgentRuntime {
+impl FromStr for Harness {
     type Err = anyhow::Error;
 
     fn from_str(given: &str) -> Result<Self> {
@@ -57,12 +57,12 @@ impl FromStr for AgentRuntime {
 }
 
 impl Dispatch {
-    fn spawns(&self, runtime: &str) -> Result<&str> {
-        self.runtimes
+    fn spawns(&self, harness: &str) -> Result<&str> {
+        self.harnesses
             .iter()
-            .find(|spawned| spawned.name == runtime)
+            .find(|spawned| spawned.name == harness)
             .map(|spawned| spawned.command.as_str())
-            .with_context(|| format!("this work role spawns no agent runtime named {runtime}"))
+            .with_context(|| format!("this work role spawns no harness named {harness}"))
     }
 
     fn logs_the_agent_in(&self) -> bool {
@@ -173,7 +173,7 @@ async fn execute(
         work::fail(store, &run, &error.to_string()).await?;
         return Ok(());
     }
-    let command = match dispatch.spawns(&session.agent.runtime) {
+    let command = match dispatch.spawns(&session.agent.harness) {
         Ok(command) => command,
         Err(error) => {
             work::fail(store, &run, &error.to_string()).await?;
@@ -202,7 +202,7 @@ async fn execute(
         ("KESTREL_LINK", dispatch.link.as_str()),
         ("KESTREL_RUN", &run.id.to_string()),
         ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-        ("KESTREL_AGENT_RUNTIME", command),
+        ("KESTREL_HARNESS", command),
         (
             "KESTREL_AGENT_AUTH",
             dispatch.auth.as_deref().unwrap_or_default(),
@@ -335,7 +335,7 @@ async fn archive(store: &Store, driver: &Driver) -> Result<()> {
     Ok(())
 }
 
-/// An Agent Runtime reaches a model with the Session's Subscription Profile, a Provider
+/// A Harness reaches a model with the Session's Subscription Profile, a Provider
 /// Credential its Organization holds, or an ACP login kestrel was configured with. A Run with
 /// none of them fails here rather than inside an Instance provisioned to find that out.
 async fn a_way_to_reach_a_model(
@@ -357,7 +357,7 @@ async fn a_way_to_reach_a_model(
     }
 
     bail!(
-        "the organization {} holds no provider credential, and this run's agent runtime was \
+        "the organization {} holds no provider credential, and this run's harness was \
          given no other way to reach a model",
         session.organization.name
     )

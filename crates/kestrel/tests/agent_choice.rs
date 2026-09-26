@@ -1,5 +1,5 @@
 //! A Session starts with its Trigger's Agent, or the one an `agent:<name>` label chooses from
-//! those the Trigger allows, and keeps that Agent's runtime and model for as long as it is open.
+//! those the Trigger allows, and keeps that Agent's harness and model for as long as it is open.
 
 mod support;
 
@@ -18,7 +18,7 @@ const REPOSITORY: &str = "jtmthf/kestrel";
 const READY: &str = "ready-for-agent";
 const BOTH: &[Direction] = &[Direction::Inbound, Direction::Outbound];
 
-/// `builder` on the default runtime, and `codex` and `claude` on runtimes of their own, each
+/// `builder` on the default harness, and `codex` and `claude` on harnesses of their own, each
 /// naming a model so a test can tell whose was recorded.
 async fn an_organization(kestrel: &Kestrel) {
     let organization = kestrel.declare_organization("acme").await;
@@ -34,7 +34,7 @@ async fn an_organization(kestrel: &Kestrel) {
         .declare_agent(
             &organization,
             "builder",
-            support::RUNTIME,
+            support::HARNESS,
             Some(DEFAULT_MODEL),
         )
         .await;
@@ -142,7 +142,7 @@ async fn with_no_agent_label_a_session_starts_with_the_triggers_agent() {
     let session = opened(&kestrel).await;
 
     assert_eq!(session.agent.name, "builder");
-    assert_eq!(session.agent.runtime, support::RUNTIME);
+    assert_eq!(session.agent.harness, support::HARNESS);
     assert_eq!(session.agent.model.as_deref(), Some(DEFAULT_MODEL));
 
     kestrel.teardown().await;
@@ -157,7 +157,7 @@ async fn one_agent_label_chooses_an_agent_the_trigger_allows() {
     let session = opened(&kestrel).await;
 
     assert_eq!(session.agent.name, "codex");
-    assert_eq!(session.agent.runtime, "codex");
+    assert_eq!(session.agent.harness, "codex");
     assert_eq!(session.agent.model.as_deref(), Some(OTHER_MODEL));
 
     kestrel.teardown().await;
@@ -229,37 +229,37 @@ async fn a_label_on_work_that_feeds_an_open_session_changes_nothing_about_its_ag
 }
 
 #[tokio::test]
-async fn an_open_sessions_agent_keeps_the_runtime_and_model_it_opened_with() {
+async fn an_open_sessions_agent_keeps_the_harness_and_model_it_opened_with() {
     let kestrel = Kestrel::boot().await;
     an_organization(&kestrel).await;
     let session = kestrel.open_session("acme", "kestrel", "codex").await;
     let organization = &session.organization;
 
     kestrel
-        .declare_agent(organization, "codex", support::RUNTIME, None)
+        .declare_agent(organization, "codex", support::HARNESS, None)
         .await;
     kestrel
         .set_agent_model(organization, "codex", Some(DEFAULT_MODEL))
         .await;
 
     let shown = kestrel.show_session(session.id).await;
-    assert_eq!(shown.agent.runtime, "codex");
+    assert_eq!(shown.agent.harness, "codex");
     assert_eq!(shown.agent.model.as_deref(), Some(OTHER_MODEL));
     let later = kestrel.open_session("acme", "kestrel", "codex").await;
-    assert_eq!(later.agent.runtime, support::RUNTIME);
+    assert_eq!(later.agent.harness, support::HARNESS);
     assert_eq!(later.agent.model.as_deref(), Some(DEFAULT_MODEL));
 
     kestrel.teardown().await;
 }
 
-/// The default runtime dies, so only the runtime the label chose can end the Run well, and only
+/// The default harness dies, so only the harness the label chose can end the Run well, and only
 /// on the model the chosen Agent named.
 #[tokio::test]
-async fn the_work_role_runs_the_runtime_and_model_a_label_chose() {
-    let kestrel = Kestrel::dispatching_runtimes(
+async fn the_work_role_runs_the_harness_and_model_a_label_chose() {
+    let kestrel = Kestrel::dispatching_harnesses(
         supervisor::binary(),
         &[
-            (support::RUNTIME, &scripted_agent::playing(Script::Dies)),
+            (support::HARNESS, &scripted_agent::playing(Script::Dies)),
             ("codex", &scripted_agent::playing(Script::Speaks)),
         ],
     )
@@ -282,7 +282,7 @@ async fn the_work_role_runs_the_runtime_and_model_a_label_chose() {
 }
 
 #[tokio::test]
-async fn a_runtime_the_work_role_cannot_spawn_fails_the_run_and_says_which() {
+async fn a_harness_the_work_role_cannot_spawn_fails_the_run_and_says_which() {
     let kestrel = Kestrel::dispatching(supervisor::binary()).await;
     an_organization(&kestrel).await;
     let session = kestrel.open_session("acme", "kestrel", "claude").await;
@@ -293,7 +293,7 @@ async fn a_runtime_the_work_role_cannot_spawn_fails_the_run_and_says_which() {
     assert_eq!(
         run.exit,
         Some(Exit::Failed {
-            because: "this work role spawns no agent runtime named claude".to_owned()
+            because: "this work role spawns no harness named claude".to_owned()
         })
     );
 

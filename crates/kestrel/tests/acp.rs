@@ -1,4 +1,4 @@
-//! The supervisor driving an Agent Runtime over ACP (ADR-0007), against the scripted ACP agent
+//! The supervisor driving a Harness over ACP (ADR-0007), against the scripted ACP agent
 //! playing a canned sequence over real stdio JSON-RPC.
 
 mod support;
@@ -14,9 +14,9 @@ use support::scripted_agent::{self, Script};
 use support::supervisor::{self, Supervisor};
 
 const PATIENCE: Duration = Duration::from_secs(30);
-/// The Agent Runtime the fixture actually drives, so what a Run sees it advertise is recorded
+/// The Harness the fixture actually drives, so what a Run sees it advertise is recorded
 /// against the name an Agent declared here names.
-use support::RUNTIME;
+use support::HARNESS;
 
 async fn a_session(kestrel: &Kestrel) -> Session {
     a_session_naming(kestrel, Some(OTHER_MODEL)).await
@@ -33,7 +33,7 @@ async fn a_session_naming(kestrel: &Kestrel, model: Option<&str>) -> Session {
         )
         .await;
     kestrel
-        .declare_agent(&organization, "builder", RUNTIME, model)
+        .declare_agent(&organization, "builder", HARNESS, model)
         .await;
 
     kestrel
@@ -382,10 +382,10 @@ async fn a_run_without_a_model_uses_its_agents_model() {
     kestrel.teardown().await;
 }
 
-/// The runtime's default is the honest answer for a Run that names no model, and a Run that
+/// The harness's default is the honest answer for a Run that names no model, and a Run that
 /// could not say which model that was would leave an audit record that says nothing (ADR-0007).
 #[tokio::test]
-async fn a_run_and_its_agent_that_name_no_model_use_the_runtimes_default() {
+async fn a_run_and_its_agent_that_name_no_model_use_the_harness_default() {
     let (kestrel, _, run) = worked_naming(Script::Speaks, None).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded));
@@ -395,7 +395,7 @@ async fn a_run_and_its_agent_that_name_no_model_use_the_runtimes_default() {
 }
 
 #[tokio::test]
-async fn a_run_that_names_no_model_skips_selection_when_its_runtime_offers_none() {
+async fn a_run_that_names_no_model_skips_selection_when_its_harness_offers_none() {
     let (kestrel, _, run) = worked_naming(Script::Decides, None).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded));
@@ -470,7 +470,7 @@ async fn changing_an_agents_model_leaves_a_run_already_in_flight_on_the_one_it_s
     kestrel.teardown().await;
 }
 
-/// Config options are optional and every agent ships a default, so a runtime may let no client
+/// Config options are optional and every agent ships a default, so a harness may let no client
 /// choose a model at all. Running one on something other than what its Run named would leave
 /// an audit record that lies, which is the worst of the three available outcomes (ADR-0007).
 #[tokio::test]
@@ -490,7 +490,7 @@ async fn an_agent_that_lets_no_client_choose_a_model_fails_a_run_that_named_one(
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
-            "the run ended {:?}, and its runtime offers no model to select",
+            "the run ended {:?}, and its harness offers no model to select",
             run.exit
         );
     };
@@ -508,7 +508,7 @@ async fn a_model_the_agent_does_not_offer_fails_the_run_rather_than_falling_back
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
-            "the run ended {:?}, and its run named a model the runtime does not offer",
+            "the run ended {:?}, and its run named a model the harness does not offer",
             run.exit
         );
     };

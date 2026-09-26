@@ -29,7 +29,7 @@ pub enum Script {
     Refuses,
     /// Says which Provider Credentials reached its own process, and nothing else.
     Confides,
-    /// Says the login it found beneath its home, and rewrites it there as a runtime refreshing
+    /// Says the login it found beneath its home, and rewrites it there as a harness refreshing
     /// one does.
     Refreshes,
     /// Says whether both ends of a long earlier context reached its prompt.
@@ -59,7 +59,7 @@ pub enum Script {
     /// Says the directory its session was opened against, and nothing else.
     Locates,
     /// Ends the turn without a message, a thought, a plan or a tool call, having sent only the
-    /// bookkeeping a runtime sends when its agent says nothing.
+    /// bookkeeping a harness sends when its agent says nothing.
     Silent,
     /// Calls a tool and ends the turn, without saying anything.
     Works,

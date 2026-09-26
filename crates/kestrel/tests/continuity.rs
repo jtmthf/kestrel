@@ -1,4 +1,4 @@
-//! A Run whose agent process is lost goes on only where the runtime can load the same
+//! A Run whose agent process is lost goes on only where the harness can load the same
 //! conversation back; otherwise it fails where it can be seen, and its Session and checkout wait
 //! for the next Run (ADR-0024).
 
@@ -26,7 +26,7 @@ async fn a_session(kestrel: &Kestrel) -> Session {
         )
         .await;
     kestrel
-        .declare_agent(&organization, "builder", support::RUNTIME, None)
+        .declare_agent(&organization, "builder", support::HARNESS, None)
         .await;
     kestrel
         .hold_provider_credential(
@@ -91,7 +91,7 @@ async fn an_agent_that_can_load_its_session_is_brought_back_into_the_same_conver
     kestrel.teardown().await;
 }
 
-/// Stands in for the Agent Runtime: leaves a line in the checkout each time it starts, then
+/// Stands in for the Harness: leaves a line in the checkout each time it starts, then
 /// hands over to an agent that exits between turns and cannot load its session back.
 #[cfg(unix)]
 fn vanishing() -> Environment {
@@ -105,10 +105,10 @@ fn vanishing() -> Environment {
 #[cfg(unix)]
 #[tokio::test]
 async fn an_agent_lost_while_waiting_fails_the_run_and_the_next_run_takes_up_its_checkout() {
-    let runtime = vanishing();
+    let harness = vanishing();
     let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
-        &format!("\"{}\"", runtime.path().display()),
+        &format!("\"{}\"", harness.path().display()),
     )
     .await;
     let session = a_session(&kestrel).await;

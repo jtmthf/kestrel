@@ -51,7 +51,7 @@ impl Supervisor {
         script: scripted_agent::Script,
         model: &str,
     ) -> Self {
-        let runtime = scripted_agent::playing(script);
+        let harness = scripted_agent::playing(script);
         let mut instance = driver()
             .provision(run)
             .expect("the instance should provision");
@@ -60,7 +60,7 @@ impl Supervisor {
                 ("KESTREL_LINK", link),
                 ("KESTREL_RUN", &run.to_string()),
                 ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-                ("KESTREL_AGENT_RUNTIME", &runtime),
+                ("KESTREL_HARNESS", &harness),
                 ("KESTREL_AGENT_MODEL", model),
             ])
             .expect("the supervisor should spawn");

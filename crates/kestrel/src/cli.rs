@@ -8,7 +8,7 @@ use directories::ProjectDirs;
 
 use crate::compute::{Docker, Driver, LocalExec};
 use crate::role::serve::Listen;
-use crate::role::work::{AgentRuntime, Dispatch};
+use crate::role::work::{Dispatch, Harness};
 
 const SUPERVISOR: &str = "kestrel-supervisor";
 const IMAGE: &str = "kestrel-env:latest";
@@ -88,19 +88,19 @@ pub struct Cli {
     #[arg(long, env = "KESTREL_SUPERVISOR", global = true, value_name = "PATH")]
     supervisor: Option<PathBuf>,
 
-    /// The command a supervisor spawns for each Agent Runtime an Agent may name, as
+    /// The command a supervisor spawns for each Harness an Agent may name, as
     /// NAME=COMMAND; repeat, or separate with commas, for many
     #[arg(
-        long = "agent-runtime",
-        env = "KESTREL_AGENT_RUNTIME",
+        long = "harness",
+        env = "KESTREL_HARNESS",
         global = true,
         value_name = "NAME=COMMAND",
         value_delimiter = ',',
         default_value = "opencode=opencode acp --print-logs,claude=claude-agent-acp,codex=codex-acp"
     )]
-    agent_runtimes: Vec<AgentRuntime>,
+    harnesses: Vec<Harness>,
 
-    /// The ACP authentication method an Agent Runtime is logged in with, for one that requires
+    /// The ACP authentication method a Harness is logged in with, for one that requires
     /// being logged in before it will open a session
     #[arg(long, env = "KESTREL_AGENT_AUTH", global = true, value_name = "METHOD")]
     agent_auth: Option<String>,
@@ -139,17 +139,17 @@ pub struct Cli {
     )]
     max_active_runs: NonZeroUsize,
 
-    /// An Agent Runtime whose Runs on one Subscription Profile are dispatched one at a time,
+    /// A Harness whose Runs on one Subscription Profile are dispatched one at a time,
     /// because the login they share rotates as it refreshes; repeat, or separate with commas
     #[arg(
-        long = "serialized-runtime",
-        env = "KESTREL_SERIALIZED_RUNTIME",
+        long = "serialized-harness",
+        env = "KESTREL_SERIALIZED_HARNESS",
         global = true,
         value_name = "NAME",
         value_delimiter = ',',
         default_value = "codex"
     )]
-    serialized_runtimes: Vec<String>,
+    serialized_harnesses: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -197,13 +197,13 @@ impl Cli {
                     Driver::LocalExec(LocalExec::running(self.supervisor()?))
                 }
             },
-            runtimes: self.agent_runtimes.clone(),
+            harnesses: self.harnesses.clone(),
             auth: self.agent_auth.clone(),
             max_active_runs: self.max_active_runs,
             serialized: self
-                .serialized_runtimes
+                .serialized_harnesses
                 .iter()
-                .filter(|runtime| !runtime.is_empty())
+                .filter(|harness| !harness.is_empty())
                 .cloned()
                 .collect(),
         })
@@ -301,14 +301,14 @@ mod tests {
 
     fn spawned(dispatch: &Dispatch) -> Vec<(&str, &str)> {
         dispatch
-            .runtimes
+            .harnesses
             .iter()
-            .map(|runtime| (runtime.name.as_str(), runtime.command.as_str()))
+            .map(|harness| (harness.name.as_str(), harness.command.as_str()))
             .collect()
     }
 
     #[test]
-    fn every_runtime_the_development_image_carries_is_spawned_unless_configuration_says_otherwise()
+    fn every_harness_the_development_image_carries_is_spawned_unless_configuration_says_otherwise()
     {
         assert_eq!(
             spawned(&dispatch(&[])),
@@ -320,9 +320,9 @@ mod tests {
         );
         assert_eq!(
             spawned(&dispatch(&[
-                "--agent-runtime",
+                "--harness",
                 "opencode=opencode acp --log-level debug",
-                "--agent-runtime",
+                "--harness",
                 "codex=codex-acp,claude=claude-agent-acp"
             ])),
             [
@@ -334,10 +334,10 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_named_without_its_command_is_rejected() {
+    fn a_harness_named_without_its_command_is_rejected() {
         for given in ["opencode", "=opencode acp", "opencode="] {
             assert!(
-                Cli::try_parse_from(["kestrel-control-plane", "--agent-runtime", given]).is_err(),
+                Cli::try_parse_from(["kestrel-control-plane", "--harness", given]).is_err(),
                 "{given} was accepted"
             );
         }
