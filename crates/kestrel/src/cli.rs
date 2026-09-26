@@ -8,7 +8,7 @@ use directories::ProjectDirs;
 
 use crate::compute::{Docker, Driver, LocalExec};
 use crate::role::serve::Listen;
-use crate::role::work::{Dispatch, Harness};
+use crate::role::work::{Dispatch, HarnessCommand};
 
 const SUPERVISOR: &str = "kestrel-supervisor";
 const IMAGE: &str = "kestrel-env:latest";
@@ -91,14 +91,14 @@ pub struct Cli {
     /// The command a supervisor spawns for each Harness an Agent may name, as
     /// NAME=COMMAND; repeat, or separate with commas, for many
     #[arg(
-        long = "harness",
-        env = "KESTREL_HARNESS",
+        long = "harness-command",
+        env = "KESTREL_HARNESS_COMMANDS",
         global = true,
         value_name = "NAME=COMMAND",
         value_delimiter = ',',
         default_value = "opencode=opencode acp --print-logs,claude=claude-agent-acp,codex=codex-acp"
     )]
-    harnesses: Vec<Harness>,
+    harnesses: Vec<HarnessCommand>,
 
     /// The ACP authentication method a Harness is logged in with, for one that requires
     /// being logged in before it will open a session
@@ -320,9 +320,9 @@ mod tests {
         );
         assert_eq!(
             spawned(&dispatch(&[
-                "--harness",
+                "--harness-command",
                 "opencode=opencode acp --log-level debug",
-                "--harness",
+                "--harness-command",
                 "codex=codex-acp,claude=claude-agent-acp"
             ])),
             [
@@ -337,7 +337,7 @@ mod tests {
     fn a_harness_named_without_its_command_is_rejected() {
         for given in ["opencode", "=opencode acp", "opencode="] {
             assert!(
-                Cli::try_parse_from(["kestrel-control-plane", "--harness", given]).is_err(),
+                Cli::try_parse_from(["kestrel-control-plane", "--harness-command", given]).is_err(),
                 "{given} was accepted"
             );
         }

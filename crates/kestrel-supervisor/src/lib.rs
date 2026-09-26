@@ -73,7 +73,7 @@ pub async fn run(diagnostics: &dyn Diagnostics, variables: &BTreeMap<String, Str
     let link = Arc::new(link);
     let (stderr, written) = mpsc::unbounded_channel();
     let harness = Harness {
-        command: set(variables, "KESTREL_HARNESS")
+        command: set(variables, "KESTREL_HARNESS_COMMAND")
             .unwrap_or_default()
             .to_owned(),
         auth: set(variables, "KESTREL_AGENT_AUTH").map(str::to_owned),

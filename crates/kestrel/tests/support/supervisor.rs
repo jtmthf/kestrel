@@ -60,7 +60,7 @@ impl Supervisor {
                 ("KESTREL_LINK", link),
                 ("KESTREL_RUN", &run.to_string()),
                 ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-                ("KESTREL_HARNESS", &harness),
+                ("KESTREL_HARNESS_COMMAND", &harness),
                 ("KESTREL_AGENT_MODEL", model),
             ])
             .expect("the supervisor should spawn");

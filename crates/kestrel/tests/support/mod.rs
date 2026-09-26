@@ -54,7 +54,7 @@ use kestrel::log::{Cursor, Entry, Page, TranscriptEntry, Unreadable, Window};
 use kestrel::profile::{self, Contents};
 use kestrel::provider::{self, Held};
 use kestrel::role::serve::Listen;
-use kestrel::role::work::{Dispatch, Harness};
+use kestrel::role::work::{Dispatch, HarnessCommand};
 use kestrel::session;
 use kestrel::store::Store;
 use kestrel::trigger::apply::Applied;
@@ -111,7 +111,7 @@ pub struct Kestrel {
 #[derive(Clone)]
 pub struct Provisions {
     driver: Driver,
-    harnesses: Vec<Harness>,
+    harnesses: Vec<HarnessCommand>,
     max_active_runs: NonZeroUsize,
 }
 
@@ -120,10 +120,10 @@ pub const HARNESS: &str = "opencode";
 /// The harness whose Runs on one Subscription Profile the work role dispatches one at a time.
 pub const SERIALIZED: &str = "codex";
 
-fn spawning(harnesses: &[(&str, &str)]) -> Vec<Harness> {
+fn spawning(harnesses: &[(&str, &str)]) -> Vec<HarnessCommand> {
     harnesses
         .iter()
-        .map(|&(name, command)| Harness {
+        .map(|&(name, command)| HarnessCommand {
             name: name.to_owned(),
             command: command.to_owned(),
         })
@@ -168,12 +168,12 @@ impl Kestrel {
         .await
     }
 
-    pub async fn dispatching_to(supervisor: &Path, harness: &str) -> Self {
-        Self::dispatching_up_to(supervisor, harness, 2).await
+    pub async fn dispatching_to(supervisor: &Path, command: &str) -> Self {
+        Self::dispatching_up_to(supervisor, command, 2).await
     }
 
-    pub async fn dispatching_up_to(supervisor: &Path, harness: &str, maximum: usize) -> Self {
-        Self::dispatching_harnesses_up_to(supervisor, &[(HARNESS, harness)], maximum).await
+    pub async fn dispatching_up_to(supervisor: &Path, command: &str, maximum: usize) -> Self {
+        Self::dispatching_harnesses_up_to(supervisor, &[(HARNESS, command)], maximum).await
     }
 
     pub async fn dispatching_harnesses(supervisor: &Path, harnesses: &[(&str, &str)]) -> Self {
@@ -193,8 +193,8 @@ impl Kestrel {
         .await
     }
 
-    pub async fn dispatching_in(image: &str, harness: &str) -> Self {
-        Self::dispatching_harnesses_in(image, &[(HARNESS, harness)]).await
+    pub async fn dispatching_in(image: &str, command: &str) -> Self {
+        Self::dispatching_harnesses_in(image, &[(HARNESS, command)]).await
     }
 
     /// The Docker driver, on a control plane bound where a container can dial out to it.

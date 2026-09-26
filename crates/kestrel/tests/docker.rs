@@ -277,7 +277,7 @@ async fn every_operation_in_the_contract_works_against_a_container() {
             ("KESTREL_LINK", &kestrel.link_from_an_environment()),
             ("KESTREL_RUN", &run.id.to_string()),
             ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-            ("KESTREL_HARNESS", "opencode acp"),
+            ("KESTREL_HARNESS_COMMAND", "opencode acp"),
         ])
         .expect("the supervisor should start");
 

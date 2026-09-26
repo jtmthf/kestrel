@@ -134,8 +134,8 @@ it starts rather than falling back to another.
 `--harness` names the harness: `opencode` unless you say otherwise, or `claude` or `codex`.
 The work role maps each name to the command an environment spawns and speaks ACP to, which by
 default is `opencode acp --print-logs`, `claude-agent-acp` and `codex-acp`; the `kestrel-dev` image
-carries all three. Set `KESTREL_HARNESS` on the control plane, or pass
-`--harness NAME=COMMAND` repeatedly, to change the table. A run whose agent names a harness
+carries all three. Set `KESTREL_HARNESS_COMMANDS` on the control plane, or pass
+`--harness-command NAME=COMMAND` repeatedly, to change the table. A run whose agent names a harness
 missing from it fails and says which.
 
 ```sh
@@ -260,7 +260,7 @@ INFO kestrel::role::work: reported started 1 run=01a07846-5d97-7230-9315-bfef2a6
 Each line the harness writes to stderr joins them as it is written, named for its run and
 never in the transcript: it is the harness's own diagnostics, not the agent speaking. opencode is
 spawned with `--print-logs`, so its log is there by default; raise its level through the harness
-table, as `--harness 'opencode=opencode acp --print-logs --log-level debug'`. A line longer
+table, as `--harness-command 'opencode=opencode acp --print-logs --log-level debug'`. A line longer
 than 4 KiB is cut short and says so.
 
 ```

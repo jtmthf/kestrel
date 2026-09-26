@@ -49,7 +49,7 @@ impl Kestrel {
             .env("KESTREL_COMPUTE", "local-exec")
             .env("KESTREL_SUPERVISOR", support::supervisor::binary())
             .env(
-                "KESTREL_HARNESS",
+                "KESTREL_HARNESS_COMMANDS",
                 format!(
                     "{}={}",
                     support::HARNESS,

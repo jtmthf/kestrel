@@ -30,19 +30,19 @@ const LEAVING: SignedDuration = SignedDuration::from_secs(3);
 pub struct Dispatch {
     pub link: String,
     pub driver: Driver,
-    pub harnesses: Vec<Harness>,
+    pub harnesses: Vec<HarnessCommand>,
     pub auth: Option<String>,
     pub max_active_runs: NonZeroUsize,
     pub serialized: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Harness {
+pub struct HarnessCommand {
     pub name: String,
     pub command: String,
 }
 
-impl FromStr for Harness {
+impl FromStr for HarnessCommand {
     type Err = anyhow::Error;
 
     fn from_str(given: &str) -> Result<Self> {
@@ -202,7 +202,7 @@ async fn execute(
         ("KESTREL_LINK", dispatch.link.as_str()),
         ("KESTREL_RUN", &run.id.to_string()),
         ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-        ("KESTREL_HARNESS", command),
+        ("KESTREL_HARNESS_COMMAND", command),
         (
             "KESTREL_AGENT_AUTH",
             dispatch.auth.as_deref().unwrap_or_default(),

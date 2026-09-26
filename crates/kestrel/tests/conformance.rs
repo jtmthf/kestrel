@@ -171,7 +171,10 @@ fn provisioned(
             "KESTREL_RUN_CREDENTIAL".to_owned(),
             credential.as_str().to_owned(),
         ),
-        ("KESTREL_HARNESS".to_owned(), lineage.command().to_owned()),
+        (
+            "KESTREL_HARNESS_COMMAND".to_owned(),
+            lineage.command().to_owned(),
+        ),
         ("KESTREL_AGENT_AUTH".to_owned(), auth.to_owned()),
         (
             "KESTREL_AGENT_MODEL".to_owned(),

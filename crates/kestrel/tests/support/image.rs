@@ -256,7 +256,7 @@ impl Environment {
                 "--env",
                 &format!("KESTREL_RUN_CREDENTIAL={}", credential.as_str()),
                 "--env",
-                "KESTREL_HARNESS=opencode acp",
+                "KESTREL_HARNESS_COMMAND=opencode acp",
                 image,
             ])
             .stdin(Stdio::null())

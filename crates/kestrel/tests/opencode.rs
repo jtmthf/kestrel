@@ -119,7 +119,7 @@ fn provisioned(
             ("KESTREL_LINK", &kestrel.link_from_an_environment()),
             ("KESTREL_RUN", &run.to_string()),
             ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-            ("KESTREL_HARNESS", HARNESS),
+            ("KESTREL_HARNESS_COMMAND", HARNESS),
             ("KESTREL_AGENT_MODEL", model),
             ("OPENCODE_MODELS_PATH", MODEL_SNAPSHOT),
         ])
