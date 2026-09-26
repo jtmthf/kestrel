@@ -54,3 +54,9 @@ Three platform constraints shape the design, and each is recorded because a read
   inputs change and on tags, so `latest` tracks the image inputs rather than every push.
 - Change detection has a default: a path matching no job's inputs runs everything. A required check
   that silently does not run is worse than a slow one.
+- The gate is a repository ruleset on the default branch, applied once through the API, because
+  GitHub keeps repository settings outside the repository. It requires the `gate` check, pinned to
+  the GitHub Actions app, so a commit status of the same name cannot stand in for it; requires no
+  review; and carries no bypass actor, so an administrator is bound too. Branches are deliberately
+  not required to be up to date: the merge queue validates each entry against the latest `main`,
+  and requiring it would restore the rebase chore the queue exists to remove.
