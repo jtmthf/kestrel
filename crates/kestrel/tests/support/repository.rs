@@ -1,5 +1,5 @@
 //! A repository a Project can name that is on this machine rather than on a forge, so a Run
-//! that checks its Project out reaches nothing over the network.
+//! that checks out its Project's repositories reaches nothing over the network.
 
 use std::path::Path;
 use std::process::{Command, Stdio};

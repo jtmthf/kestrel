@@ -16,13 +16,14 @@ Early, and honest about it: rung `0.1` is under construction. Sessions are durab
 organization, a project and an agent, open a session against them, and its state and transcript
 are still there after the process is killed. Runs execute: enqueue one and the control plane
 provisions an isolated container, clones the project's repositories into it, and drives opencode
-there by speaking the Agent Client Protocol over the link in [`openapi/link.json`](openapi/link.json), which
-the environment dials out to, authenticating as the run it is executing, and reconnects to with its
-cursor when the control plane restarts under it. Beside the link, on a listener of its own, the
-control plane serves the operator boundary in [`openapi/operator.json`](openapi/operator.json), and
-it is the only way in: `kestrel`, the Client an operator installs, declares and lists organizations,
-projects and agents over it, sets and forgets provider credentials and the subscription profiles a
-session names, registers integrations and reads the events they record, and
+there by speaking the Agent Client Protocol over the link in
+[`openapi/link.json`](openapi/link.json), which the environment dials out to, authenticating as the
+run it is executing, and reconnects to with its cursor when the control plane restarts under it.
+Beside the link, on a listener of its own, the control plane serves the operator boundary in
+[`openapi/operator.json`](openapi/operator.json), and it is the only way in: `kestrel`, the Client
+an operator installs, declares and lists organizations, projects and agents over it, sets and
+forgets provider credentials and the subscription profiles a session names, registers integrations
+and reads the events they record, and
 `kestrel session transcript --follow` streams a session's transcript over it, all from outside the
 control plane's process. What stops a run short of useful work is that
 nothing carries a task to it: every run asks its agent the same fixed question, and nothing triggers

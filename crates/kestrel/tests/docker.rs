@@ -16,7 +16,7 @@ use support::scripted_agent::{self, Script};
 
 const PATIENCE: Duration = Duration::from_secs(120);
 
-/// A repository the container can reach, which a Project on this machine is not.
+/// A repository the container can reach, which one on this machine is not.
 const REPOSITORY: &str = "https://github.com/jtmthf/kestrel";
 const BRANCH: &str = "main";
 
