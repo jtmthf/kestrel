@@ -76,7 +76,7 @@ fn usage() -> Usage {
 }
 
 #[tokio::test]
-async fn a_codex_run_waiting_between_turns_yields_its_profile_and_resumes_when_free() {
+async fn a_waiting_codex_run_yields_its_profile_and_resumes_when_free() {
     let data_dir = TempDir::new().unwrap();
     let store = Store::open(data_dir.path()).await.unwrap();
     let mut tx = store.begin().await.unwrap();
@@ -139,6 +139,10 @@ async fn a_codex_run_waiting_between_turns_yields_its_profile_and_resumes_when_f
     )
     .await
     .unwrap();
+    assert_eq!(
+        run(&store, first_run.id).await.unwrap().state,
+        RunState::Waiting
+    );
 
     let second_queued = enqueue(&store, second.id, None).await.unwrap();
     let second_run = match occupy(&store, 1, &["codex".to_owned()]).await.unwrap() {
@@ -155,16 +159,6 @@ async fn a_codex_run_waiting_between_turns_yields_its_profile_and_resumes_when_f
             .await
             .unwrap()
             .is_none()
-    );
-    assert!(
-        store
-            .begin()
-            .await
-            .unwrap()
-            .sessions()
-            .is_waiting(&first_run)
-            .await
-            .unwrap()
     );
 
     let mut tx = store.begin().await.unwrap();
@@ -363,7 +357,7 @@ async fn numbered_reports_refuse_missing_and_invalid_numbers_without_effects() {
     }
 
     let recorded = run(&fixture.store, fixture.run.id).await.unwrap();
-    assert_eq!(recorded.state, RunState::Active);
+    assert_eq!(recorded.state, RunState::Working);
     assert!(recorded.started_at.is_none());
     assert!(recorded.worked_model.is_none());
     assert!(recorded.usage.is_none());

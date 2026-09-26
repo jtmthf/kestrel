@@ -282,13 +282,13 @@ async fn a_session_with_no_instance_has_nothing_to_release() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_run_waiting_between_turns_ends_when_its_clean_session_seals_idle() {
+async fn a_waiting_run_ends_when_its_clean_session_seals_idle() {
     let runtime = working("true");
     let harness = dispatching_to(&runtime).await;
     let session = a_session(&harness).await;
     let run = harness.enqueue_run(session.id).await;
     let waiting = harness.answered(run.id, 1).await;
-    assert_eq!(waiting.state, RunState::Active);
+    assert_eq!(waiting.state, RunState::Waiting);
 
     harness.last_active(&session, a_day_ago()).await;
 
@@ -305,7 +305,7 @@ async fn a_run_waiting_between_turns_ends_when_its_clean_session_seals_idle() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_run_waiting_between_turns_over_unpublished_work_outlasts_the_idle_window() {
+async fn a_waiting_run_over_unpublished_work_outlasts_the_idle_window() {
     let runtime = working("echo untracked > kestrel/untracked");
     let harness = dispatching_to(&runtime).await;
     let session = a_session(&harness).await;
@@ -315,7 +315,7 @@ async fn a_run_waiting_between_turns_over_unpublished_work_outlasts_the_idle_win
     harness.last_active(&session, a_day_ago()).await;
     stays_open(&harness, &session).await;
 
-    assert_eq!(harness.run(run.id).await.state, RunState::Active);
+    assert_eq!(harness.run(run.id).await.state, RunState::Waiting);
     let held = harness.held_instances("acme").await;
     assert_eq!(held.len(), 1);
     assert_eq!(held[0].instance, waiting.instance.expect("an instance"));

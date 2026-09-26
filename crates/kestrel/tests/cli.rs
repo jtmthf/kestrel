@@ -236,7 +236,7 @@ fn a_free_port() -> String {
     format!("127.0.0.1:{port}")
 }
 
-const RUN: &str = "id,state,waiting,exit,instance,worked_model";
+const RUN: &str = "id,state,exit,instance,worked_model";
 
 fn runs(kestrel: &Booted, session: &str) -> Vec<Value> {
     kestrel.records(&["run", "list", "--session", session, "--json", RUN])
@@ -251,7 +251,7 @@ fn dispatched(kestrel: &Booted, session: &str) -> Vec<Value> {
         if listed.iter().all(|run| !run["exit"]["status"].is_null()) {
             return listed;
         }
-        for waiting in listed.iter().filter(|run| run["waiting"] == true) {
+        for waiting in listed.iter().filter(|run| run["state"] == "waiting") {
             let run = waiting["id"].as_str().expect("a run's identifier");
             kestrel.run(&["run", "stop", run]);
         }
@@ -440,7 +440,7 @@ fn an_instance_is_shown_on_its_session_and_released_on_the_record() {
 }
 
 #[test]
-fn a_run_ends_succeeded_between_turns_and_is_not_stopped_twice() {
+fn a_run_ends_succeeded_while_waiting_and_is_not_stopped_twice() {
     let kestrel = Kestrel::new();
     let booted = kestrel.boot();
     declared(&booted);
@@ -498,7 +498,7 @@ fn a_control_plane_killed_mid_turn_comes_back_and_the_turn_is_answered() {
         |listed| {
             listed
                 .iter()
-                .any(|run| run["waiting"] == true || !run["exit"].is_null())
+                .any(|run| run["state"] == "waiting" || !run["exit"].is_null())
         },
         "answered its turn",
     );

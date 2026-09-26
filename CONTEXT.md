@@ -50,15 +50,20 @@ One prompt and response within a session's continuing agent conversation. Its re
 reported to the work source when the turn finishes, without ending the session.
 _Avoid_: session, workspace
 
+**Waiting**:
+A session's phase between turns: its last prompt answered, its agent conversation and instance kept
+for the next. Its other phases are queued, working (mid-turn), ended and unreachable.
+_Avoid_: between turns, paused, idle
+
 **Unfinished Session**:
-The one session a workspace may have that has not yet let go of it: queued, mid-turn, between
-turns, or ended while its supervisor is still leaving. A workspace has at most one; a message
-posted while it exists waits on it rather than starting another.
+The one session a workspace may have that has not yet let go of it: queued, working, waiting, or
+ended while its supervisor is still leaving. A workspace has at most one; a message posted while it
+exists waits on it rather than starting another.
 _Avoid_: slot, current session, holding session
 
 **Active-Work Slot**:
 One unit of an organization's capacity for sessions doing work at once. A session mid-turn, or
-blocked on an approval, occupies one; a queued session, or one between turns, does not.
+blocked on an approval, occupies one; a queued or waiting session does not.
 _Avoid_: slot (alone), capacity, concurrency
 
 **Unpublished Work**:
@@ -322,8 +327,8 @@ words from drifting.
   asks, and the control plane decides.
 - At most **one** session is unfinished in a workspace at a time. Concurrency is across workspaces,
   **never** within one.
-- A session blocked on an approval still occupies an **active-work** slot. A session waiting between
-  turns does not. Neither waits on work it has enqueued.
+- A session blocked on an approval still occupies an **active-work** slot. A **waiting** session
+  does not. Neither waits on work it has enqueued.
 - A workspace belongs to at most **one** campaign, and nothing outside a workflow's roster may be
   enqueued. Naming a non-member is rejected when the work is **enqueued**, never when it is
   dispatched.
@@ -331,7 +336,7 @@ words from drifting.
   enqueues nothing.
 - A queued session is dispatched **at most once**. A lease that expires marks its session failed and
   never re-dispatches it.
-- A session may wait between turns with its ACP conversation and instance intact. Waiting holds no
+- A session may be **waiting** with its ACP conversation and instance intact. Waiting holds no
   active-work slot; the next prompt continues that same session. A turn ending does not end a
   session.
 - A turn in which the agent produced no message, narration or detail **fails** its session: a

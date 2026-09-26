@@ -150,7 +150,7 @@ async fn a_lease_that_expires_leaves_its_session_no_active_run() {
             .runs(session.id)
             .await
             .iter()
-            .all(|run| run.state != RunState::Active),
+            .all(|run| run.state != RunState::Working),
         "a session whose run's lease expired still has an active run"
     );
     let next = harness.enqueue_run(session.id).await;
@@ -187,7 +187,7 @@ async fn one_parallel_runs_expired_lease_leaves_the_other_run_active() {
     harness.lease_until(&first, a_moment_ago()).await;
     swept(&harness, first.id).await;
 
-    assert_eq!(harness.run(second.id).await.state, RunState::Active);
+    assert_eq!(harness.run(second.id).await.state, RunState::Working);
 
     harness.teardown().await;
 }
@@ -243,12 +243,12 @@ async fn a_supervisor_holds_its_runs_lease_out_for_the_life_of_the_run() {
         run.lease_expires_at > Some(shortened)
     })
     .await;
-    assert_eq!(held.state, RunState::Active);
+    assert_eq!(held.state, RunState::Working);
 
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert_eq!(
         harness.run(run.id).await.state,
-        RunState::Active,
+        RunState::Working,
         "a run whose supervisor is alive was swept anyway"
     );
 

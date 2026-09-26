@@ -180,7 +180,7 @@ async fn a_turns_response_reaches_the_issue_before_the_run_ends() {
         "the reply does not carry this turn's marker: {}",
         bodies[0]
     );
-    assert_eq!(harness.run(run.id).await.state, RunState::Active);
+    assert_eq!(harness.run(run.id).await.state, RunState::Waiting);
 
     harness.stop_run(run.id).await;
     let ended = harness.run(run.id).await;
@@ -332,7 +332,7 @@ async fn each_turn_of_one_run_says_its_own_response_once() {
     harness
         .post_while_busy(session.id, "operator", "the second thing to do")
         .await
-        .expect("a run between turns takes the next prompt");
+        .expect("a waiting run takes the next prompt");
     harness.prompt_waiting().await;
     report(
         &link,
