@@ -62,7 +62,7 @@ origin's owner names the organization while none exists, and origin's default br
 work happens on. Whatever already exists is used rather than redeclared: the only organization, the
 project already declaring that repository, and the only agent. Before it changes anything it
 prints every value on stderr, why it is that value, and the flag that says otherwise. Every value
-has one: `--organization`, `--project`, `--repository`, `--branch`, `--agent`, `--runtime`,
+has one: `--organization`, `--project`, `--repository`, `--branch`, `--agent`, `--harness`,
 `--model` and `--credential`. `--credential` names an environment variable of the Client's, and the
 organization holds what that variable holds, replacing any credential it held under that name, so
 the key never appears on a command line.
@@ -110,16 +110,16 @@ kestrel project declare kestrel \
   --branch main
 ```
 
-An **agent** is a configured identity rather than a running process: the agent runtime that drives
+An **agent** is a configured identity rather than a running process: the harness that drives
 it, and the model it works with.
 
 ```sh
 kestrel agent declare builder
 ```
 
-Naming no `--model` asks for whatever the agent runtime's own default is, which is what you want
+Naming no `--model` asks for whatever the harness's own default is, which is what you want
 here; the run records which model that turned out to be. Name a specific model and the run fails at
-model selection unless that runtime offers it.
+model selection unless that harness offers it.
 
 Changing an agent's model is configuration rather than a rebuild, and a run already in flight stays
 on the model it was dispatched with:
@@ -128,21 +128,21 @@ on the model it was dispatched with:
 kestrel agent model builder --model anthropic/claude-opus-4-5
 ```
 
-kestrel takes a named model at its word: a run on a model its runtime cannot honour fails when
+kestrel takes a named model at its word: a run on a model its harness cannot honour fails when
 it starts rather than falling back to another.
 
-`--runtime` names the agent runtime: `opencode` unless you say otherwise, or `claude` or `codex`.
+`--harness` names the harness: `opencode` unless you say otherwise, or `claude` or `codex`.
 The work role maps each name to the command an environment spawns and speaks ACP to, which by
 default is `opencode acp --print-logs`, `claude-agent-acp` and `codex-acp`; the `kestrel-dev` image
-carries all three. Set `KESTREL_AGENT_RUNTIME` on the control plane, or pass
-`--agent-runtime NAME=COMMAND` repeatedly, to change the table. A run whose agent names a runtime
+carries all three. Set `KESTREL_HARNESS_COMMANDS` on the control plane, or pass
+`--harness-command NAME=COMMAND` repeatedly, to change the table. A run whose agent names a harness
 missing from it fails and says which.
 
 ```sh
-kestrel agent declare codex --runtime codex
+kestrel agent declare codex --harness codex
 ```
 
-A session takes its agent's runtime and model when it opens and keeps them while it is open:
+A session takes its agent's harness and model when it opens and keeps them while it is open:
 redeclaring the agent, or changing its model, changes the sessions opened after that.
 
 `kestrel organization list`, `kestrel project list` and `kestrel agent list` show what you have
@@ -213,7 +213,7 @@ cursor  01a07846-49fa-7dc0-a44b-183a63794ee3:1
 
 ## Enqueue a run
 
-A **run** is one execution of an agent runtime on its session's instance: one conversation with it,
+A **run** is one execution of a harness on its session's instance: one conversation with it,
 over as many turns as the session gives it. At most one is ever open in a session.
 
 ```sh
@@ -221,12 +221,12 @@ kestrel run enqueue --session latest
 ```
 
 Within seconds the control plane claims it, provisions a container for the session, and starts a
-supervisor in it that clones the project's repositories and spawns an agent runtime, dialling back
+supervisor in it that clones the project's repositories and spawns a harness, dialling back
 over the link. The container is the session's **instance**: every later run in the session starts a
 supervisor of its own in the same one.
 
 The work role keeps up to two runs working at once by default. That conservative default leaves
-room on a laptop for two agent runtimes mid-turn. Set `KESTREL_MAX_ACTIVE_RUNS` on the control-plane
+room on a laptop for two harnesses mid-turn. Set `KESTREL_MAX_ACTIVE_RUNS` on the control-plane
 container, or pass `--max-active-runs RUNS`, to choose a different positive limit. Only a run getting
 to its first turn or mid-turn counts against it: a run waiting between turns keeps its agent
 conversation and instance but frees its place, so another session can work meanwhile. Queued runs
@@ -257,14 +257,14 @@ INFO kestrel::role::work: instruction start 1 run=01a07846-5d97-7230-9315-bfef2a
 INFO kestrel::role::work: reported started 1 run=01a07846-5d97-7230-9315-bfef2a644006
 ```
 
-Each line the agent runtime writes to stderr joins them as it is written, named for its run and
-never in the transcript: it is the runtime's own diagnostics, not the agent speaking. opencode is
-spawned with `--print-logs`, so its log is there by default; raise its level through the runtime
-table, as `--agent-runtime 'opencode=opencode acp --print-logs --log-level debug'`. A line longer
+Each line the harness writes to stderr joins them as it is written, named for its run and
+never in the transcript: it is the harness's own diagnostics, not the agent speaking. opencode is
+spawned with `--print-logs`, so its log is there by default; raise its level through the harness
+table, as `--harness-command 'opencode=opencode acp --print-logs --log-level debug'`. A line longer
 than 4 KiB is cut short and says so.
 
 ```
-INFO kestrel::work: its agent runtime wrote to stderr run=01a07846-5d97-7230-9315-bfef2a644006 line="timestamp=2026-09-21T22:16:20.783Z level=INFO run=304e054b message=init"
+INFO kestrel::work: its harness wrote to stderr run=01a07846-5d97-7230-9315-bfef2a644006 line="timestamp=2026-09-21T22:16:20.783Z level=INFO run=304e054b message=init"
 ```
 
 The agent is now working — reading the repository, running commands, taking turns. It has no task,
@@ -284,12 +284,12 @@ says plainly what the filter does not buy.
 
 ### Run on your own subscription
 
-A **subscription profile** is one person's access to a subscribed runtime: an OpenCode Go or Zen
+A **subscription profile** is one person's access to a subscribed harness: an OpenCode Go or Zen
 key, Codex through a ChatGPT plan, or Claude Code through a Claude plan. kestrel keeps it, so no
 image, checkout or provider account has to. It reaches only the runs of sessions that name it.
 
 An OpenCode Go or Zen subscription is an OpenCode-issued key, so it is a **variable** the agent
-runtime reads from its environment:
+harness reads from its environment:
 
 ```sh
 kestrel profile declare jack --owner jack
@@ -299,7 +299,7 @@ kestrel profile set jack --variable OPENCODE_API_KEY
 The command waits for the key: paste it and press Ctrl-D. Each credential is read from standard
 input, sealed with the key beside the database, and never printed again. `kestrel profile list`
 shows a profile's owner and what it holds, by name only. A `--variable` goes into the agent
-runtime's environment.
+harness's environment.
 
 Codex and Claude log in with OAuth rather than a key, and opencode can too. Those are named as
 files or variables:
@@ -311,12 +311,12 @@ kestrel profile set jack --variable CLAUDE_CODE_OAUTH_TOKEN
 ```
 
 A `--file` is written at that path beneath the agent's home when the run starts. When the run ends
-it is read back and removed from the instance, so a login the runtime refreshed there is the one
+it is read back and removed from the instance, so a login the harness refreshed there is the one
 the next run gets, on this instance or a fresh one. A profile belongs to the owner it was declared
 with, and redeclaring it under another owner is refused.
 
 opencode 2 keeps its credentials in a SQLite database, so an `auth.json` written there is a
-**seed**: the runtime imports it into a fresh database once and never writes it back. Refreshed
+**seed**: the harness imports it into a fresh database once and never writes it back. Refreshed
 OAuth tokens stay in the database, which kestrel does not carry, so an opencode OAuth login the
 provider rotates has to be supplied again — log in afresh and re-seed. The subscription key above
 does not rotate. Codex writes `auth.json` only when `cli_auth_credentials_store = "file"` is set
@@ -339,11 +339,11 @@ authorization. Review a trigger that names one as carefully as one that admits s
 
 Codex rotates its login as it refreshes it, and two copies refreshing at once can revoke each other.
 The work role therefore runs one Codex run per profile at a time and leaves the others queued.
-`--serialized-runtime` (`KESTREL_SERIALIZED_RUNTIME`) names the runtimes handled this way, and
+`--serialized-harness` (`KESTREL_SERIALIZED_HARNESS`) names the harnesses handled this way, and
 defaults to `codex`.
 
 To check that a subscription works before relying on it, run the smoke checks. Each makes one real
-model call through its runtime in the `kestrel-dev` image, kills and restarts the control plane,
+model call through its harness in the `kestrel-dev` image, kills and restarts the control plane,
 destroys the first instance, and makes another on a fresh one. Each reads its login from the
 variables below, and fails if they are unset:
 
@@ -354,11 +354,11 @@ export KESTREL_SMOKE_CLAUDE_OAUTH_TOKEN=...
 cargo test --locked --package kestrel --test subscription -- --ignored --test-threads 1
 ```
 
-Name one test, such as `codex_answers`, to check one runtime. A Codex login the runtime refreshed is
+Name one test, such as `codex_answers`, to check one harness. A Codex login the harness refreshed is
 written back to `KESTREL_SMOKE_CODEX_AUTH`, unless the file changed while the check ran, so keep
-Codex idle on that login until it finishes. A failure says whether the runtime failed to launch,
+Codex idle on that login until it finishes. A failure says whether the harness failed to launch,
 the login was refused (authentication), the plan does not cover the call (entitlement), or the
-login worked before the restart and not after it (persistence). It prints what the runtime said,
+login worked before the restart and not after it (persistence). It prints what the harness said,
 with every credential it was given, and every token inside those, replaced by `[redacted]`.
 
 ## Your sessions survive a restart
@@ -703,7 +703,7 @@ outcome comment would arrive without one.
 
 [`kestrel-dev`](images/kestrel-dev/README.md) is the image this repository ships for work that has to
 touch GitHub. It derives from `kestrel-env` and adds `gh`, Rust, and the Claude Code and Codex agent
-runtimes. Build it, then point the control plane at it with a gitignored `compose.override.yaml`,
+harnesses. Build it, then point the control plane at it with a gitignored `compose.override.yaml`,
 which Compose merges automatically:
 
 ```sh
@@ -1045,8 +1045,8 @@ succeeded
 
 A run stopped between turns succeeds; one stopped mid-turn, or before it started, fails. A comment on
 a session with no open run enqueues a new run in it, on the same instance and checkout, with a fresh
-supervisor and agent runtime. Before its agent starts, the supervisor pages the whole transcript into
-the runtime, so the new conversation sees the brief, earlier runs, and the follow-up message.
+supervisor and harness. Before its agent starts, the supervisor pages the whole transcript into
+the harness, so the new conversation sees the brief, earlier runs, and the follow-up message.
 
 An operator can post the same kind of message directly:
 

@@ -9,8 +9,8 @@ use jiff::SignedDuration;
 use kestrel::domain::{Direction, Exit, Run, RunState, Session, SessionId};
 use kestrel::link::credential::Secret;
 use kestrel::work::{Report, Reported};
-use support::Harness;
-use support::RUNTIME;
+use support::HARNESS;
+use support::Kestrel;
 use support::github_stub::{self, GithubStub, RecordedRequest, ScriptedResponse};
 use support::link_client::Link;
 
@@ -63,10 +63,10 @@ async fn nothing_more_is_said(stub: &GithubStub, after: usize) {
     );
 }
 
-async fn sessions(harness: &Harness, count: usize) -> Vec<Session> {
+async fn sessions(kestrel: &Kestrel, count: usize) -> Vec<Session> {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        let sessions = harness.sessions("acme").await;
+        let sessions = kestrel.sessions("acme").await;
         if sessions.len() == count {
             return sessions;
         }
@@ -79,15 +79,15 @@ async fn sessions(harness: &Harness, count: usize) -> Vec<Session> {
 }
 
 /// A Session an Event started through an Integration that carries what it says back out.
-async fn a_session_from_the_issue(harness: &Harness, stub: &GithubStub) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session_from_the_issue(kestrel: &Kestrel, stub: &GithubStub) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    harness
-        .declare_agent(&organization, "builder", RUNTIME, None)
+    kestrel
+        .declare_agent(&organization, "builder", HARNESS, None)
         .await;
-    harness
+    kestrel
         .declare_trigger(
             "acme",
             "ready",
@@ -96,7 +96,7 @@ async fn a_session_from_the_issue(harness: &Harness, stub: &GithubStub) -> Sessi
             "builder",
         )
         .await;
-    harness
+    kestrel
         .register_integration(
             "acme",
             "github",
@@ -112,17 +112,17 @@ async fn a_session_from_the_issue(harness: &Harness, stub: &GithubStub) -> Sessi
         "ready-for-agent",
     )]));
 
-    sessions(harness, 1).await.remove(0)
+    sessions(kestrel, 1).await.remove(0)
 }
 
 /// A Run claimed the way a work role claims it, with its first Turn prompted.
-async fn a_working_run(harness: &Harness, session: SessionId) -> (Run, Secret) {
+async fn a_working_run(kestrel: &Kestrel, session: SessionId) -> (Run, Secret) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        if harness.runs(session).await.len() == 1
-            && let Some(claimed) = harness.claim_run().await
+        if kestrel.runs(session).await.len() == 1
+            && let Some(claimed) = kestrel.claim_run().await
         {
-            harness.start(&claimed.run).await;
+            kestrel.start(&claimed.run).await;
             return (claimed.run, claimed.credential);
         }
         assert!(
@@ -155,10 +155,10 @@ async fn report(link: &Link, run: &Run, credential: &Secret, seq: i64, report: R
 async fn a_turns_response_reaches_the_issue_before_the_run_ends() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    let session = a_session_from_the_issue(&harness, &stub).await;
-    let (run, credential) = a_working_run(&harness, session.id).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let session = a_session_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
     report(
@@ -180,25 +180,25 @@ async fn a_turns_response_reaches_the_issue_before_the_run_ends() {
         "the reply does not carry this turn's marker: {}",
         bodies[0]
     );
-    assert_eq!(harness.run(run.id).await.state, RunState::Waiting);
+    assert_eq!(kestrel.run(run.id).await.state, RunState::Waiting);
 
-    harness.stop_run(run.id).await;
-    let ended = harness.run(run.id).await;
+    kestrel.stop_run(run.id).await;
+    let ended = kestrel.run(run.id).await;
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert_eq!(ended.outcome_message.as_deref(), Some("the first answer"));
     nothing_more_is_said(&stub, 1).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_final_message_repeating_a_combined_turn_response_is_not_posted_again() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    let session = a_session_from_the_issue(&harness, &stub).await;
-    let (run, credential) = a_working_run(&harness, session.id).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let session = a_session_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
     for (seq, message) in [(2, "The investigation is complete."), (3, "CI is green.")] {
@@ -236,19 +236,19 @@ async fn a_final_message_repeating_a_combined_turn_response_is_not_posted_again(
     )
     .await;
 
-    assert_eq!(harness.run(run.id).await.exit, Some(Exit::Succeeded));
+    assert_eq!(kestrel.run(run.id).await.exit, Some(Exit::Succeeded));
     nothing_more_is_said(&stub, 1).await;
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn new_final_information_after_a_turn_is_saved_and_reported_once() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    let session = a_session_from_the_issue(&harness, &stub).await;
-    let (run, credential) = a_working_run(&harness, session.id).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let session = a_session_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
     report(
@@ -285,7 +285,7 @@ async fn new_final_information_after_a_turn_is_saved_and_reported_once() {
     )
     .await;
 
-    let ended = harness.run(run.id).await;
+    let ended = kestrel.run(run.id).await;
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert_eq!(
         ended.outcome_message.as_deref(),
@@ -293,24 +293,24 @@ async fn new_final_information_after_a_turn_is_saved_and_reported_once() {
     );
     let bodies = replies(&stub, 2).await;
     assert!(bodies[1].contains("The follow-up found a regression."));
-    harness.complete_run(&run).await;
+    kestrel.complete_run(&run).await;
     assert_eq!(
-        harness.run(run.id).await.outcome_message.as_deref(),
+        kestrel.run(run.id).await.outcome_message.as_deref(),
         Some("The follow-up found a regression.")
     );
     nothing_more_is_said(&stub, 2).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn each_turn_of_one_run_says_its_own_response_once() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    let session = a_session_from_the_issue(&harness, &stub).await;
-    let (run, credential) = a_working_run(&harness, session.id).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let session = a_session_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
     report(
@@ -329,11 +329,11 @@ async fn each_turn_of_one_run_says_its_own_response_once() {
 
     // The next Turn waits on the Run holding no slot, so the work role prompts it with what
     // arrived in between.
-    harness
+    kestrel
         .post_while_busy(session.id, "operator", "the second thing to do")
         .await
         .expect("a waiting run takes the next prompt");
-    harness.prompt_waiting().await;
+    kestrel.prompt_waiting().await;
     report(
         &link,
         &run,
@@ -353,7 +353,7 @@ async fn each_turn_of_one_run_says_its_own_response_once() {
         "the second turn said the first's words: {bodies:?}"
     );
     assert_eq!(
-        harness.turns(run.id).await.len(),
+        kestrel.turns(run.id).await.len(),
         2,
         "a turn was prompted more than once"
     );
@@ -380,17 +380,17 @@ async fn each_turn_of_one_run_says_its_own_response_once() {
     .await;
     nothing_more_is_said(&stub, 2).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_run_that_answered_no_turn_still_says_how_it_ended() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    let session = a_session_from_the_issue(&harness, &stub).await;
-    let (run, credential) = a_working_run(&harness, session.id).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let session = a_session_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
     report(
@@ -412,7 +412,7 @@ async fn a_run_that_answered_no_turn_still_says_how_it_ended() {
         bodies[0]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A Turn that fails the Run still posts the Turn it already answered, and the failure is said
@@ -421,10 +421,10 @@ async fn a_run_that_answered_no_turn_still_says_how_it_ended() {
 async fn a_failed_run_posts_its_turns_response_and_then_the_failure() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    let session = a_session_from_the_issue(&harness, &stub).await;
-    let (run, credential) = a_working_run(&harness, session.id).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let session = a_session_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
     report(
@@ -461,17 +461,17 @@ async fn a_failed_run_posts_its_turns_response_and_then_the_failure() {
         bodies[1]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_turn_response_that_landed_while_the_control_plane_died_is_not_posted_twice() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, ScriptedResponse::answering(502));
-    let harness = Harness::boot().await;
-    let session = a_session_from_the_issue(&harness, &stub).await;
-    let (run, credential) = a_working_run(&harness, session.id).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let session = a_session_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
     report(
@@ -495,7 +495,7 @@ async fn a_turn_response_that_landed_while_the_control_plane_died_is_not_posted_
         COMMENTS,
         github_stub::page(&[github_stub::comment(1, &landed)]),
     );
-    let harness = harness.kill_and_restart().await;
+    let kestrel = kestrel.kill_and_restart().await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     assert_eq!(
@@ -504,5 +504,5 @@ async fn a_turn_response_that_landed_while_the_control_plane_died_is_not_posted_
         "the turn response already on the issue was posted again after the restart"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

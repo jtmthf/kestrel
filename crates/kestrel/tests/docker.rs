@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver};
 use kestrel::domain::{Exit, Run, RunId, Session, SessionId};
-use support::Harness;
+use support::Kestrel;
 use support::image::{self, Container};
 use support::scripted_agent::{self, Script};
 
@@ -20,20 +20,20 @@ const PATIENCE: Duration = Duration::from_secs(120);
 const REPOSITORY: &str = "https://github.com/jtmthf/kestrel";
 const BRANCH: &str = "main";
 
-async fn working(script: Script) -> Harness {
-    Harness::dispatching_in(
+async fn working(script: Script) -> Kestrel {
+    Kestrel::dispatching_in(
         image::with_the_scripted_agent(),
         &scripted_agent::playing_in_an_image(script),
     )
     .await
 }
 
-async fn a_session(harness: &Harness) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session(kestrel: &Kestrel) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[REPOSITORY.to_owned()], BRANCH)
         .await;
-    harness
+    kestrel
         .declare_agent(
             &organization,
             "builder",
@@ -42,7 +42,7 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
 
-    harness
+    kestrel
         .hold_provider_credential(
             &organization,
             support::PROVIDER_KEY,
@@ -50,14 +50,14 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
 
-    harness.open_session("acme", "kestrel", "builder").await
+    kestrel.open_session("acme", "kestrel", "builder").await
 }
 
-async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
+async fn until(kestrel: &Kestrel, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let run = harness.run(run).await;
+        let run = kestrel.run(run).await;
         if ready(&run) {
             return run;
         }
@@ -73,8 +73,8 @@ async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -
 }
 
 /// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
-async fn ended(harness: &Harness, run: RunId) -> Run {
-    harness.after_one_turn_within(run, PATIENCE).await
+async fn ended(kestrel: &Kestrel, run: RunId) -> Run {
+    kestrel.after_one_turn_within(run, PATIENCE).await
 }
 
 /// A stopped Run's exit is recorded before its supervisor has actually left (ADR-0024), so its
@@ -93,18 +93,18 @@ async fn without_its_processes(container: &Container) -> String {
     }
 }
 
-async fn started(harness: &Harness, run: RunId) -> Run {
-    until(harness, run, "started", |run| run.started_at.is_some()).await
+async fn started(kestrel: &Kestrel, run: RunId) -> Run {
+    until(kestrel, run, "started", |run| run.started_at.is_some()).await
 }
 
 /// A Run's exit is recorded as soon as it is decided, before its supervisor is confirmed gone;
 /// a session does not free its slot until that confirmation lands, which for a dead container
 /// can take a reconciliation pass rather than the commit that ended the Run (ADR-0002).
-async fn enqueue_when_free(harness: &Harness, session: SessionId) -> Run {
+async fn enqueue_when_free(kestrel: &Kestrel, session: SessionId) -> Run {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        match harness.try_enqueue_run(session).await {
+        match kestrel.try_enqueue_run(session).await {
             Ok(run) => return run,
             Err(error) => {
                 assert!(
@@ -122,15 +122,15 @@ async fn enqueue_when_free(harness: &Harness, session: SessionId) -> Run {
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
 async fn the_scripted_run_ends_the_same_way_in_a_container_as_it_does_in_a_process() {
-    let harness = working(Script::Speaks).await;
-    let session = a_session(&harness).await;
+    let kestrel = working(Script::Speaks).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert_eq!(
-        harness
+        kestrel
             .transcript(session.id)
             .await
             .iter()
@@ -143,17 +143,17 @@ async fn the_scripted_run_ends_the_same_way_in_a_container_as_it_does_in_a_proce
         ]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
 async fn an_instance_is_a_container_that_outlives_its_run_but_not_its_supervisor() {
-    let harness = working(Script::Speaks).await;
-    let session = a_session(&harness).await;
+    let kestrel = working(Script::Speaks).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     let instance = ended.instance.as_deref().expect("an instance");
     assert_eq!(
@@ -168,19 +168,19 @@ async fn an_instance_is_a_container_that_outlives_its_run_but_not_its_supervisor
         "the run left processes on its instance: {left}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
     container.is_gone().await;
 }
 
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
 async fn a_projects_repositories_and_its_branch_are_in_the_container() {
-    let harness = working(Script::Dawdles).await;
-    let session = a_session(&harness).await;
+    let kestrel = working(Script::Dawdles).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
     let container = Container::named(
-        started(&harness, run.id)
+        started(&kestrel, run.id)
             .await
             .instance
             .as_deref()
@@ -204,7 +204,7 @@ async fn a_projects_repositories_and_its_branch_are_in_the_container() {
         "the repository is not in the workspace: {readme:?}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
     container.is_gone().await;
 }
 
@@ -214,12 +214,12 @@ async fn a_projects_repositories_and_its_branch_are_in_the_container() {
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
 async fn a_container_that_dies_mid_run_is_detected_and_the_next_run_starts_it_again() {
-    let harness = working(Script::Dawdles).await;
-    let session = a_session(&harness).await;
+    let kestrel = working(Script::Dawdles).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
     let container = Container::named(
-        started(&harness, run.id)
+        started(&kestrel, run.id)
             .await
             .instance
             .as_deref()
@@ -228,7 +228,7 @@ async fn a_container_that_dies_mid_run_is_detected_and_the_next_run_starts_it_ag
 
     container.kill();
 
-    let ended = ended(&harness, run.id).await;
+    let ended = ended(&kestrel, run.id).await;
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
             "the run ended {:?}, and its container was killed",
@@ -244,14 +244,14 @@ async fn a_container_that_dies_mid_run_is_detected_and_the_next_run_starts_it_ag
         "a run whose container died still holds a lease"
     );
 
-    let next = enqueue_when_free(&harness, session.id).await;
-    let next = started(&harness, next.id).await;
+    let next = enqueue_when_free(&kestrel, session.id).await;
+    let next = started(&kestrel, next.id).await;
     assert_eq!(
         next.instance, ended.instance,
         "a stopped container was taken for gone"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
     container.is_gone().await;
 }
 
@@ -261,9 +261,9 @@ async fn a_container_that_dies_mid_run_is_detected_and_the_next_run_starts_it_ag
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
 async fn every_operation_in_the_contract_works_against_a_container() {
-    let harness = Harness::boot_reachable_from_an_environment().await;
-    let session = a_session(&harness).await;
-    let (run, credential) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
+    let session = a_session(&kestrel).await;
+    let (run, credential) = kestrel.dispatch_run(session.id).await;
 
     // Provisioned through the port rather than through the work role, so the operations no
     // Run makes are exercised on the same Instance as the ones it does.
@@ -274,10 +274,10 @@ async fn every_operation_in_the_contract_works_against_a_container() {
     let container = Container::named(instance.name());
     let mut supervisor = instance
         .supervise(&[
-            ("KESTREL_LINK", &harness.link_from_an_environment()),
+            ("KESTREL_LINK", &kestrel.link_from_an_environment()),
             ("KESTREL_RUN", &run.id.to_string()),
             ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-            ("KESTREL_AGENT_RUNTIME", "opencode acp"),
+            ("KESTREL_HARNESS_COMMAND", "opencode acp"),
         ])
         .expect("the supervisor should start");
 
@@ -328,5 +328,5 @@ async fn every_operation_in_the_contract_works_against_a_container() {
             .is_none()
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

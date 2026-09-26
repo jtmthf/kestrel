@@ -1,4 +1,4 @@
--- An Agent that names no model runs on whatever its Agent Runtime defaults to, which is a
+-- An Agent that names no model runs on whatever its Harness defaults to, which is a
 -- model it did not name rather than one named as nothing.
 ALTER TABLE agent ADD COLUMN names_model TEXT;
 UPDATE agent SET names_model = model WHERE model <> '';

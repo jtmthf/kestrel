@@ -13,11 +13,11 @@ use reqwest::StatusCode;
 use serde_json::{Value, json};
 use support::client::{self, Client};
 use support::github_stub::{self, GithubStub};
-use support::{Harness, TOKEN};
+use support::{Kestrel, TOKEN};
 
-async fn an_open_session(harness: &Harness, said: usize) -> (String, kestrel::domain::Run) {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn an_open_session(kestrel: &Kestrel, said: usize) -> (String, kestrel::domain::Run) {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -25,20 +25,20 @@ async fn an_open_session(harness: &Harness, said: usize) -> (String, kestrel::do
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    let session = harness.open_session("acme", "kestrel", "builder").await;
-    let (run, _) = harness.dispatch_run(session.id).await;
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let (run, _) = kestrel.dispatch_run(session.id).await;
     for message in 1..=said {
-        harness.said(&run, &format!("message {message}")).await;
+        kestrel.said(&run, &format!("message {message}")).await;
     }
 
     (session.id.to_string(), run)
 }
 
-async fn recorded_seqs(harness: &Harness, session: &str) -> Vec<i64> {
-    harness
+async fn recorded_seqs(kestrel: &Kestrel, session: &str) -> Vec<i64> {
+    kestrel
         .transcript(session.parse().expect("a session id"))
         .await
         .iter()
@@ -91,15 +91,15 @@ fn shortest_prefix_of(id: &str, others: &[&str]) -> String {
     id[..length].to_owned()
 }
 
-async fn client(harness: &Harness, args: &[&str]) -> client::Finished {
-    client_given(harness, args, None).await
+async fn client(kestrel: &Kestrel, args: &[&str]) -> client::Finished {
+    client_given(kestrel, args, None).await
 }
 
-async fn client_given(harness: &Harness, args: &[&str], input: Option<&str>) -> client::Finished {
+async fn client_given(kestrel: &Kestrel, args: &[&str], input: Option<&str>) -> client::Finished {
     let invocation = input.map_or_else(client::Invocation::default, |input| {
         client::Invocation::default().given(input)
     });
-    client::ran_by(harness, args, invocation).await
+    client::ran_by(kestrel, args, invocation).await
 }
 
 const DECLARATION: &str = r#"
@@ -110,7 +110,7 @@ project:
   branch: main
 agent:
   name: builder
-  runtime: opencode
+  harness: opencode
 trigger:
   name: ready
   filter:
@@ -143,7 +143,7 @@ fn recorded(finished: &client::Finished) -> Vec<Value> {
 /// reaches none of these assertions.
 const ORGANIZATION: &str = "id,name,max_live_instances";
 const PROJECT: &str = "id,name,repositories,branch";
-const AGENT: &str = "id,name,runtime,model";
+const AGENT: &str = "id,name,harness,model";
 const CREDENTIAL: &str = "variable";
 const INTEGRATION: &str = "id,kind,repository,carries,polled_every,webhook_path,last_event_refusal";
 const EVENT: &str = "record,integration,event";
@@ -154,13 +154,13 @@ const ENTRY: &str = "seq,entry";
 
 /// Every answer is checked against what the published document says the operation answers.
 async fn requested(
-    harness: &Harness,
+    kestrel: &Kestrel,
     method: reqwest::Method,
     path: &str,
     body: Option<&Value>,
 ) -> (StatusCode, Value) {
     let mut request =
-        reqwest::Client::new().request(method.clone(), format!("{}{path}", harness.operator()));
+        reqwest::Client::new().request(method.clone(), format!("{}{path}", kestrel.operator()));
     if let Some(body) = body {
         request = request.json(body);
     }
@@ -181,23 +181,23 @@ async fn requested(
     (status, body)
 }
 
-async fn declared(harness: &Harness, path: &str, declaration: &Value) -> (StatusCode, Value) {
-    requested(harness, reqwest::Method::POST, path, Some(declaration)).await
+async fn declared(kestrel: &Kestrel, path: &str, declaration: &Value) -> (StatusCode, Value) {
+    requested(kestrel, reqwest::Method::POST, path, Some(declaration)).await
 }
 
-async fn got(harness: &Harness, path: &str) -> (StatusCode, Value) {
-    requested(harness, reqwest::Method::GET, path, None).await
+async fn got(kestrel: &Kestrel, path: &str) -> (StatusCode, Value) {
+    requested(kestrel, reqwest::Method::GET, path, None).await
 }
 
-async fn listed(harness: &Harness, path: &str) -> Vec<Value> {
-    let (status, body) = got(harness, path).await;
+async fn listed(kestrel: &Kestrel, path: &str) -> Vec<Value> {
+    let (status, body) = got(kestrel, path).await;
 
     assert_eq!(status, StatusCode::OK, "{body}");
     body.as_array().expect("an array of records").clone()
 }
 
-async fn listed_nothing(harness: &Harness, path: &str) -> bool {
-    listed(harness, path).await.is_empty()
+async fn listed_nothing(kestrel: &Kestrel, path: &str) -> bool {
+    listed(kestrel, path).await.is_empty()
 }
 
 fn projects_of(organization: &str) -> String {
@@ -318,11 +318,11 @@ fn failed(finished: &client::Finished) -> &str {
 
 #[tokio::test]
 async fn a_client_declares_and_lists_organizations_without_opening_a_database() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
     let declared = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "organization",
                 "declare",
@@ -335,9 +335,9 @@ async fn a_client_declares_and_lists_organizations_without_opening_a_database() 
         )
         .await,
     );
-    succeeded(&client(&harness, &["organization", "declare", "globex"]).await);
+    succeeded(&client(&kestrel, &["organization", "declare", "globex"]).await);
     let listed =
-        recorded(&client(&harness, &["organization", "list", "--json", ORGANIZATION]).await);
+        recorded(&client(&kestrel, &["organization", "list", "--json", ORGANIZATION]).await);
 
     assert_eq!(declared.len(), 1);
     assert_eq!(declared[0]["name"], "acme");
@@ -351,21 +351,21 @@ async fn a_client_declares_and_lists_organizations_without_opening_a_database() 
     );
     assert_eq!(listed[0]["id"], declared[0]["id"]);
     assert_eq!(
-        harness.organizations().await[0].id.to_string(),
+        kestrel.organizations().await[0].id.to_string(),
         declared[0]["id"].as_str().expect("an id")
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_declares_and_lists_projects_and_agents() {
-    let harness = Harness::boot().await;
-    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    let kestrel = Kestrel::boot().await;
+    succeeded(&client(&kestrel, &["organization", "declare", "acme"]).await);
 
     let project = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "project",
                 "declare",
@@ -386,7 +386,7 @@ async fn a_client_declares_and_lists_projects_and_agents() {
     );
     let agent = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "agent",
                 "declare",
@@ -403,7 +403,7 @@ async fn a_client_declares_and_lists_projects_and_agents() {
     );
     let projects = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "project",
                 "list",
@@ -417,7 +417,7 @@ async fn a_client_declares_and_lists_projects_and_agents() {
     );
     let agents = recorded(
         &client(
-            &harness,
+            &kestrel,
             &["agent", "list", "--organization", "acme", "--json", AGENT],
         )
         .await,
@@ -433,25 +433,25 @@ async fn a_client_declares_and_lists_projects_and_agents() {
     );
     assert_eq!(projects[0]["branch"], "main");
     assert_eq!(agents, agent);
-    assert_eq!(agents[0]["runtime"], "opencode");
+    assert_eq!(agents[0]["harness"], "opencode");
     assert_eq!(agents[0]["model"], "claude-opus-5");
 
-    let opened = harness.open_session("acme", "kestrel", "builder").await;
+    let opened = kestrel.open_session("acme", "kestrel", "builder").await;
     assert_eq!(
         opened.project.id.to_string(),
         project[0]["id"].as_str().expect("an id")
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_applies_one_project_agent_and_trigger_declaration() {
-    let harness = Harness::boot().await;
-    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    let kestrel = Kestrel::boot().await;
+    succeeded(&client(&kestrel, &["organization", "declare", "acme"]).await);
 
     let first = client::ran_by(
-        &harness,
+        &kestrel,
         &["apply", "--organization", "acme", "-f", "kestrel.yaml"],
         client::Invocation::default().file("kestrel.yaml", DECLARATION),
     )
@@ -471,7 +471,7 @@ async fn a_client_applies_one_project_agent_and_trigger_declaration() {
     assert!(first.contains(&"    branch".to_owned()), "{first:?}");
     let project = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "project",
                 "list",
@@ -485,14 +485,14 @@ async fn a_client_applies_one_project_agent_and_trigger_declaration() {
     );
     let agent = recorded(
         &client(
-            &harness,
+            &kestrel,
             &["agent", "list", "--organization", "acme", "--json", AGENT],
         )
         .await,
     );
     let trigger = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "trigger",
                 "list",
@@ -506,7 +506,7 @@ async fn a_client_applies_one_project_agent_and_trigger_declaration() {
     );
 
     let again = client::ran_by(
-        &harness,
+        &kestrel,
         &["apply", "--organization", "acme", "-f", "kestrel.yaml"],
         client::Invocation::default().file("kestrel.yaml", DECLARATION),
     )
@@ -519,7 +519,7 @@ async fn a_client_applies_one_project_agent_and_trigger_declaration() {
     assert_eq!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &[
                     "project",
                     "list",
@@ -536,7 +536,7 @@ async fn a_client_applies_one_project_agent_and_trigger_declaration() {
     assert_eq!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &["agent", "list", "--organization", "acme", "--json", AGENT,],
             )
             .await,
@@ -546,7 +546,7 @@ async fn a_client_applies_one_project_agent_and_trigger_declaration() {
     assert_eq!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &[
                     "trigger",
                     "list",
@@ -562,7 +562,7 @@ async fn a_client_applies_one_project_agent_and_trigger_declaration() {
     );
 
     let changed = client::ran_by(
-        &harness,
+        &kestrel,
         &["apply", "--organization", "acme", "-f", "kestrel.yaml"],
         client::Invocation::default().file(
             "kestrel.yaml",
@@ -579,20 +579,20 @@ async fn a_client_applies_one_project_agent_and_trigger_declaration() {
     assert!(changed.contains(&"      - main".to_owned()), "{changed:?}");
     assert!(changed.contains(&"      + next".to_owned()), "{changed:?}");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_declaration_preview_changes_nothing() {
-    let harness = Harness::boot().await;
-    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    let kestrel = Kestrel::boot().await;
+    succeeded(&client(&kestrel, &["organization", "declare", "acme"]).await);
     let declaration = json!({
         "project": {
             "name": "kestrel",
             "repositories": ["https://github.com/jtmthf/kestrel"],
             "branch": "main",
         },
-        "agent": { "name": "builder", "runtime": "opencode" },
+        "agent": { "name": "builder", "harness": "opencode" },
         "trigger": {
             "name": "ready",
             "filter": { "exact": { "type": "com.github.issues.labeled" } },
@@ -602,14 +602,14 @@ async fn a_declaration_preview_changes_nothing() {
         },
     });
 
-    let (status, preview) = declared(&harness, &declaration_preview_of("acme"), &declaration).await;
+    let (status, preview) = declared(&kestrel, &declaration_preview_of("acme"), &declaration).await;
 
     assert_eq!(status, StatusCode::OK, "{preview}");
     assert_eq!(preview["declarations"][0]["action"], "add");
     assert!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &[
                     "project",
                     "list",
@@ -624,12 +624,12 @@ async fn a_declaration_preview_changes_nothing() {
         .is_empty()
     );
 
-    let (status, applied) = declared(&harness, &declaration_of("acme"), &declaration).await;
+    let (status, applied) = declared(&kestrel, &declaration_of("acme"), &declaration).await;
 
     assert_eq!(status, StatusCode::OK, "{applied}");
     assert_eq!(applied["declarations"][0]["action"], "add");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -640,11 +640,11 @@ async fn a_trigger_applied_after_an_event_never_fires_for_that_event() {
         43,
         "ready-for-agent",
     )]));
-    let harness = Harness::boot().await;
-    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    let kestrel = Kestrel::boot().await;
+    succeeded(&client(&kestrel, &["organization", "declare", "acme"]).await);
     succeeded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "integration",
                 "register",
@@ -669,7 +669,7 @@ async fn a_trigger_applied_after_an_event_never_fires_for_that_event() {
     for _ in 0..100 {
         events = recorded(
             &client(
-                &harness,
+                &kestrel,
                 &["event", "list", "--organization", "acme", "--json", EVENT],
             )
             .await,
@@ -686,7 +686,7 @@ async fn a_trigger_applied_after_an_event_never_fires_for_that_event() {
 
     succeeded(
         &client::ran_by(
-            &harness,
+            &kestrel,
             &["apply", "--organization", "acme", "-f", "kestrel.yaml"],
             client::Invocation::default().file("kestrel.yaml", DECLARATION),
         )
@@ -697,7 +697,7 @@ async fn a_trigger_applied_after_an_event_never_fires_for_that_event() {
     assert!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &[
                     "session",
                     "list",
@@ -713,20 +713,20 @@ async fn a_trigger_applied_after_an_event_never_fires_for_that_event() {
         "a trigger fired for an event recorded before it was applied"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_inconsistent_declaration_changes_nothing() {
-    let harness = Harness::boot().await;
-    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    let kestrel = Kestrel::boot().await;
+    succeeded(&client(&kestrel, &["organization", "declare", "acme"]).await);
     let inconsistent = DECLARATION.replace(
         "project: kestrel\n  agent: builder",
         "project: elsewhere\n  agent: builder",
     );
 
     let refused = client::ran_by(
-        &harness,
+        &kestrel,
         &["apply", "--organization", "acme", "-f", "kestrel.yaml"],
         client::Invocation::default().file("kestrel.yaml", &inconsistent),
     )
@@ -741,7 +741,7 @@ async fn an_inconsistent_declaration_changes_nothing() {
     assert!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &[
                     "project",
                     "list",
@@ -758,7 +758,7 @@ async fn an_inconsistent_declaration_changes_nothing() {
     assert!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &["agent", "list", "--organization", "acme", "--json", AGENT,],
             )
             .await,
@@ -768,7 +768,7 @@ async fn an_inconsistent_declaration_changes_nothing() {
     assert!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &[
                     "trigger",
                     "list",
@@ -783,16 +783,16 @@ async fn an_inconsistent_declaration_changes_nothing() {
         .is_empty()
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
-    let harness = Harness::boot().await;
-    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    let kestrel = Kestrel::boot().await;
+    succeeded(&client(&kestrel, &["organization", "declare", "acme"]).await);
     succeeded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "project",
                 "declare",
@@ -809,7 +809,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
     );
     succeeded(
         &client(
-            &harness,
+            &kestrel,
             &["agent", "declare", "builder", "--organization", "acme"],
         )
         .await,
@@ -817,7 +817,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
 
     let opened = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "session",
                 "open",
@@ -838,7 +838,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
 
     let listed = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "session",
                 "list",
@@ -852,13 +852,13 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
     );
     assert_eq!(listed, opened);
     let shown =
-        recorded(&client(&harness, &["session", "show", &session, "--json", SESSION]).await);
+        recorded(&client(&kestrel, &["session", "show", &session, "--json", SESSION]).await);
     assert_eq!(shown, opened);
     assert_eq!(shown[0]["name"], session_name);
 
     let posted = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "session",
                 "post",
@@ -877,7 +877,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
     assert_eq!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &["run", "list", "--session", &session, "--json", RUN]
             )
             .await
@@ -885,19 +885,19 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         posted
     );
 
-    let completed = harness
+    let completed = kestrel
         .claim_run()
         .await
         .expect("the posted run should wait for the worker");
     assert_eq!(completed.run.id.to_string(), run);
-    harness.complete_run(&completed.run).await;
+    kestrel.complete_run(&completed.run).await;
     let sealed =
-        recorded(&client(&harness, &["session", "seal", &session, "--json", SESSION]).await);
+        recorded(&client(&kestrel, &["session", "seal", &session, "--json", SESSION]).await);
     assert_eq!(sealed[0]["state"], "sealed");
 
     let continued = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "session",
                 "open",
@@ -920,7 +920,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
     assert_eq!(continued[0]["continues"], session);
     let enqueued = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "run",
                 "enqueue",
@@ -940,7 +940,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
     assert_eq!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &["run", "list", "--session", continuing, "--json", RUN]
             )
             .await
@@ -948,14 +948,14 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         enqueued
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_names_a_session_by_name_identifier_prefix_and_latest() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -963,17 +963,17 @@ async fn a_client_names_a_session_by_name_identifier_prefix_and_latest() {
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
 
-    let first = harness.open_session("acme", "kestrel", "builder").await;
-    let second = harness.open_session("acme", "kestrel", "builder").await;
+    let first = kestrel.open_session("acme", "kestrel", "builder").await;
+    let second = kestrel.open_session("acme", "kestrel", "builder").await;
     let (first_id, second_id) = (first.id.to_string(), second.id.to_string());
 
     let by_name = recorded(
         &client(
-            &harness,
+            &kestrel,
             &["session", "show", &second.name, "--json", SESSION],
         )
         .await,
@@ -981,7 +981,7 @@ async fn a_client_names_a_session_by_name_identifier_prefix_and_latest() {
     assert_eq!(by_name[0]["id"], second_id);
 
     let by_id =
-        recorded(&client(&harness, &["session", "show", &first_id, "--json", SESSION]).await);
+        recorded(&client(&kestrel, &["session", "show", &first_id, "--json", SESSION]).await);
     assert_eq!(by_id[0]["name"], first.name);
 
     let prefix = shortest_prefix_of(&first_id, &[&second_id]);
@@ -990,21 +990,21 @@ async fn a_client_names_a_session_by_name_identifier_prefix_and_latest() {
         "two sessions opened into the one identifier"
     );
     let by_prefix =
-        recorded(&client(&harness, &["session", "show", &prefix, "--json", SESSION]).await);
+        recorded(&client(&kestrel, &["session", "show", &prefix, "--json", SESSION]).await);
     assert_eq!(by_prefix[0]["id"], first_id);
 
     let latest =
-        recorded(&client(&harness, &["session", "show", "latest", "--json", SESSION]).await);
+        recorded(&client(&kestrel, &["session", "show", "latest", "--json", SESSION]).await);
     assert_eq!(latest[0]["id"], second_id);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_session_reference_matching_several_is_refused_naming_them() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -1012,14 +1012,14 @@ async fn a_session_reference_matching_several_is_refused_naming_them() {
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
     for _ in 0..17 {
-        harness.open_session("acme", "kestrel", "builder").await;
+        kestrel.open_session("acme", "kestrel", "builder").await;
     }
 
-    let listed = recorded(&client(&harness, &["session", "list", "--json", "id,name"]).await);
+    let listed = recorded(&client(&kestrel, &["session", "list", "--json", "id,name"]).await);
     let mut by_leading: HashMap<char, Vec<(String, String)>> = HashMap::new();
     for record in &listed {
         let id = record["id"].as_str().expect("an identifier").to_owned();
@@ -1037,7 +1037,7 @@ async fn a_session_reference_matching_several_is_refused_naming_them() {
         .find(|(_, matching)| matching.len() > 1)
         .expect("seventeen identifiers over sixteen leading digits share one");
 
-    let refused = client(&harness, &["session", "show", &leading.to_string()]).await;
+    let refused = client(&kestrel, &["session", "show", &leading.to_string()]).await;
     let said = failed(&refused);
 
     assert!(said.contains("ambiguous"), "{said}");
@@ -1051,15 +1051,15 @@ async fn a_session_reference_matching_several_is_refused_naming_them() {
         assert!(said.contains(id), "{said} does not name {id}");
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
     for name in ["acme", "globex"] {
-        let organization = harness.declare_organization(name).await;
-        harness
+        let organization = kestrel.declare_organization(name).await;
+        kestrel
             .declare_project(
                 &organization,
                 "kestrel",
@@ -1067,15 +1067,15 @@ async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
                 "main",
             )
             .await;
-        harness
+        kestrel
             .declare_agent(&organization, "builder", "opencode", None)
             .await;
     }
-    let acme = harness.open_session("acme", "kestrel", "builder").await;
-    let globex = harness.open_session("globex", "kestrel", "builder").await;
+    let acme = kestrel.open_session("acme", "kestrel", "builder").await;
+    let globex = kestrel.open_session("globex", "kestrel", "builder").await;
 
     let refused = client(
-        &harness,
+        &kestrel,
         &[
             "session",
             "show",
@@ -1093,7 +1093,7 @@ async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
 
     let latest = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "session",
                 "show",
@@ -1109,7 +1109,7 @@ async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
     assert_eq!(latest[0]["id"], globex.id.to_string());
 
     let refused = client(
-        &harness,
+        &kestrel,
         &[
             "session",
             "show",
@@ -1125,14 +1125,14 @@ async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
         "the refusal is not corrective: {said}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_names_a_run_by_name_identifier_prefix_and_latest() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -1140,37 +1140,37 @@ async fn a_client_names_a_run_by_name_identifier_prefix_and_latest() {
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
 
-    let session = harness.open_session("acme", "kestrel", "builder").await;
-    let first = harness.enqueue_run(session.id).await;
-    harness.stop_run(first.id).await;
-    let second = harness.enqueue_run(session.id).await;
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let first = kestrel.enqueue_run(session.id).await;
+    kestrel.stop_run(first.id).await;
+    let second = kestrel.enqueue_run(session.id).await;
     let (first_id, second_id) = (first.id.to_string(), second.id.to_string());
 
-    let by_name = recorded(&client(&harness, &["run", "show", &second.name, "--json", RUN]).await);
+    let by_name = recorded(&client(&kestrel, &["run", "show", &second.name, "--json", RUN]).await);
     assert_eq!(by_name[0]["id"], second_id);
 
-    let by_id = recorded(&client(&harness, &["run", "show", &first_id, "--json", RUN]).await);
+    let by_id = recorded(&client(&kestrel, &["run", "show", &first_id, "--json", RUN]).await);
     assert_eq!(by_id[0]["name"], first.name);
 
     let prefix = shortest_prefix_of(&first_id, &[&second_id]);
-    let by_prefix = recorded(&client(&harness, &["run", "show", &prefix, "--json", RUN]).await);
+    let by_prefix = recorded(&client(&kestrel, &["run", "show", &prefix, "--json", RUN]).await);
     assert_eq!(by_prefix[0]["id"], first_id);
 
-    let latest = recorded(&client(&harness, &["run", "show", "latest", "--json", RUN]).await);
+    let latest = recorded(&client(&kestrel, &["run", "show", "latest", "--json", RUN]).await);
     assert_eq!(latest[0]["id"], second_id);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn session_and_run_names_remain_unique_when_creation_retries_collisions() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -1178,30 +1178,30 @@ async fn session_and_run_names_remain_unique_when_creation_retries_collisions() 
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
 
     let mut session_names = HashSet::new();
     let mut run_names = HashSet::new();
     for _ in 0..100 {
-        let session = harness.open_session("acme", "kestrel", "builder").await;
+        let session = kestrel.open_session("acme", "kestrel", "builder").await;
         assert!(session_names.insert(session.name));
 
-        let run = harness.enqueue_run(session.id).await;
+        let run = kestrel.enqueue_run(session.id).await;
         assert!(run_names.insert(run.name));
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_manages_triggers_without_opening_a_database() {
-    let harness = Harness::boot().await;
-    succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
+    let kestrel = Kestrel::boot().await;
+    succeeded(&client(&kestrel, &["organization", "declare", "acme"]).await);
     succeeded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "project",
                 "declare",
@@ -1218,16 +1218,16 @@ async fn a_client_manages_triggers_without_opening_a_database() {
     );
     succeeded(
         &client(
-            &harness,
+            &kestrel,
             &["agent", "declare", "builder", "--organization", "acme"],
         )
         .await,
     );
-    let webhook = harness
+    let webhook = kestrel
         .register_webhook("acme", "events", "a-shared-secret")
         .await;
     let response = reqwest::Client::new()
-        .post(format!("{}{}", harness.link(), webhook.webhook_path()))
+        .post(format!("{}{}", kestrel.link(), webhook.webhook_path()))
         .bearer_auth("a-shared-secret")
         .header("content-type", "application/cloudevents+json")
         .body(
@@ -1244,7 +1244,7 @@ async fn a_client_manages_triggers_without_opening_a_database() {
         .await
         .expect("the webhook should answer");
     assert!(response.status().is_success());
-    let retained = harness.events("acme").await[0].record_id.to_string();
+    let retained = kestrel.events("acme").await[0].record_id.to_string();
 
     let declaration = [
         "trigger",
@@ -1263,14 +1263,14 @@ async fn a_client_manages_triggers_without_opening_a_database() {
         "--json",
         TRIGGER,
     ];
-    let declared = recorded(&client(&harness, &declaration).await);
+    let declared = recorded(&client(&kestrel, &declaration).await);
     let trigger = declared[0]["id"].as_str().expect("a trigger id").to_owned();
     assert_eq!(declared[0]["name"], "ready");
     assert_eq!(declared[0]["state"], "enabled");
 
     let listed = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "trigger",
                 "list",
@@ -1286,7 +1286,7 @@ async fn a_client_manages_triggers_without_opening_a_database() {
     assert_eq!(
         recorded(
             &client(
-                &harness,
+                &kestrel,
                 &[
                     "trigger",
                     "show",
@@ -1302,13 +1302,13 @@ async fn a_client_manages_triggers_without_opening_a_database() {
         declared
     );
     assert_eq!(
-        recorded(&client(&harness, &declaration).await)[0]["id"],
+        recorded(&client(&kestrel, &declaration).await)[0]["id"],
         trigger
     );
 
     let changed = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "trigger",
                 "declare",
@@ -1332,7 +1332,7 @@ async fn a_client_manages_triggers_without_opening_a_database() {
     assert_eq!(changed[0]["id"], trigger);
     assert_eq!(changed[0]["brief"], "Triage {{ event.type }}");
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
     let test = vec![
         "trigger",
@@ -1345,12 +1345,12 @@ async fn a_client_manages_triggers_without_opening_a_database() {
         "--json",
         "matches",
     ];
-    let tested = recorded(&client(&harness, &test).await);
+    let tested = recorded(&client(&kestrel, &test).await);
     assert_eq!(tested[0]["matches"], true);
 
     let disabled = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "trigger",
                 "disable",
@@ -1366,7 +1366,7 @@ async fn a_client_manages_triggers_without_opening_a_database() {
     assert_eq!(disabled[0]["state"], "disabled:operator");
     let enabled = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "trigger",
                 "enable",
@@ -1381,14 +1381,14 @@ async fn a_client_manages_triggers_without_opening_a_database() {
     );
     assert_eq!(enabled[0]["state"], "enabled");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_operator_documents_trigger_answers_and_refusals() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -1396,7 +1396,7 @@ async fn the_operator_documents_trigger_answers_and_refusals() {
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
     let triggers = triggers_of("acme");
@@ -1408,16 +1408,16 @@ async fn the_operator_documents_trigger_answers_and_refusals() {
         "agent": "builder",
     });
 
-    assert!(listed_nothing(&harness, &triggers).await);
-    let (status, trigger) = declared(&harness, &triggers, &declaration).await;
+    assert!(listed_nothing(&kestrel, &triggers).await);
+    let (status, trigger) = declared(&kestrel, &triggers, &declaration).await;
     assert_eq!(status, StatusCode::CREATED);
-    let (status, repeated) = declared(&harness, &triggers, &declaration).await;
+    let (status, repeated) = declared(&kestrel, &triggers, &declaration).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(repeated["id"], trigger["id"]);
     let path = trigger_at("acme", "sweep");
-    let (status, _) = got(&harness, &path).await;
+    let (status, _) = got(&kestrel, &path).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, tested) = declared(&harness, &format!("{path}/test"), &json!({})).await;
+    let (status, tested) = declared(&kestrel, &format!("{path}/test"), &json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(tested["matches"], true);
     for misnamed in [
@@ -1425,15 +1425,15 @@ async fn the_operator_documents_trigger_answers_and_refusals() {
         json!({ "integration": "github" }),
         json!({ "issue": 60, "integration": "github", "event": EventRecordId::generate().to_string() }),
     ] {
-        let (status, _) = declared(&harness, &format!("{path}/test"), &misnamed).await;
+        let (status, _) = declared(&kestrel, &format!("{path}/test"), &misnamed).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{misnamed}");
     }
-    let (status, _) = declared(&harness, &format!("{path}/disable"), &json!({})).await;
+    let (status, _) = declared(&kestrel, &format!("{path}/disable"), &json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = declared(&harness, &format!("{path}/enable"), &json!({})).await;
+    let (status, _) = declared(&kestrel, &format!("{path}/enable"), &json!({})).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = declared(
-        &harness,
+        &kestrel,
         &triggers,
         &json!({
             "name": "broken",
@@ -1447,14 +1447,14 @@ async fn the_operator_documents_trigger_answers_and_refusals() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -1462,7 +1462,7 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
     let fields = "name,every,cron,zone,filter";
@@ -1488,7 +1488,7 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
 
     let triage = recorded(
         &client(
-            &harness,
+            &kestrel,
             &declare(&["--cron", "0 9 * * 1-5", "--zone", "America/New_York"]),
         )
         .await,
@@ -1505,7 +1505,7 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
     );
     let listed = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "trigger",
                 "list",
@@ -1520,7 +1520,7 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
     assert_eq!(listed, triage);
     let shown = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "trigger",
                 "show",
@@ -1547,7 +1547,7 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
         ]),
         declare(&["--cron", "0 9 * * *"]),
     ] {
-        failed(&client(&harness, &refused).await);
+        failed(&client(&kestrel, &refused).await);
     }
 
     let triggers = triggers_of("acme");
@@ -1569,7 +1569,7 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
             .as_object_mut()
             .expect("a declaration is an object")
             .extend(body.as_object().expect("a body is an object").clone());
-        let (status, refusal) = declared(&harness, &triggers, &declaration).await;
+        let (status, refusal) = declared(&kestrel, &triggers, &declaration).await;
         assert_eq!(
             status,
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1577,14 +1577,14 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
         );
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_operator_documents_session_and_run_answers_and_refusals() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -1592,22 +1592,22 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
     let sessions = operator::SESSIONS.replace("{organization}", "acme");
 
-    let (status, _) = got(&harness, &sessions).await;
+    let (status, _) = got(&kestrel, &sessions).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = declared(
-        &harness,
+        &kestrel,
         &sessions,
         &json!({ "project": "nowhere", "agent": "builder" }),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, opened) = declared(
-        &harness,
+        &kestrel,
         &sessions,
         &json!({ "project": "kestrel", "agent": "builder" }),
     )
@@ -1618,42 +1618,42 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     let messages = session_messages_at("acme", session);
     let runs = runs_of("acme", session);
 
-    let (status, _) = got(&harness, &shown).await;
+    let (status, _) = got(&kestrel, &shown).await;
     assert_eq!(status, StatusCode::OK);
     let (status, posted) = declared(
-        &harness,
+        &kestrel,
         &messages,
         &json!({ "message": "start with the operator boundary" }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(posted["session"], session);
-    let (status, _) = got(&harness, &runs).await;
+    let (status, _) = got(&kestrel, &runs).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = declared(&harness, &runs, &json!({})).await;
+    let (status, _) = declared(&kestrel, &runs, &json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
     let run_id = posted["id"].as_str().expect("a run id");
     let run_name = posted["name"].as_str().expect("a generated run name");
-    let (status, shown_run) = got(&harness, &run_at("acme", run_id)).await;
+    let (status, shown_run) = got(&kestrel, &run_at("acme", run_id)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(shown_run["session"], session);
-    let (status, named_run) = got(&harness, &run_at("acme", run_name)).await;
+    let (status, named_run) = got(&kestrel, &run_at("acme", run_name)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(named_run["id"], run_id);
 
-    let run = harness
+    let run = kestrel
         .claim_run()
         .await
         .expect("the posted run should wait for the worker");
-    harness.complete_run(&run.run).await;
+    kestrel.complete_run(&run.run).await;
     let seal = session_seal_at("acme", session);
-    let (status, _) = declared(&harness, &seal, &json!({})).await;
+    let (status, _) = declared(&kestrel, &seal, &json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = declared(&harness, &seal, &json!({})).await;
+    let (status, _) = declared(&kestrel, &seal, &json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     let (status, _) = declared(
-        &harness,
+        &kestrel,
         &sessions,
         &json!({ "project": "kestrel", "agent": "builder", "continues": session }),
     )
@@ -1661,7 +1661,7 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     assert_eq!(status, StatusCode::CREATED);
     let session_name = opened["name"].as_str().expect("a generated session name");
     let (status, _) = declared(
-        &harness,
+        &kestrel,
         &sessions,
         &json!({ "project": "kestrel", "agent": "builder", "continues": session_name }),
     )
@@ -1669,17 +1669,17 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     assert_eq!(status, StatusCode::CREATED);
 
     let nowhere = session_at("acme", "01a0a2d8-baf8-7c02-99fa-7280f174c14a");
-    let (status, _) = got(&harness, &nowhere).await;
+    let (status, _) = got(&kestrel, &nowhere).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_not_an_outage() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -1687,20 +1687,20 @@ async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_n
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    let session = harness.open_session("acme", "kestrel", "builder").await;
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
 
-    let queued = harness.enqueue_run(session.id).await;
-    let claimed = harness
+    let queued = kestrel.enqueue_run(session.id).await;
+    let claimed = kestrel
         .occupy_run()
         .await
         .expect("the run should claim")
         .run;
     assert_eq!(claimed.id, queued.id);
-    harness.executes_on(&claimed, "held").await;
-    harness
+    kestrel.executes_on(&claimed, "held").await;
+    kestrel
         .report_checkout(
             &claimed,
             vec![Observed {
@@ -1715,11 +1715,11 @@ async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_n
             }],
         )
         .await;
-    harness.complete_run(&claimed).await;
+    kestrel.complete_run(&claimed).await;
 
     let session_id = session.id.to_string();
     let (status, refusal) =
-        declared(&harness, &session_seal_at("acme", &session_id), &json!({})).await;
+        declared(&kestrel, &session_seal_at("acme", &session_id), &json!({})).await;
 
     assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
     let message = refusal["message"].as_str().expect("a message");
@@ -1728,7 +1728,7 @@ async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_n
         "{refusal}"
     );
 
-    let rejected = client(&harness, &["session", "seal", &session_id]).await;
+    let rejected = client(&kestrel, &["session", "seal", &session_id]).await;
     assert!(
         failed(&rejected).contains("may hold the only copy of its work"),
         "{}",
@@ -1741,18 +1741,18 @@ async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_n
         rejected.err
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
     let project = json!({
         "name": "kestrel",
         "repositories": ["https://github.com/jtmthf/kestrel"],
         "branch": "main",
     });
-    let agent = json!({ "name": "builder", "runtime": "opencode", "model": "claude-opus-5" });
+    let agent = json!({ "name": "builder", "harness": "opencode", "model": "claude-opus-5" });
 
     let declarations = [
         (
@@ -1764,21 +1764,21 @@ async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
     ];
 
     for (path, declaration) in &declarations {
-        let (created, first) = declared(&harness, path, declaration).await;
-        let (repeated, second) = declared(&harness, path, declaration).await;
+        let (created, first) = declared(&kestrel, path, declaration).await;
+        let (repeated, second) = declared(&kestrel, path, declaration).await;
 
         assert_eq!(created, StatusCode::CREATED, "{first}");
         assert_eq!(repeated, StatusCode::OK, "{second}");
         assert_eq!(first, second);
     }
-    assert_eq!(listed(&harness, operator::ORGANIZATIONS).await.len(), 1);
-    assert_eq!(listed(&harness, &projects_of("acme")).await.len(), 1);
-    assert_eq!(listed(&harness, &agents_of("acme")).await.len(), 1);
+    assert_eq!(listed(&kestrel, operator::ORGANIZATIONS).await.len(), 1);
+    assert_eq!(listed(&kestrel, &projects_of("acme")).await.len(), 1);
+    assert_eq!(listed(&kestrel, &agents_of("acme")).await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
-fn a_start(organization: &str, agent_runtime: &str, brief: &str) -> Value {
+fn a_start(organization: &str, harness: &str, brief: &str) -> Value {
     json!({
         "organization": organization,
         "project": {
@@ -1786,17 +1786,17 @@ fn a_start(organization: &str, agent_runtime: &str, brief: &str) -> Value {
             "repositories": ["https://github.com/jtmthf/kestrel"],
             "branch": "main",
         },
-        "agent": { "name": "builder", "runtime": agent_runtime, "model": null },
+        "agent": { "name": "builder", "harness": harness, "model": null },
         "brief": brief,
     })
 }
 
 #[tokio::test]
 async fn a_start_declares_its_setup_and_reaches_a_run_carrying_its_brief() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
     let (status, started) = declared(
-        &harness,
+        &kestrel,
         operator::STARTS,
         &a_start("acme", "opencode", "Fix the flaky test"),
     )
@@ -1818,7 +1818,7 @@ async fn a_start_declares_its_setup_and_reaches_a_run_carrying_its_brief() {
         .parse()
         .expect("a session identifier");
     assert_eq!(
-        harness.transcript(session).await[0].entry,
+        kestrel.transcript(session).await[0].entry,
         Entry::Brief {
             trigger: None,
             brief: "Fix the flaky test".to_owned(),
@@ -1826,7 +1826,7 @@ async fn a_start_declares_its_setup_and_reaches_a_run_carrying_its_brief() {
     );
 
     let (status, again) = declared(
-        &harness,
+        &kestrel,
         operator::STARTS,
         &a_start("acme", "opencode", "And another"),
     )
@@ -1835,56 +1835,56 @@ async fn a_start_declares_its_setup_and_reaches_a_run_carrying_its_brief() {
     assert_eq!(again["project"]["created"], false);
     assert_ne!(again["session"]["id"], started["session"]["id"]);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_start_that_would_change_a_declaration_leaves_nothing_behind() {
-    let harness = Harness::boot().await;
-    let acme = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let acme = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_agent(&acme, "builder", "claude", None)
         .await;
 
     let mut start = a_start("acme", "opencode", "Fix the flaky test");
     start["credentials"] = json!([{ "variable": "ANTHROPIC_API_KEY", "secret": "sk-ant" }]);
-    let (status, refused) = declared(&harness, operator::STARTS, &start).await;
+    let (status, refused) = declared(&kestrel, operator::STARTS, &start).await;
 
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
-    assert!(listed_nothing(&harness, &credentials_of("acme")).await);
+    assert!(listed_nothing(&kestrel, &credentials_of("acme")).await);
     assert!(
         refused["message"]
             .as_str()
             .is_some_and(|message| message.contains("claude")),
         "{refused}"
     );
-    assert!(listed_nothing(&harness, &projects_of("acme")).await);
+    assert!(listed_nothing(&kestrel, &projects_of("acme")).await);
     assert!(
         listed_nothing(
-            &harness,
+            &kestrel,
             &operator::SESSIONS.replace("{organization}", "acme")
         )
         .await
     );
     assert_eq!(
-        listed(&harness, &agents_of("acme")).await[0]["runtime"],
+        listed(&kestrel, &agents_of("acme")).await[0]["harness"],
         "claude"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_changed_project_declaration_converges_on_the_project_by_that_name() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
     declared(
-        &harness,
+        &kestrel,
         operator::ORGANIZATIONS,
         &json!({ "name": "acme" }),
     )
     .await;
     let (_, first) = declared(
-        &harness,
+        &kestrel,
         &projects_of("acme"),
         &json!({
             "name": "kestrel",
@@ -1898,7 +1898,7 @@ async fn a_changed_project_declaration_converges_on_the_project_by_that_name() {
     .await;
 
     let (status, changed) = declared(
-        &harness,
+        &kestrel,
         &projects_of("acme"),
         &json!({
             "name": "kestrel",
@@ -1915,57 +1915,57 @@ async fn a_changed_project_declaration_converges_on_the_project_by_that_name() {
         json!(["https://github.com/jtmthf/skills"])
     );
     assert_eq!(changed["branch"], "next");
-    assert_eq!(listed(&harness, &projects_of("acme")).await, vec![changed]);
+    assert_eq!(listed(&kestrel, &projects_of("acme")).await, vec![changed]);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_changed_agent_declaration_converges_on_the_agent_by_that_name() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
     declared(
-        &harness,
+        &kestrel,
         operator::ORGANIZATIONS,
         &json!({ "name": "acme" }),
     )
     .await;
     let (_, first) = declared(
-        &harness,
+        &kestrel,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "opencode", "model": "claude-opus-5" }),
+        &json!({ "name": "builder", "harness": "opencode", "model": "claude-opus-5" }),
     )
     .await;
 
     let (_, changed) = declared(
-        &harness,
+        &kestrel,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "claude-code", "model": "claude-sonnet-5" }),
+        &json!({ "name": "builder", "harness": "claude-code", "model": "claude-sonnet-5" }),
     )
     .await;
     let (status, unnamed) = declared(
-        &harness,
+        &kestrel,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "claude-code" }),
+        &json!({ "name": "builder", "harness": "claude-code" }),
     )
     .await;
 
     assert_eq!(changed["id"], first["id"]);
-    assert_eq!(changed["runtime"], "claude-code");
+    assert_eq!(changed["harness"], "claude-code");
     assert_eq!(changed["model"], "claude-sonnet-5");
     assert_eq!(status, StatusCode::OK, "{unnamed}");
     assert_eq!(unnamed["id"], first["id"]);
     assert_eq!(unnamed["model"], Value::Null);
-    assert_eq!(listed(&harness, &agents_of("acme")).await, vec![unnamed]);
+    assert_eq!(listed(&kestrel, &agents_of("acme")).await, vec![unnamed]);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_declaring_into_no_such_organization_is_refused() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
     let refused = client(
-        &harness,
+        &kestrel,
         &[
             "project",
             "declare",
@@ -1980,9 +1980,9 @@ async fn a_client_declaring_into_no_such_organization_is_refused() {
     )
     .await;
     let (status, refusal) = declared(
-        &harness,
+        &kestrel,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "opencode" }),
+        &json!({ "name": "builder", "harness": "opencode" }),
     )
     .await;
 
@@ -1995,34 +1995,34 @@ async fn a_client_declaring_into_no_such_organization_is_refused() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(refusal["message"], "no organization named acme");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_declaration_that_describes_nothing_declarable_is_refused() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
     declared(
-        &harness,
+        &kestrel,
         operator::ORGANIZATIONS,
         &json!({ "name": "acme" }),
     )
     .await;
 
     let (malformed, _) = declared(
-        &harness,
+        &kestrel,
         operator::ORGANIZATIONS,
         &json!({ "title": "acme" }),
     )
     .await;
-    let (unnamed, _) = declared(&harness, operator::ORGANIZATIONS, &json!({ "name": "" })).await;
+    let (unnamed, _) = declared(&kestrel, operator::ORGANIZATIONS, &json!({ "name": "" })).await;
     let (nowhere, refusal) = declared(
-        &harness,
+        &kestrel,
         &projects_of("acme"),
         &json!({ "name": "kestrel", "repositories": [], "branch": "main" }),
     )
     .await;
     let (clashing, clash) = declared(
-        &harness,
+        &kestrel,
         &projects_of("acme"),
         &json!({
             "name": "kestrel",
@@ -2050,32 +2050,32 @@ async fn a_declaration_that_describes_nothing_declarable_is_refused() {
             .contains("checked out into api"),
         "{clash}"
     );
-    assert!(listed(&harness, &projects_of("acme")).await.is_empty());
+    assert!(listed(&kestrel, &projects_of("acme")).await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_agent_names_a_model_a_newly_added_profile_could_offer() {
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
     let (built, _) = declared(
-        &harness,
+        &kestrel,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "opencode" }),
+        &json!({ "name": "builder", "harness": "opencode" }),
     )
     .await;
     assert_eq!(built, StatusCode::CREATED);
 
     let (subscribed, _) = declared(
-        &harness,
+        &kestrel,
         &profiles_of("acme"),
         &json!({ "name": "jack", "owner": "Jack" }),
     )
     .await;
     assert_eq!(subscribed, StatusCode::CREATED);
     let (keyed, _) = requested(
-        &harness,
+        &kestrel,
         reqwest::Method::PUT,
         &profile_variable_of("acme", "jack", "OPENCODE_API_KEY"),
         Some(&json!({ "secret": "jacks-subscription-key" })),
@@ -2084,18 +2084,18 @@ async fn an_agent_names_a_model_a_newly_added_profile_could_offer() {
     assert_eq!(keyed, StatusCode::OK);
 
     let (changed, model) = requested(
-        &harness,
+        &kestrel,
         reqwest::Method::PUT,
         &agent_model_of("acme", "builder"),
         Some(&json!({ "model": "opencode-go/glm-5.3" })),
     )
     .await;
     let (named, fresh) = declared(
-        &harness,
+        &kestrel,
         &agents_of("acme"),
         &json!({
             "name": "reviewer",
-            "runtime": "opencode",
+            "harness": "opencode",
             "model": "opencode-go/glm-5.3"
         }),
     )
@@ -2106,17 +2106,17 @@ async fn an_agent_names_a_model_a_newly_added_profile_could_offer() {
     assert_eq!(named, StatusCode::CREATED, "{fresh}");
     assert_eq!(fresh["model"], "opencode-go/glm-5.3");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_sets_lists_and_forgets_provider_credentials_without_saying_them() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
     let secret = "sk-kestrel-should-never-say-this";
 
     let set = client_given(
-        &harness,
+        &kestrel,
         &[
             "credential",
             "set",
@@ -2131,7 +2131,7 @@ async fn a_client_sets_lists_and_forgets_provider_credentials_without_saying_the
     .await;
     let held = recorded(&set);
     let listed = client(
-        &harness,
+        &kestrel,
         &[
             "credential",
             "list",
@@ -2153,12 +2153,12 @@ async fn a_client_sets_lists_and_forgets_provider_credentials_without_saying_the
         );
     }
     assert_eq!(
-        harness.provider_credentials_held(&organization).await[0].variable,
+        kestrel.provider_credentials_held(&organization).await[0].variable,
         "ANTHROPIC_API_KEY"
     );
 
     let forgotten = client(
-        &harness,
+        &kestrel,
         &[
             "credential",
             "forget",
@@ -2169,37 +2169,37 @@ async fn a_client_sets_lists_and_forgets_provider_credentials_without_saying_the
     )
     .await;
     assert!(succeeded(&forgotten).is_empty());
-    assert!(listed_nothing(&harness, &credentials_of("acme")).await);
+    assert!(listed_nothing(&kestrel, &credentials_of("acme")).await);
     assert!(
-        harness
+        kestrel
             .provider_credentials_held(&organization)
             .await
             .is_empty()
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_credential_answers_back_what_it_is_read_from_and_never_its_value() {
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
 
     let (status, held) = requested(
-        &harness,
+        &kestrel,
         reqwest::Method::PUT,
         &credential_of("acme", "OPENAI_API_KEY"),
         Some(&json!({ "secret": "the-first-key" })),
     )
     .await;
     let (replaced, again) = requested(
-        &harness,
+        &kestrel,
         reqwest::Method::PUT,
         &credential_of("acme", "OPENAI_API_KEY"),
         Some(&json!({ "secret": "the-second-key" })),
     )
     .await;
-    let listed = listed(&harness, &credentials_of("acme")).await;
+    let listed = listed(&kestrel, &credentials_of("acme")).await;
 
     assert_eq!(status, StatusCode::OK, "{held}");
     assert_eq!(replaced, StatusCode::OK, "{again}");
@@ -2212,50 +2212,50 @@ async fn a_credential_answers_back_what_it_is_read_from_and_never_its_value() {
         );
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_credential_no_process_could_carry_or_nobody_holds_is_refused() {
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
 
     let (unnamed, refusal) = requested(
-        &harness,
+        &kestrel,
         reqwest::Method::PUT,
         &credential_of("acme", "NOT-A-VARIABLE"),
         Some(&json!({ "secret": "a-key" })),
     )
     .await;
     let (empty, _) = requested(
-        &harness,
+        &kestrel,
         reqwest::Method::PUT,
         &credential_of("acme", "A_KEY"),
         Some(&json!({ "secret": "" })),
     )
     .await;
     let (nowhere, _) = requested(
-        &harness,
+        &kestrel,
         reqwest::Method::PUT,
         &credential_of("globex", "A_KEY"),
         Some(&json!({ "secret": "a-key" })),
     )
     .await;
     let (unheld, _) = requested(
-        &harness,
+        &kestrel,
         reqwest::Method::DELETE,
         &credential_of("acme", "A_KEY"),
         None,
     )
     .await;
     let nothing_on_stdin = client_given(
-        &harness,
+        &kestrel,
         &["credential", "set", "A_KEY", "--organization", "acme"],
         Some(""),
     )
     .await;
     let forgetting = client(
-        &harness,
+        &kestrel,
         &["credential", "forget", "A_KEY", "--organization", "acme"],
     )
     .await;
@@ -2273,19 +2273,19 @@ async fn a_credential_no_process_could_carry_or_nobody_holds_is_refused() {
     assert_eq!(unheld, StatusCode::NOT_FOUND);
     assert!(failed(&nothing_on_stdin).contains("standard input"));
     assert!(failed(&forgetting).contains("holds no provider credential named A_KEY"));
-    assert!(listed_nothing(&harness, &credentials_of("acme")).await);
+    assert!(listed_nothing(&kestrel, &credentials_of("acme")).await);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_registers_and_lists_integrations_without_saying_their_secrets() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
     let stub = GithubStub::start();
-    harness.declare_organization("acme").await;
+    kestrel.declare_organization("acme").await;
 
     let github = client(
-        &harness,
+        &kestrel,
         &[
             "integration",
             "register",
@@ -2307,7 +2307,7 @@ async fn a_client_registers_and_lists_integrations_without_saying_their_secrets(
     )
     .await;
     let webhook = client(
-        &harness,
+        &kestrel,
         &[
             "integration",
             "register",
@@ -2323,7 +2323,7 @@ async fn a_client_registers_and_lists_integrations_without_saying_their_secrets(
     )
     .await;
     let listed = client(
-        &harness,
+        &kestrel,
         &[
             "integration",
             "list",
@@ -2358,20 +2358,20 @@ async fn a_client_registers_and_lists_integrations_without_saying_their_secrets(
         "the listing spelled the webhook secret out"
     );
     assert_eq!(
-        harness.integrations("acme").await[0].id.to_string(),
+        kestrel.integrations("acme").await[0].id.to_string(),
         webhook[0]["id"].as_str().expect("an id")
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_integration_is_registered_with_what_it_is_declared_to_carry() {
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
 
     let (status, signed) = declared(
-        &harness,
+        &kestrel,
         &integrations_of("acme"),
         &json!({
             "kind": "github",
@@ -2391,15 +2391,15 @@ async fn an_integration_is_registered_with_what_it_is_declared_to_carry() {
     assert!(!signed.to_string().contains("a-signing-secret"));
     assert!(!signed.to_string().contains(TOKEN));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_registration_that_describes_no_usable_integration_is_refused() {
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
     let webhook = json!({ "kind": "webhook", "name": "ci", "secret": "a-shared-secret" });
-    declared(&harness, &integrations_of("acme"), &webhook).await;
+    declared(&kestrel, &integrations_of("acme"), &webhook).await;
 
     let refusals = [
         (
@@ -2456,7 +2456,7 @@ async fn a_registration_that_describes_no_usable_integration_is_refused() {
         ),
     ];
     for (path, registration, expected) in &refusals {
-        let (status, refusal) = declared(&harness, path, registration).await;
+        let (status, refusal) = declared(&kestrel, path, registration).await;
         assert_eq!(status, *expected, "{registration} was answered {refusal}");
         assert!(
             !refusal.to_string().contains(TOKEN),
@@ -2464,7 +2464,7 @@ async fn a_registration_that_describes_no_usable_integration_is_refused() {
         );
     }
     let taken = client(
-        &harness,
+        &kestrel,
         &[
             "integration",
             "register",
@@ -2479,20 +2479,20 @@ async fn a_registration_that_describes_no_usable_integration_is_refused() {
     .await;
 
     assert!(failed(&taken).contains("already has an integration named ci"));
-    assert_eq!(listed(&harness, &integrations_of("acme")).await.len(), 1);
+    assert_eq!(listed(&kestrel, &integrations_of("acme")).await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_acknowledges_the_event_an_integration_refused() {
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
-    let webhook = harness
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
+    let webhook = kestrel
         .register_webhook("acme", "ci", "a-shared-secret")
         .await;
     reqwest::Client::new()
-        .post(format!("{}{}", harness.link(), webhook.webhook_path()))
+        .post(format!("{}{}", kestrel.link(), webhook.webhook_path()))
         .bearer_auth("a-shared-secret")
         .header("content-type", "text/plain")
         .body("x".repeat(1024 * 1024 + 1))
@@ -2502,7 +2502,7 @@ async fn a_client_acknowledges_the_event_an_integration_refused() {
 
     let refused = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "integration",
                 "list",
@@ -2515,7 +2515,7 @@ async fn a_client_acknowledges_the_event_an_integration_refused() {
         .await,
     );
     let acknowledged = client(
-        &harness,
+        &kestrel,
         &[
             "integration",
             "acknowledge-refusal",
@@ -2526,14 +2526,14 @@ async fn a_client_acknowledges_the_event_an_integration_refused() {
     )
     .await;
     let (status, _) = requested(
-        &harness,
+        &kestrel,
         reqwest::Method::DELETE,
         &event_refusal_of("acme", "ci"),
         None,
     )
     .await;
     let (unknown, _) = requested(
-        &harness,
+        &kestrel,
         reqwest::Method::DELETE,
         &event_refusal_of("acme", "pager"),
         None,
@@ -2550,23 +2550,23 @@ async fn a_client_acknowledges_the_event_an_integration_refused() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(unknown, StatusCode::NOT_FOUND);
     assert_eq!(
-        listed(&harness, &integrations_of("acme")).await[0]["last_event_refusal"],
+        listed(&kestrel, &integrations_of("acme")).await[0]["last_event_refusal"],
         Value::Null
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_lists_an_organizations_events_and_shows_one_whole() {
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
-    let webhook = harness
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
+    let webhook = kestrel
         .register_webhook("acme", "ci", "a-shared-secret")
         .await;
     for id in ["deploy-1", "deploy-2"] {
         let answered = reqwest::Client::new()
-            .post(format!("{}{}", harness.link(), webhook.webhook_path()))
+            .post(format!("{}{}", kestrel.link(), webhook.webhook_path()))
             .bearer_auth("a-shared-secret")
             .header("content-type", "application/cloudevents+json")
             .body(
@@ -2588,14 +2588,14 @@ async fn a_client_lists_an_organizations_events_and_shows_one_whole() {
 
     let events = recorded(
         &client(
-            &harness,
+            &kestrel,
             &["event", "list", "--organization", "acme", "--json", EVENT],
         )
         .await,
     );
     let limited = recorded(
         &client(
-            &harness,
+            &kestrel,
             &[
                 "event",
                 "list",
@@ -2610,7 +2610,7 @@ async fn a_client_lists_an_organizations_events_and_shows_one_whole() {
         .await,
     );
     let record = events[0]["record"].as_str().expect("a record id");
-    let shown = recorded(&client(&harness, &["event", "show", record, "--json", EVENT]).await);
+    let shown = recorded(&client(&kestrel, &["event", "show", record, "--json", EVENT]).await);
 
     assert_eq!(events.len(), 2);
     assert_eq!(limited, events[..1]);
@@ -2622,25 +2622,25 @@ async fn a_client_lists_an_organizations_events_and_shows_one_whole() {
     assert_eq!(shown[0]["event"]["subject"], "kestrel");
     assert_eq!(shown[0]["event"]["data"], json!({ "image": "kestrel:1" }));
     assert_eq!(
-        harness.events("acme").await[0].record_id.to_string(),
+        kestrel.events("acme").await[0].record_id.to_string(),
         record
     );
-    let (_, over_the_boundary) = got(&harness, &format!("{}?limit=1", events_of("acme"))).await;
+    let (_, over_the_boundary) = got(&kestrel, &format!("{}?limit=1", events_of("acme"))).await;
     assert_eq!(over_the_boundary.as_array().map(Vec::len), Some(1));
     assert_eq!(over_the_boundary[0]["record"], limited[0]["record"]);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_event_nobody_recorded_is_refused() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
     let (unrecorded, refusal) =
-        got(&harness, &event_at(&EventRecordId::generate().to_string())).await;
-    let (malformed, _) = got(&harness, &event_at("yesterday")).await;
-    let (nowhere, _) = got(&harness, &events_of("acme")).await;
-    let showing = client(&harness, &["event", "show", "yesterday"]).await;
+        got(&kestrel, &event_at(&EventRecordId::generate().to_string())).await;
+    let (malformed, _) = got(&kestrel, &event_at("yesterday")).await;
+    let (nowhere, _) = got(&kestrel, &events_of("acme")).await;
+    let showing = client(&kestrel, &["event", "show", "yesterday"]).await;
 
     assert_eq!(unrecorded, StatusCode::NOT_FOUND);
     assert!(
@@ -2654,14 +2654,14 @@ async fn an_event_nobody_recorded_is_refused() {
     assert_eq!(nowhere, StatusCode::NOT_FOUND);
     assert!(failed(&showing).contains("no event yesterday"));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_in_its_own_process_reads_a_transcript_over_the_operator_boundary() {
-    let harness = Harness::boot().await;
-    let (session, _) = an_open_session(&harness, 2).await;
-    let (operator, reading) = (harness.operator(), session.clone());
+    let kestrel = Kestrel::boot().await;
+    let (session, _) = an_open_session(&kestrel, 2).await;
+    let (operator, reading) = (kestrel.operator(), session.clone());
 
     let read = tokio::task::spawn_blocking(move || {
         client::ran(
@@ -2673,7 +2673,7 @@ async fn a_client_in_its_own_process_reads_a_transcript_over_the_operator_bounda
     .expect("the client should run");
 
     assert!(read.status.success(), "the client failed:\n{}", read.err);
-    assert_eq!(seqs(&read.out), recorded_seqs(&harness, &session).await);
+    assert_eq!(seqs(&read.out), recorded_seqs(&kestrel, &session).await);
     let said: Value = serde_json::from_str(&read.out[read.out.len() - 1]).expect("an entry");
     assert_eq!(said["entry"]["kind"], "said");
     assert_eq!(said["entry"]["message"], "message 2");
@@ -2688,14 +2688,14 @@ async fn a_client_in_its_own_process_reads_a_transcript_over_the_operator_bounda
         read.left_behind
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_handed_a_cursor_reads_only_what_came_after_it() {
-    let harness = Harness::boot().await;
-    let (session, run) = an_open_session(&harness, 1).await;
-    let operator = harness.operator();
+    let kestrel = Kestrel::boot().await;
+    let (session, run) = an_open_session(&kestrel, 1).await;
+    let operator = kestrel.operator();
 
     let first = {
         let (operator, session) = (operator.clone(), session.clone());
@@ -2711,7 +2711,7 @@ async fn a_client_handed_a_cursor_reads_only_what_came_after_it() {
         .find_map(|line| line.strip_prefix("cursor  "))
         .expect("a cursor")
         .to_owned();
-    harness.said(&run, "said after the first read").await;
+    kestrel.said(&run, "said after the first read").await;
 
     let second = tokio::task::spawn_blocking(move || {
         client::ran(
@@ -2730,17 +2730,17 @@ async fn a_client_handed_a_cursor_reads_only_what_came_after_it() {
     assert_eq!(second.out.len(), 1, "read {:?}", second.out);
     assert!(second.out[0].contains("said after the first read"));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_following_client_resumes_across_a_restart_without_repeating_an_entry() {
-    let harness = Harness::boot().await;
-    let (session, run) = an_open_session(&harness, 2).await;
-    let before = recorded_seqs(&harness, &session).await.len();
+    let kestrel = Kestrel::boot().await;
+    let (session, run) = an_open_session(&kestrel, 2).await;
+    let before = recorded_seqs(&kestrel, &session).await.len();
 
     let mut client = Client::spawn(
-        &harness.operator(),
+        &kestrel.operator(),
         &[
             "session",
             "transcript",
@@ -2755,13 +2755,13 @@ async fn a_following_client_resumes_across_a_restart_without_repeating_an_entry(
         read.push(tokio::task::block_in_place(|| client.line()));
     }
 
-    harness.said(&run, "said while it followed").await;
+    kestrel.said(&run, "said while it followed").await;
     read.push(tokio::task::block_in_place(|| client.line()));
-    harness.complete_run(&run).await;
+    kestrel.complete_run(&run).await;
 
-    let harness = harness.teardown().await.restart().await;
-    harness.said(&run, "said after the restart").await;
-    harness
+    let kestrel = kestrel.teardown().await.restart().await;
+    kestrel.said(&run, "said after the restart").await;
+    kestrel
         .seal_session(session.parse().expect("a session id"))
         .await;
 
@@ -2773,21 +2773,21 @@ async fn a_following_client_resumes_across_a_restart_without_repeating_an_entry(
         "the client failed:\n{}",
         finished.err
     );
-    assert_eq!(seqs(&read), recorded_seqs(&harness, &session).await);
+    assert_eq!(seqs(&read), recorded_seqs(&kestrel, &session).await);
     assert!(
         read.last()
             .expect("an entry")
             .contains("said after the restart")
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_client_asking_for_no_such_session_is_refused() {
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
-    let operator = harness.operator();
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
+    let operator = kestrel.operator();
 
     let read = tokio::task::spawn_blocking(move || {
         client::ran(
@@ -2810,19 +2810,19 @@ async fn a_client_asking_for_no_such_session_is_refused() {
         read.err
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_cursor_from_another_transcript_is_refused_rather_than_restarting_the_walk() {
-    let harness = Harness::boot().await;
-    let (session, _) = an_open_session(&harness, 1).await;
+    let kestrel = Kestrel::boot().await;
+    let (session, _) = an_open_session(&kestrel, 1).await;
     let elsewhere = format!("{}:1", RunId::generate());
 
     let response = reqwest::Client::new()
         .get(format!(
             "{}{}",
-            harness.operator(),
+            kestrel.operator(),
             transcript_of("acme", &session)
         ))
         .header("last-event-id", elsewhere)
@@ -2832,19 +2832,19 @@ async fn a_cursor_from_another_transcript_is_refused_rather_than_restarting_the_
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_operator_boundary_and_the_link_are_served_apart() {
-    let harness = Harness::boot().await;
-    let (session, run) = an_open_session(&harness, 0).await;
+    let kestrel = Kestrel::boot().await;
+    let (session, run) = an_open_session(&kestrel, 0).await;
     let client = reqwest::Client::new();
 
     let link_on_the_operator_listener = client
         .get(format!(
             "{}{}",
-            harness.operator(),
+            kestrel.operator(),
             link::ENTRIES.replace("{run}", &run.id.to_string())
         ))
         .send()
@@ -2853,14 +2853,14 @@ async fn the_operator_boundary_and_the_link_are_served_apart() {
     let operator_on_the_link_listener = client
         .get(format!(
             "{}{}?follow=false",
-            harness.link(),
+            kestrel.link(),
             transcript_of("acme", &session)
         ))
         .send()
         .await
         .expect("the link listener should answer");
 
-    assert_ne!(harness.operator(), harness.link());
+    assert_ne!(kestrel.operator(), kestrel.link());
     assert_eq!(
         link_on_the_operator_listener.status(),
         StatusCode::NOT_FOUND
@@ -2870,18 +2870,18 @@ async fn the_operator_boundary_and_the_link_are_served_apart() {
         StatusCode::NOT_FOUND
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_operator_boundary_asks_for_no_credential() {
-    let harness = Harness::boot().await;
-    let (session, _) = an_open_session(&harness, 0).await;
+    let kestrel = Kestrel::boot().await;
+    let (session, _) = an_open_session(&kestrel, 0).await;
 
     let response = reqwest::Client::new()
         .get(format!(
             "{}{}?follow=false",
-            harness.operator(),
+            kestrel.operator(),
             transcript_of("acme", &session)
         ))
         .send()
@@ -2897,7 +2897,7 @@ async fn the_operator_boundary_asks_for_no_credential() {
             .contains("event: end")
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[test]

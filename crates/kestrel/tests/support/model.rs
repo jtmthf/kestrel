@@ -1,5 +1,5 @@
-//! Stands in for the model an Agent Runtime is configured with: an OpenAI-compatible endpoint
-//! serving one canned turn, so a Run against a real Agent Runtime spends nothing and says the
+//! Stands in for the model a Harness is configured with: an OpenAI-compatible endpoint
+//! serving one canned turn, so a Run against a real Harness spends nothing and says the
 //! same thing twice running.
 //!
 //! The turn is the scripted ACP agent's, in the terms a model answers in: something said, a
@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-/// What the tool call the turn makes leaves behind, which is how a test sees that the Agent
-/// Runtime was allowed to make it.
+/// What the tool call the turn makes leaves behind, which is how a test sees that the
+/// Harness was allowed to make it.
 pub const MARK: &str = "kestrel-was-here";
 
 /// Long enough that a test can reach into the Environment while the turn is still in flight,
@@ -32,14 +32,14 @@ impl Model {
         Self::bound(false)
     }
 
-    /// Answers the first step of the turn and then sits on the rest of it, so the Agent Runtime
+    /// Answers the first step of the turn and then sits on the rest of it, so the Harness
     /// is still working when a test does something to it.
     pub fn dawdling() -> Self {
         Self::bound(true)
     }
 
     /// Bound on every interface rather than on loopback, because what reaches this one is an
-    /// Agent Runtime in a container.
+    /// Harness in a container.
     fn bound(dawdles: bool) -> Self {
         let server = tiny_http::Server::http("0.0.0.0:0").expect("the model should bind a port");
         let port = server
@@ -87,7 +87,7 @@ impl Model {
             .clone()
     }
 
-    /// How often the Agent Runtime has had its tool call answered and come back for the rest
+    /// How often the Harness has had its tool call answered and come back for the rest
     /// of the turn, which is where it is certainly still working at one.
     pub fn times_working_at_the_rest_of_a_turn(&self) -> usize {
         self.asked()
@@ -133,7 +133,7 @@ fn answer(mut request: tiny_http::Request, asked: &Mutex<Vec<Value>>, dawdle: Op
 }
 
 /// A turn is one step at a time, and which step this is is read off what was sent rather than
-/// counted: an Agent Runtime asks for more than the turn — a title, a summary — and those ask
+/// counted: a Harness asks for more than the turn — a title, a summary — and those ask
 /// for no tools at all.
 fn turn(asked: &Value) -> Vec<Value> {
     let tools = asked["tools"]
@@ -237,7 +237,7 @@ mod tests {
     }
 
     /// A title or a summary asks for no tools, and answering one with a tool call would leave
-    /// the Agent Runtime executing something nothing in the turn asked for.
+    /// the Harness executing something nothing in the turn asked for.
     #[test]
     fn what_is_asked_without_tools_is_answered_without_one() {
         let served = streamed(&turn(&json!({ "messages": [{ "role": "user" }] })));

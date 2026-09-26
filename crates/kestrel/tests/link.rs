@@ -15,22 +15,22 @@ use kestrel::log::{Entry, Message};
 use kestrel::work::{Report, Reported};
 use reqwest::{StatusCode, Version, header};
 use serde_json::json;
-use support::Harness;
+use support::Kestrel;
 use support::link_client::{Link, Next};
 use support::supervisor::Supervisor;
 
 const PATIENCE: Duration = Duration::from_secs(30);
 const LONG_ENOUGH_TO_BE_SURE: Duration = Duration::from_millis(500);
 
-async fn a_run(harness: &Harness) -> (Run, Secret) {
-    declared(harness).await;
+async fn a_run(kestrel: &Kestrel) -> (Run, Secret) {
+    declared(kestrel).await;
 
-    another_run(harness).await
+    another_run(kestrel).await
 }
 
-async fn declared(harness: &Harness) {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn declared(kestrel: &Kestrel) {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -38,28 +38,28 @@ async fn declared(harness: &Harness) {
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 }
 
 /// A second Session, because at 0.1 nothing yet stops two Runs being live in one.
-async fn another_run(harness: &Harness) -> (Run, Secret) {
-    let session = harness.open_session("acme", "kestrel", "builder").await;
+async fn another_run(kestrel: &Kestrel) -> (Run, Secret) {
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
 
-    harness.dispatch_run(session.id).await
+    kestrel.dispatch_run(session.id).await
 }
 
 #[tokio::test]
 async fn an_environment_dials_out_and_the_control_plane_knows_it_is_connected() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
 
-    assert!(harness.run(run.id).await.connected.is_none());
-    let mut supervisor = Supervisor::provision(&harness.link(), run.id, &credential);
+    assert!(kestrel.run(run.id).await.connected.is_none());
+    let mut supervisor = Supervisor::provision(&kestrel.link(), run.id, &credential);
     supervisor.wait_until_it_says("reported connected").await;
 
-    let connected = harness
+    let connected = kestrel
         .run(run.id)
         .await
         .connected
@@ -70,15 +70,15 @@ async fn an_environment_dials_out_and_the_control_plane_knows_it_is_connected() 
     );
 
     supervisor.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_environment_holds_the_stream_open_until_the_control_plane_tells_it_to_stop() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
 
-    let mut supervisor = Supervisor::provision(&harness.link(), run.id, &credential);
+    let mut supervisor = Supervisor::provision(&kestrel.link(), run.id, &credential);
     supervisor.wait_until_it_says("link open").await;
     assert!(
         supervisor.is_still_running(LONG_ENOUGH_TO_BE_SURE).await,
@@ -86,7 +86,7 @@ async fn an_environment_holds_the_stream_open_until_the_control_plane_tells_it_t
         supervisor.everything_it_said()
     );
 
-    harness.instruct(&run, Instruction::Stop).await;
+    kestrel.instruct(&run, Instruction::Stop).await;
 
     let status = supervisor.exits().await;
     assert!(
@@ -96,21 +96,21 @@ async fn an_environment_holds_the_stream_open_until_the_control_plane_tells_it_t
     );
     assert!(supervisor.said("instruction stop"));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_supervisor_that_loses_the_stream_comes_back_and_is_handed_what_it_missed() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
 
-    let mut supervisor = Supervisor::provision(&harness.link(), run.id, &credential);
+    let mut supervisor = Supervisor::provision(&kestrel.link(), run.id, &credential);
     supervisor.wait_until_it_says("reported connected").await;
 
-    let stopped = harness.kill().await;
+    let stopped = kestrel.kill().await;
     supervisor.wait_until_it_says("lost the link").await;
     stopped.instruct(&run, Instruction::Stop).await;
-    let harness = stopped.restart().await;
+    let kestrel = stopped.restart().await;
 
     let status = supervisor.exits().await;
     assert!(
@@ -124,16 +124,16 @@ async fn a_supervisor_that_loses_the_stream_comes_back_and_is_handed_what_it_mis
         supervisor.everything_it_said()
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_reconnect_carrying_a_cursor_is_not_handed_what_it_already_had() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
-    harness.instruct(&run, Instruction::Stop).await;
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
+    kestrel.instruct(&run, Instruction::Stop).await;
 
-    let link = Link::to(&harness.link());
+    let link = Link::to(&kestrel.link());
     let mut first = link.open(run.id, &credential, None).await;
     let Next::Event(delivered) = first.next_within(PATIENCE).await else {
         panic!("the stream never delivered the instruction that was waiting on it");
@@ -148,14 +148,14 @@ async fn a_reconnect_carrying_a_cursor_is_not_handed_what_it_already_had() {
         "reconnecting with a cursor was handed an instruction it had already been given"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_link_refuses_an_environment_presenting_no_credential() {
-    let harness = Harness::boot().await;
-    let (run, _) = a_run(&harness).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let (run, _) = a_run(&kestrel).await;
+    let link = Link::to(&kestrel.link());
 
     assert_eq!(
         link.instructions(run.id, None, None).await.status(),
@@ -177,46 +177,46 @@ async fn the_link_refuses_an_environment_presenting_no_credential() {
         StatusCode::UNAUTHORIZED
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_link_refuses_an_environment_presenting_an_expired_credential() {
-    let harness = Harness::boot().await;
-    let (run, _) = a_run(&harness).await;
-    let expired = harness
+    let kestrel = Kestrel::boot().await;
+    let (run, _) = a_run(&kestrel).await;
+    let expired = kestrel
         .issue_credential(&run, Timestamp::now() - SignedDuration::from_secs(1))
         .await;
 
-    let refused = Link::to(&harness.link())
+    let refused = Link::to(&kestrel.link())
         .instructions(run.id, Some(&expired), None)
         .await;
 
     assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_link_refuses_an_environment_presenting_a_credential_belonging_to_another_run() {
-    let harness = Harness::boot().await;
-    let (run, _) = a_run(&harness).await;
-    let (_, another) = another_run(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let (run, _) = a_run(&kestrel).await;
+    let (_, another) = another_run(&kestrel).await;
 
-    let refused = Link::to(&harness.link())
+    let refused = Link::to(&kestrel.link())
         .instructions(run.id, Some(&another), None)
         .await;
 
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_credential_stops_working_when_its_run_ends() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
+    let link = Link::to(&kestrel.link());
     assert_eq!(
         link.instructions(run.id, Some(&credential), None)
             .await
@@ -224,7 +224,7 @@ async fn a_credential_stops_working_when_its_run_ends() {
         StatusCode::OK
     );
 
-    harness.complete_run(&run).await;
+    kestrel.complete_run(&run).await;
 
     assert_eq!(
         link.instructions(run.id, Some(&credential), None)
@@ -233,29 +233,29 @@ async fn a_credential_stops_working_when_its_run_ends() {
         StatusCode::UNAUTHORIZED
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_link_has_nothing_to_say_about_a_run_it_has_never_heard_of() {
-    let harness = Harness::boot().await;
-    let (_, credential) = a_run(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let (_, credential) = a_run(&kestrel).await;
 
-    let refused = Link::to(&harness.link())
+    let refused = Link::to(&kestrel.link())
         .instructions_for("not-a-run", Some(&credential), None)
         .await;
 
     assert_eq!(refused.status(), StatusCode::NOT_FOUND);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_link_is_plain_http_with_no_protocol_upgrade() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
 
-    let stream = Link::to(&harness.link())
+    let stream = Link::to(&kestrel.link())
         .instructions(run.id, Some(&credential), None)
         .await;
 
@@ -277,7 +277,7 @@ async fn the_link_is_plain_http_with_no_protocol_upgrade() {
             .is_some_and(|connection| connection.to_lowercase().contains("upgrade"))
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[test]
@@ -370,12 +370,12 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
             .collect::<Vec<_>>()
     );
 
-    let harness = Harness::boot().await;
-    let link = Link::to(&harness.link());
-    declared(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let link = Link::to(&kestrel.link());
+    declared(&kestrel).await;
 
     for kind in described {
-        let (run, credential) = another_run(&harness).await;
+        let (run, credential) = another_run(&kestrel).await;
         assert_eq!(
             link.report_body(run.id, Some(&credential), &bodies[&kind])
                 .await
@@ -385,7 +385,7 @@ async fn the_link_takes_every_report_the_published_openapi_document_describes() 
         );
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 fn published() -> serde_json::Value {
@@ -434,12 +434,12 @@ async fn paged(link: &Link, run: &Run, credential: &Secret, window: usize) -> Ve
 
 #[tokio::test]
 async fn an_environment_reads_the_transcript_of_the_session_its_run_belongs_to_in_windows() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
     for message in 1..=4 {
-        harness.said(&run, &format!("message {message}")).await;
+        kestrel.said(&run, &format!("message {message}")).await;
     }
-    let link = Link::to(&harness.link());
+    let link = Link::to(&kestrel.link());
 
     let first: serde_json::Value = link
         .entries(run.id, Some(&credential), None, Some(2))
@@ -457,14 +457,14 @@ async fn an_environment_reads_the_transcript_of_the_session_its_run_belongs_to_i
         (1..=5).collect::<Vec<_>>()
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_link_refuses_a_cursor_that_names_no_position_in_the_transcript() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
+    let link = Link::to(&kestrel.link());
 
     for cursor in ["halfway-through", &format!("{}:99", run.session)] {
         assert_eq!(
@@ -476,14 +476,14 @@ async fn the_link_refuses_a_cursor_that_names_no_position_in_the_transcript() {
         );
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_link_refuses_a_window_wider_than_one_read_may_return() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
+    let link = Link::to(&kestrel.link());
 
     assert_eq!(
         link.entries(run.id, Some(&credential), None, Some(5_000))
@@ -492,21 +492,21 @@ async fn the_link_refuses_a_window_wider_than_one_read_may_return() {
         StatusCode::BAD_REQUEST
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_link_refuses_a_transcript_read_from_an_environment_presenting_no_credential() {
-    let harness = Harness::boot().await;
-    let (run, _) = a_run(&harness).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let (run, _) = a_run(&kestrel).await;
+    let link = Link::to(&kestrel.link());
 
     assert_eq!(
         link.entries(run.id, None, None, None).await.status(),
         StatusCode::UNAUTHORIZED
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The document is what a supervisor seeding a cold Environment reads the entries against, so

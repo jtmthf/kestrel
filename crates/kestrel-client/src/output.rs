@@ -280,7 +280,7 @@ mod tests {
 
     use super::*;
 
-    const AGENTS: View = View::Rows(&["name", "runtime", "model"]);
+    const AGENTS: View = View::Rows(&["name", "harness", "model"]);
 
     fn shown(presentation: &Presentation, view: &View, answer: &Value) -> Vec<String> {
         answer
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn a_pipe_gets_every_field_of_every_record_joined_by_tabs() {
-        let agents = json!([{ "name": "builder", "runtime": "opencode", "model": null }]);
+        let agents = json!([{ "name": "builder", "harness": "opencode", "model": null }]);
 
         assert_eq!(
             shown(&Presentation::Delimited, &AGENTS, &agents),
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn a_record_spanning_lines_is_still_one_line_of_a_pipe() {
-        let triggers = json!([{ "name": "nightly", "runtime": "a\nb", "model": null }]);
+        let triggers = json!([{ "name": "nightly", "harness": "a\nb", "model": null }]);
 
         assert_eq!(
             shown(&Presentation::Delimited, &AGENTS, &triggers),
@@ -315,7 +315,7 @@ mod tests {
     /// reading the order it asked for.
     #[test]
     fn json_emits_the_named_fields_and_nothing_else() {
-        let record = json!({ "id": "01", "name": "builder", "runtime": "opencode" });
+        let record = json!({ "id": "01", "name": "builder", "harness": "opencode" });
         let presentation = Presentation::chosen(Some("name,id")).expect("a field list");
 
         assert_eq!(
@@ -356,8 +356,8 @@ mod tests {
     #[test]
     fn a_terminal_gets_columns_that_line_up_under_their_labels() {
         let agents = json!([
-            { "name": "builder", "runtime": "opencode", "model": "claude-opus-5" },
-            { "name": "reviewer", "runtime": "acp", "model": null },
+            { "name": "builder", "harness": "opencode", "model": "claude-opus-5" },
+            { "name": "reviewer", "harness": "acp", "model": null },
         ]);
         let mut written = Vec::new();
 
@@ -375,7 +375,7 @@ mod tests {
 
         assert_eq!(
             String::from_utf8(written).expect("utf-8"),
-            "name      runtime   model\n\
+            "name      harness   model\n\
              builder   opencode  claude-opus-5\n\
              reviewer  acp       -\n"
         );
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn a_terminal_gets_a_line_no_wider_than_it_is() {
         let agents =
-            json!([{ "name": "builder", "runtime": "opencode", "model": "claude-opus-5" }]);
+            json!([{ "name": "builder", "harness": "opencode", "model": "claude-opus-5" }]);
         let mut written = Vec::new();
 
         human(

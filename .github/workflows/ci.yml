@@ -183,8 +183,8 @@ jobs:
       - name: Test the Docker driver
         run: cargo test --locked --package kestrel --test docker -- --ignored
 
-      # One agent runtime, one model stub and one host daemon, so a Run at a time.
-      - name: Test the agent runtime the image ships
+      # One harness, one model stub and one host daemon, so a Run at a time.
+      - name: Test the harness the image ships
         run: cargo test --locked --package kestrel --test opencode -- --ignored --test-threads 1
 
   development:
@@ -287,7 +287,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build the agent runtime for arm64
+      - name: Build the harness for arm64
         run: |
           docker buildx build --platform linux/arm64 --target opencode \
             --output type=cacheonly --file images/kestrel-env/Dockerfile .

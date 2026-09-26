@@ -1,4 +1,4 @@
-//! The stand-in Agent Runtime the main suite runs on, selected by naming a script in the
+//! The stand-in Harness the main suite runs on, selected by naming a script in the
 //! command an Environment spawns.
 
 use std::path::PathBuf;

@@ -26,7 +26,7 @@ CREATE TABLE agent (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organization (id),
     name TEXT NOT NULL,
-    runtime TEXT NOT NULL,
+    harness TEXT NOT NULL,
     model TEXT NOT NULL,
     declared_at TEXT NOT NULL,
     UNIQUE (organization_id, name)
@@ -38,7 +38,7 @@ CREATE TABLE session (
     organization_id TEXT NOT NULL REFERENCES organization (id),
     project_id TEXT NOT NULL REFERENCES project (id),
     agent_id TEXT NOT NULL REFERENCES agent (id),
-    runtime TEXT NOT NULL,
+    harness TEXT NOT NULL,
     base TEXT NOT NULL,
     branch TEXT NOT NULL,
     instance TEXT,

@@ -396,7 +396,7 @@ fn a_session(stack: &Stack) -> String {
         "--branch",
         "main",
     ]);
-    // The Agent names no model, so the agent runtime's own default is what a Run would get.
+    // The Agent names no model, so the harness's own default is what a Run would get.
     stack.ran(&["agent", "declare", "builder"]);
     // A Run reaches no model without one. This value reaches no provider either, which is why
     // nothing here gets further than an Environment.

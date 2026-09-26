@@ -9,7 +9,7 @@ use kestrel::domain::{Direction, Schedule, Session, SessionId, TriggerState};
 use kestrel::log::Entry;
 use kestrel::trigger::{Asked, Fired};
 use support::github_stub::{self, GithubStub};
-use support::{Harness, templates};
+use support::{Kestrel, templates};
 
 const DOGFOOD: &str = include_str!("../../../.kestrel/triggers.yaml");
 const REPOSITORY: &str = "openkestrel/kestrel";
@@ -19,27 +19,27 @@ const EVENTS: &str = "/issues/events?";
 const COMMENTS: &str = "/issues/comments?";
 const PATIENCE: Duration = Duration::from_secs(30);
 
-async fn dogfooding(harness: &Harness, stub: &GithubStub) {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn dogfooding(kestrel: &Kestrel, stub: &GithubStub) {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    for (agent, runtime) in [
+    for (agent, harness) in [
         ("builder", "opencode"),
         ("codex", "codex"),
         ("claude", "claude"),
     ] {
-        harness
-            .declare_agent(&organization, agent, runtime, None)
+        kestrel
+            .declare_agent(&organization, agent, harness, None)
             .await;
     }
-    let applied = harness.apply_triggers("acme", DOGFOOD).await;
+    let applied = kestrel.apply_triggers("acme", DOGFOOD).await;
     assert!(
         applied.admitting_outsiders.is_empty(),
         "{:?}",
         applied.admitting_outsiders
     );
-    harness
+    kestrel
         .register_integration(
             "acme",
             "github",
@@ -51,10 +51,10 @@ async fn dogfooding(harness: &Harness, stub: &GithubStub) {
         .await;
 }
 
-async fn sessions(harness: &Harness, count: usize) -> Vec<Session> {
+async fn sessions(kestrel: &Kestrel, count: usize) -> Vec<Session> {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        let sessions = harness.sessions("acme").await;
+        let sessions = kestrel.sessions("acme").await;
         if sessions.len() >= count {
             return sessions;
         }
@@ -66,8 +66,8 @@ async fn sessions(harness: &Harness, count: usize) -> Vec<Session> {
     }
 }
 
-async fn brief(harness: &Harness, session: SessionId) -> String {
-    harness
+async fn brief(kestrel: &Kestrel, session: SessionId) -> String {
+    kestrel
         .transcript(session)
         .await
         .into_iter()
@@ -78,8 +78,8 @@ async fn brief(harness: &Harness, session: SessionId) -> String {
         .expect("a session opened by a trigger starts with its brief")
 }
 
-async fn said(harness: &Harness, session: SessionId) -> Vec<(String, String)> {
-    harness
+async fn said(kestrel: &Kestrel, session: SessionId) -> Vec<(String, String)> {
+    kestrel
         .transcript(session)
         .await
         .into_iter()
@@ -118,33 +118,33 @@ async fn neither_labels_nor_assignment_start_work() {
         COMMENTS,
         github_stub::page(&[github_stub::issue_comment(20, 43, MAINTAINER, "@kestrel")]),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let opened = sessions(&harness, 1).await;
+    let opened = sessions(&kestrel, 1).await;
 
     assert_eq!(opened.len(), 1);
     assert_eq!(opened[0].agent.name, "builder");
     assert_eq!(opened[0].checkout.branch, "kestrel/issue-43");
     assert_eq!(
-        brief(&harness, opened[0].id).await,
+        brief(&kestrel, opened[0].id).await,
         format!(
             "/implement {}\n\nRead the issue and its comments with `gh issue view --comments` \
              before you start.",
             issue_link(43)
         )
     );
-    for event in harness.events("acme").await {
+    for event in kestrel.events("acme").await {
         if event.occurrence.subject.as_deref() != Some("#43") {
             assert!(
-                harness.firings(event.record_id).await.is_empty(),
+                kestrel.firings(event.record_id).await.is_empty(),
                 "{} fired",
                 event.occurrence.r#type
             );
         }
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -160,19 +160,19 @@ async fn the_maintainers_mention_starts_work_with_the_instruction_and_agent_it_n
             "@kestrel agent=codex $tdd the parser",
         )]),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let opened = sessions(&harness, 1).await.remove(0);
+    let opened = sessions(&kestrel, 1).await.remove(0);
 
     assert_eq!(opened.agent.name, "codex");
     assert!(
-        brief(&harness, opened.id)
+        brief(&kestrel, opened.id)
             .await
             .starts_with(&format!("$tdd the parser {}\n", issue_link(50)))
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -195,24 +195,24 @@ async fn ordinary_comments_strangers_and_kestrel_itself_command_nothing() {
             github_stub::issue_comment(21, 51, MAINTAINER, "this one is ready"),
         ]),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let opened = sessions(&harness, 1).await;
+    let opened = sessions(&kestrel, 1).await;
 
     assert_eq!(opened.len(), 1);
     assert!(
-        brief(&harness, opened[0].id)
+        brief(&kestrel, opened[0].id)
             .await
             .contains(&issue_link(55))
     );
-    for event in harness.events("acme").await {
+    for event in kestrel.events("acme").await {
         assert_ne!(
             event.occurrence.subject.as_deref(),
             Some("#53"),
             "kestrel heard its own comment"
         );
-        let firings = harness.firings(event.record_id).await;
+        let firings = kestrel.firings(event.record_id).await;
         match event.occurrence.subject.as_deref() {
             Some("#55") => {}
             Some("#56") => assert!(
@@ -223,7 +223,7 @@ async fn ordinary_comments_strangers_and_kestrel_itself_command_nothing() {
         }
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -238,16 +238,16 @@ async fn repeated_signals_for_one_issue_open_one_session() {
             github_stub::issue_comment(20, 43, MAINTAINER, "@kestrel"),
         ]),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let outcomes = loop {
-        let events = harness.events("acme").await;
+        let events = kestrel.events("acme").await;
         let mut outcomes = Vec::new();
         for event in &events {
             outcomes.extend(
-                harness
+                kestrel
                     .firings(event.record_id)
                     .await
                     .into_iter()
@@ -264,7 +264,7 @@ async fn repeated_signals_for_one_issue_open_one_session() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
 
-    assert_eq!(harness.sessions("acme").await.len(), 1);
+    assert_eq!(kestrel.sessions("acme").await.len(), 1);
     assert_eq!(
         outcomes
             .iter()
@@ -274,7 +274,7 @@ async fn repeated_signals_for_one_issue_open_one_session() {
         "{outcomes:?}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -285,11 +285,11 @@ async fn a_command_on_an_open_sessions_issue_is_not_also_heard_as_a_remark() {
         COMMENTS,
         github_stub::page(&[github_stub::issue_comment(10, 43, MAINTAINER, "@kestrel")]),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
-    let session = sessions(&harness, 1).await.remove(0);
-    let first = harness.claim_run().await.expect("the first run").run;
-    harness.complete_run(&first).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
+    let session = sessions(&kestrel, 1).await.remove(0);
+    let first = kestrel.claim_run().await.expect("the first run").run;
+    kestrel.complete_run(&first).await;
 
     stub.script_answer(
         "GET",
@@ -302,7 +302,7 @@ async fn a_command_on_an_open_sessions_issue_is_not_also_heard_as_a_remark() {
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let heard = loop {
-        let heard = said(&harness, session.id).await;
+        let heard = said(&kestrel, session.id).await;
         let commanded = heard
             .iter()
             .any(|(by, message)| by == "delegated" && message.starts_with("/again "));
@@ -312,8 +312,8 @@ async fn a_command_on_an_open_sessions_issue_is_not_also_heard_as_a_remark() {
         if commanded && remarked {
             break heard;
         }
-        if let Some(claimed) = harness.claim_run().await {
-            harness.complete_run(&claimed.run).await;
+        if let Some(claimed) = kestrel.claim_run().await {
+            kestrel.complete_run(&claimed.run).await;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -328,9 +328,9 @@ async fn a_command_on_an_open_sessions_issue_is_not_also_heard_as_a_remark() {
             .any(|(_, message)| message.starts_with("@kestrel")),
         "{heard:?}"
     );
-    assert_eq!(harness.sessions("acme").await.len(), 1);
+    assert_eq!(kestrel.sessions("acme").await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -347,12 +347,12 @@ async fn a_comment_on_a_sealed_sessions_issue_starts_nothing_and_a_command_conti
             before_first_command,
         ]),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
-    let sealed = sessions(&harness, 1).await.remove(0);
-    let first = harness.claim_run().await.expect("the first run").run;
-    harness.complete_run(&first).await;
-    harness.seal_session(sealed.id).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
+    let sealed = sessions(&kestrel, 1).await.remove(0);
+    let first = kestrel.claim_run().await.expect("the first run").run;
+    kestrel.complete_run(&first).await;
+    kestrel.seal_session(sealed.id).await;
 
     stub.script_answer(
         "GET",
@@ -364,7 +364,7 @@ async fn a_comment_on_a_sealed_sessions_issue_starts_nothing_and_a_command_conti
             "@kestrel /again",
         )]),
     );
-    let opened = sessions(&harness, 2).await;
+    let opened = sessions(&kestrel, 2).await;
 
     assert_eq!(opened.len(), 2);
     let continuation = opened
@@ -374,7 +374,7 @@ async fn a_comment_on_a_sealed_sessions_issue_starts_nothing_and_a_command_conti
     assert_eq!(continuation.continues, Some(sealed.id));
     assert_eq!(continuation.correlation, sealed.correlation);
     assert!(
-        brief(&harness, continuation.id)
+        brief(&kestrel, continuation.id)
             .await
             .starts_with("/again ")
     );
@@ -386,7 +386,7 @@ async fn a_comment_on_a_sealed_sessions_issue_starts_nothing_and_a_command_conti
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let heard = loop {
-        let heard = said(&harness, continuation.id).await;
+        let heard = said(&kestrel, continuation.id).await;
         if heard
             .iter()
             .any(|(_, message)| message == "now please add a test")
@@ -403,9 +403,9 @@ async fn a_comment_on_a_sealed_sessions_issue_starts_nothing_and_a_command_conti
         heard,
         vec![(MAINTAINER.to_owned(), "now please add a test".to_owned())]
     );
-    assert!(!harness.has_pending_messages(continuation.id).await);
+    assert!(!kestrel.has_pending_messages(continuation.id).await);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -416,10 +416,10 @@ async fn a_dispatch_starts_the_work_it_asks_for_on_the_issue_it_names() {
         "/issues/60",
         github_stub::issue(60, &["agent:claude"]),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let fired = harness
+    let fired = kestrel
         .dispatch(
             "acme",
             "delegated",
@@ -435,25 +435,25 @@ async fn a_dispatch_starts_the_work_it_asks_for_on_the_issue_it_names() {
     let Fired::Opened { session, .. } = fired else {
         panic!("the dispatch opened nothing: {fired:?}");
     };
-    let session = harness.show_session(session).await;
+    let session = kestrel.show_session(session).await;
     assert_eq!(session.agent.name, "codex");
     assert_eq!(session.checkout.branch, "kestrel/issue-60");
     assert!(
-        brief(&harness, session.id)
+        brief(&kestrel, session.id)
             .await
             .starts_with(&format!("/tdd the parser {}\n", issue_link(60)))
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_dispatch_fires_only_the_trigger_it_names() {
     let stub = GithubStub::start();
     stub.script_answer("GET", "/issues/60", github_stub::issue(60, &[]));
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
+    kestrel
         .declare_trigger(
             "acme",
             "everything",
@@ -463,7 +463,7 @@ async fn a_dispatch_fires_only_the_trigger_it_names() {
         )
         .await;
 
-    harness
+    kestrel
         .dispatch("acme", "delegated", 60, Asked::default())
         .await
         .expect("the dispatch should fire");
@@ -473,33 +473,33 @@ async fn a_dispatch_fires_only_the_trigger_it_names() {
         github_stub::page(&[github_stub::labelled(7, 61, "bug")]),
     );
 
-    let opened = sessions(&harness, 2).await;
+    let opened = sessions(&kestrel, 2).await;
     assert_eq!(opened.len(), 2);
-    let dispatched = harness
+    let dispatched = kestrel
         .events("acme")
         .await
         .into_iter()
         .find(|event| event.occurrence.r#type == kestrel::trigger::DISPATCHED)
         .expect("the dispatch is recorded");
-    let firings = harness.firings(dispatched.record_id).await;
+    let firings = kestrel.firings(dispatched.record_id).await;
     assert_eq!(firings.len(), 1);
     assert_eq!(firings[0].trigger, "delegated");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_dispatch_asking_for_an_agent_the_trigger_does_not_allow_starts_nothing() {
     let stub = GithubStub::start();
     stub.script_answer("GET", "/issues/60", github_stub::issue(60, &[]));
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_agent(&organization, "stranger", "opencode", None)
         .await;
-    dogfooding(&harness, &stub).await;
+    dogfooding(&kestrel, &stub).await;
 
-    let fired = harness
+    let fired = kestrel
         .dispatch(
             "acme",
             "delegated",
@@ -519,9 +519,9 @@ async fn a_dispatch_asking_for_an_agent_the_trigger_does_not_allow_starts_nothin
         because,
         "the trigger delegated does not allow the agent stranger that was asked for"
     );
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -532,39 +532,39 @@ async fn a_dispatch_test_renders_what_the_dispatch_then_starts_and_records_nothi
         "/issues/60",
         github_stub::issue(60, &["agent:claude"]),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
     let asked = Asked {
         instruction: Some("/tdd the parser"),
         agent: Some("codex"),
     };
 
-    let tested = harness
+    let tested = kestrel
         .test_dispatch("acme", "delegated", 60, asked)
         .await
         .expect("the dispatch should test");
 
-    assert!(harness.events("acme").await.is_empty());
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.events("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
     assert_eq!(
-        harness.show_trigger("acme", "delegated").await.state,
+        kestrel.show_trigger("acme", "delegated").await.state,
         TriggerState::Enabled
     );
     assert!(tested.matches);
     let rendered = tested.rendered.expect("the dispatch should render");
     let agent = tested.agent.expect("the asked agent is allowed");
 
-    let Fired::Opened { event, session, .. } = harness
+    let Fired::Opened { event, session, .. } = kestrel
         .dispatch("acme", "delegated", 60, asked)
         .await
         .expect("the dispatch should fire")
     else {
         panic!("the dispatch opened nothing");
     };
-    assert_eq!(harness.events("acme").await.len(), 1);
-    assert_eq!(harness.firings(event).await.len(), 1);
-    let session = harness.show_session(session).await;
-    assert_eq!(rendered.brief, brief(&harness, session.id).await);
+    assert_eq!(kestrel.events("acme").await.len(), 1);
+    assert_eq!(kestrel.firings(event).await.len(), 1);
+    let session = kestrel.show_session(session).await;
+    assert_eq!(rendered.brief, brief(&kestrel, session.id).await);
     assert_eq!(
         rendered.branch.as_deref(),
         Some(session.checkout.branch.as_str())
@@ -572,25 +572,25 @@ async fn a_dispatch_test_renders_what_the_dispatch_then_starts_and_records_nothi
     assert_eq!(rendered.correlation, session.correlation);
     assert_eq!(agent, session.agent.name);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_dispatch_test_refuses_what_the_dispatch_refuses() {
     let stub = GithubStub::start();
     stub.script_answer("GET", "/issues/60", github_stub::issue(60, &[]));
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_agent(&organization, "stranger", "opencode", None)
         .await;
-    dogfooding(&harness, &stub).await;
+    dogfooding(&kestrel, &stub).await;
 
     let stranger = Asked {
         instruction: None,
         agent: Some("stranger"),
     };
-    let refused = harness
+    let refused = kestrel
         .test_dispatch("acme", "delegated", 60, stranger)
         .await
         .expect("the dispatch should test")
@@ -608,17 +608,17 @@ async fn a_dispatch_test_refuses_what_the_dispatch_refuses() {
             github_stub::ScriptedResponse::answering(404),
         );
     }
-    let unreadable = harness
+    let unreadable = kestrel
         .test_dispatch("acme", "delegated", 61, Asked::default())
         .await
         .expect_err("github returns no issue 61");
-    let undispatched = harness
+    let undispatched = kestrel
         .dispatch("acme", "delegated", 61, Asked::default())
         .await
         .expect_err("github returns no issue 61");
     assert_eq!(unreadable.to_string(), undispatched.to_string());
 
-    harness
+    kestrel
         .try_declare_scheduled_trigger(
             "acme",
             "sweep",
@@ -627,7 +627,7 @@ async fn a_dispatch_test_refuses_what_the_dispatch_refuses() {
         )
         .await
         .expect("an hourly schedule should declare");
-    let scheduled = harness
+    let scheduled = kestrel
         .test_dispatch("acme", "sweep", 60, Asked::default())
         .await
         .expect_err("a scheduled trigger cannot be dispatched");
@@ -635,14 +635,14 @@ async fn a_dispatch_test_refuses_what_the_dispatch_refuses() {
         scheduled.to_string(),
         "the trigger sweep fires on a schedule, so it cannot be dispatched"
     );
-    let undispatchable = harness
+    let undispatchable = kestrel
         .dispatch("acme", "sweep", 60, Asked::default())
         .await
         .expect_err("a scheduled trigger cannot be dispatched");
     assert_eq!(scheduled.to_string(), undispatchable.to_string());
-    assert!(harness.events("acme").await.is_empty());
+    assert!(kestrel.events("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -667,10 +667,10 @@ async fn a_command_works_ahead_of_a_blocker_on_an_unassigned_issue_and_says_so()
         ),
     );
     blocked_by(&stub, 43, 42);
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let firing = command_firing(&harness).await;
+    let firing = command_firing(&kestrel).await;
 
     assert_eq!(firing.outcome, "opened", "{firing:?}");
     assert_eq!(
@@ -684,9 +684,9 @@ async fn a_command_works_ahead_of_a_blocker_on_an_unassigned_issue_and_says_so()
             .as_str()
         )
     );
-    assert_eq!(harness.sessions("acme").await.len(), 1);
+    assert_eq!(kestrel.sessions("acme").await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 fn unassigned(stub: &GithubStub, issue: i64) {
@@ -704,12 +704,12 @@ fn unassigned(stub: &GithubStub, issue: i64) {
     );
 }
 
-async fn command_firing(harness: &Harness) -> kestrel::domain::Firing {
+async fn command_firing(kestrel: &Kestrel) -> kestrel::domain::Firing {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        for event in harness.events("acme").await {
+        for event in kestrel.events("acme").await {
             if event.occurrence.subject.as_deref() == Some("#43")
-                && let Some(firing) = harness.firings(event.record_id).await.into_iter().next()
+                && let Some(firing) = kestrel.firings(event.record_id).await.into_iter().next()
             {
                 return firing;
             }
@@ -746,15 +746,15 @@ async fn a_closed_issue_holds_a_stale_command() {
             .to_string(),
         ),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let firing = command_firing(&harness).await;
+    let firing = command_firing(&kestrel).await;
     assert_eq!(firing.outcome, "held");
     assert!(firing.failure.unwrap_or_default().contains("is closed"));
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -772,15 +772,15 @@ async fn an_issue_with_unknown_state_holds_the_start() {
             .to_string(),
         ),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let firing = command_firing(&harness).await;
+    let firing = command_firing(&kestrel).await;
     assert_eq!(firing.outcome, "held");
     assert!(firing.failure.unwrap_or_default().contains("unknown state"));
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -795,10 +795,10 @@ async fn an_edited_command_without_a_current_assignment_cancels_the_start() {
             github_stub::issue_comment(20, 43, MAINTAINER, "never mind").to_string(),
         ),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let firing = command_firing(&harness).await;
+    let firing = command_firing(&kestrel).await;
     assert_eq!(firing.outcome, "canceled");
     assert!(
         firing
@@ -806,9 +806,9 @@ async fn an_edited_command_without_a_current_assignment_cancels_the_start() {
             .unwrap_or_default()
             .contains("no longer delegated")
     );
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -820,10 +820,10 @@ async fn a_failed_dependency_query_holds_the_start() {
         "/issues/43/dependencies/blocked_by",
         github_stub::ScriptedResponse::answering(503),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let firing = command_firing(&harness).await;
+    let firing = command_firing(&kestrel).await;
     assert_eq!(firing.outcome, "held");
     assert!(
         firing
@@ -831,9 +831,9 @@ async fn a_failed_dependency_query_holds_the_start() {
             .unwrap_or_default()
             .contains("readiness could not be checked")
     );
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -849,21 +849,21 @@ async fn a_closed_native_dependency_does_not_hold_the_start() {
             "html_url": issue_link(42),
         })]),
     );
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let opened = sessions(&harness, 1).await;
+    let opened = sessions(&kestrel, 1).await;
     assert_eq!(opened.len(), 1);
-    assert_eq!(command_firing(&harness).await.outcome, "opened");
+    assert_eq!(command_firing(&kestrel).await.outcome, "opened");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// Assignment starts nothing in the dogfood declarations, so the automatic start under test is
 /// declared beside them.
-async fn delegating(harness: &Harness, stub: &GithubStub) {
-    dogfooding(harness, stub).await;
-    harness
+async fn delegating(kestrel: &Kestrel, stub: &GithubStub) {
+    dogfooding(kestrel, stub).await;
+    kestrel
         .declare_trigger_rendering(
             "acme",
             "assigned",
@@ -906,12 +906,12 @@ fn unblocked(stub: &GithubStub, issue: i64) {
     );
 }
 
-async fn firing_of(harness: &Harness, r#type: &str, outcome: &str) -> kestrel::domain::Firing {
+async fn firing_of(kestrel: &Kestrel, r#type: &str, outcome: &str) -> kestrel::domain::Firing {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        for event in harness.events("acme").await {
+        for event in kestrel.events("acme").await {
             if event.occurrence.r#type == r#type
-                && let Some(firing) = harness
+                && let Some(firing) = kestrel
                     .firings(event.record_id)
                     .await
                     .into_iter()
@@ -939,12 +939,12 @@ async fn a_held_delegation_starts_once_its_blocker_closes() {
         github_stub::page(&[github_stub::assigned(14, 43, KESTREL, MAINTAINER)]),
     );
     blocked_by(&stub, 43, 42);
-    let harness = Harness::boot().await;
-    delegating(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    delegating(&kestrel, &stub).await;
 
-    let held = firing_of(&harness, ASSIGNED, "held").await;
+    let held = firing_of(&kestrel, ASSIGNED, "held").await;
     assert!(held.failure.unwrap_or_default().contains(&issue_link(42)));
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
     unblocked(&stub, 43);
     stub.script_answer(
@@ -953,16 +953,16 @@ async fn a_held_delegation_starts_once_its_blocker_closes() {
         github_stub::page(&[github_stub::issue_event(15, 42, "closed", "")]),
     );
 
-    let opened = sessions(&harness, 1).await;
+    let opened = sessions(&kestrel, 1).await;
     assert_eq!(opened.len(), 1);
     assert_eq!(
-        firing_of(&harness, ASSIGNED, "opened").await.trigger,
+        firing_of(&kestrel, ASSIGNED, "opened").await.trigger,
         "assigned"
     );
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert_eq!(harness.sessions("acme").await.len(), 1);
+    assert_eq!(kestrel.sessions("acme").await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -974,33 +974,33 @@ async fn a_held_delegation_whose_unblocking_event_was_missed_starts_on_the_sweep
         github_stub::page(&[github_stub::assigned(14, 43, KESTREL, MAINTAINER)]),
     );
     blocked_by(&stub, 43, 42);
-    let harness = Harness::boot().await;
-    delegating(&harness, &stub).await;
-    firing_of(&harness, ASSIGNED, "held").await;
+    let kestrel = Kestrel::boot().await;
+    delegating(&kestrel, &stub).await;
+    firing_of(&kestrel, ASSIGNED, "held").await;
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
     unblocked(&stub, 43);
-    let held = harness
+    let held = kestrel
         .events("acme")
         .await
         .into_iter()
         .find(|event| event.occurrence.r#type == ASSIGNED)
         .expect("the assignment is recorded");
-    harness
+    kestrel
         .last_considered(
             held.record_id,
             jiff::Timestamp::now() - SignedDuration::from_hours(1),
         )
         .await;
 
-    assert_eq!(sessions(&harness, 1).await.len(), 1);
+    assert_eq!(sessions(&kestrel, 1).await.len(), 1);
     assert_eq!(
-        firing_of(&harness, ASSIGNED, "opened").await.worked_ahead,
+        firing_of(&kestrel, ASSIGNED, "opened").await.worked_ahead,
         None
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -1012,9 +1012,9 @@ async fn unassigning_a_held_delegation_cancels_it() {
         github_stub::page(&[github_stub::assigned(14, 43, KESTREL, MAINTAINER)]),
     );
     blocked_by(&stub, 43, 42);
-    let harness = Harness::boot().await;
-    delegating(&harness, &stub).await;
-    firing_of(&harness, ASSIGNED, "held").await;
+    let kestrel = Kestrel::boot().await;
+    delegating(&kestrel, &stub).await;
+    firing_of(&kestrel, ASSIGNED, "held").await;
 
     unassigned(&stub, 43);
     stub.script_answer(
@@ -1023,7 +1023,7 @@ async fn unassigning_a_held_delegation_cancels_it() {
         github_stub::page(&[github_stub::issue_event(15, 43, "unassigned", "")]),
     );
 
-    let canceled = firing_of(&harness, ASSIGNED, "canceled").await;
+    let canceled = firing_of(&kestrel, ASSIGNED, "canceled").await;
     assert!(
         canceled
             .failure
@@ -1031,9 +1031,9 @@ async fn unassigning_a_held_delegation_cancels_it() {
             .contains("no longer delegated")
     );
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -1049,9 +1049,9 @@ async fn two_held_delegations_of_one_issue_start_it_once() {
     );
     blocked_by(&stub, 43, 42);
     blocked_by(&stub, 43, 42);
-    let harness = Harness::boot().await;
-    delegating(&harness, &stub).await;
-    firing_of(&harness, ASSIGNED, "canceled").await;
+    let kestrel = Kestrel::boot().await;
+    delegating(&kestrel, &stub).await;
+    firing_of(&kestrel, ASSIGNED, "canceled").await;
 
     stub.script_answer(
         "GET",
@@ -1059,14 +1059,14 @@ async fn two_held_delegations_of_one_issue_start_it_once() {
         github_stub::page(&[github_stub::issue_event(16, 42, "closed", "")]),
     );
 
-    let opened = sessions(&harness, 1).await;
+    let opened = sessions(&kestrel, 1).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert_eq!(harness.sessions("acme").await.len(), 1);
+    assert_eq!(kestrel.sessions("acme").await.len(), 1);
     let mut outcomes = Vec::new();
-    for event in harness.events("acme").await {
+    for event in kestrel.events("acme").await {
         if event.occurrence.r#type == ASSIGNED {
             outcomes.extend(
-                harness
+                kestrel
                     .firings(event.record_id)
                     .await
                     .into_iter()
@@ -1083,7 +1083,7 @@ async fn two_held_delegations_of_one_issue_start_it_once() {
         ]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -1092,10 +1092,10 @@ async fn a_dispatch_works_ahead_of_a_blocker_and_says_so() {
     unassigned(&stub, 60);
     unassigned(&stub, 60);
     blocked_by(&stub, 60, 42);
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
 
-    let fired = harness
+    let fired = kestrel
         .dispatch("acme", "delegated", 60, Asked::default())
         .await
         .expect("the dispatch should fire");
@@ -1104,7 +1104,7 @@ async fn a_dispatch_works_ahead_of_a_blocker_and_says_so() {
         panic!("the dispatch opened nothing: {fired:?}");
     };
     assert_eq!(
-        harness.firings(event).await[0].worked_ahead.as_deref(),
+        kestrel.firings(event).await[0].worked_ahead.as_deref(),
         Some(
             format!(
                 "{} is blocked by {}, and an operator's dispatch asked to work ahead",
@@ -1115,18 +1115,18 @@ async fn a_dispatch_works_ahead_of_a_blocker_and_says_so() {
         )
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_blocker_added_after_a_session_opens_does_not_freeze_it() {
     let stub = GithubStub::start();
     script_command(&stub);
-    let harness = Harness::boot().await;
-    dogfooding(&harness, &stub).await;
-    let session = sessions(&harness, 1).await.remove(0);
-    let first = harness.claim_run().await.expect("the first run").run;
-    harness.complete_run(&first).await;
+    let kestrel = Kestrel::boot().await;
+    dogfooding(&kestrel, &stub).await;
+    let session = sessions(&kestrel, 1).await.remove(0);
+    let first = kestrel.claim_run().await.expect("the first run").run;
+    kestrel.complete_run(&first).await;
 
     for _ in 0..4 {
         blocked_by(&stub, 43, 42);
@@ -1144,7 +1144,7 @@ async fn a_blocker_added_after_a_session_opens_does_not_freeze_it() {
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let next = loop {
-        if let Some(claimed) = harness.claim_run().await {
+        if let Some(claimed) = kestrel.claim_run().await {
             break claimed.run;
         }
         assert!(
@@ -1154,13 +1154,13 @@ async fn a_blocker_added_after_a_session_opens_does_not_freeze_it() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
     assert_eq!(next.session, session.id);
-    assert_eq!(harness.sessions("acme").await.len(), 1);
+    assert_eq!(kestrel.sessions("acme").await.len(), 1);
     assert_eq!(
-        firing_of(&harness, "com.github.issue_comment.created", "fed")
+        firing_of(&kestrel, "com.github.issue_comment.created", "fed")
             .await
             .session,
         Some(session.id)
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

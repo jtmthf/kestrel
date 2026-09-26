@@ -1,7 +1,7 @@
 //! The primary test seam (0.1/03): boot a complete control plane in-process against a fresh
 //! temporary SQLite file, drive it through the same paths a person would use, and tear it
 //! down. Assertions live in the language of Sessions, Runs and Transcripts; `Store` and `Log`
-//! stay behind `Harness`, never reached for directly.
+//! stay behind `Kestrel`, never reached for directly.
 
 // Every integration-test binary compiles all of this; a helper one of them does not reach for
 // is not dead, it belongs to a sibling.
@@ -54,7 +54,7 @@ use kestrel::log::{Cursor, Entry, Page, TranscriptEntry, Unreadable, Window};
 use kestrel::profile::{self, Contents};
 use kestrel::provider::{self, Held};
 use kestrel::role::serve::Listen;
-use kestrel::role::work::{AgentRuntime, Dispatch};
+use kestrel::role::work::{Dispatch, HarnessCommand};
 use kestrel::session;
 use kestrel::store::Store;
 use kestrel::trigger::apply::Applied;
@@ -98,7 +98,7 @@ pub fn templates(brief: &str, branch: Option<&str>, correlation: Option<&str>) -
 const LOOPBACK: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
-pub struct Harness {
+pub struct Kestrel {
     data_dir: TempDir,
     store: Store,
     bound: Listen,
@@ -111,19 +111,19 @@ pub struct Harness {
 #[derive(Clone)]
 pub struct Provisions {
     driver: Driver,
-    runtimes: Vec<AgentRuntime>,
+    harnesses: Vec<HarnessCommand>,
     max_active_runs: NonZeroUsize,
 }
 
-/// The runtime an Agent names unless a test says otherwise, spawned as whatever the test plays.
-pub const RUNTIME: &str = "opencode";
-/// The runtime whose Runs on one Subscription Profile the work role dispatches one at a time.
+/// The harness an Agent names unless a test says otherwise, spawned as whatever the test plays.
+pub const HARNESS: &str = "opencode";
+/// The harness whose Runs on one Subscription Profile the work role dispatches one at a time.
 pub const SERIALIZED: &str = "codex";
 
-fn spawning(runtimes: &[(&str, &str)]) -> Vec<AgentRuntime> {
-    runtimes
+fn spawning(harnesses: &[(&str, &str)]) -> Vec<HarnessCommand> {
+    harnesses
         .iter()
-        .map(|&(name, command)| AgentRuntime {
+        .map(|&(name, command)| HarnessCommand {
             name: name.to_owned(),
             command: command.to_owned(),
         })
@@ -138,7 +138,7 @@ pub struct Stopped {
     environment: Option<Provisions>,
 }
 
-impl Harness {
+impl Kestrel {
     /// Boots with no supervisor to provision an Environment with, so the work role claims
     /// nothing and a test is the only thing dispatching the Runs it opens.
     pub async fn boot() -> Self {
@@ -168,37 +168,37 @@ impl Harness {
         .await
     }
 
-    pub async fn dispatching_to(supervisor: &Path, runtime: &str) -> Self {
-        Self::dispatching_up_to(supervisor, runtime, 2).await
+    pub async fn dispatching_to(supervisor: &Path, command: &str) -> Self {
+        Self::dispatching_up_to(supervisor, command, 2).await
     }
 
-    pub async fn dispatching_up_to(supervisor: &Path, runtime: &str, maximum: usize) -> Self {
-        Self::dispatching_runtimes_up_to(supervisor, &[(RUNTIME, runtime)], maximum).await
+    pub async fn dispatching_up_to(supervisor: &Path, command: &str, maximum: usize) -> Self {
+        Self::dispatching_harnesses_up_to(supervisor, &[(HARNESS, command)], maximum).await
     }
 
-    pub async fn dispatching_runtimes(supervisor: &Path, runtimes: &[(&str, &str)]) -> Self {
-        Self::dispatching_runtimes_up_to(supervisor, runtimes, 2).await
+    pub async fn dispatching_harnesses(supervisor: &Path, harnesses: &[(&str, &str)]) -> Self {
+        Self::dispatching_harnesses_up_to(supervisor, harnesses, 2).await
     }
 
-    pub async fn dispatching_runtimes_up_to(
+    pub async fn dispatching_harnesses_up_to(
         supervisor: &Path,
-        runtimes: &[(&str, &str)],
+        harnesses: &[(&str, &str)],
         maximum: usize,
     ) -> Self {
         Self::booted(Some(Provisions {
             driver: Driver::LocalExec(LocalExec::running(supervisor)),
-            runtimes: spawning(runtimes),
+            harnesses: spawning(harnesses),
             max_active_runs: NonZeroUsize::new(maximum).expect("at least one active run"),
         }))
         .await
     }
 
-    pub async fn dispatching_in(image: &str, runtime: &str) -> Self {
-        Self::dispatching_runtimes_in(image, &[(RUNTIME, runtime)]).await
+    pub async fn dispatching_in(image: &str, command: &str) -> Self {
+        Self::dispatching_harnesses_in(image, &[(HARNESS, command)]).await
     }
 
     /// The Docker driver, on a control plane bound where a container can dial out to it.
-    pub async fn dispatching_runtimes_in(image: &str, runtimes: &[(&str, &str)]) -> Self {
+    pub async fn dispatching_harnesses_in(image: &str, harnesses: &[(&str, &str)]) -> Self {
         let data_dir = TempDir::new().expect("a temporary data directory");
         Self::boot_against(
             data_dir,
@@ -208,7 +208,7 @@ impl Harness {
             },
             Some(Provisions {
                 driver: Driver::Docker(Docker::provisioning_from(image)),
-                runtimes: spawning(runtimes),
+                harnesses: spawning(harnesses),
                 max_active_runs: NonZeroUsize::new(2).unwrap(),
             }),
         )
@@ -248,7 +248,7 @@ impl Harness {
                 Driver::LocalExec(_) => format!("http://{address}"),
             },
             driver: provisions.driver,
-            runtimes: provisions.runtimes,
+            harnesses: provisions.harnesses,
             auth: None,
             max_active_runs: provisions.max_active_runs,
             serialized: vec![SERIALIZED.to_owned()],
@@ -346,10 +346,10 @@ impl Harness {
         &self,
         organization: &Organization,
         name: &str,
-        runtime: &str,
+        harness: &str,
         model: Option<&str>,
     ) -> Agent {
-        self.try_declare_agent(organization, name, runtime, model)
+        self.try_declare_agent(organization, name, harness, model)
             .await
             .expect("the agent should declare")
     }
@@ -358,10 +358,10 @@ impl Harness {
         &self,
         organization: &Organization,
         name: &str,
-        runtime: &str,
+        harness: &str,
         model: Option<&str>,
     ) -> anyhow::Result<Agent> {
-        agent::declare(&self.store, &organization.name, name, runtime, model)
+        agent::declare(&self.store, &organization.name, name, harness, model)
             .await
             .map(|declared| declared.record)
     }
@@ -1106,7 +1106,7 @@ impl Harness {
         work::enqueue(&self.store, session, model).await
     }
 
-    /// Claims what it enqueued, standing in for the work role a `boot`ed harness leaves idle.
+    /// Claims what it enqueued, standing in for the work role a `boot`ed fixture leaves idle.
     pub async fn dispatch_run(&self, session: SessionId) -> (Run, Secret) {
         self.enqueue_run(session).await;
         let claimed = self
@@ -1464,8 +1464,8 @@ async fn destroy_instances(data_dir: &Path, provisions: Option<&Provisions>) {
 }
 
 impl Stopped {
-    pub async fn restart(self) -> Harness {
-        Harness::boot_against(self.data_dir, self.bound, self.environment).await
+    pub async fn restart(self) -> Kestrel {
+        Kestrel::boot_against(self.data_dir, self.bound, self.environment).await
     }
 
     pub async fn run(&self, id: RunId) -> Run {

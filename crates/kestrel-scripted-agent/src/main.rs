@@ -30,7 +30,7 @@ const LINGER: Duration = Duration::from_secs(3);
 const TOOL_CALL: &str = "call-1";
 const MODEL_OPTION: &str = "model";
 const ALLOW_ONCE: &str = "allow-once";
-/// Where `Revives` keeps its session, outside the checkout as a runtime's own store would be.
+/// Where `Revives` keeps its session, outside the checkout as a harness's own store would be.
 const KEPT: &str = ".scripted-session";
 const DIED: &str = ".scripted-session-died";
 const PROMPT_SEPARATOR: char = '\u{1e}';

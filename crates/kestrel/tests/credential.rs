@@ -1,5 +1,5 @@
 //! Provider Credentials: held by an Organization, encrypted with the key beside the database,
-//! and reaching the Agent Runtime's own process for the length of one Run and no longer.
+//! and reaching the Harness's own process for the length of one Run and no longer.
 
 mod support;
 
@@ -11,12 +11,12 @@ use reqwest::StatusCode;
 use support::environment::Environment;
 use support::link_client::Link;
 use support::supervisor::{self, Supervisor};
-use support::{A_PROVIDER_KEY, Harness, PROVIDER_KEY, repository, scripted_agent};
+use support::{A_PROVIDER_KEY, Kestrel, PROVIDER_KEY, repository, scripted_agent};
 
 const LONG_ENOUGH_TO_BE_SURE: Duration = Duration::from_millis(500);
 
-async fn confiding() -> Harness {
-    Harness::dispatching_to(
+async fn confiding() -> Kestrel {
+    Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Confides),
     )
@@ -24,9 +24,9 @@ async fn confiding() -> Harness {
 }
 
 /// A Session ready to run in an Organization that holds one Provider Credential, or none.
-async fn a_session(harness: &Harness, organization: &str, held: Option<&str>) -> Session {
-    let declared = harness.declare_organization(organization).await;
-    harness
+async fn a_session(kestrel: &Kestrel, organization: &str, held: Option<&str>) -> Session {
+    let declared = kestrel.declare_organization(organization).await;
+    kestrel
         .declare_project(
             &declared,
             repository::NAME,
@@ -34,27 +34,27 @@ async fn a_session(harness: &Harness, organization: &str, held: Option<&str>) ->
             repository::BRANCH,
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&declared, "builder", "opencode", Some(OTHER_MODEL))
         .await;
     if let Some(secret) = held {
-        harness
+        kestrel
             .hold_provider_credential(&declared, PROVIDER_KEY, secret)
             .await;
     }
 
-    harness
+    kestrel
         .open_session(organization, repository::NAME, "builder")
         .await
 }
 
 /// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
-async fn ended(harness: &Harness, run: RunId) -> Run {
-    harness.after_one_turn(run).await
+async fn ended(kestrel: &Kestrel, run: RunId) -> Run {
+    kestrel.after_one_turn(run).await
 }
 
-async fn transcript(harness: &Harness, session: &Session) -> String {
-    harness
+async fn transcript(kestrel: &Kestrel, session: &Session) -> String {
+    kestrel
         .transcript(session.id)
         .await
         .iter()
@@ -66,35 +66,35 @@ async fn transcript(harness: &Harness, session: &Session) -> String {
 /// The agent playing `Confides` says what its own process was spawned with, which is the only
 /// place a credential is observable from outside kestrel.
 #[tokio::test]
-async fn a_run_carries_the_credential_its_organization_holds_into_the_agent_runtime() {
-    let harness = confiding().await;
-    let session = a_session(&harness, "acme", Some(A_PROVIDER_KEY)).await;
+async fn a_run_carries_the_credential_its_organization_holds_into_the_harness() {
+    let kestrel = confiding().await;
+    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert!(
-        transcript(&harness, &session)
+        transcript(&kestrel, &session)
             .await
             .contains(&format!("{PROVIDER_KEY}={A_PROVIDER_KEY}")),
         "the credential never reached the agent: {}",
-        transcript(&harness, &session).await
+        transcript(&kestrel, &session).await
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn one_organizations_credential_does_not_reach_anothers_run() {
-    let harness = confiding().await;
-    a_session(&harness, "acme", Some("the-acme-key")).await;
-    let globex = a_session(&harness, "globex", Some("the-globex-key")).await;
+    let kestrel = confiding().await;
+    a_session(&kestrel, "acme", Some("the-acme-key")).await;
+    let globex = a_session(&kestrel, "globex", Some("the-globex-key")).await;
 
-    let run = harness.enqueue_run(globex.id).await;
-    ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(globex.id).await;
+    ended(&kestrel, run.id).await;
 
-    let said = transcript(&harness, &globex).await;
+    let said = transcript(&kestrel, &globex).await;
     assert!(
         said.contains("the-globex-key"),
         "the organization's own credential never reached its run: {said}"
@@ -104,16 +104,16 @@ async fn one_organizations_credential_does_not_reach_anothers_run() {
         "another organization's credential reached this run: {said}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_run_whose_organization_holds_no_credential_fails_before_an_instance() {
-    let harness = confiding().await;
-    let session = a_session(&harness, "acme", None).await;
+    let kestrel = confiding().await;
+    let session = a_session(&kestrel, "acme", None).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
@@ -130,7 +130,7 @@ async fn a_run_whose_organization_holds_no_credential_fails_before_an_instance()
         "an instance was provisioned to find out what the control plane already knew"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The supervisor starts with what it needs to reach the link, and nothing a provider would
@@ -142,11 +142,11 @@ async fn nothing_a_supervisor_is_started_with_carries_a_credential() {
         "env > \"$(dirname \"$0\")/variables\"\n\
          exit 3",
     );
-    let harness = Harness::dispatching(environment.path()).await;
-    let session = a_session(&harness, "acme", Some(A_PROVIDER_KEY)).await;
+    let kestrel = Kestrel::dispatching(environment.path()).await;
+    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    ended(&kestrel, run.id).await;
 
     let provisioned = environment.wrote("variables");
     assert!(
@@ -158,18 +158,18 @@ async fn nothing_a_supervisor_is_started_with_carries_a_credential() {
         "the supervisor was started with a provider credential:\n{provisioned}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// An Environment asks for a credential as it spawns its agent, so one that is never told to
 /// start never has one to hold, and nothing is decrypted for it.
 #[tokio::test]
 async fn an_environment_that_is_never_told_to_start_takes_no_credential() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness, "acme", Some(A_PROVIDER_KEY)).await;
-    let (run, credential) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
+    let (run, credential) = kestrel.dispatch_run(session.id).await;
 
-    let mut supervisor = Supervisor::provision(&harness.link(), run.id, &credential);
+    let mut supervisor = Supervisor::provision(&kestrel.link(), run.id, &credential);
     supervisor.wait_until_it_says("reported connected").await;
     tokio::time::sleep(LONG_ENOUGH_TO_BE_SURE).await;
 
@@ -180,18 +180,18 @@ async fn an_environment_that_is_never_told_to_start_takes_no_credential() {
     );
 
     supervisor.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_credentials_a_run_needs_reach_nobody_but_that_run() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness, "acme", Some(A_PROVIDER_KEY)).await;
-    let (run, credential) = harness.dispatch_run(session.id).await;
-    let (elsewhere, _) = harness
-        .dispatch_run(a_session(&harness, "globex", None).await.id)
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
+    let (run, credential) = kestrel.dispatch_run(session.id).await;
+    let (elsewhere, _) = kestrel
+        .dispatch_run(a_session(&kestrel, "globex", None).await.id)
         .await;
-    let link = Link::to(&harness.link());
+    let link = Link::to(&kestrel.link());
 
     assert_eq!(
         link.credentials(run.id, None).await.status(),
@@ -204,49 +204,49 @@ async fn the_credentials_a_run_needs_reach_nobody_but_that_run() {
         StatusCode::FORBIDDEN
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A credential is invalidated when its Run ends, so the Session's next Run finds nothing on the
 /// Instance that could ask for the provider keys again.
 #[tokio::test]
 async fn a_run_that_has_ended_hands_out_no_credential() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness, "acme", Some(A_PROVIDER_KEY)).await;
-    let (run, credential) = harness.dispatch_run(session.id).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
+    let (run, credential) = kestrel.dispatch_run(session.id).await;
+    let link = Link::to(&kestrel.link());
     assert_eq!(
         link.credentials(run.id, Some(&credential)).await.status(),
         StatusCode::OK
     );
 
-    harness.complete_run(&run).await;
+    kestrel.complete_run(&run).await;
 
     assert_eq!(
         link.credentials(run.id, Some(&credential)).await.status(),
         StatusCode::UNAUTHORIZED
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The key is generated the first time kestrel opens a data directory: an operator supplies
 /// provider keys, and never a key of kestrel's.
 #[tokio::test]
 async fn the_key_is_generated_beside_the_database_and_what_it_sealed_is_not_readable_without_it() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
 
-    harness
+    kestrel
         .hold_provider_credential(&organization, PROVIDER_KEY, A_PROVIDER_KEY)
         .await;
 
     assert!(
-        harness.data_dir().join("kestrel.key").exists(),
+        kestrel.data_dir().join("kestrel.key").exists(),
         "no key was generated beside the database"
     );
     for kept in ["kestrel.db", "kestrel.db-wal"] {
-        let Ok(written) = std::fs::read(harness.data_dir().join(kept)) else {
+        let Ok(written) = std::fs::read(kestrel.data_dir().join(kept)) else {
             continue;
         };
         assert!(
@@ -255,49 +255,49 @@ async fn the_key_is_generated_beside_the_database_and_what_it_sealed_is_not_read
         );
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn what_an_organization_holds_lists_by_the_variable_it_is_read_from_and_never_by_value() {
-    let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
+    let kestrel = Kestrel::boot().await;
+    let organization = kestrel.declare_organization("acme").await;
 
-    harness
+    kestrel
         .hold_provider_credential(&organization, PROVIDER_KEY, A_PROVIDER_KEY)
         .await;
-    let held = harness.provider_credentials_held(&organization).await;
+    let held = kestrel.provider_credentials_held(&organization).await;
 
     let [only] = &held[..] else {
         panic!("the organization holds {held:?}");
     };
     assert_eq!(only.variable, PROVIDER_KEY);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// What an agent said reaches the Transcript, and what it was spawned with does not.
 #[tokio::test]
 async fn a_run_that_used_a_credential_records_it_nowhere() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Speaks),
     )
     .await;
-    let session = a_session(&harness, "acme", Some(A_PROVIDER_KEY)).await;
+    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert!(
-        !transcript(&harness, &session)
+        !transcript(&kestrel, &session)
             .await
             .contains(A_PROVIDER_KEY)
     );
     assert!(!format!("{ended:?}").contains(A_PROVIDER_KEY));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 fn contains(written: &[u8], secret: &str) -> bool {

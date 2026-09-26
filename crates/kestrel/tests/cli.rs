@@ -49,10 +49,10 @@ impl Kestrel {
             .env("KESTREL_COMPUTE", "local-exec")
             .env("KESTREL_SUPERVISOR", support::supervisor::binary())
             .env(
-                "KESTREL_AGENT_RUNTIME",
+                "KESTREL_HARNESS_COMMANDS",
                 format!(
                     "{}={}",
-                    support::RUNTIME,
+                    support::HARNESS,
                     support::scripted_agent::playing(script)
                 ),
             )
@@ -374,7 +374,7 @@ fn an_agents_model_changes_without_declaring_the_agent_again() {
         "agent",
         "declare",
         "builder",
-        "--runtime",
+        "--harness",
         "codex",
         "--model",
         "claude-opus-5",
@@ -385,8 +385,8 @@ fn an_agents_model_changes_without_declaring_the_agent_again() {
         "claude-sonnet-5"
     );
     assert_eq!(
-        booted.records(&["agent", "list", "--json", "name,runtime,model"]),
-        [serde_json::json!({ "name": "builder", "runtime": "codex", "model": "claude-sonnet-5" })]
+        booted.records(&["agent", "list", "--json", "name,harness,model"]),
+        [serde_json::json!({ "name": "builder", "harness": "codex", "model": "claude-sonnet-5" })]
     );
     assert_eq!(
         booted.record(&["agent", "model", "builder", "--json", "model"])["model"],

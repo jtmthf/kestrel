@@ -10,7 +10,7 @@ use kestrel::integration::credential::Token;
 use kestrel::integration::github::Github;
 use kestrel::log::{Entry, Message};
 use kestrel_scripted_agent::{FIRST_MEMORY, LAST_MEMORY};
-use support::Harness;
+use support::Kestrel;
 use support::github_stub::{self, GithubStub};
 use support::scripted_agent::Script;
 use support::supervisor::Supervisor;
@@ -23,28 +23,28 @@ const EVENTS: &str = "/issues/events?";
 const COMMENTS: &str = "/issues/comments?";
 const PATIENCE: Duration = Duration::from_secs(30);
 
-async fn a_session(harness: &Harness) -> kestrel::domain::Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session(kestrel: &Kestrel) -> kestrel::domain::Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    harness.open_session("acme", "kestrel", "builder").await
+    kestrel.open_session("acme", "kestrel", "builder").await
 }
 
 /// The Trigger comes before the poll: an Event recorded before the Trigger was declared fires
 /// nothing.
-async fn watching(harness: &Harness, stub: &GithubStub) {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn watching(kestrel: &Kestrel, stub: &GithubStub) {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    harness
+    kestrel
         .declare_trigger(
             "acme",
             "ready",
@@ -53,7 +53,7 @@ async fn watching(harness: &Harness, stub: &GithubStub) {
             "builder",
         )
         .await;
-    harness
+    kestrel
         .register_integration(
             "acme",
             "github",
@@ -65,10 +65,10 @@ async fn watching(harness: &Harness, stub: &GithubStub) {
         .await;
 }
 
-async fn sessions(harness: &Harness, count: usize) -> Vec<kestrel::domain::Session> {
+async fn sessions(kestrel: &Kestrel, count: usize) -> Vec<kestrel::domain::Session> {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        let sessions = harness.sessions("acme").await;
+        let sessions = kestrel.sessions("acme").await;
         if sessions.len() == count {
             return sessions;
         }
@@ -77,10 +77,10 @@ async fn sessions(harness: &Harness, count: usize) -> Vec<kestrel::domain::Sessi
     }
 }
 
-async fn runs(harness: &Harness, session: kestrel::domain::SessionId, count: usize) {
+async fn runs(kestrel: &Kestrel, session: kestrel::domain::SessionId, count: usize) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        if harness.runs(session).await.len() == count {
+        if kestrel.runs(session).await.len() == count {
             return;
         }
         assert!(tokio::time::Instant::now() < deadline);
@@ -88,10 +88,10 @@ async fn runs(harness: &Harness, session: kestrel::domain::SessionId, count: usi
     }
 }
 
-async fn message_arrived(harness: &Harness, session: kestrel::domain::SessionId, message: &str) {
+async fn message_arrived(kestrel: &Kestrel, session: kestrel::domain::SessionId, message: &str) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        if harness.transcript(session).await.iter().any(|recorded| {
+        if kestrel.transcript(session).await.iter().any(|recorded| {
             matches!(&recorded.entry, Entry::Said { message: said, .. } if said == message)
         }) {
             return;
@@ -117,10 +117,10 @@ async fn requested(stub: &GithubStub, path: &str, after: usize) {
     }
 }
 
-async fn pending_arrived(harness: &Harness, session: kestrel::domain::SessionId) {
+async fn pending_arrived(kestrel: &Kestrel, session: kestrel::domain::SessionId) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        if harness.has_pending_messages(session).await {
+        if kestrel.has_pending_messages(session).await {
             return;
         }
         assert!(tokio::time::Instant::now() < deadline);
@@ -130,16 +130,16 @@ async fn pending_arrived(harness: &Harness, session: kestrel::domain::SessionId)
 
 #[tokio::test]
 async fn posting_a_message_into_an_idle_session_enqueues_its_next_run() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness
+    let run = kestrel
         .post(session.id, "operator", "please add the missing test")
         .await;
 
     assert_eq!(run.session, session.id);
     assert_eq!(run.state, RunState::Queued);
-    assert!(harness.transcript(session.id).await.iter().any(|recorded| {
+    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
         matches!(
             &recorded.entry,
             Entry::Said { participant, message }
@@ -147,40 +147,40 @@ async fn posting_a_message_into_an_idle_session_enqueues_its_next_run() {
         )
     }));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_message_arriving_during_a_run_waits_for_that_run_to_end() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (active, _) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (active, _) = kestrel.dispatch_run(session.id).await;
 
     assert!(
-        harness
+        kestrel
             .post_while_busy(session.id, "operator", "one more change")
             .await
             .is_none()
     );
     assert!(
-        harness
+        kestrel
             .post_while_busy(session.id, "operator", "and update the docs")
             .await
             .is_none()
     );
-    assert_eq!(harness.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(session.id).await.len(), 1);
     assert!(
-        !harness.transcript(session.id).await.iter().any(|recorded| {
+        !kestrel.transcript(session.id).await.iter().any(|recorded| {
             matches!(&recorded.entry, Entry::Said { .. } | Entry::Messages { .. })
         })
     );
 
-    harness.complete_run(&active).await;
+    kestrel.complete_run(&active).await;
 
-    let runs = harness.runs(session.id).await;
+    let runs = kestrel.runs(session.id).await;
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[1].state, RunState::Queued);
-    let messages = harness
+    let messages = kestrel
         .transcript(session.id)
         .await
         .into_iter()
@@ -203,38 +203,38 @@ async fn a_message_arriving_during_a_run_waits_for_that_run_to_end() {
         ]]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn cleanup_left_by_a_stopped_worker_is_found_before_the_session_continues() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (active, _) = harness.dispatch_run(session.id).await;
-    harness.supervised(&active, "local-exec/2147483647").await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (active, _) = kestrel.dispatch_run(session.id).await;
+    kestrel.supervised(&active, "local-exec/2147483647").await;
     assert!(
-        harness
+        kestrel
             .post_while_busy(session.id, "operator", "continue after cleanup")
             .await
             .is_none()
     );
 
-    harness.complete_run(&active).await;
-    assert_eq!(harness.runs(session.id).await.len(), 1);
-    let reapable = harness.supervisors_to_stop().await;
+    kestrel.complete_run(&active).await;
+    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    let reapable = kestrel.supervisors_to_stop().await;
     assert_eq!(reapable.len(), 1);
     assert_eq!(reapable[0].0.id, active.id);
 
-    harness.supervisor_gone(&active).await;
-    assert_eq!(harness.runs(session.id).await.len(), 2);
-    harness.teardown().await;
+    kestrel.supervisor_gone(&active).await;
+    assert_eq!(kestrel.runs(session.id).await.len(), 2);
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_cold_run_is_seeded_with_every_page_of_earlier_context() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (first, _) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (first, _) = kestrel.dispatch_run(session.id).await;
 
     for index in 0..105 {
         let message = match index {
@@ -242,30 +242,30 @@ async fn a_cold_run_is_seeded_with_every_page_of_earlier_context() {
             104 => LAST_MEMORY.to_owned(),
             _ => format!("earlier message {index}"),
         };
-        harness.said(&first, &message).await;
+        kestrel.said(&first, &message).await;
     }
-    harness.complete_run(&first).await;
-    let second = harness
+    kestrel.complete_run(&first).await;
+    let second = kestrel
         .post(session.id, "operator", "please continue")
         .await;
-    let claimed = harness
+    let claimed = kestrel
         .claim_run()
         .await
         .expect("the second run should claim");
     assert_eq!(claimed.run.id, second.id);
 
     let mut supervisor = Supervisor::provision_playing(
-        &harness.link(),
+        &kestrel.link(),
         second.id,
         &claimed.credential,
         Script::Recalls,
     );
     supervisor.wait_until_it_says("reported connected").await;
-    harness.start(&second).await;
+    kestrel.start(&second).await;
     supervisor.wait_until_it_says("reported answered").await;
-    harness.stop_run(second.id).await;
+    kestrel.stop_run(second.id).await;
 
-    assert!(harness.transcript(session.id).await.iter().any(|recorded| {
+    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
         matches!(
             &recorded.entry,
             Entry::Said { message, .. } if message == "I remember the whole earlier context"
@@ -273,51 +273,51 @@ async fn a_cold_run_is_seeded_with_every_page_of_earlier_context() {
     }));
 
     assert!(supervisor.finishes().await.success());
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_second_run_starts_a_fresh_supervisor_on_the_same_instance_after_the_first_is_gone() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         support::supervisor::binary(),
         &support::scripted_agent::playing(Script::Lingers),
     )
     .await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    harness
+    kestrel
         .hold_provider_credential(&organization, PROVIDER_KEY, A_PROVIDER_KEY)
         .await;
-    let session = harness.open_session("acme", "kestrel", "builder").await;
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
 
-    let first = harness.post(session.id, "operator", FIRST_MEMORY).await;
-    harness.answered(first.id, 1).await;
-    harness.stop_run(first.id).await;
-    let first = harness.run(first.id).await;
+    let first = kestrel.post(session.id, "operator", FIRST_MEMORY).await;
+    kestrel.answered(first.id, 1).await;
+    kestrel.stop_run(first.id).await;
+    let first = kestrel.run(first.id).await;
     let first_supervisor = first.supervisor.as_deref().expect("a supervisor");
     support::environment::Environment::named(first_supervisor)
         .is_gone()
         .await;
-    harness.supervisor_recorded_gone(&first).await;
+    kestrel.supervisor_recorded_gone(&first).await;
 
-    let second = harness.post(session.id, "operator", LAST_MEMORY).await;
-    harness.answered(second.id, 1).await;
-    let second = harness.run(second.id).await;
+    let second = kestrel.post(session.id, "operator", LAST_MEMORY).await;
+    kestrel.answered(second.id, 1).await;
+    let second = kestrel.run(second.id).await;
     let second_supervisor = second.supervisor.as_deref().expect("a supervisor");
 
     assert_ne!(first_supervisor, second_supervisor);
     assert_eq!(first.instance, second.instance);
-    harness.stop_run(second.id).await;
+    kestrel.stop_run(second.id).await;
     support::environment::Environment::named(second_supervisor)
         .is_gone()
         .await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -328,10 +328,10 @@ async fn a_github_comment_enqueues_a_second_run_in_the_originating_session() {
         ISSUE,
         "ready-for-agent",
     )]));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
-    let session = sessions(&harness, 1).await.remove(0);
-    let first = harness
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub).await;
+    let session = sessions(&kestrel, 1).await.remove(0);
+    let first = kestrel
         .claim_run()
         .await
         .expect("the first run should claim")
@@ -353,21 +353,21 @@ async fn a_github_comment_enqueues_a_second_run_in_the_originating_session() {
         )]),
     );
     requested(&stub, COMMENTS, comments_before).await;
-    pending_arrived(&harness, session.id).await;
+    pending_arrived(&kestrel, session.id).await;
     assert_eq!(
-        harness.runs(session.id).await.len(),
+        kestrel.runs(session.id).await.len(),
         1,
         "the comment started a concurrent run"
     );
-    assert!(!harness.transcript(session.id).await.iter().any(|recorded| {
+    assert!(!kestrel.transcript(session.id).await.iter().any(|recorded| {
         matches!(&recorded.entry, Entry::Said { message, .. } if message == "please add the missing test")
     }));
 
-    harness.complete_run(&first).await;
-    runs(&harness, session.id, 2).await;
+    kestrel.complete_run(&first).await;
+    runs(&kestrel, session.id, 2).await;
 
-    assert_eq!(harness.sessions("acme").await.len(), 1);
-    assert!(harness.transcript(session.id).await.iter().any(|recorded| {
+    assert_eq!(kestrel.sessions("acme").await.len(), 1);
+    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
         matches!(
             &recorded.entry,
             Entry::Messages { messages }
@@ -378,7 +378,7 @@ async fn a_github_comment_enqueues_a_second_run_in_the_originating_session() {
         )
     }));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -389,10 +389,10 @@ async fn comments_arriving_during_a_turn_wait_in_order_with_their_authors() {
         ISSUE,
         "ready-for-agent",
     )]));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
-    let session = sessions(&harness, 1).await.remove(0);
-    let first = harness
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub).await;
+    let session = sessions(&kestrel, 1).await.remove(0);
+    let first = kestrel
         .claim_run()
         .await
         .expect("the first run should claim")
@@ -412,15 +412,15 @@ async fn comments_arriving_during_a_turn_wait_in_order_with_their_authors() {
         ]),
     );
     requested(&stub, COMMENTS, comments_before).await;
-    pending_arrived(&harness, session.id).await;
+    pending_arrived(&kestrel, session.id).await;
     // Both comments are one poll's, and each is received in its own transaction; let the sweep
     // finish holding the second before the run ends.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    harness.complete_run(&first).await;
-    runs(&harness, session.id, 2).await;
+    kestrel.complete_run(&first).await;
+    runs(&kestrel, session.id, 2).await;
 
-    assert!(harness.transcript(session.id).await.iter().any(|recorded| {
+    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
         recorded.entry
             == Entry::Messages {
                 messages: vec![
@@ -436,7 +436,7 @@ async fn comments_arriving_during_a_turn_wait_in_order_with_their_authors() {
             }
     }));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -450,13 +450,13 @@ async fn a_comment_polled_with_its_origin_waits_for_the_session_to_open() {
     stub.script_answer("GET", EVENTS, github_stub::page(&[label]));
     stub.script_answer("GET", COMMENTS, github_stub::page(&[comment]));
 
-    let harness = Harness::boot().await;
-    watching(&harness, &stub).await;
-    let session = sessions(&harness, 1).await.remove(0);
-    message_arrived(&harness, session.id, "picked up together").await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub).await;
+    let session = sessions(&kestrel, 1).await.remove(0);
+    message_arrived(&kestrel, session.id, "picked up together").await;
 
-    assert_eq!(harness.runs(session.id).await.len(), 1);
-    harness.teardown().await;
+    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -514,15 +514,15 @@ async fn a_comment_backlog_larger_than_ten_pages_loses_nothing() {
     );
 }
 
-async fn watching_correlated(harness: &Harness, stub: &GithubStub, correlation: &str) {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn watching_correlated(kestrel: &Kestrel, stub: &GithubStub, correlation: &str) {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    harness
+    kestrel
         .declare_trigger_rendering(
             "acme",
             "ready",
@@ -532,7 +532,7 @@ async fn watching_correlated(harness: &Harness, stub: &GithubStub, correlation: 
             &support::templates(support::BRIEF, None, Some(correlation)),
         )
         .await;
-    harness
+    kestrel
         .register_integration(
             "acme",
             "github",
@@ -552,23 +552,23 @@ async fn a_comment_on_a_sealed_session_feeds_the_open_one_holding_its_correlatio
         ISSUE,
         "ready-for-agent",
     )]));
-    let harness = Harness::boot().await;
-    watching_correlated(&harness, &stub, "the release").await;
-    let sealed = sessions(&harness, 1).await.remove(0);
-    let first = harness
+    let kestrel = Kestrel::boot().await;
+    watching_correlated(&kestrel, &stub, "the release").await;
+    let sealed = sessions(&kestrel, 1).await.remove(0);
+    let first = kestrel
         .claim_run()
         .await
         .expect("the first run should claim")
         .run;
-    harness.complete_run(&first).await;
-    harness.seal_session(sealed.id).await;
+    kestrel.complete_run(&first).await;
+    kestrel.seal_session(sealed.id).await;
 
     stub.script_answer(
         "GET",
         EVENTS,
         github_stub::page(&[github_stub::labelled(8, ISSUE + 1, "ready-for-agent")]),
     );
-    let holding = sessions(&harness, 2)
+    let holding = sessions(&kestrel, 2)
         .await
         .into_iter()
         .find(|session| session.id != sealed.id)
@@ -584,23 +584,23 @@ async fn a_comment_on_a_sealed_session_feeds_the_open_one_holding_its_correlatio
         )]),
     );
 
-    message_arrived(&harness, holding.id, "about the release").await;
-    assert_eq!(harness.sessions("acme").await.len(), 2);
+    message_arrived(&kestrel, holding.id, "about the release").await;
+    assert_eq!(kestrel.sessions("acme").await.len(), 2);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A Trigger that names the one login it obeys, so a Session it opened has an author it
 /// authorizes and everyone else is a stranger to it.
-async fn watching_a_named_actor(harness: &Harness, stub: &GithubStub) {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn watching_a_named_actor(kestrel: &Kestrel, stub: &GithubStub) {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    harness
+    kestrel
         .declare_trigger_rendering(
             "acme",
             "delegated",
@@ -616,7 +616,7 @@ async fn watching_a_named_actor(harness: &Harness, stub: &GithubStub) {
             &support::templates("Work on {{ event.subject }}", None, Some("the release")),
         )
         .await;
-    harness
+    kestrel
         .register_integration(
             "acme",
             "github",
@@ -651,10 +651,10 @@ fn a_remark_from(stub: &GithubStub, author: &str, remark: &str) {
 
 /// The sweep records the remark as an Event before it decides whether to feed it, so an Event
 /// on the issue is the signal that the decision has been made.
-async fn the_remark_was_recorded(harness: &Harness, remark: &str) {
+async fn the_remark_was_recorded(kestrel: &Kestrel, remark: &str) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        let recorded = harness.events("acme").await.iter().any(|event| {
+        let recorded = kestrel.events("acme").await.iter().any(|event| {
             event
                 .occurrence
                 .data
@@ -677,53 +677,53 @@ async fn the_remark_was_recorded(harness: &Harness, remark: &str) {
 async fn a_remark_from_a_stranger_does_not_feed_an_open_session() {
     let stub = GithubStub::start();
     the_command(&stub);
-    let harness = Harness::boot().await;
-    watching_a_named_actor(&harness, &stub).await;
-    let session = sessions(&harness, 1).await.remove(0);
-    let run = harness
+    let kestrel = Kestrel::boot().await;
+    watching_a_named_actor(&kestrel, &stub).await;
+    let session = sessions(&kestrel, 1).await.remove(0);
+    let run = kestrel
         .claim_run()
         .await
         .expect("the command should have opened a run")
         .run;
     a_remark_from(&stub, "a-stranger", "please also change the parser");
 
-    the_remark_was_recorded(&harness, "please also change the parser").await;
+    the_remark_was_recorded(&kestrel, "please also change the parser").await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(
-        !harness.has_pending_messages(session.id).await,
+        !kestrel.has_pending_messages(session.id).await,
         "a stranger's remark was held as input to the run"
     );
 
-    harness.complete_run(&run).await;
+    kestrel.complete_run(&run).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
-        harness.runs(session.id).await.len(),
+        kestrel.runs(session.id).await.len(),
         1,
         "a stranger's remark started a run"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_remark_from_the_trigger_actor_feeds_an_open_session() {
     let stub = GithubStub::start();
     the_command(&stub);
-    let harness = Harness::boot().await;
-    watching_a_named_actor(&harness, &stub).await;
-    let session = sessions(&harness, 1).await.remove(0);
-    let run = harness
+    let kestrel = Kestrel::boot().await;
+    watching_a_named_actor(&kestrel, &stub).await;
+    let session = sessions(&kestrel, 1).await.remove(0);
+    let run = kestrel
         .claim_run()
         .await
         .expect("the command should have opened a run")
         .run;
     a_remark_from(&stub, MAINTAINER, "please also change the parser");
 
-    pending_arrived(&harness, session.id).await;
-    harness.complete_run(&run).await;
-    runs(&harness, session.id, 2).await;
+    pending_arrived(&kestrel, session.id).await;
+    kestrel.complete_run(&run).await;
+    runs(&kestrel, session.id, 2).await;
 
-    assert!(harness.transcript(session.id).await.iter().any(|recorded| {
+    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
         recorded.entry
             == Entry::Messages {
                 messages: vec![Message {
@@ -733,7 +733,7 @@ async fn a_remark_from_the_trigger_actor_feeds_an_open_session() {
             }
     }));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -746,10 +746,10 @@ async fn a_comment_kestrel_left_is_never_heard_as_input() {
             10, ISSUE, MAINTAINER, "@kestrel",
         )]),
     );
-    let harness = Harness::boot().await;
-    watching_a_named_actor(&harness, &stub).await;
-    let session = sessions(&harness, 1).await.remove(0);
-    harness
+    let kestrel = Kestrel::boot().await;
+    watching_a_named_actor(&kestrel, &stub).await;
+    let session = sessions(&kestrel, 1).await.remove(0);
+    kestrel
         .claim_run()
         .await
         .expect("the command should have opened a run");
@@ -767,10 +767,10 @@ async fn a_comment_kestrel_left_is_never_heard_as_input() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     assert!(
-        !harness.has_pending_messages(session.id).await,
+        !kestrel.has_pending_messages(session.id).await,
         "kestrel heard its own comment as input"
     );
-    assert_eq!(harness.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(session.id).await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

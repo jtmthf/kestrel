@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use crate::scope::{Scope, Source};
 
 const DEFAULT_ORGANIZATION: &str = "default";
-const DEFAULT_RUNTIME: &str = "opencode";
+const DEFAULT_HARNESS: &str = "opencode";
 
 #[derive(Default)]
 pub struct Given {
@@ -14,7 +14,7 @@ pub struct Given {
     pub branch: Option<String>,
     pub project: Option<String>,
     pub agent: Option<String>,
-    pub runtime: Option<String>,
+    pub harness: Option<String>,
     pub model: Option<String>,
     pub credentials: Vec<String>,
 }
@@ -58,7 +58,7 @@ impl Existing {
             agents: records(agents, |record| {
                 Some(Agent {
                     name: record["name"].as_str()?.to_owned(),
-                    runtime: record["runtime"].as_str()?.to_owned(),
+                    harness: record["harness"].as_str()?.to_owned(),
                     model: record["model"].as_str().map(str::to_owned),
                 })
             }),
@@ -86,7 +86,7 @@ pub struct Project {
 
 pub struct Agent {
     pub name: String,
-    pub runtime: String,
+    pub harness: String,
     pub model: Option<String>,
 }
 
@@ -127,7 +127,7 @@ pub struct Plan {
     pub project: Inferred<String>,
     pub branch: Inferred<String>,
     pub agent: Inferred<String>,
-    pub runtime: Inferred<String>,
+    pub harness: Inferred<String>,
     pub model: Inferred<Option<String>>,
     pub credentials: Inferred<Vec<String>>,
 }
@@ -317,27 +317,27 @@ pub fn plan(
         },
     };
 
-    let runtime_or_model_given = given.runtime.is_some() || given.model.is_some();
+    let harness_or_model_given = given.harness.is_some() || given.model.is_some();
     let agent = match (given.agent, agents.as_slice()) {
         (Some(agent), _) => flagged(agent, "--agent"),
-        (None, [only]) if !runtime_or_model_given => inferred(
+        (None, [only]) if !harness_or_model_given => inferred(
             only.name.clone(),
             format!("the only Agent in {}", organization.value),
         ),
         (None, _) => inferred(
             given
-                .runtime
+                .harness
                 .clone()
-                .unwrap_or_else(|| DEFAULT_RUNTIME.to_owned()),
-            "named for its Agent Runtime",
+                .unwrap_or_else(|| DEFAULT_HARNESS.to_owned()),
+            "named for its Harness",
         ),
     };
     let declared = agents.iter().find(|declared| declared.name == agent.value);
     let differs = declared.is_some_and(|declared| {
         given
-            .runtime
+            .harness
             .as_ref()
-            .is_some_and(|runtime| runtime != &declared.runtime)
+            .is_some_and(|harness| harness != &declared.harness)
             || given
                 .model
                 .as_ref()
@@ -352,16 +352,13 @@ pub fn plan(
             ),
         });
     }
-    let runtime = match (given.runtime, declared) {
-        (Some(runtime), _) => flagged(runtime, "--runtime"),
+    let harness = match (given.harness, declared) {
+        (Some(harness), _) => flagged(harness, "--harness"),
         (None, Some(declared)) => inferred(
-            declared.runtime.clone(),
-            format!("the runtime {} is declared on", declared.name),
+            declared.harness.clone(),
+            format!("the harness {} is declared on", declared.name),
         ),
-        (None, None) => inferred(
-            DEFAULT_RUNTIME.to_owned(),
-            "kestrel's default Agent Runtime",
-        ),
+        (None, None) => inferred(DEFAULT_HARNESS.to_owned(), "kestrel's default Harness"),
     };
     let model = match (given.model, declared) {
         (Some(model), _) => flagged(Some(model), "--model"),
@@ -369,7 +366,7 @@ pub fn plan(
             declared.model.clone(),
             format!("the model {} is declared with", declared.name),
         ),
-        (None, None) => inferred(None, "none, so the Agent Runtime chooses"),
+        (None, None) => inferred(None, "none, so the Harness chooses"),
     };
     let credentials = match (given.credentials, existing.credentials.as_slice()) {
         (given, held) if !given.is_empty() => {
@@ -390,7 +387,7 @@ pub fn plan(
         }
         (_, []) => inferred(
             Vec::new(),
-            "none is held, so a Run reaches a model only through a runtime logged in otherwise",
+            "none is held, so a Run reaches a model only through a harness logged in otherwise",
         ),
         (_, held) => inferred(
             held.to_vec(),
@@ -405,7 +402,7 @@ pub fn plan(
             project,
             branch,
             agent,
-            runtime,
+            harness,
             model,
             credentials,
         }),
@@ -464,10 +461,10 @@ impl Plan {
             ),
             row("agent", &self.agent, self.agent.value.clone(), "--agent"),
             row(
-                "runtime",
-                &self.runtime,
-                self.runtime.value.clone(),
-                "--runtime",
+                "harness",
+                &self.harness,
+                self.harness.value.clone(),
+                "--harness",
             ),
             row(
                 "model",
@@ -522,8 +519,8 @@ impl Plan {
                     format!("the model {model}")
                 });
             applying.push(format!(
-                "declare the Agent {agent}, an actor driven by the Agent Runtime {} with {model}",
-                self.runtime.value
+                "declare the Agent {agent}, an actor driven by the Harness {} with {model}",
+                self.harness.value
             ));
         }
         if self.credentials.given {
@@ -550,7 +547,7 @@ impl Plan {
             },
             "agent": {
                 "name": self.agent.value,
-                "runtime": self.runtime.value,
+                "harness": self.harness.value,
                 "model": self.model.value,
             },
             "brief": brief,
@@ -711,25 +708,17 @@ mod tests {
                     "origin of the clone at /work/widgets",
                 ),
                 ("branch", "main".to_owned(), "origin's default branch"),
+                ("agent", "opencode".to_owned(), "named for its Harness"),
                 (
-                    "agent",
+                    "harness",
                     "opencode".to_owned(),
-                    "named for its Agent Runtime"
+                    "kestrel's default Harness"
                 ),
-                (
-                    "runtime",
-                    "opencode".to_owned(),
-                    "kestrel's default Agent Runtime"
-                ),
-                (
-                    "model",
-                    "none".to_owned(),
-                    "none, so the Agent Runtime chooses"
-                ),
+                ("model", "none".to_owned(), "none, so the Harness chooses"),
                 (
                     "credentials",
                     "none".to_owned(),
-                    "none is held, so a Run reaches a model only through a runtime logged in \
+                    "none is held, so a Run reaches a model only through a harness logged in \
                      otherwise",
                 ),
             ]
@@ -744,7 +733,7 @@ mod tests {
                 branch: Some("develop".to_owned()),
                 project: Some("gadgets-work".to_owned()),
                 agent: Some("builder".to_owned()),
-                runtime: Some("claude".to_owned()),
+                harness: Some("claude".to_owned()),
                 model: Some("opus".to_owned()),
                 credentials: vec!["ANTHROPIC_API_KEY".to_owned()],
             },
@@ -788,7 +777,7 @@ mod tests {
             &Existing {
                 agents: vec![Agent {
                     name: "builder".to_owned(),
-                    runtime: "claude".to_owned(),
+                    harness: "claude".to_owned(),
                     model: Some("opus".to_owned()),
                 }],
                 ..Existing::default()
@@ -796,7 +785,7 @@ mod tests {
         );
 
         assert_eq!(plan.agent.value, "builder");
-        assert_eq!(plan.runtime.value, "claude");
+        assert_eq!(plan.harness.value, "claude");
         assert_eq!(plan.model.value.as_deref(), Some("opus"));
     }
 
@@ -918,7 +907,7 @@ mod tests {
             &Existing {
                 agents: vec![Agent {
                     name: "opencode".to_owned(),
-                    runtime: "opencode".to_owned(),
+                    harness: "opencode".to_owned(),
                     model: Some("opus".to_owned()),
                 }],
                 ..Existing::default()
@@ -947,7 +936,7 @@ mod tests {
                 "declare the Organization acme, the boundary everything below belongs to",
                 "declare the Project widgets, where work on \
                  https://github.com/acme/widgets.git happens on main",
-                "declare the Agent opencode, an actor driven by the Agent Runtime opencode \
+                "declare the Agent opencode, an actor driven by the Harness opencode \
                  with its default model",
                 "hold ANTHROPIC_API_KEY as a Provider Credential of acme",
                 "open a Session in widgets carrying the Brief, and enqueue a Run of opencode \
@@ -965,7 +954,7 @@ mod tests {
             )],
             agents: vec![Agent {
                 name: "builder".to_owned(),
-                runtime: "claude".to_owned(),
+                harness: "claude".to_owned(),
                 model: Some("opus".to_owned()),
             }],
             credentials: vec!["ANTHROPIC_API_KEY".to_owned()],

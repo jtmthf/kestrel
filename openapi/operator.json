@@ -259,7 +259,7 @@
       "post": {
         "operationId": "declareAgent",
         "summary": "Declare an Agent.",
-        "description": "Desired state: an Agent by this name that already exists keeps its identity and takes on the runtime and model declared, so a declaration naming no model leaves it naming none. A named model is taken at its word: what a runtime offers is only learned from a Run, and a Subscription Profile added since can widen it. A Run already in flight keeps the model it was dispatched with.",
+        "description": "Desired state: an Agent by this name that already exists keeps its identity and takes on the harness and model declared, so a declaration naming no model leaves it naming none. A named model is taken at its word: what a harness offers is only learned from a Run, and a Subscription Profile added since can widen it. A Run already in flight keeps the model it was dispatched with.",
         "parameters": [
           {
             "name": "organization",
@@ -467,7 +467,7 @@
             "name": "variable",
             "in": "path",
             "required": true,
-            "description": "The environment variable an Agent Runtime reads the credential from.",
+            "description": "The environment variable a Harness reads the credential from.",
             "schema": {
               "type": "string"
             }
@@ -525,7 +525,7 @@
             "name": "variable",
             "in": "path",
             "required": true,
-            "description": "The environment variable an Agent Runtime reads the credential from.",
+            "description": "The environment variable a Harness reads the credential from.",
             "schema": {
               "type": "string"
             }
@@ -585,7 +585,7 @@
       "post": {
         "operationId": "declareSubscriptionProfile",
         "summary": "Declare a Subscription Profile.",
-        "description": "A person's login to a subscribed Agent Runtime. It reaches only the Runs of Sessions that name it. A profile by this name that already exists is answered as it is; one that belongs to someone else is refused with 409, because a profile never changes hands.",
+        "description": "A person's login to a subscribed Harness. It reaches only the Runs of Sessions that name it. A profile by this name that already exists is answered as it is; one that belongs to someone else is refused with 409, because a profile never changes hands.",
         "parameters": [
           {
             "name": "organization",
@@ -650,7 +650,7 @@
       "put": {
         "operationId": "holdSubscriptionProfileVariable",
         "summary": "Hold a variable in a Subscription Profile.",
-        "description": "Replaces whatever the profile held as this variable. It is put into the Agent Runtime's environment as the Run is spawned. It is encrypted at rest and never answered back.",
+        "description": "Replaces whatever the profile held as this variable. It is put into the Harness's environment as the Run is spawned. It is encrypted at rest and never answered back.",
         "parameters": [
           {
             "name": "organization",
@@ -674,7 +674,7 @@
             "name": "variable",
             "in": "path",
             "required": true,
-            "description": "The environment variable the Agent Runtime is spawned with.",
+            "description": "The environment variable the Harness is spawned with.",
             "schema": {
               "type": "string"
             }
@@ -741,7 +741,7 @@
             "name": "variable",
             "in": "path",
             "required": true,
-            "description": "The environment variable the Agent Runtime is spawned with.",
+            "description": "The environment variable the Harness is spawned with.",
             "schema": {
               "type": "string"
             }
@@ -767,7 +767,7 @@
       "put": {
         "operationId": "holdSubscriptionProfileFile",
         "summary": "Hold a file in a Subscription Profile.",
-        "description": "Replaces whatever the profile held as this file. It is written beneath the agent's home as the Run is spawned, read back as the Run ends, and held again if the runtime rewrote it, so a refreshed login persists; the secret is the file's contents, byte for byte. It is encrypted at rest and never answered back.",
+        "description": "Replaces whatever the profile held as this file. It is written beneath the agent's home as the Run is spawned, read back as the Run ends, and held again if the harness rewrote it, so a refreshed login persists; the secret is the file's contents, byte for byte. It is encrypted at rest and never answered back.",
         "parameters": [
           {
             "name": "organization",
@@ -1616,22 +1616,22 @@
             "type": "string",
             "minLength": 1
           },
-          "runtime": {
+          "harness": {
             "type": "string",
             "minLength": 1,
-            "description": "The Agent Runtime that drives it."
+            "description": "The Harness that drives it."
           },
           "model": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The model it works with. Absent or null names none, and the Agent Runtime's own default is the answer."
+            "description": "The model it works with. Absent or null names none, and the Harness's own default is the answer."
           }
         },
         "required": [
           "name",
-          "runtime"
+          "harness"
         ]
       },
       "Agent": {
@@ -1644,7 +1644,7 @@
           "name": {
             "type": "string"
           },
-          "runtime": {
+          "harness": {
             "type": "string"
           },
           "model": {
@@ -1657,7 +1657,7 @@
         "required": [
           "id",
           "name",
-          "runtime",
+          "harness",
           "model"
         ]
       },

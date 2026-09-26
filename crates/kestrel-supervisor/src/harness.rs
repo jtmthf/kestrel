@@ -1,5 +1,5 @@
-//! kestrel as an ACP client (ADR-0007): no contract of kestrel's, and no branch on which Agent
-//! Runtime is on the other end of one.
+//! kestrel as an ACP client (ADR-0007): no contract of kestrel's, and no branch on which
+//! Harness is on the other end of one.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -31,10 +31,10 @@ use crate::permission::{self, Subject};
 const PROMPT: &str = "Do the work this environment was provisioned for.";
 
 /// What this Environment was configured to drive, what the Run asks of it, and where what the
-/// agent writes to stderr goes. Which Agent Runtime is on the other end is the configuration's
+/// agent writes to stderr goes. Which Harness is on the other end is the configuration's
 /// business, never this module's.
 #[derive(Debug, Clone)]
-pub struct Runtime {
+pub struct Harness {
     pub command: String,
     /// The ACP authentication method to log the agent in with, for an agent that requires one.
     pub auth: Option<String>,
@@ -57,7 +57,7 @@ pub struct Worked {
     pub failed: Option<String>,
 }
 
-/// Which model the agent works the turn on — the one its Run named, or the one the runtime
+/// Which model the agent works the turn on — the one its Run named, or the one the harness
 /// defaults to when it named none.
 pub struct On {
     pub model: String,
@@ -85,7 +85,7 @@ impl Conversation {
     /// `provider` reaches the agent's own process and nothing else: not this one's
     /// environment, not a file, and not ACP, which carries no credentials (ADR-0007).
     pub fn open(
-        runtime: &Runtime,
+        harness: &Harness,
         provider: BTreeMap<String, String>,
         first: String,
         root: PathBuf,
@@ -96,7 +96,7 @@ impl Conversation {
             .send(first)
             .expect("the conversation has not started, so nothing has hung up on it");
         let task = tokio::spawn(conversing(
-            runtime.clone(),
+            harness.clone(),
             provider,
             root,
             prompted,
@@ -186,7 +186,7 @@ impl Continuity {
         }
         if self.recovery.is_none() {
             return Err(format!(
-                "the agent's process was lost ({lost}), and its runtime cannot resume the \
+                "the agent's process was lost ({lost}), and its harness cannot resume the \
                  conversation it held"
             ));
         }
@@ -210,7 +210,7 @@ enum Ended {
 
 /// Everything that can go wrong here ends the conversation, and is its last turn.
 async fn conversing(
-    runtime: Runtime,
+    harness: Harness,
     provider: BTreeMap<String, String>,
     root: PathBuf,
     mut prompts: mpsc::UnboundedReceiver<String>,
@@ -221,7 +221,7 @@ async fn conversing(
 
     let because = loop {
         let lost = match living(
-            &runtime,
+            &harness,
             &provider,
             &root,
             &mut prompts,
@@ -238,7 +238,7 @@ async fn conversing(
         };
         match continuity.recovering(lost.clone()) {
             Ok(()) => {
-                let _ = runtime.stderr.send(format!(
+                let _ = harness.stderr.send(format!(
                     "kestrel: the agent's process was lost ({lost}); bringing it back into its \
                      conversation"
                 ));
@@ -251,7 +251,7 @@ async fn conversing(
 
 /// An `Err` is the connection itself failing, which is a loss.
 async fn living(
-    runtime: &Runtime,
+    harness: &Harness,
     provider: &BTreeMap<String, String>,
     root: &Path,
     prompts: &mut mpsc::UnboundedReceiver<String>,
@@ -259,16 +259,16 @@ async fn living(
     heard: &Arc<Mutex<Heard>>,
     continuity: &mut Continuity,
 ) -> Result<Ended, Error> {
-    let spawn = match AcpAgent::from_str(&runtime.command) {
+    let spawn = match AcpAgent::from_str(&harness.command) {
         Ok(spawn) => spawn,
         Err(error) => {
             return Ok(Ended::Over(format!(
-                "the agent runtime {:?} could not be spawned: {error}",
-                runtime.command
+                "the harness {:?} could not be spawned: {error}",
+                harness.command
             )));
         }
     };
-    let stderr = runtime.stderr.clone();
+    let stderr = harness.stderr.clone();
     let spawn = AcpAgent::new(spawn.into_config().envs(provider.clone())).with_debug(
         move |line, direction| {
             if direction == LineDirection::Stderr {
@@ -323,13 +323,13 @@ async fn living(
                 let conversed = match (continuity.conversed.clone(), continuity.recovery) {
                     (Some(conversed), Some(recovery)) => {
                         if let Err(error) =
-                            recover(&connection, runtime, root, heard, &conversed, recovery).await
+                            recover(&connection, harness, root, heard, &conversed, recovery).await
                         {
                             return Ok(ended(&error));
                         }
                         conversed
                     }
-                    _ => match set_up(&connection, runtime, root, heard).await {
+                    _ => match set_up(&connection, harness, root, heard).await {
                         Ok((conversed, recovery)) => {
                             continuity.opened(conversed.clone(), recovery);
                             conversed
@@ -452,11 +452,11 @@ async fn initialized(
 /// ask it.
 async fn set_up(
     connection: &ConnectionTo<agent_client_protocol::Agent>,
-    runtime: &Runtime,
+    harness: &Harness,
     root: &Path,
     heard: &Mutex<Heard>,
 ) -> Result<(SessionId, Option<Recovery>), Error> {
-    let initialized = initialized(connection, runtime.auth.as_deref()).await?;
+    let initialized = initialized(connection, harness.auth.as_deref()).await?;
 
     let set_up = connection
         .send_request(NewSessionRequest::new(root))
@@ -468,7 +468,7 @@ async fn set_up(
         connection,
         &set_up.session_id,
         set_up.config_options.as_deref(),
-        runtime.model.as_deref(),
+        harness.model.as_deref(),
     )
     .await?;
     heard
@@ -486,13 +486,13 @@ async fn set_up(
 /// is whatever a loaded conversation replays; what it used and was allowed still happened.
 async fn recover(
     connection: &ConnectionTo<agent_client_protocol::Agent>,
-    runtime: &Runtime,
+    harness: &Harness,
     root: &Path,
     heard: &Mutex<Heard>,
     conversed: &SessionId,
     recovery: Recovery,
 ) -> Result<(), Error> {
-    initialized(connection, runtime.auth.as_deref()).await?;
+    initialized(connection, harness.auth.as_deref()).await?;
     let lost = taken(heard);
 
     let config_options = match recovery {
@@ -527,7 +527,7 @@ async fn recover(
         connection,
         conversed,
         config_options.as_deref(),
-        runtime.model.as_deref(),
+        harness.model.as_deref(),
     )
     .await?;
 
@@ -1123,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_that_cannot_resume_a_session_ends_the_conversation_saying_so() {
+    fn a_harness_that_cannot_resume_a_session_ends_the_conversation_saying_so() {
         let refused = conversing_with(None)
             .recovering("it exited".to_owned())
             .expect_err("nothing to recover with");

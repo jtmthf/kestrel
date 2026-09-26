@@ -60,7 +60,7 @@ impl Lineage {
         }
     }
 
-    /// As the runtime advertises it: the same model is named differently across the line.
+    /// As the harness advertises it: the same model is named differently across the line.
     pub fn model(self) -> String {
         match self {
             Lineage::Native => format!("opencode/{MODEL}"),
@@ -68,7 +68,7 @@ impl Lineage {
         }
     }
 
-    /// The same model, named the way the other lineage names it. What one runtime advertises
+    /// The same model, named the way the other lineage names it. What one harness advertises
     /// is not what the other does, and a client that assumes one shape is wrong on the other.
     pub fn unoffered_model(self) -> String {
         match self {
@@ -121,7 +121,7 @@ impl Lineage {
     }
 
     /// Written into the Instance before the Run is told to start. The Agent's model is not
-    /// among it: that reaches the runtime over ACP, which is the point of setting it.
+    /// among it: that reaches the harness over ACP, which is the point of setting it.
     pub fn configure(self, instance: &mut Instance) {
         instance
             .write_file("AGENTS.md", AGENTS_MD.as_bytes())
@@ -130,7 +130,7 @@ impl Lineage {
         if self == Lineage::Native {
             instance
                 .write_file("opencode.json", opencode_config().as_bytes())
-                .expect("the agent runtime should be configured");
+                .expect("the harness should be configured");
         }
     }
 }

@@ -219,7 +219,7 @@ mod tests {
                 id: AgentId::generate(),
                 organization: organization.id,
                 name: "builder".to_owned(),
-                runtime: "opencode".to_owned(),
+                harness: "opencode".to_owned(),
                 model: None,
             },
             profile: None,

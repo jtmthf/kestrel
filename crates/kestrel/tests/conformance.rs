@@ -6,9 +6,9 @@
 //! it is logged in and how it is configured live in `support::lineage`, which is the setup; a
 //! failure in this file names the promise ACP makes that kestrel relied on and did not get.
 //!
-//! Both agents here advertise a model a client may select, so the runtime that advertises none
+//! Both agents here advertise a model a client may select, so the harness that advertises none
 //! is the scripted ACP agent's to play, in `tests/acp.rs`; what this suite has instead is each
-//! runtime naming the same model differently, and refusing the other's name for it.
+//! harness naming the same model differently, and refusing the other's name for it.
 //!
 //! It costs network and model spend, so it is gated to nightly and to a release rather than run
 //! per commit, and every test is ignored by default. What each Run spent is written to
@@ -22,7 +22,7 @@ use std::time::Duration;
 use kestrel::compute::{Docker, Driver, Instance, Supervisor};
 use kestrel::domain::{Exit, Run, RunId, Session, Usage};
 use kestrel::link::credential::Secret;
-use support::Harness;
+use support::Kestrel;
 use support::diagnostics::Diagnostics;
 use support::lineage::{DONE, Lineage};
 
@@ -56,24 +56,24 @@ struct Driven {
 }
 
 impl Driven {
-    async fn started(harness: &Harness, lineage: Lineage, model: &str) -> Self {
-        Self::logged_in_with(harness, lineage, model, lineage.auth()).await
+    async fn started(kestrel: &Kestrel, lineage: Lineage, model: &str) -> Self {
+        Self::logged_in_with(kestrel, lineage, model, lineage.auth()).await
     }
 
-    async fn logged_in_with(harness: &Harness, lineage: Lineage, model: &str, auth: &str) -> Self {
-        let session = a_session(harness, lineage, model).await;
-        let (run, credential) = harness.dispatch_run(session.id).await;
+    async fn logged_in_with(kestrel: &Kestrel, lineage: Lineage, model: &str, auth: &str) -> Self {
+        let session = a_session(kestrel, lineage, model).await;
+        let (run, credential) = kestrel.dispatch_run(session.id).await;
         let (mut instance, supervisor, mut diagnostics) =
-            provisioned(harness, lineage, &session, run.id, &credential, auth);
+            provisioned(kestrel, lineage, &session, run.id, &credential, auth);
 
         diagnostics.wait_until_it_says("reported connected").await;
         lineage.configure(&mut instance);
-        harness.start(&run).await;
+        kestrel.start(&run).await;
 
         Self {
             lineage,
             run,
-            session: harness.show_session(session.id).await,
+            session: kestrel.show_session(session.id).await,
             instance,
             supervisor,
             diagnostics,
@@ -85,7 +85,7 @@ impl Driven {
     ///
     /// The image carries no `ps` and no `pkill`, so the process is found where the kernel keeps
     /// it. Matched from the front so the shell doing the matching is not itself a hit.
-    async fn kill_the_agent_runtime(&mut self) {
+    async fn kill_the_harness(&mut self) {
         let deadline = tokio::time::Instant::now() + PATIENCE;
 
         loop {
@@ -98,7 +98,7 @@ impl Driven {
                     "sh",
                     self.lineage.process(),
                 ])
-                .expect("the agent runtime should be signalled")
+                .expect("the harness should be signalled")
                 .finish()
                 .expect("the signal should land");
 
@@ -107,7 +107,7 @@ impl Driven {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "no agent runtime ever started to be killed. {self}"
+                "no harness ever started to be killed. {self}"
             );
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -155,14 +155,14 @@ impl fmt::Display for Driven {
 }
 
 fn provisioned(
-    harness: &Harness,
+    kestrel: &Kestrel,
     lineage: Lineage,
     session: &Session,
     run: RunId,
     credential: &Secret,
     auth: &str,
 ) -> (Instance, Supervisor, Diagnostics) {
-    let link = harness.link_from_an_environment();
+    let link = kestrel.link_from_an_environment();
     let run_id = run.to_string();
     let mut variables = vec![
         ("KESTREL_LINK".to_owned(), link),
@@ -172,7 +172,7 @@ fn provisioned(
             credential.as_str().to_owned(),
         ),
         (
-            "KESTREL_AGENT_RUNTIME".to_owned(),
+            "KESTREL_HARNESS_COMMAND".to_owned(),
             lineage.command().to_owned(),
         ),
         ("KESTREL_AGENT_AUTH".to_owned(), auth.to_owned()),
@@ -204,30 +204,30 @@ fn provisioned(
     )
 }
 
-async fn a_session(harness: &Harness, lineage: Lineage, model: &str) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session(kestrel: &Kestrel, lineage: Lineage, model: &str) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", lineage.command(), Some(model))
         .await;
     for (variable, secret) in lineage.credentials(&Lineage::key()) {
-        harness
+        kestrel
             .hold_provider_credential(&organization, &variable, &secret)
             .await;
     }
 
-    harness.open_session("acme", "kestrel", "builder").await
+    kestrel.open_session("acme", "kestrel", "builder").await
 }
 
 /// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
-async fn ended(harness: &Harness, driven: &Driven) -> Run {
-    harness.after_one_turn_within(driven.run.id, PATIENCE).await
+async fn ended(kestrel: &Kestrel, driven: &Driven) -> Run {
+    kestrel.after_one_turn_within(driven.run.id, PATIENCE).await
 }
 
-async fn transcript(harness: &Harness, session: &Session) -> Vec<String> {
-    harness
+async fn transcript(kestrel: &Kestrel, session: &Session) -> Vec<String> {
+    kestrel
         .transcript(session.id)
         .await
         .iter()
@@ -277,20 +277,20 @@ async fn a_turn(lineage: Lineage) {
 /// agent goes on, the model the Run's Agent named is the one it was set to, what it used is
 /// recorded, and `end_turn` is a Run that succeeded.
 async fn a_turn_once(lineage: Lineage) -> Judged {
-    let harness = Harness::boot_reachable_from_an_environment().await;
-    let mut driven = Driven::started(&harness, lineage, &lineage.model()).await;
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
+    let mut driven = Driven::started(&kestrel, lineage, &lineage.model()).await;
 
-    let ended = ended(&harness, &driven).await;
+    let ended = ended(&kestrel, &driven).await;
     driven.diagnostics.drain();
 
-    let said = transcript(&harness, &driven.session).await.join("\n");
+    let said = transcript(&kestrel, &driven.session).await.join("\n");
     let because = match &ended.exit {
         Some(Exit::Failed { because }) => because.as_str(),
         _ => "",
     };
     if !said.to_lowercase().contains(DONE) && (unanswered(&said) || unanswered(because)) {
         driven.destroy();
-        harness.teardown().await;
+        kestrel.teardown().await;
         return Judged::Unanswered;
     }
 
@@ -337,7 +337,7 @@ async fn a_turn_once(lineage: Lineage) -> Judged {
     );
 
     driven.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 
     Judged::Kept
 }
@@ -361,16 +361,16 @@ fn unanswered(said: &str) -> bool {
 /// An agent that dies mid-turn: the Run ends with an exit status rather than hanging on a
 /// connection ACP gives a client no way to reopen.
 async fn an_agent_that_dies(lineage: Lineage) {
-    let harness = Harness::boot_reachable_from_an_environment().await;
-    let mut driven = Driven::started(&harness, lineage, &lineage.model()).await;
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
+    let mut driven = Driven::started(&kestrel, lineage, &lineage.model()).await;
 
     driven
         .diagnostics
         .wait_until_it_says("reported started")
         .await;
-    driven.kill_the_agent_runtime().await;
+    driven.kill_the_harness().await;
 
-    let ended = ended(&harness, &driven).await;
+    let ended = ended(&kestrel, &driven).await;
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
             "the run ended {:?}, and its agent was killed mid-turn. {driven}",
@@ -381,20 +381,20 @@ async fn an_agent_that_dies(lineage: Lineage) {
 
     record(lineage, &lineage.model(), ended.usage.as_ref());
     driven.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
-/// A model config option is optional and a runtime advertises the values it will honour, so an
+/// A model config option is optional and a harness advertises the values it will honour, so an
 /// Agent naming one outside them is a Run that fails rather than one that quietly runs on the
-/// runtime's default (ADR-0007).
+/// harness's default (ADR-0007).
 async fn a_model_the_agent_does_not_offer(lineage: Lineage) {
-    let harness = Harness::boot_reachable_from_an_environment().await;
-    let driven = Driven::started(&harness, lineage, &lineage.unoffered_model()).await;
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
+    let driven = Driven::started(&kestrel, lineage, &lineage.unoffered_model()).await;
 
-    let ended = ended(&harness, &driven).await;
+    let ended = ended(&kestrel, &driven).await;
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
-            "the run ended {:?}, and its agent named a model the runtime does not offer. {driven}",
+            "the run ended {:?}, and its agent named a model the harness does not offer. {driven}",
             ended.exit
         );
     };
@@ -404,17 +404,17 @@ async fn a_model_the_agent_does_not_offer(lineage: Lineage) {
     );
 
     driven.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// ACP has an agent advertise the methods it can be logged in with and offers a client no way
 /// to choose between them, so which one kestrel uses is configuration. One the agent does not
 /// advertise is a Run that fails rather than one left waiting at a login.
 async fn a_login_the_agent_does_not_offer(lineage: Lineage) {
-    let harness = Harness::boot_reachable_from_an_environment().await;
-    let driven = Driven::logged_in_with(&harness, lineage, &lineage.model(), UNOFFERED_LOGIN).await;
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
+    let driven = Driven::logged_in_with(&kestrel, lineage, &lineage.model(), UNOFFERED_LOGIN).await;
 
-    let ended = ended(&harness, &driven).await;
+    let ended = ended(&kestrel, &driven).await;
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
             "the run ended {:?}, and kestrel was configured to log its agent in with a method \
@@ -428,7 +428,7 @@ async fn a_login_the_agent_does_not_offer(lineage: Lineage) {
     );
 
     driven.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 macro_rules! against_both_lineages {

@@ -93,7 +93,7 @@ pub async fn reaching(
         .await
 }
 
-/// A credential is named by the environment variable the runtime reads it from, so a name a
+/// A credential is named by the environment variable the harness reads it from, so a name a
 /// process could not carry is refused where it is set rather than where it is spawned.
 pub(crate) fn named(variable: &str) -> Result<()> {
     let acceptable = variable
@@ -106,7 +106,7 @@ pub(crate) fn named(variable: &str) -> Result<()> {
 
     if !acceptable || !starts {
         bail!(Declined::Unacceptable(format!(
-            "{variable} is not an environment variable an Agent Runtime could be spawned with"
+            "{variable} is not an environment variable a Harness could be spawned with"
         )));
     }
 
@@ -118,7 +118,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_credential_is_named_by_the_variable_a_runtime_reads_it_from() {
+    fn a_credential_is_named_by_the_variable_a_harness_reads_it_from() {
         assert!(named("ANTHROPIC_API_KEY").is_ok());
         assert!(named("_KEY2").is_ok());
     }

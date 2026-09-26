@@ -19,7 +19,7 @@ impl<'a> Agents<'a> {
         &mut self,
         organization: &Organization,
         name: &str,
-        runtime: &str,
+        harness: &str,
         model: Option<&str>,
     ) -> Result<Declared<Agent>> {
         let found = self.find(organization, name).await?;
@@ -29,7 +29,7 @@ impl<'a> Agents<'a> {
                 .map_or_else(AgentId::generate, |found| found.id),
             organization: organization.id,
             name: name.to_owned(),
-            runtime: runtime.to_owned(),
+            harness: harness.to_owned(),
             model: model.map(str::to_owned),
         };
 
@@ -37,23 +37,23 @@ impl<'a> Agents<'a> {
         match found {
             None => {
                 sqlx::query(
-                    "INSERT INTO agent (id, organization_id, name, runtime, model, declared_at)
+                    "INSERT INTO agent (id, organization_id, name, harness, model, declared_at)
                      VALUES (?, ?, ?, ?, ?, ?)",
                 )
                 .bind(agent.id.to_string())
                 .bind(agent.organization.to_string())
                 .bind(&agent.name)
-                .bind(&agent.runtime)
+                .bind(&agent.harness)
                 .bind(&agent.model)
                 .bind(Timestamp::now().to_string())
                 .execute(&mut *self.connection)
                 .await
                 .with_context(|| format!("declaring the agent {name}"))?;
             }
-            Some(found) if found.runtime == agent.runtime && found.model == agent.model => {}
+            Some(found) if found.harness == agent.harness && found.model == agent.model => {}
             Some(_) => {
-                sqlx::query("UPDATE agent SET runtime = ?, model = ? WHERE id = ?")
-                    .bind(&agent.runtime)
+                sqlx::query("UPDATE agent SET harness = ?, model = ? WHERE id = ?")
+                    .bind(&agent.harness)
                     .bind(&agent.model)
                     .bind(agent.id.to_string())
                     .execute(&mut *self.connection)
@@ -79,7 +79,7 @@ impl<'a> Agents<'a> {
 
     pub async fn find(&mut self, organization: &Organization, name: &str) -> Result<Option<Agent>> {
         sqlx::query(
-            "SELECT id, organization_id, name, runtime, model
+            "SELECT id, organization_id, name, harness, model
              FROM agent
              WHERE organization_id = ? AND name = ?",
         )
@@ -94,7 +94,7 @@ impl<'a> Agents<'a> {
 
     pub async fn all(&mut self, organization: &Organization) -> Result<Vec<Agent>> {
         sqlx::query(
-            "SELECT id, organization_id, name, runtime, model
+            "SELECT id, organization_id, name, harness, model
              FROM agent
              WHERE organization_id = ?
              ORDER BY name",
@@ -130,7 +130,7 @@ pub(crate) async fn with_id(
     id: AgentId,
 ) -> Result<Agent> {
     let row = sqlx::query(
-        "SELECT id, organization_id, name, runtime, model
+        "SELECT id, organization_id, name, harness, model
          FROM agent
          WHERE organization_id = ? AND id = ?",
     )
@@ -147,7 +147,7 @@ fn agent(row: &SqliteRow) -> Result<Agent> {
         id: row.get::<String, _>("id").parse()?,
         organization: row.get::<String, _>("organization_id").parse()?,
         name: row.get("name"),
-        runtime: row.get("runtime"),
+        harness: row.get("harness"),
         model: row.get("model"),
     })
 }

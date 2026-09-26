@@ -13,11 +13,11 @@ use std::time::Duration;
 use kestrel::domain::{Exit, Run, RunState, Session};
 use kestrel::log;
 use kestrel::profile::{Contents, Entry};
-use support::Harness;
+use support::Kestrel;
 use support::image::{self, Container};
 
 const PATIENCE: Duration = Duration::from_secs(300);
-/// Asked for something the prompt does not contain, so an error the runtime echoes back as
+/// Asked for something the prompt does not contain, so an error the harness echoes back as
 /// its answer is never mistaken for a model's.
 const PROMPT: &str = "Reply with the word harrier spelled backwards, in lowercase, and nothing else. Do not use any tools.";
 const ANSWER: &str = "reirrah";
@@ -27,7 +27,7 @@ const AGENT: &str = "smoke";
 const PROFILE: &str = "smoke";
 
 struct Subject {
-    runtime: &'static str,
+    harness: &'static str,
     command: &'static str,
     model: Option<String>,
     variables: Vec<(&'static str, String)>,
@@ -35,7 +35,7 @@ struct Subject {
 }
 
 /// A login file read from the host, handed back there once the smoke is over so a refresh the
-/// runtime made does not leave the person holding a token it revoked.
+/// harness made does not leave the person holding a token it revoked.
 struct Login {
     path: &'static str,
     host: PathBuf,
@@ -59,7 +59,7 @@ async fn codex_answers_on_a_chatgpt_login_before_and_after_a_restart() {
     let as_read = fs::read_to_string(&host).expect("the Codex login should read");
 
     smoke(Subject {
-        runtime: "codex",
+        harness: "codex",
         command: "codex-acp",
         model: None,
         variables: Vec::new(),
@@ -86,7 +86,7 @@ async fn opencode_answers_on_an_opencode_go_key_before_and_after_a_restart() {
     );
 
     smoke(Subject {
-        runtime: "opencode",
+        harness: "opencode",
         command: "opencode acp --print-logs",
         model: Some(model),
         variables: vec![("OPENCODE_API_KEY", key)],
@@ -104,7 +104,7 @@ async fn claude_answers_on_a_claude_plan_token_before_and_after_a_restart() {
     );
 
     smoke(Subject {
-        runtime: "claude",
+        harness: "claude",
         command: "claude-agent-acp",
         model: None,
         variables: vec![("CLAUDE_CODE_OAUTH_TOKEN", token)],
@@ -113,82 +113,82 @@ async fn claude_answers_on_a_claude_plan_token_before_and_after_a_restart() {
     .await;
 }
 
-/// The login is handed back and the harness torn down before anything is asserted, so a
+/// The login is handed back and the fixture torn down before anything is asserted, so a
 /// failing smoke still leaves the person's login where it found it.
 async fn smoke(subject: Subject) {
-    let harness = Harness::dispatching_runtimes_in(
+    let kestrel = Kestrel::dispatching_harnesses_in(
         image::development(),
-        &[(subject.runtime, subject.command)],
+        &[(subject.harness, subject.command)],
     )
     .await;
-    declared(&harness, &subject).await;
+    declared(&kestrel, &subject).await;
 
-    let first = attempt(&harness, &subject, Round::BeforeTheRestart).await;
-    let (harness, second) = match &first {
+    let first = attempt(&kestrel, &subject, Round::BeforeTheRestart).await;
+    let (kestrel, second) = match &first {
         Ok(run) => {
-            let harness = harness.kill_and_restart().await;
+            let kestrel = kestrel.kill_and_restart().await;
             if let Some(instance) = &run.instance {
                 Container::named(instance).destroy();
             }
-            let second = attempt(&harness, &subject, Round::AfterTheRestart).await;
-            (harness, Some(second))
+            let second = attempt(&kestrel, &subject, Round::AfterTheRestart).await;
+            (kestrel, Some(second))
         }
-        Err(_) => (harness, None),
+        Err(_) => (kestrel, None),
     };
-    handed_back(&harness, &subject).await;
-    harness.teardown().await;
+    handed_back(&kestrel, &subject).await;
+    kestrel.teardown().await;
 
-    let runtime = subject.runtime;
-    let first = first.unwrap_or_else(|failure| panic!("{runtime} {failure}"));
+    let harness = subject.harness;
+    let first = first.unwrap_or_else(|failure| panic!("{harness} {failure}"));
     let second = second
         .expect("a second attempt follows a first that worked")
-        .unwrap_or_else(|failure| panic!("{runtime} {failure}"));
+        .unwrap_or_else(|failure| panic!("{harness} {failure}"));
     assert_ne!(
         first.instance, second.instance,
-        "{runtime} answered after the restart on the Instance it answered on before it"
+        "{harness} answered after the restart on the Instance it answered on before it"
     );
 }
 
-async fn declared(harness: &Harness, subject: &Subject) {
-    let organization = harness.declare_organization(ORGANIZATION).await;
-    harness
+async fn declared(kestrel: &Kestrel, subject: &Subject) {
+    let organization = kestrel.declare_organization(ORGANIZATION).await;
+    kestrel
         .declare_project(&organization, PROJECT, &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(
             &organization,
             AGENT,
-            subject.runtime,
+            subject.harness,
             subject.model.as_deref(),
         )
         .await;
-    harness
+    kestrel
         .declare_profile(ORGANIZATION, PROFILE, "smoke")
         .await
         .expect("the profile should declare");
     for (name, value) in &subject.variables {
         let entry = Entry::variable(name).expect("a variable");
-        harness
+        kestrel
             .hold_in_profile(ORGANIZATION, PROFILE, &entry, value)
             .await;
     }
     for login in &subject.files {
         let entry = Entry::file(login.path).expect("a file");
-        harness
+        kestrel
             .hold_in_profile(ORGANIZATION, PROFILE, &entry, &login.as_read)
             .await;
     }
 }
 
-async fn attempt(harness: &Harness, subject: &Subject, round: Round) -> Result<Run, Failure> {
-    let session = harness
+async fn attempt(kestrel: &Kestrel, subject: &Subject, round: Round) -> Result<Run, Failure> {
+    let session = kestrel
         .open_session_with(ORGANIZATION, PROJECT, AGENT, PROFILE)
         .await;
-    let run = harness.post(session.id, "operator", PROMPT).await;
-    let (run, answered) = settled(harness, run).await;
-    let said = said_by_the_agent(harness, &session).await;
+    let run = kestrel.post(session.id, "operator", PROMPT).await;
+    let (run, answered) = settled(kestrel, run).await;
+    let said = said_by_the_agent(kestrel, &session).await;
     if run.state != RunState::Ended {
-        harness.stop_run(run.id).await;
+        kestrel.stop_run(run.id).await;
     }
 
     let failed = match &run.exit {
@@ -211,21 +211,21 @@ async fn attempt(harness: &Harness, subject: &Subject, round: Round) -> Result<R
     Err(Failure {
         round,
         problem: diagnosed(round, answered, &evidence),
-        evidence: secrets(harness, subject).await.redacted(&evidence),
+        evidence: secrets(kestrel, subject).await.redacted(&evidence),
     })
 }
 
 /// Waited for without panicking, because a smoke that times out still hands its login back.
-async fn settled(harness: &Harness, run: Run) -> (Run, bool) {
+async fn settled(kestrel: &Kestrel, run: Run) -> (Run, bool) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let answered = harness
+        let answered = kestrel
             .turns(run.id)
             .await
             .iter()
             .any(|turn| turn.answered_at.is_some());
-        let run = harness.run(run.id).await;
+        let run = kestrel.run(run.id).await;
         if answered || run.state == RunState::Ended || tokio::time::Instant::now() >= deadline {
             return (run, answered);
         }
@@ -233,8 +233,8 @@ async fn settled(harness: &Harness, run: Run) -> (Run, bool) {
     }
 }
 
-async fn said_by_the_agent(harness: &Harness, session: &Session) -> String {
-    harness
+async fn said_by_the_agent(kestrel: &Kestrel, session: &Session) -> String {
+    kestrel
         .transcript(session.id)
         .await
         .into_iter()
@@ -251,8 +251,8 @@ async fn said_by_the_agent(harness: &Harness, session: &Session) -> String {
 
 /// Everything the profile held and holds now, because a login refreshed mid-smoke is as much a
 /// secret as the one it replaced.
-async fn held_now(harness: &Harness) -> Contents {
-    let profile = harness
+async fn held_now(kestrel: &Kestrel) -> Contents {
+    let profile = kestrel
         .profiles(ORGANIZATION)
         .await
         .into_iter()
@@ -260,11 +260,11 @@ async fn held_now(harness: &Harness) -> Contents {
         .find(|profile| profile.name == PROFILE)
         .expect("the smoke's profile");
 
-    harness.profile_contents(&profile).await
+    kestrel.profile_contents(&profile).await
 }
 
-async fn secrets(harness: &Harness, subject: &Subject) -> Secrets {
-    let now = held_now(harness).await;
+async fn secrets(kestrel: &Kestrel, subject: &Subject) -> Secrets {
+    let now = held_now(kestrel).await;
     let held = subject
         .variables
         .iter()
@@ -276,8 +276,8 @@ async fn secrets(harness: &Harness, subject: &Subject) -> Secrets {
     Secrets::of(&held.collect::<Vec<_>>())
 }
 
-async fn handed_back(harness: &Harness, subject: &Subject) {
-    let now = held_now(harness).await;
+async fn handed_back(kestrel: &Kestrel, subject: &Subject) {
+    let now = held_now(kestrel).await;
 
     for login in &subject.files {
         let Some(refreshed) = now.files.get(login.path) else {
@@ -289,7 +289,7 @@ async fn handed_back(harness: &Harness, subject: &Subject) {
         let host = &login.host;
         if fs::read_to_string(host).ok().as_ref() != Some(&login.as_read) {
             eprintln!(
-                "{} changed on the host during the smoke, so the login the runtime refreshed is not written over it",
+                "{} changed on the host during the smoke, so the login the harness refreshed is not written over it",
                 host.display()
             );
             continue;
@@ -327,7 +327,7 @@ impl fmt::Display for Failure {
             Round::AfterTheRestart => "after the restart",
         };
         let problem = match self.problem {
-            Problem::RuntimeLaunch => "a runtime launch problem",
+            Problem::HarnessLaunch => "a harness launch problem",
             Problem::Authentication => "an authentication problem",
             Problem::Entitlement => "an entitlement problem",
             Problem::Persistence => "a persistence problem: the login worked before the restart",
@@ -348,7 +348,7 @@ enum Round {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Problem {
-    RuntimeLaunch,
+    HarnessLaunch,
     Authentication,
     Entitlement,
     Persistence,
@@ -393,7 +393,7 @@ const LAUNCH: &[&str] = &[
     "exec format error",
     "acp v1",
     "exited before",
-    "names a runtime",
+    "names a harness",
 ];
 
 fn diagnosed(round: Round, answered: bool, evidence: &str) -> Problem {
@@ -408,7 +408,7 @@ fn diagnosed(round: Round, answered: bool, evidence: &str) -> Problem {
             Round::AfterTheRestart => Problem::Persistence,
         }
     } else if !answered && says(LAUNCH) {
-        Problem::RuntimeLaunch
+        Problem::HarnessLaunch
     } else {
         Problem::Unclassified
     }
@@ -426,7 +426,7 @@ fn mentions(text: &str, phrase: &str) -> bool {
 struct Secrets(Vec<String>);
 
 impl Secrets {
-    /// A login file is redacted as a whole and token by token, because a runtime that logs one
+    /// A login file is redacted as a whole and token by token, because a harness that logs one
     /// logs a token out of it rather than the file.
     fn of(values: &[&str]) -> Self {
         let mut secrets = Vec::new();
@@ -494,7 +494,7 @@ fn a_login_the_plan_does_not_cover_is_an_entitlement_problem() {
 }
 
 #[test]
-fn a_runtime_that_never_came_up_is_a_launch_problem() {
+fn a_harness_that_never_came_up_is_a_launch_problem() {
     for evidence in [
         "No such file or directory (os error 2)",
         "kestrel speaks ACP v1, and this agent answered v0",
@@ -502,7 +502,7 @@ fn a_runtime_that_never_came_up_is_a_launch_problem() {
     ] {
         assert_eq!(
             diagnosed(Round::BeforeTheRestart, false, evidence),
-            Problem::RuntimeLaunch,
+            Problem::HarnessLaunch,
             "{evidence}"
         );
     }
@@ -520,7 +520,7 @@ fn a_login_refused_only_after_the_restart_is_a_persistence_problem() {
     );
     assert_eq!(
         diagnosed(Round::AfterTheRestart, false, "No such file or directory"),
-        Problem::RuntimeLaunch
+        Problem::HarnessLaunch
     );
 }
 

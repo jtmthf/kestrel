@@ -60,19 +60,19 @@ services:
 Do not do this with `KESTREL_ENV_IMAGE`. Compose builds the `kestrel-env` Dockerfile under that
 tag, so the base image would overwrite this one.
 
-An Agent names its runtime as `opencode`, `claude` or `codex`, and the work role spawns
+An Agent names its harness as `opencode`, `claude` or `codex`, and the work role spawns
 `opencode acp --print-logs`, `claude-agent-acp` or `codex-acp` for it.
 
 ## No credentials
 
-Nothing in the image signs a runtime or `gh` in. The home directory contains only the skeleton
+Nothing in the image signs a harness or `gh` in. The home directory contains only the skeleton
 files `useradd` creates, and no variable in the image's environment names a key, token, or secret.
 Credentials come in when the Run starts ([ADR-0010](../../docs/adr/0010-a-provider-credential-crosses-the-link-at-the-spawn.md)).
 A Subscription Profile's files, such as `.codex/auth.json`, are written beneath `/home/kestrel`
 for the length of one Run and removed when it ends
 ([ADR-0025](../../docs/adr/0025-subscription-profiles-are-personal.md)). An OpenCode Go or Zen
 subscription is a Subscription Profile variable (`OPENCODE_API_KEY`) rather than a file, and an
-opencode `auth.json` is a one-time seed into the runtime's database, not a login kestrel refreshes
+opencode `auth.json` is a one-time seed into the harness's database, not a login kestrel refreshes
 ([ADR-0026](../../docs/adr/0026-kestrel-carries-named-credentials-never-a-runtimes-store.md)). `gh`
 reads `GH_TOKEN` from its own environment. The token's scope is the operator's and kestrel does not
 narrow it: a `repo`-scoped token merges pull requests as well as opening them, so a human merge gate
@@ -82,7 +82,7 @@ credential is set).
 ## How it is checked
 
 `crates/kestrel/tests/development.rs` holds ignored tests. CI runs them on every change: the
-toolchain, `git`, and `gh` each run; each of the three runtimes answers an ACP `initialize`; and no
+toolchain, `git`, and `gh` each run; each of the three harnesses answers an ACP `initialize`; and no
 credentials are present. `kestrel_passes_its_own_checks_in_the_image` mounts the checkout read-only
 and runs the same `fmt`, `clippy`, `build`, and `test` commands as CI's workspace job. Because it
 compiles the workspace three times, it runs in the scheduled `Development image` workflow:
@@ -92,5 +92,5 @@ cargo test --locked --package kestrel --test development -- --ignored kestrel_pa
 ```
 
 `crates/kestrel/tests/subscription.rs` holds the one check CI cannot run: a real model call through
-each runtime on a person's own subscription, repeated after the control plane and the Instance are
+each harness on a person's own subscription, repeated after the control plane and the Instance are
 replaced. It needs that person's login, so it runs only by hand; [USAGE.md](../../USAGE.md) says how.

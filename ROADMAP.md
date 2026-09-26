@@ -70,7 +70,7 @@ ingestion boundary: anything that can POST a CloudEvent can start work here with
 integration.
 
 **This is the biggest rung on the ladder, and it is irreducible.** A single triggered pull request
-needs the trigger path, the scheduler, the compute contract, the agent-runtime boundary, durable
+needs the trigger path, the scheduler, the compute contract, the harness boundary, durable
 storage, the transcript, and SQLite, all at once. Every split anyone has proposed produces a rung on
 which the human is still the scheduler, which is the exact state this project exists to reject.
 Everything above this rung is addition; this one is creation.
@@ -147,7 +147,7 @@ could block an approval would deadlock the session it was meant to describe.
 transcript, shared state, diffs and read-only live files, and lets a person take a turn. It shows the
 declared branch, learned pull request or merge request, and unpublished Instance changes, including
 committed but unpushed, uncommitted and untracked work. It shows the requested and effective model,
-and reports ACP conversation continuity separately from the durable kestrel Session: losing runtime
+and reports ACP conversation continuity separately from the durable kestrel Session: losing harness
 context must not look like successful resume. The queue shows FIFO order, active limits and wait
 reasons without inventing an estimated start time.
 Feedback is prompt, work state is clear, and the view is accessible and responsive. The same event
@@ -198,17 +198,17 @@ authorized operator may open an interactive Instance shell under Policy, and its
 audited rather than bypassing the control plane.
 
 **Skills and MCP become managed capabilities here.** An Organization catalog versions Skills selected
-by Projects and Agents. kestrel stages them in each Agent Runtime's filesystem convention; the
-runtime decides whether to load one or run it as a command. A repository copy wins by name unless
+by Projects and Agents. kestrel stages them in each Harness's filesystem convention; the
+harness decides whether to load one or run it as a command. A repository copy wins by name unless
 Policy denies it; the effective source is visible, staging never overwrites repository files, and
 failure to stage a selected Skill fails the Run visibly. Each Run retains the exact managed versions
 delivered; agent-advertised use is recorded as a claim, with no inference when the agent reports
 none. Kestrel's own MCP tools start with
 pending Events ([issue 90](https://github.com/jtmthf/kestrel/issues/90)), and external MCP servers
 can be selected from an Organization catalog by Projects and Agents. Stdio is the baseline; HTTP
-requires runtime capability advertisement, SSE remains a compatibility path, and unsupported
+requires harness capability advertisement, SSE remains a compatibility path, and unsupported
 transport fails visibly. Kestrel mediates external tool calls through Policy and the Audit Record,
-supplying per-server, per-Run credentials without ambient runtime secrets. Event data and unreviewed
+supplying per-server, per-Run credentials without ambient harness secrets. Event data and unreviewed
 repository MCP configuration cannot select tool authority.
 
 ### 0.5 — kestrel runs multi-step work

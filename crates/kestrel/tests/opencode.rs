@@ -1,4 +1,4 @@
-//! The default Agent Runtime, driven over ACP (ADR-0007): the assertions the scripted ACP
+//! The default Harness, driven over ACP (ADR-0007): the assertions the scripted ACP
 //! agent already carries, made against the real binary the `kestrel-env` image ships.
 //!
 //! opencode is named where the spawn command is built and where its own configuration file is
@@ -15,17 +15,17 @@ use kestrel::compute::{Docker, Driver, Instance, Supervisor};
 use kestrel::domain::{Exit, Run, RunId, Session};
 use kestrel::link::credential::Secret;
 use serde_json::json;
-use support::Harness;
+use support::Kestrel;
 use support::diagnostics::Diagnostics;
 use support::image;
 use support::model::{MARK, Model};
 
-/// A real Agent Runtime starts slowly, and the whole turn is two round-trips to a model that
+/// A real Harness starts slowly, and the whole turn is two round-trips to a model that
 /// answers instantly, so this is nearly all startup.
 const PATIENCE: Duration = Duration::from_secs(180);
 
-const RUNTIME: &str = "opencode acp";
-/// The model the stub endpoint serves, named as the Agent Runtime advertises it: the provider
+const HARNESS: &str = "opencode acp";
+/// The model the stub endpoint serves, named as the Harness advertises it: the provider
 /// this Instance is configured with, and the one model in it.
 const MODEL: &str = "kestrel-test/canned";
 /// opencode fixes its model catalog at the first model it sees, and its built-in models are ready
@@ -33,7 +33,7 @@ const MODEL: &str = "kestrel-test/canned";
 const MODEL_SNAPSHOT: &str = "/workspace/models.json";
 
 /// A Run, the Instance executing it, and what the supervisor on it says. Provisioned through
-/// the `Compute` port rather than through the work role, because the model the Agent Runtime is
+/// the `Compute` port rather than through the work role, because the model the Harness is
 /// pointed at is this test's and has to reach the Workspace before the turn starts.
 struct Driven {
     run: Run,
@@ -43,11 +43,11 @@ struct Driven {
 }
 
 impl Driven {
-    async fn in_an_environment(harness: &Harness, model: &Model) -> Self {
-        let session = a_session(harness).await;
-        let (run, credential) = harness.dispatch_run(session.id).await;
+    async fn in_an_environment(kestrel: &Kestrel, model: &Model) -> Self {
+        let session = a_session(kestrel).await;
+        let (run, credential) = kestrel.dispatch_run(session.id).await;
         let (instance, supervisor, diagnostics) = provisioned(
-            harness,
+            kestrel,
             run.id,
             &credential,
             session.agent.model.as_deref().unwrap_or_default(),
@@ -66,19 +66,19 @@ impl Driven {
         driven
             .instance
             .write_file("opencode.json", configured_with(model).as_bytes())
-            .expect("the agent runtime should be configured");
+            .expect("the harness should be configured");
         driven
             .instance
             .write_file("models.json", b"{}")
-            .expect("the runtime's model snapshot should be written");
-        harness.start(&driven.run).await;
+            .expect("the harness's model snapshot should be written");
+        kestrel.start(&driven.run).await;
 
         driven
     }
 
     /// The image carries no `ps` and no `pkill`, so the process is found where the kernel
     /// keeps it. Matched from the front so the shell doing the matching is not itself a hit.
-    fn kill_the_agent_runtime(&mut self) {
+    fn kill_the_harness(&mut self) {
         let killed = self
             .instance
             .exec(&[
@@ -88,14 +88,11 @@ impl Driven {
                 "sh",
                 "opencode",
             ])
-            .expect("the agent runtime should be signalled")
+            .expect("the harness should be signalled")
             .finish()
             .expect("the signal should land");
 
-        assert!(
-            !killed.out.is_empty(),
-            "no agent runtime was running to kill"
-        );
+        assert!(!killed.out.is_empty(), "no harness was running to kill");
     }
 
     fn destroy(self) {
@@ -109,7 +106,7 @@ impl Driven {
 }
 
 fn provisioned(
-    harness: &Harness,
+    kestrel: &Kestrel,
     run: RunId,
     credential: &Secret,
     model: &str,
@@ -119,10 +116,10 @@ fn provisioned(
         .expect("the instance should provision");
     let mut supervisor = instance
         .supervise(&[
-            ("KESTREL_LINK", &harness.link_from_an_environment()),
+            ("KESTREL_LINK", &kestrel.link_from_an_environment()),
             ("KESTREL_RUN", &run.to_string()),
             ("KESTREL_RUN_CREDENTIAL", credential.as_str()),
-            ("KESTREL_AGENT_RUNTIME", RUNTIME),
+            ("KESTREL_HARNESS_COMMAND", HARNESS),
             ("KESTREL_AGENT_MODEL", model),
             ("OPENCODE_MODELS_PATH", MODEL_SNAPSHOT),
         ])
@@ -156,21 +153,21 @@ fn configured_with(model: &Model) -> String {
     .to_string()
 }
 
-async fn a_session(harness: &Harness) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session(kestrel: &Kestrel) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", Some(MODEL))
         .await;
 
-    harness.open_session("acme", "kestrel", "builder").await
+    kestrel.open_session("acme", "kestrel", "builder").await
 }
 
 /// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
-async fn ended(harness: &Harness, run: RunId) -> Run {
-    harness.after_one_turn_within(run, PATIENCE).await
+async fn ended(kestrel: &Kestrel, run: RunId) -> Run {
+    kestrel.after_one_turn_within(run, PATIENCE).await
 }
 
 /// The supervisor says how it answered a permission request only once the turn is over, so
@@ -181,14 +178,14 @@ async fn working_at_a_turn(model: &Model, times: usize) {
     while model.times_working_at_the_rest_of_a_turn() < times {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the agent runtime never came back for the rest of a turn"
+            "the harness never came back for the rest of a turn"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
-async fn transcript(harness: &Harness, session: &Session) -> Vec<String> {
-    harness
+async fn transcript(kestrel: &Kestrel, session: &Session) -> Vec<String> {
+    kestrel
         .transcript(session.id)
         .await
         .iter()
@@ -198,12 +195,12 @@ async fn transcript(harness: &Harness, session: &Session) -> Vec<String> {
 
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
-async fn a_run_drives_the_agent_runtime_through_a_turn_and_ends_with_an_exit_status() {
-    let harness = Harness::boot_reachable_from_an_environment().await;
+async fn a_run_drives_the_harness_through_a_turn_and_ends_with_an_exit_status() {
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
     let model = Model::serving();
-    let mut driven = Driven::in_an_environment(&harness, &model).await;
+    let mut driven = Driven::in_an_environment(&kestrel, &model).await;
 
-    let ended = ended(&harness, driven.run.id).await;
+    let ended = ended(&kestrel, driven.run.id).await;
 
     driven.diagnostics.drain();
     assert_eq!(
@@ -214,7 +211,7 @@ async fn a_run_drives_the_agent_runtime_through_a_turn_and_ends_with_an_exit_sta
     );
     assert!(
         !model.asked().is_empty(),
-        "the run ended without the agent runtime having reached a model at all"
+        "the run ended without the harness having reached a model at all"
     );
     assert!(
         driven.diagnostics.said(&format!("on the model {MODEL}")),
@@ -223,21 +220,21 @@ async fn a_run_drives_the_agent_runtime_through_a_turn_and_ends_with_an_exit_sta
     );
 
     driven.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
 async fn what_the_agent_says_reaches_the_transcript_and_what_it_does_inside_the_run_does_not() {
-    let harness = Harness::boot_reachable_from_an_environment().await;
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
     let model = Model::serving();
-    let mut driven = Driven::in_an_environment(&harness, &model).await;
-    let session = harness.show_session(driven.run.session).await;
+    let mut driven = Driven::in_an_environment(&kestrel, &model).await;
+    let session = kestrel.show_session(driven.run.session).await;
 
-    ended(&harness, driven.run.id).await;
+    ended(&kestrel, driven.run.id).await;
     driven.diagnostics.drain();
 
-    let transcript = transcript(&harness, &session).await;
+    let transcript = transcript(&kestrel, &session).await;
     assert_eq!(
         transcript
             .iter()
@@ -261,60 +258,60 @@ async fn what_the_agent_says_reaches_the_transcript_and_what_it_does_inside_the_
     }
 
     driven.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The model serves the rest of the turn only once its tool call has been answered, so a
-/// transcript carrying the second message is a round-trip the Agent Runtime came back from.
+/// transcript carrying the second message is a round-trip the Harness came back from.
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
-async fn a_permission_request_is_answered_and_the_agent_runtime_proceeds() {
-    let harness = Harness::boot_reachable_from_an_environment().await;
+async fn a_permission_request_is_answered_and_the_harness_proceeds() {
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
     let model = Model::serving();
-    let mut driven = Driven::in_an_environment(&harness, &model).await;
-    let session = harness.show_session(driven.run.session).await;
+    let mut driven = Driven::in_an_environment(&kestrel, &model).await;
+    let session = kestrel.show_session(driven.run.session).await;
 
     driven
         .diagnostics
         .wait_until_it_says("allowed once  tool call call-1")
         .await;
-    let ended = ended(&harness, driven.run.id).await;
+    let ended = ended(&kestrel, driven.run.id).await;
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert!(
-        transcript(&harness, &session)
+        transcript(&kestrel, &session)
             .await
             .iter()
             .any(|entry| entry.ends_with("a second message")),
-        "the agent runtime was answered and never went on"
+        "the harness was answered and never went on"
     );
 
     driven.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
-async fn an_agent_runtime_that_dies_mid_run_ends_the_run_with_an_exit_status() {
-    let harness = Harness::boot_reachable_from_an_environment().await;
+async fn a_harness_that_dies_mid_run_ends_the_run_with_an_exit_status() {
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
     let model = Model::dawdling();
-    let mut driven = Driven::in_an_environment(&harness, &model).await;
+    let mut driven = Driven::in_an_environment(&kestrel, &model).await;
 
     // Killed twice, because opencode can resume its session and is brought back from the first.
     working_at_a_turn(&model, 1).await;
-    driven.kill_the_agent_runtime();
+    driven.kill_the_harness();
     working_at_a_turn(&model, 2).await;
-    driven.kill_the_agent_runtime();
+    driven.kill_the_harness();
 
-    let ended = ended(&harness, driven.run.id).await;
+    let ended = ended(&kestrel, driven.run.id).await;
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
-            "the run ended {:?}, and its agent runtime was killed mid-turn",
+            "the run ended {:?}, and its harness was killed mid-turn",
             ended.exit
         );
     };
     assert!(!because.is_empty(), "the run failed without saying why");
 
     driven.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

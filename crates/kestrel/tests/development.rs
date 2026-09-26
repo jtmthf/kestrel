@@ -42,15 +42,15 @@ fn the_toolchain_git_and_gh_are_each_invocable_in_the_image() {
 #[test]
 #[ignore = "builds and runs the kestrel-dev image"]
 fn each_harness_answers_an_acp_handshake_in_the_image() {
-    for runtime in [
+    for harness in [
         &["claude-agent-acp"][..],
         &["codex-acp"],
         &["opencode", "acp"],
     ] {
-        let answer = initialized(runtime);
+        let answer = initialized(harness);
         assert_eq!(
             answer["result"]["protocolVersion"], 1,
-            "{runtime:?} answered initialize with {answer}"
+            "{harness:?} answered initialize with {answer}"
         );
     }
 }
@@ -128,10 +128,10 @@ fn running(command: &[&str]) -> docker::Ran {
     docker::running(image::development(), command)
 }
 
-/// What an ACP runtime in the image answers the first message a client sends, with no
+/// What an ACP harness in the image answers the first message a client sends, with no
 /// credential anywhere it could look.
-fn initialized(runtime: &[&str]) -> Value {
-    let (program, arguments) = runtime.split_first().expect("a runtime to spawn");
+fn initialized(harness: &[&str]) -> Value {
+    let (program, arguments) = harness.split_first().expect("a harness to spawn");
     let name = format!("kestrel-dev-handshake-{}-{}", program, std::process::id());
     removed(&name);
 
@@ -157,13 +157,13 @@ fn initialized(runtime: &[&str]) -> Value {
             },
         },
     });
-    let mut stdin = spawned.stdin.take().expect("the runtime's stdin is piped");
-    writeln!(stdin, "{initialize}").expect("the runtime should read its stdin");
+    let mut stdin = spawned.stdin.take().expect("the harness's stdin is piped");
+    writeln!(stdin, "{initialize}").expect("the harness should read its stdin");
 
     let stdout = spawned
         .stdout
         .take()
-        .expect("the runtime's stdout is piped");
+        .expect("the harness's stdout is piped");
     let (answered, answer) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -181,5 +181,5 @@ fn initialized(runtime: &[&str]) -> Value {
     removed(&name);
     let _ = spawned.wait();
 
-    answer.unwrap_or_else(|_| panic!("{runtime:?} never answered initialize"))
+    answer.unwrap_or_else(|_| panic!("{harness:?} never answered initialize"))
 }

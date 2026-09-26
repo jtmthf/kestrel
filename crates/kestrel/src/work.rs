@@ -262,7 +262,7 @@ pub async fn report(
         }
         Report::Stderr { lines } => {
             for line in lines {
-                info!(run = %run.id, line, "its agent runtime wrote to stderr");
+                info!(run = %run.id, line, "its harness wrote to stderr");
             }
         }
         Report::Started => {

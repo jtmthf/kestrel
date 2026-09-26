@@ -141,14 +141,14 @@ struct Start {
     /// the repository's name
     #[arg(long)]
     project: Option<String>,
-    /// The Agent, declared if missing. Without it, the only one, then its runtime's name
+    /// The Agent, declared if missing. Without it, the only one, then its harness's name
     #[arg(long)]
     agent: Option<String>,
-    /// The Agent Runtime a declared Agent is driven by. Without it, the declared Agent's, then
+    /// The Harness a declared Agent is driven by. Without it, the declared Agent's, then
     /// kestrel's default
     #[arg(long)]
-    runtime: Option<String>,
-    /// The model a declared Agent works with. Without it, its Agent Runtime's default
+    harness: Option<String>,
+    /// The model a declared Agent works with. Without it, its Harness's default
     #[arg(long)]
     model: Option<String>,
     /// A Provider Credential for the Organization to hold, read from the environment variable
@@ -192,7 +192,7 @@ impl Command {
 enum CredentialCommand {
     /// Hold a Provider Credential against an Organization, read from standard input
     Set {
-        /// The environment variable an Agent Runtime reads it from
+        /// The environment variable a Harness reads it from
         variable: String,
     },
     /// List what the Organization holds, by the variable each is read from and never by value
@@ -206,7 +206,7 @@ enum CredentialCommand {
 
 #[derive(Debug, Subcommand)]
 enum ProfileCommand {
-    /// Declare a Subscription Profile: a person's login to a subscribed Agent Runtime
+    /// Declare a Subscription Profile: a person's login to a subscribed Harness
     Declare {
         /// The name a Session or Trigger names it by
         name: String,
@@ -235,7 +235,7 @@ enum ProfileCommand {
 #[derive(Debug, Args)]
 #[group(required = true, multiple = false)]
 struct ProfileEntry {
-    /// An environment variable the Agent Runtime is spawned with
+    /// An environment variable the Harness is spawned with
     #[arg(long, value_name = "NAME")]
     variable: Option<String>,
     /// A file beneath the agent's home, handed back after each Run so a refreshed login
@@ -490,10 +490,10 @@ enum AgentCommand {
     Declare {
         /// The name it is referred to by
         name: String,
-        /// The Agent Runtime that drives it
+        /// The Harness that drives it
         #[arg(long, default_value = "opencode")]
-        runtime: String,
-        /// The model it works with; left out, it names none and its Agent Runtime's default
+        harness: String,
+        /// The model it works with; left out, it names none and its Harness's default
         /// is the answer
         #[arg(long)]
         model: Option<String>,
@@ -502,7 +502,7 @@ enum AgentCommand {
     Model {
         /// The name it is referred to by
         name: String,
-        /// The model it works with; left out, it names none and its Agent Runtime's default
+        /// The model it works with; left out, it names none and its Harness's default
         /// is the answer
         #[arg(long)]
         model: Option<String>,
@@ -591,7 +591,7 @@ enum RunCommand {
         /// unambiguous prefix of its identifier, or `latest`
         #[arg(long)]
         session: String,
-        /// The model it works with, or none for its Agent's or Agent Runtime's default
+        /// The model it works with, or none for its Agent's or Harness's default
         #[arg(long)]
         model: Option<String>,
     },
@@ -744,13 +744,13 @@ async fn run() -> Result<()> {
         }
         Command::Agent(AgentCommand::Declare {
             name,
-            runtime,
+            harness,
             model,
         }) => {
             let organization = scoping.resolve().await?.organization;
             let declaration = json!({
                 "name": name,
-                "runtime": runtime,
+                "harness": harness,
                 "model": model,
             });
             show(
@@ -1315,7 +1315,7 @@ async fn started(
             branch: start.branch,
             project: start.project,
             agent: start.agent,
-            runtime: start.runtime,
+            harness: start.harness,
             model: start.model,
             credentials: start.credentials,
         },

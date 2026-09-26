@@ -5,32 +5,32 @@ mod support;
 
 use serde_json::Value;
 use support::client::{self, Invocation, ran_on_a_terminal};
-use support::{Harness, TOKEN};
+use support::{Kestrel, TOKEN};
 
 const REPOSITORY: &str = "https://github.com/jtmthf/kestrel";
 
-async fn an_organization_holding_two_agents() -> Harness {
-    let harness = Harness::boot().await;
-    let acme = harness.declare_organization("acme").await;
-    harness
+async fn an_organization_holding_two_agents() -> Kestrel {
+    let kestrel = Kestrel::boot().await;
+    let acme = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&acme, "kestrel", &[REPOSITORY.to_owned()], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(&acme, "builder", "opencode", Some("claude-opus-5"))
         .await;
-    harness
+    kestrel
         .declare_agent(&acme, "reviewer", "opencode", None)
         .await;
 
-    harness
+    kestrel
 }
 
-async fn piped(harness: &Harness, args: &[&str]) -> client::Finished {
-    client::ran_by(harness, args, Invocation::default()).await
+async fn piped(kestrel: &Kestrel, args: &[&str]) -> client::Finished {
+    client::ran_by(kestrel, args, Invocation::default()).await
 }
 
-async fn on_a_terminal(harness: &Harness, args: &[&str], columns: u16) -> client::Shown {
-    let operator = harness.operator();
+async fn on_a_terminal(kestrel: &Kestrel, args: &[&str], columns: u16) -> client::Shown {
+    let operator = kestrel.operator();
     let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
 
     tokio::task::spawn_blocking(move || {
@@ -43,9 +43,9 @@ async fn on_a_terminal(harness: &Harness, args: &[&str], columns: u16) -> client
 
 #[tokio::test]
 async fn a_pipe_gets_the_commands_own_fields_tab_delimited_without_a_flag() {
-    let harness = an_organization_holding_two_agents().await;
+    let kestrel = an_organization_holding_two_agents().await;
 
-    let listed = piped(&harness, &["agent", "list"]).await;
+    let listed = piped(&kestrel, &["agent", "list"]).await;
 
     let agents: Vec<Vec<&str>> = listed
         .out
@@ -55,55 +55,55 @@ async fn a_pipe_gets_the_commands_own_fields_tab_delimited_without_a_flag() {
     assert_eq!(agents.len(), 2, "{:?}", listed.out);
     assert_eq!(agents[0][1..], ["builder", "opencode", "claude-opus-5"]);
     assert_eq!(agents[1][1..], ["reviewer", "opencode", "-"]);
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_pipe_gets_no_header_to_strip_and_no_styling_to_strip_it_from() {
-    let harness = an_organization_holding_two_agents().await;
+    let kestrel = an_organization_holding_two_agents().await;
 
-    let listed = piped(&harness, &["agent", "list"]).await;
+    let listed = piped(&kestrel, &["agent", "list"]).await;
 
     let said = listed.out.join("\n");
     assert!(
-        !said.contains("name\truntime"),
+        !said.contains("name\tharness"),
         "a pipe was given a header:\n{said}"
     );
     assert!(
         !said.contains('\u{1b}'),
         "a pipe was given styling:\n{said}"
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_terminal_gets_the_records_under_the_fields_they_fill() {
-    let harness = an_organization_holding_two_agents().await;
+    let kestrel = an_organization_holding_two_agents().await;
 
-    let listed = on_a_terminal(&harness, &["agent", "list"], 120).await;
+    let listed = on_a_terminal(&kestrel, &["agent", "list"], 120).await;
 
     assert!(listed.status.success(), "{}", listed.said);
     let [header, builder, reviewer] = listed.lines()[..] else {
         panic!("a terminal was shown {:?}", listed.lines());
     };
     assert!(header.starts_with("id "), "{header:?}");
-    assert!(header.contains("name") && header.contains("runtime") && header.contains("model"));
+    assert!(header.contains("name") && header.contains("harness") && header.contains("model"));
     assert_eq!(
         builder.find("opencode"),
         reviewer.find("opencode"),
         "the columns do not line up:\n{builder}\n{reviewer}"
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_terminal_gets_a_detail_read_down_the_page_and_a_pipe_gets_it_across_one_line() {
-    let harness = an_organization_holding_two_agents().await;
-    let session = harness.open_session("acme", "kestrel", "builder").await;
+    let kestrel = an_organization_holding_two_agents().await;
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
     let session = session.id.to_string();
 
-    let watched = on_a_terminal(&harness, &["session", "show", &session], 120).await;
-    let scripted = piped(&harness, &["session", "show", &session]).await;
+    let watched = on_a_terminal(&kestrel, &["session", "show", &session], 120).await;
+    let scripted = piped(&kestrel, &["session", "show", &session]).await;
 
     assert!(
         watched
@@ -125,21 +125,21 @@ async fn a_terminal_gets_a_detail_read_down_the_page_and_a_pipe_gets_it_across_o
     let fields: Vec<&str> = scripted.out[0].split('\t').collect();
     assert_eq!(fields[0], session);
     assert!(fields.contains(&"open"), "{fields:?}");
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_terminal_gets_lines_it_can_hold_and_a_pipe_gets_them_whole() {
-    let harness = Harness::boot().await;
-    let acme = harness.declare_organization("acme").await;
+    let kestrel = Kestrel::boot().await;
+    let acme = kestrel.declare_organization("acme").await;
     let repositories = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
         .map(|name| format!("https://github.com/jtmthf/{name}-a-rather-long-repository-name"));
-    harness
+    kestrel
         .declare_project(&acme, "kestrel", &repositories, "main")
         .await;
 
-    let watched = on_a_terminal(&harness, &["project", "list"], 60).await;
-    let scripted = piped(&harness, &["project", "list"]).await;
+    let watched = on_a_terminal(&kestrel, &["project", "list"], 60).await;
+    let scripted = piped(&kestrel, &["project", "list"]).await;
 
     for line in watched.lines() {
         assert!(
@@ -154,14 +154,14 @@ async fn a_terminal_gets_lines_it_can_hold_and_a_pipe_gets_them_whole() {
             scripted.out[0]
         );
     }
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn json_emits_the_fields_it_names_and_nothing_the_boundary_adds() {
-    let harness = an_organization_holding_two_agents().await;
+    let kestrel = an_organization_holding_two_agents().await;
 
-    let listed = piped(&harness, &["agent", "list", "--json", "name,model"]).await;
+    let listed = piped(&kestrel, &["agent", "list", "--json", "name,model"]).await;
 
     let agents: Vec<Value> = listed.records();
     assert_eq!(
@@ -171,16 +171,16 @@ async fn json_emits_the_fields_it_names_and_nothing_the_boundary_adds() {
             serde_json::json!({ "name": "reviewer", "model": null }),
         ]
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn json_without_a_field_list_is_refused_rather_than_guessed_at() {
-    let harness = an_organization_holding_two_agents().await;
+    let kestrel = an_organization_holding_two_agents().await;
 
-    let bare = piped(&harness, &["agent", "list", "--json"]).await;
-    let empty = piped(&harness, &["agent", "list", "--json", ""]).await;
-    let unknown = piped(&harness, &["agent", "list", "--json", "naem"]).await;
+    let bare = piped(&kestrel, &["agent", "list", "--json"]).await;
+    let empty = piped(&kestrel, &["agent", "list", "--json", ""]).await;
+    let unknown = piped(&kestrel, &["agent", "list", "--json", "naem"]).await;
 
     for refused in [&bare, &empty, &unknown] {
         assert!(!refused.status.success(), "{:?}", refused.out);
@@ -192,21 +192,21 @@ async fn json_without_a_field_list_is_refused_rather_than_guessed_at() {
         "{}",
         unknown.err
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn standard_output_carries_the_value_and_standard_error_carries_the_rest() {
-    let harness = an_organization_holding_two_agents().await;
-    let session = harness.open_session("acme", "kestrel", "builder").await;
+    let kestrel = an_organization_holding_two_agents().await;
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
 
     let read = piped(
-        &harness,
+        &kestrel,
         &["session", "transcript", &session.id.to_string()],
     )
     .await;
     let registered = piped(
-        &harness,
+        &kestrel,
         &[
             "integration",
             "register",
@@ -233,21 +233,21 @@ async fn standard_output_carries_the_value_and_standard_error_carries_the_rest()
         registered.out[0]
     );
     assert!(registered.err.is_empty(), "{}", registered.err);
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_pipe_on_standard_input_is_read_without_asking_for_anything() {
-    let harness = an_organization_holding_two_agents().await;
+    let kestrel = an_organization_holding_two_agents().await;
 
     let held = client::ran_by(
-        &harness,
+        &kestrel,
         &["credential", "set", "ANTHROPIC_API_KEY"],
         Invocation::default().given("sk-a-key\n"),
     )
     .await;
     let nothing = client::ran_by(
-        &harness,
+        &kestrel,
         &["credential", "set", "OPENAI_API_KEY"],
         Invocation::default(),
     )
@@ -265,13 +265,13 @@ async fn a_pipe_on_standard_input_is_read_without_asking_for_anything() {
         "the client prompted a closed standard input: {}",
         nothing.err
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_terminal_on_standard_input_is_told_what_is_being_waited_for() {
-    let harness = an_organization_holding_two_agents().await;
-    let operator = harness.operator();
+    let kestrel = an_organization_holding_two_agents().await;
+    let operator = kestrel.operator();
 
     let held = tokio::task::spawn_blocking(move || {
         ran_on_a_terminal(
@@ -290,21 +290,21 @@ async fn a_terminal_on_standard_input_is_told_what_is_being_waited_for() {
         "a terminal was left waiting in silence:\n{}",
         held.said
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A Transcript is the one listing whose records are prose, so the terminal presentation that
 /// makes a table readable would make this command pointless.
 #[tokio::test]
 async fn a_transcript_reaches_a_terminal_whole_however_narrow_it_is() {
-    let harness = an_organization_holding_two_agents().await;
-    let session = harness.open_session("acme", "kestrel", "builder").await;
-    let (run, _) = harness.dispatch_run(session.id).await;
+    let kestrel = an_organization_holding_two_agents().await;
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let (run, _) = kestrel.dispatch_run(session.id).await;
     let said = "a line of what the agent had to say, and then\na second line after it";
-    harness.said(&run, said).await;
+    kestrel.said(&run, said).await;
 
     let read = on_a_terminal(
-        &harness,
+        &kestrel,
         &["session", "transcript", &session.id.to_string()],
         40,
     )
@@ -317,5 +317,5 @@ async fn a_transcript_reaches_a_terminal_whole_however_narrow_it_is() {
             read.said
         );
     }
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

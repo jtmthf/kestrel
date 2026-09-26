@@ -40,7 +40,7 @@ impl Written {
         self.files.keys().map(String::as_str)
     }
 
-    /// A file the runtime removed is a login it gave up, which the next Run may still need.
+    /// A file the harness removed is a login it gave up, which the next Run may still need.
     pub fn refreshed(&self) -> BTreeMap<String, String> {
         self.files
             .iter()
@@ -82,27 +82,27 @@ mod tests {
     }
 
     #[test]
-    fn only_what_the_runtime_rewrote_is_handed_back() {
+    fn only_what_the_harness_rewrote_is_handed_back() {
         let home = home();
         let written = write(
             &home,
-            files(&[(".runtime/auth.json", "first"), (".other/token", "kept")]),
+            files(&[(".harness/auth.json", "first"), (".other/token", "kept")]),
         )
         .expect("written");
 
-        fs::write(home.join(".runtime/auth.json"), "refreshed").expect("rewritten");
+        fs::write(home.join(".harness/auth.json"), "refreshed").expect("rewritten");
 
         assert_eq!(
             written.refreshed(),
-            files(&[(".runtime/auth.json", "refreshed")])
+            files(&[(".harness/auth.json", "refreshed")])
         );
         written.remove();
-        assert!(!home.join(".runtime/auth.json").exists());
+        assert!(!home.join(".harness/auth.json").exists());
         assert!(!home.join(".other/token").exists());
     }
 
     #[test]
-    fn a_login_the_runtime_removed_is_not_handed_back_as_nothing() {
+    fn a_login_the_harness_removed_is_not_handed_back_as_nothing() {
         let home = home();
         let written = write(&home, files(&[("auth.json", "first")])).expect("written");
 
@@ -117,7 +117,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let home = home();
-        write(&home, files(&[(".runtime/auth.json", "secret")])).expect("written");
+        write(&home, files(&[(".harness/auth.json", "secret")])).expect("written");
 
         let mode = |path: &str| {
             fs::metadata(home.join(path))
@@ -126,7 +126,7 @@ mod tests {
                 .mode()
                 & 0o777
         };
-        assert_eq!(mode(".runtime/auth.json"), 0o600);
-        assert_eq!(mode(".runtime"), 0o700);
+        assert_eq!(mode(".harness/auth.json"), 0o600);
+        assert_eq!(mode(".harness"), 0o700);
     }
 }

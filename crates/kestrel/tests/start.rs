@@ -5,7 +5,7 @@ use kestrel::log::Entry;
 use serde_json::Value;
 use support::client::{Finished, Invocation, Shown, ran_by, ran_on_a_terminal_by};
 use support::scripted_agent::{self, Script};
-use support::{A_PROVIDER_KEY, Harness, PROVIDER_KEY, repository, supervisor};
+use support::{A_PROVIDER_KEY, Kestrel, PROVIDER_KEY, repository, supervisor};
 
 const BRIEF: &str = "Make the README say what kestrel is";
 const STARTED: &str = "organization,project,agent,session,session_id,run,run_id";
@@ -54,28 +54,28 @@ fn reached(shown: &Shown) -> Value {
     serde_json::from_str(record).expect("a record")
 }
 
-async fn declared(harness: &Harness) -> Vec<String> {
+async fn declared(kestrel: &Kestrel) -> Vec<String> {
     let mut declared = Vec::new();
-    for organization in harness.organizations().await {
+    for organization in kestrel.organizations().await {
         declared.push(format!("organization {}", organization.name));
-        for project in harness.projects(&organization).await {
+        for project in kestrel.projects(&organization).await {
             declared.push(format!(
                 "project {} {:?} {}",
                 project.name, project.repositories, project.branch
             ));
         }
-        for agent in harness.agents(&organization).await {
+        for agent in kestrel.agents(&organization).await {
             declared.push(format!(
                 "agent {} {} {:?}",
-                agent.name, agent.runtime, agent.model
+                agent.name, agent.harness, agent.model
             ));
         }
-        for held in harness.provider_credentials_held(&organization).await {
+        for held in kestrel.provider_credentials_held(&organization).await {
             declared.push(format!("credential {}", held.variable));
         }
         declared.push(format!(
             "sessions {}",
-            harness.sessions(&organization.name).await.len()
+            kestrel.sessions(&organization.name).await.len()
         ));
     }
 
@@ -84,15 +84,15 @@ async fn declared(harness: &Harness) -> Vec<String> {
 
 #[tokio::test]
 async fn one_command_takes_a_fresh_clone_and_an_empty_control_plane_to_a_run_carrying_its_brief() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Echoes),
     )
     .await;
-    assert!(harness.organizations().await.is_empty());
+    assert!(kestrel.organizations().await.is_empty());
 
     let started = ran_by(
-        &harness,
+        &kestrel,
         &[
             "start",
             "--brief",
@@ -119,9 +119,9 @@ async fn one_command_takes_a_fresh_clone_and_an_empty_control_plane_to_a_run_car
         .and_then(|id| id.parse().ok())
         .expect("a run identifier");
 
-    let ended = harness.after_one_turn(run).await;
+    let ended = kestrel.after_one_turn(run).await;
     assert_eq!(ended.exit, Some(Exit::Succeeded));
-    let transcript = harness.transcript(session).await;
+    let transcript = kestrel.transcript(session).await;
     assert_eq!(
         transcript[0].entry,
         Entry::Brief {
@@ -138,14 +138,14 @@ async fn one_command_takes_a_fresh_clone_and_an_empty_control_plane_to_a_run_car
         "the agent was never prompted with the brief"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn every_inferred_value_is_explained_before_anything_is_applied() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
-    let started = ran_by(&harness, &["start", "--brief", BRIEF], in_a_fresh_clone()).await;
+    let started = ran_by(&kestrel, &["start", "--brief", BRIEF], in_a_fresh_clone()).await;
 
     assert!(started.status.success(), "{}", started.err);
     let explained: Vec<&str> = started
@@ -161,7 +161,7 @@ async fn every_inferred_value_is_explained_before_anything_is_applied() {
         ("repository", "--repository"),
         ("branch", "--branch"),
         ("agent", "--agent"),
-        ("runtime", "--runtime"),
+        ("harness", "--harness"),
         ("model", "--model"),
         ("credentials", "--credential"),
     ]) {
@@ -182,15 +182,15 @@ async fn every_inferred_value_is_explained_before_anything_is_applied() {
         started.err
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn flags_say_every_value_nothing_needs_inferring() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
     let started = ran_by(
-        &harness,
+        &kestrel,
         &[
             "start",
             "--brief",
@@ -205,7 +205,7 @@ async fn flags_say_every_value_nothing_needs_inferring() {
             repository::EXISTING_BRANCH,
             "--agent",
             "builder",
-            "--runtime",
+            "--harness",
             "opencode",
             "--json",
             STARTED,
@@ -218,21 +218,21 @@ async fn flags_say_every_value_nothing_needs_inferring() {
     assert_eq!(started["organization"], "acme");
     assert_eq!(started["project"], "widgets");
     assert_eq!(started["agent"], "builder");
-    let acme = &harness.organizations().await[0];
+    let acme = &kestrel.organizations().await[0];
     assert_eq!(
-        harness.projects(acme).await[0].branch,
+        kestrel.projects(acme).await[0].branch,
         repository::EXISTING_BRANCH
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn with_no_terminal_and_no_clone_it_fails_naming_the_flags_and_declares_nothing() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
     let refused = ran_by(
-        &harness,
+        &kestrel,
         &["start", "--brief", BRIEF, "--credential", PROVIDER_KEY],
         Invocation::default().given(""),
     )
@@ -242,32 +242,32 @@ async fn with_no_terminal_and_no_clone_it_fails_naming_the_flags_and_declares_no
         &refused,
         &["--repository", "--branch", "--credential", PROVIDER_KEY],
     );
-    assert!(harness.organizations().await.is_empty());
+    assert!(kestrel.organizations().await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn with_several_organizations_and_none_named_it_fails_naming_the_flag() {
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
-    harness.declare_organization("globex").await;
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
+    kestrel.declare_organization("globex").await;
 
-    let refused = ran_by(&harness, &["start", "--brief", BRIEF], in_a_fresh_clone()).await;
+    let refused = ran_by(&kestrel, &["start", "--brief", BRIEF], in_a_fresh_clone()).await;
 
     refused_naming(&refused, &["--organization", "acme", "globex"]);
-    for organization in harness.organizations().await {
-        assert!(harness.projects(&organization).await.is_empty());
+    for organization in kestrel.organizations().await {
+        assert!(kestrel.projects(&organization).await.is_empty());
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_plan_the_control_plane_refuses_leaves_no_partial_setup() {
-    let harness = Harness::boot().await;
-    let acme = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let acme = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &acme,
             repository::NAME,
@@ -277,7 +277,7 @@ async fn a_plan_the_control_plane_refuses_leaves_no_partial_setup() {
         .await;
 
     let refused = ran_by(
-        &harness,
+        &kestrel,
         &[
             "start",
             "--brief",
@@ -295,21 +295,21 @@ async fn a_plan_the_control_plane_refuses_leaves_no_partial_setup() {
 
     assert_eq!(refused.status.code(), Some(4), "{}", refused.err);
     assert_eq!(
-        harness.projects(&acme).await[0].repositories,
+        kestrel.projects(&acme).await[0].repositories,
         [repository::url()]
     );
-    assert!(harness.agents(&acme).await.is_empty());
-    assert!(harness.provider_credentials_held(&acme).await.is_empty());
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.agents(&acme).await.is_empty());
+    assert!(kestrel.provider_credentials_held(&acme).await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_declaration_the_plan_would_change_is_named_before_anything_is_sent() {
-    let harness = Harness::boot().await;
-    let acme = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let acme = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &acme,
             repository::NAME,
@@ -318,12 +318,12 @@ async fn a_declaration_the_plan_would_change_is_named_before_anything_is_sent() 
         )
         .await;
 
-    let refused = ran_by(&harness, &["start", "--brief", BRIEF], in_a_fresh_clone()).await;
+    let refused = ran_by(&kestrel, &["start", "--brief", BRIEF], in_a_fresh_clone()).await;
 
     refused_naming(&refused, &["--project"]);
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -338,7 +338,7 @@ async fn on_a_terminal_confirming_once_applies_the_plan_the_noninteractive_start
         STARTED,
     ];
     let invocation = in_a_fresh_clone().env(PROVIDER_KEY, A_PROVIDER_KEY);
-    let (interactive, noninteractive) = (Harness::boot().await, Harness::boot().await);
+    let (interactive, noninteractive) = (Kestrel::boot().await, Kestrel::boot().await);
 
     let confirmed = ran_on_a_terminal_by(&interactive, &args, invocation.clone(), "y\n").await;
     let applied = ran_by(&noninteractive, &args, invocation).await;
@@ -371,10 +371,10 @@ async fn on_a_terminal_confirming_once_applies_the_plan_the_noninteractive_start
 
 #[tokio::test]
 async fn on_a_terminal_the_plan_is_explained_and_taught_and_declining_it_changes_nothing() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
     let shown = ran_on_a_terminal_by(
-        &harness,
+        &kestrel,
         &["start", "--brief", BRIEF],
         in_a_fresh_clone(),
         "n\n",
@@ -382,7 +382,7 @@ async fn on_a_terminal_the_plan_is_explained_and_taught_and_declining_it_changes
     .await;
 
     assert!(shown.status.success(), "{}", shown.said);
-    assert!(harness.organizations().await.is_empty());
+    assert!(kestrel.organizations().await.is_empty());
     let before: Vec<&str> = shown
         .lines()
         .into_iter()
@@ -395,7 +395,7 @@ async fn on_a_terminal_the_plan_is_explained_and_taught_and_declining_it_changes
         "--repository",
         "--branch",
         "--agent",
-        "--runtime",
+        "--harness",
         "--model",
         "--credential",
     ] {
@@ -420,15 +420,15 @@ async fn on_a_terminal_the_plan_is_explained_and_taught_and_declining_it_changes
         );
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn on_a_terminal_yes_applies_the_plan_without_asking() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
     let applied = ran_on_a_terminal_by(
-        &harness,
+        &kestrel,
         &["start", "--brief", BRIEF, "--yes"],
         in_a_fresh_clone(),
         "",
@@ -437,17 +437,17 @@ async fn on_a_terminal_yes_applies_the_plan_without_asking() {
 
     assert!(applied.status.success(), "{}", applied.said);
     assert!(!applied.said.contains(QUESTION), "{}", applied.said);
-    assert_eq!(harness.sessions("default").await.len(), 1);
+    assert_eq!(kestrel.sessions("default").await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn with_output_on_a_terminal_and_input_piped_nothing_is_asked() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
     let applied = ran_on_a_terminal_by(
-        &harness,
+        &kestrel,
         &["start", "--brief", BRIEF],
         in_a_fresh_clone().given(""),
         "",
@@ -456,7 +456,7 @@ async fn with_output_on_a_terminal_and_input_piped_nothing_is_asked() {
 
     assert!(applied.status.success(), "{}", applied.said);
     assert!(!applied.said.contains(QUESTION), "{}", applied.said);
-    assert_eq!(harness.sessions("default").await.len(), 1);
+    assert_eq!(kestrel.sessions("default").await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
