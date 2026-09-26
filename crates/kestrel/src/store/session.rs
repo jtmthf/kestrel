@@ -1311,7 +1311,7 @@ impl<'a> Sessions<'a> {
         .bind(RunState::Working.as_str())
         .fetch_optional(&mut *self.connection)
         .await
-        .context("reading which run between turns has input held longest")?;
+        .context("reading which waiting run has input held longest")?;
 
         let Some(row) = row else {
             return Ok(None);

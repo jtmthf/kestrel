@@ -250,7 +250,7 @@ pub(crate) async fn post_in(
             said(tx, session, participant, message).await?;
             Ok(None)
         }
-        // Held even for a Run between turns: its next turn waits for an active-work slot.
+        // Held even for a waiting Run: its next turn waits for an active-work slot.
         PostDestination::Held(waiting) => {
             tx.sessions()
                 .add_pending_message(session, participant, message)

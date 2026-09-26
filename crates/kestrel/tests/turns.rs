@@ -80,7 +80,7 @@ async fn a_follow_up_is_the_next_turn_of_the_same_agent_conversation() {
     let continued = harness
         .post_while_busy(session.id, "operator", "the second thing to do")
         .await
-        .expect("a run between turns takes the message as its next prompt");
+        .expect("a waiting run takes the message as its next prompt");
     assert_eq!(continued.id, run.id);
     let answered = harness.answered(run.id, 2).await;
 
@@ -129,7 +129,7 @@ async fn an_answer_saying_the_work_is_done_leaves_the_run_open() {
 }
 
 #[tokio::test]
-async fn a_session_holds_one_open_run_even_while_it_waits_while_waiting() {
+async fn a_session_holds_one_unfinished_run_even_while_it_waits() {
     let (harness, session) = conversing(Script::Converses).await;
     let run = harness.post(session.id, "operator", "start").await;
     harness.answered(run.id, 1).await;
@@ -234,7 +234,7 @@ async fn a_later_turn_that_produced_nothing_fails_the_run() {
     let continued = harness
         .post_while_busy(session.id, "operator", "the second thing to do")
         .await
-        .expect("a run between turns takes the message as its next prompt");
+        .expect("a waiting run takes the message as its next prompt");
     assert_eq!(continued.id, run.id);
     let ended = harness.answered(run.id, 2).await;
 
@@ -371,7 +371,7 @@ async fn not_prompted_again(harness: &Harness, run: RunId, turns: usize) {
 }
 
 #[tokio::test]
-async fn a_run_waiting_while_waiting_leaves_its_slot_to_another_session() {
+async fn a_waiting_run_leaves_its_active_work_slot_to_another_session() {
     let harness = sharing_one_slot().await;
     let waiting = harness.open_session("acme", "kestrel", "builder").await;
     let working = harness.open_session("acme", "kestrel", "dawdler").await;
@@ -386,7 +386,7 @@ async fn a_run_waiting_while_waiting_leaves_its_slot_to_another_session() {
     let continued = harness
         .post_while_busy(waiting.id, "operator", "the second thing to do")
         .await
-        .expect("a run between turns takes the message as its next prompt");
+        .expect("a waiting run takes the message as its next prompt");
     assert_eq!(continued.id, first.id);
     not_prompted_again(&harness, first.id, 1).await;
     assert!(harness.has_pending_messages(waiting.id).await);
@@ -425,7 +425,7 @@ async fn a_run_queued_before_a_follow_up_arrived_takes_the_freed_slot_first() {
     harness
         .post_while_busy(waiting.id, "operator", "and one more thing")
         .await
-        .expect("a run between turns takes the message as its next prompt");
+        .expect("a waiting run takes the message as its next prompt");
 
     harness.stop_run(busy.id).await;
     prompted(&harness, next.id).await;
@@ -451,7 +451,7 @@ async fn a_follow_up_held_before_a_run_was_queued_takes_the_freed_slot_first() {
     harness
         .post_while_busy(waiting.id, "operator", "and one more thing")
         .await
-        .expect("a run between turns takes the message as its next prompt");
+        .expect("a waiting run takes the message as its next prompt");
     let next = harness.post(queued.id, "operator", "then this").await;
 
     harness.stop_run(busy.id).await;

@@ -72,7 +72,7 @@ async fn an_agent_that_can_load_its_session_is_brought_back_into_the_same_conver
     harness
         .post_while_busy(session.id, "operator", "the second thing to do")
         .await
-        .expect("a run between turns takes the message as its next prompt");
+        .expect("a waiting run takes the message as its next prompt");
     let answered = harness.answered(run.id, 2).await;
 
     assert_eq!(answered.state, RunState::Waiting, "{:?}", answered.exit);

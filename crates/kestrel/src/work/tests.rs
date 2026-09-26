@@ -77,7 +77,7 @@ fn usage() -> Usage {
 }
 
 #[tokio::test]
-async fn a_codex_run_waiting_while_waiting_yields_its_profile_and_resumes_when_free() {
+async fn a_waiting_codex_run_yields_its_profile_and_resumes_when_free() {
     let data_dir = TempDir::new().unwrap();
     let store = Store::open(data_dir.path()).await.unwrap();
     let mut tx = store.begin().await.unwrap();

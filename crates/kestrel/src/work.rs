@@ -142,8 +142,8 @@ pub enum Occupied {
     Resumed(Run),
 }
 
-/// A Run between turns holds no slot (ADR-0024), so a free one goes to whichever asked for it
-/// first: a queued Run, or input held for a Run between turns.
+/// A waiting Run holds no slot (ADR-0024), so a free one goes to whichever asked for it
+/// first: a queued Run, or input held for a waiting Run.
 pub async fn occupy(
     store: &Store,
     slots: usize,
@@ -387,7 +387,7 @@ pub async fn turns(store: &Store, run: RunId) -> Result<Vec<Turn>> {
     store.begin().await?.sessions().turns(run).await
 }
 
-/// A Run between turns has done everything asked of it, so stopping it there is how it
+/// A waiting Run has done everything asked of it, so stopping it there is how it
 /// succeeds; stopping one mid-turn abandons what its agent was still doing.
 pub async fn stop(store: &Store, id: RunId) -> Result<Exit> {
     let mut tx = store.begin().await?;

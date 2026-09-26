@@ -147,7 +147,7 @@ pub async fn start(store: &Store, run: &Run) -> Result<SentInstruction> {
     Ok(sent)
 }
 
-/// The next turn of a Run already between turns, in the same agent conversation (ADR-0024).
+/// The next turn of a waiting Run, in the same agent conversation (ADR-0024).
 pub(crate) async fn prompt(tx: &mut Tx<'_>, run: &Run, prompt: String) -> Result<()> {
     tx.sessions()
         .send_instruction(run, Instruction::Prompt { prompt })

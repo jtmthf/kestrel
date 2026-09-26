@@ -282,7 +282,7 @@ async fn a_session_with_no_instance_has_nothing_to_release() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_run_waiting_while_waiting_ends_when_its_clean_session_seals_idle() {
+async fn a_waiting_run_ends_when_its_clean_session_seals_idle() {
     let runtime = working("true");
     let harness = dispatching_to(&runtime).await;
     let session = a_session(&harness).await;
@@ -305,7 +305,7 @@ async fn a_run_waiting_while_waiting_ends_when_its_clean_session_seals_idle() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_run_waiting_while_waiting_over_unpublished_work_outlasts_the_idle_window() {
+async fn a_waiting_run_over_unpublished_work_outlasts_the_idle_window() {
     let runtime = working("echo untracked > kestrel/untracked");
     let harness = dispatching_to(&runtime).await;
     let session = a_session(&harness).await;

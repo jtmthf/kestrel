@@ -1146,7 +1146,7 @@ impl Harness {
         }
     }
 
-    /// Prompts a Run between turns with what is held for it, the way the work role's sweep does.
+    /// Prompts a waiting Run with what is held for it, the way the work role's sweep does.
     pub async fn prompt_waiting(&self) {
         work::occupy(&self.store, 1, &[SERIALIZED.to_owned()])
             .await
@@ -1233,7 +1233,7 @@ impl Harness {
         if answered.state != RunState::Ended {
             self.try_stop_run(run)
                 .await
-                .expect("a run between turns should stop");
+                .expect("a waiting run should stop");
         }
 
         self.run(run).await
