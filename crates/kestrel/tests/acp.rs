@@ -7,24 +7,24 @@ use std::time::Duration;
 
 use kestrel::domain::{Cost, Exit, Run, RunId, RunState, Session, Usage};
 use kestrel_scripted_agent::{DEFAULT_MODEL, MUTTERED, OTHER_MODEL, OVERLONG};
-use support::Harness;
+use support::Kestrel;
 use support::operator_log;
 use support::repository;
 use support::scripted_agent::{self, Script};
 use support::supervisor::{self, Supervisor};
 
 const PATIENCE: Duration = Duration::from_secs(30);
-/// The Agent Runtime the harness actually drives, so what a Run sees it advertise is recorded
+/// The Agent Runtime the fixture actually drives, so what a Run sees it advertise is recorded
 /// against the name an Agent declared here names.
 use support::RUNTIME;
 
-async fn a_session(harness: &Harness) -> Session {
-    a_session_naming(harness, Some(OTHER_MODEL)).await
+async fn a_session(kestrel: &Kestrel) -> Session {
+    a_session_naming(kestrel, Some(OTHER_MODEL)).await
 }
 
-async fn a_session_naming(harness: &Harness, model: Option<&str>) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session_naming(kestrel: &Kestrel, model: Option<&str>) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             repository::NAME,
@@ -32,11 +32,11 @@ async fn a_session_naming(harness: &Harness, model: Option<&str>) -> Session {
             repository::BRANCH,
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", RUNTIME, model)
         .await;
 
-    harness
+    kestrel
         .hold_provider_credential(
             &organization,
             support::PROVIDER_KEY,
@@ -44,16 +44,16 @@ async fn a_session_naming(harness: &Harness, model: Option<&str>) -> Session {
         )
         .await;
 
-    harness.open_session("acme", "kestrel", "builder").await
+    kestrel.open_session("acme", "kestrel", "builder").await
 }
 
 /// A Run the work role has started a supervisor for, and is therefore past reading its Agent's
 /// model.
-async fn in_flight(harness: &Harness, run: RunId) {
+async fn in_flight(kestrel: &Kestrel, run: RunId) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        if harness.run(run).await.supervisor.is_some() {
+        if kestrel.run(run).await.supervisor.is_some() {
             return;
         }
         assert!(
@@ -64,22 +64,22 @@ async fn in_flight(harness: &Harness, run: RunId) {
     }
 }
 
-async fn worked(script: Script) -> (Harness, Session, Run) {
+async fn worked(script: Script) -> (Kestrel, Session, Run) {
     worked_naming(script, Some(OTHER_MODEL)).await
 }
 
-async fn worked_naming(script: Script, model: Option<&str>) -> (Harness, Session, Run) {
-    let harness =
-        Harness::dispatching_to(supervisor::binary(), &scripted_agent::playing(script)).await;
-    let session = a_session_naming(&harness, model).await;
-    let run = harness.enqueue_run(session.id).await;
-    let ended = harness.after_one_turn(run.id).await;
+async fn worked_naming(script: Script, model: Option<&str>) -> (Kestrel, Session, Run) {
+    let kestrel =
+        Kestrel::dispatching_to(supervisor::binary(), &scripted_agent::playing(script)).await;
+    let session = a_session_naming(&kestrel, model).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = kestrel.after_one_turn(run.id).await;
 
-    (harness, session, ended)
+    (kestrel, session, ended)
 }
 
-async fn transcript(harness: &Harness, session: &Session) -> Vec<String> {
-    harness
+async fn transcript(kestrel: &Kestrel, session: &Session) -> Vec<String> {
+    kestrel
         .transcript(session.id)
         .await
         .iter()
@@ -89,11 +89,11 @@ async fn transcript(harness: &Harness, session: &Session) -> Vec<String> {
 
 #[tokio::test]
 async fn what_the_agent_says_reaches_the_transcript_coalesced_by_the_message_it_belongs_to() {
-    let (harness, session, run) = worked(Script::Speaks).await;
+    let (kestrel, session, run) = worked(Script::Speaks).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded));
     assert_eq!(
-        transcript(&harness, &session)
+        transcript(&kestrel, &session)
             .await
             .into_iter()
             .filter(|entry| entry.starts_with("said"))
@@ -104,14 +104,14 @@ async fn what_the_agent_says_reaches_the_transcript_coalesced_by_the_message_it_
         ]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_agents_plan_its_tool_calls_and_its_reasoning_reach_no_transcript() {
-    let (harness, session, _) = worked(Script::Speaks).await;
+    let (kestrel, session, _) = worked(Script::Speaks).await;
 
-    let transcript = transcript(&harness, &session).await.join("\n");
+    let transcript = transcript(&kestrel, &session).await.join("\n");
     for inside_the_run in [
         "read the issue",
         "the issue looks small",
@@ -124,19 +124,19 @@ async fn an_agents_plan_its_tool_calls_and_its_reasoning_reach_no_transcript() {
         );
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn what_the_agent_writes_to_stderr_reaches_the_operator_log_mid_run_and_no_transcript() {
     let log = operator_log::capturing();
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Mutters),
     )
     .await;
-    let session = a_session(&harness).await;
-    let run = harness.enqueue_run(session.id).await;
+    let session = a_session(&kestrel).await;
+    let run = kestrel.enqueue_run(session.id).await;
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let relayed = loop {
@@ -156,22 +156,22 @@ async fn what_the_agent_writes_to_stderr_reaches_the_operator_log_mid_run_and_no
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
 
-    assert_eq!(harness.run(run.id).await.state, RunState::Working);
+    assert_eq!(kestrel.run(run.id).await.state, RunState::Working);
     assert!(relayed[0].contains(MUTTERED), "{}", relayed[0]);
     assert!(
         relayed[1].contains("[truncated]") && relayed[1].len() < OVERLONG,
         "the overlong line was relayed {} bytes long",
         relayed[1].len()
     );
-    let transcript = transcript(&harness, &session).await.join("\n");
+    let transcript = transcript(&kestrel, &session).await.join("\n");
     assert!(!transcript.contains(MUTTERED), "{transcript}");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn what_the_agent_used_is_recorded_on_the_run_and_reaches_no_transcript() {
-    let (harness, session, run) = worked(Script::Speaks).await;
+    let (kestrel, session, run) = worked(Script::Speaks).await;
 
     assert_eq!(
         run.usage,
@@ -184,28 +184,28 @@ async fn what_the_agent_used_is_recorded_on_the_run_and_reaches_no_transcript() 
             }),
         })
     );
-    let transcript = transcript(&harness, &session).await.join("\n");
+    let transcript = transcript(&kestrel, &session).await.join("\n");
     assert!(
         !transcript.contains("1200") && !transcript.contains("0.42"),
         "the transcript carries what the agent used:\n{transcript}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The scripted agent refuses to go on unless it is allowed, so a Run that succeeded is a
 /// round-trip that completed; the supervisor says which subject it decided about.
 #[tokio::test]
 async fn a_permission_request_is_answered_and_the_round_trip_is_observable() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, credential) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, credential) = kestrel.dispatch_run(session.id).await;
 
-    let mut supervisor = Supervisor::provision(&harness.link(), run.id, &credential);
+    let mut supervisor = Supervisor::provision(&kestrel.link(), run.id, &credential);
     supervisor.wait_until_it_says("reported connected").await;
-    harness.start(&run).await;
+    kestrel.start(&run).await;
     supervisor.wait_until_it_says("reported answered").await;
-    harness.stop_run(run.id).await;
+    kestrel.stop_run(run.id).await;
 
     assert!(
         supervisor.said("allowed once  tool call call-1"),
@@ -213,18 +213,18 @@ async fn a_permission_request_is_answered_and_the_round_trip_is_observable() {
         supervisor.everything_it_said()
     );
     assert_eq!(
-        harness.run(run.id).await.exit,
+        kestrel.run(run.id).await.exit,
         Some(Exit::Succeeded),
         "the agent was not allowed to go on"
     );
 
     assert!(supervisor.finishes().await.success());
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_turn_that_stops_for_any_other_reason_fails_the_run() {
-    let (harness, _, run) = worked(Script::Refuses).await;
+    let (kestrel, _, run) = worked(Script::Refuses).await;
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!("the run ended {:?}, and its agent refused", run.exit);
@@ -234,14 +234,14 @@ async fn a_turn_that_stops_for_any_other_reason_fails_the_run() {
         "unhelpful exit status: {because}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A prompt that never became work is not an answer: a turn with no message, narration or
 /// detail fails the run rather than reporting itself answered.
 #[tokio::test]
 async fn a_turn_that_produced_nothing_fails_the_run_and_names_why() {
-    let (harness, _, run) = worked(Script::Silent).await;
+    let (kestrel, _, run) = worked(Script::Silent).await;
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
@@ -254,7 +254,7 @@ async fn a_turn_that_produced_nothing_fails_the_run_and_names_why() {
         "unhelpful exit status: {because}"
     );
     assert!(
-        harness
+        kestrel
             .turns(run.id)
             .await
             .iter()
@@ -262,7 +262,7 @@ async fn a_turn_that_produced_nothing_fails_the_run_and_names_why() {
         "a turn that produced nothing was recorded as answered"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// Bookkeeping alone is not the agent working, but a tool call or a permission request is,
@@ -270,21 +270,21 @@ async fn a_turn_that_produced_nothing_fails_the_run_and_names_why() {
 #[tokio::test]
 async fn a_turn_that_only_used_a_tool_or_asked_permission_is_answered() {
     for script in [Script::Works, Script::Asks] {
-        let (harness, _, run) = worked(script).await;
+        let (kestrel, _, run) = worked(script).await;
 
         assert_eq!(run.exit, Some(Exit::Succeeded), "{script:?}");
         assert!(
-            harness.turns(run.id).await[0].answered_at.is_some(),
+            kestrel.turns(run.id).await[0].answered_at.is_some(),
             "{script:?}"
         );
 
-        harness.teardown().await;
+        kestrel.teardown().await;
     }
 }
 
 #[tokio::test]
 async fn an_agent_that_does_not_answer_acp_v1_fails_the_run_rather_than_being_prompted_anyway() {
-    let (harness, session, run) = worked(Script::Predates).await;
+    let (kestrel, session, run) = worked(Script::Predates).await;
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
@@ -294,19 +294,19 @@ async fn an_agent_that_does_not_answer_acp_v1_fails_the_run_rather_than_being_pr
     };
     assert!(because.contains("v1"), "unhelpful exit status: {because}");
     assert!(
-        !transcript(&harness, &session)
+        !transcript(&kestrel, &session)
             .await
             .iter()
             .any(|entry| entry.starts_with("said")),
         "an agent that was never initialized said something"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_agent_that_can_only_be_logged_into_at_a_terminal_fails_the_run_rather_than_hanging() {
-    let (harness, _, run) = worked(Script::Demands).await;
+    let (kestrel, _, run) = worked(Script::Demands).await;
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
@@ -319,7 +319,7 @@ async fn an_agent_that_can_only_be_logged_into_at_a_terminal_fails_the_run_rathe
         "unhelpful exit status: {because}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// ACP offers a client no way to choose between the login methods an agent advertises, so the
@@ -327,7 +327,7 @@ async fn an_agent_that_can_only_be_logged_into_at_a_terminal_fails_the_run_rathe
 /// given fails the Run rather than leaving it waiting at a login (ADR-0007).
 #[tokio::test]
 async fn an_agent_that_will_not_work_until_it_is_logged_in_fails_the_run_rather_than_hanging() {
-    let (harness, _, run) = worked(Script::Insists).await;
+    let (kestrel, _, run) = worked(Script::Insists).await;
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
@@ -340,7 +340,7 @@ async fn an_agent_that_will_not_work_until_it_is_logged_in_fails_the_run_rather_
         "the run failed without naming what the agent offers to be logged in with: {because}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A model reaches the agent through `session/set_config_option` rather than through what the
@@ -348,78 +348,78 @@ async fn an_agent_that_will_not_work_until_it_is_logged_in_fails_the_run_rather_
 /// Environment has to be believed.
 #[tokio::test]
 async fn the_supervisor_sets_the_model_it_was_given() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, credential) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, credential) = kestrel.dispatch_run(session.id).await;
 
     let mut supervisor = Supervisor::provision_selecting(
-        &harness.link(),
+        &kestrel.link(),
         run.id,
         &credential,
         Script::Speaks,
         OTHER_MODEL,
     );
     supervisor.wait_until_it_says("reported connected").await;
-    harness.start(&run).await;
+    kestrel.start(&run).await;
     supervisor.wait_until_it_says("reported answered").await;
-    harness.stop_run(run.id).await;
+    kestrel.stop_run(run.id).await;
 
-    let ended = harness.run(run.id).await;
+    let ended = kestrel.run(run.id).await;
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert_eq!(ended.worked_model.as_deref(), Some(OTHER_MODEL));
 
     assert!(supervisor.finishes().await.success());
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_run_without_a_model_uses_its_agents_model() {
-    let (harness, _, run) = worked_naming(Script::Speaks, Some(OTHER_MODEL)).await;
+    let (kestrel, _, run) = worked_naming(Script::Speaks, Some(OTHER_MODEL)).await;
 
     assert!(run.model.is_none());
     assert_eq!(run.worked_model.as_deref(), Some(OTHER_MODEL));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The runtime's default is the honest answer for a Run that names no model, and a Run that
 /// could not say which model that was would leave an audit record that says nothing (ADR-0007).
 #[tokio::test]
 async fn a_run_and_its_agent_that_name_no_model_use_the_runtimes_default() {
-    let (harness, _, run) = worked_naming(Script::Speaks, None).await;
+    let (kestrel, _, run) = worked_naming(Script::Speaks, None).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded));
     assert_eq!(run.worked_model.as_deref(), Some(DEFAULT_MODEL));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_run_that_names_no_model_skips_selection_when_its_runtime_offers_none() {
-    let (harness, _, run) = worked_naming(Script::Decides, None).await;
+    let (kestrel, _, run) = worked_naming(Script::Decides, None).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded));
     assert!(run.worked_model.is_none());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn two_runs_in_one_session_can_drive_different_models() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Speaks),
     )
     .await;
-    let session = a_session_naming(&harness, Some(OTHER_MODEL)).await;
+    let session = a_session_naming(&kestrel, Some(OTHER_MODEL)).await;
 
-    let built = harness
+    let built = kestrel
         .enqueue_run_naming(session.id, Some(OTHER_MODEL))
         .await;
-    let built = harness.after_one_turn(built.id).await;
+    let built = kestrel.after_one_turn(built.id).await;
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let reviewed = loop {
-        match harness
+        match kestrel
             .try_enqueue_run_naming(session.id, Some(DEFAULT_MODEL))
             .await
         {
@@ -430,44 +430,44 @@ async fn two_runs_in_one_session_can_drive_different_models() {
             Err(error) => panic!("the session never took its next run: {error}"),
         }
     };
-    let reviewed = harness.after_one_turn(reviewed.id).await;
+    let reviewed = kestrel.after_one_turn(reviewed.id).await;
 
     assert_eq!(built.model.as_deref(), Some(OTHER_MODEL));
     assert_eq!(reviewed.model.as_deref(), Some(DEFAULT_MODEL));
     assert_eq!(built.worked_model.as_deref(), Some(OTHER_MODEL));
     assert_eq!(reviewed.worked_model.as_deref(), Some(DEFAULT_MODEL));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// An Agent's model is configuration rather than a rebuild, and a Run already in flight was
 /// handed the model it was dispatched with.
 #[tokio::test]
 async fn changing_an_agents_model_leaves_a_run_already_in_flight_on_the_one_it_started_on() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Lingers),
     )
     .await;
-    let session = a_session_naming(&harness, Some(OTHER_MODEL)).await;
-    let run = harness.enqueue_run(session.id).await;
-    in_flight(&harness, run.id).await;
+    let session = a_session_naming(&kestrel, Some(OTHER_MODEL)).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    in_flight(&kestrel, run.id).await;
 
-    harness
+    kestrel
         .set_agent_model(&session.organization, "builder", Some(DEFAULT_MODEL))
         .await;
     assert_eq!(
-        harness.run(run.id).await.state,
+        kestrel.run(run.id).await.state,
         RunState::Working,
         "the run was over before its agent's model changed"
     );
 
     assert_eq!(
-        harness.after_one_turn(run.id).await.worked_model.as_deref(),
+        kestrel.after_one_turn(run.id).await.worked_model.as_deref(),
         Some(OTHER_MODEL)
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// Config options are optional and every agent ships a default, so a runtime may let no client
@@ -475,16 +475,16 @@ async fn changing_an_agents_model_leaves_a_run_already_in_flight_on_the_one_it_s
 /// an audit record that lies, which is the worst of the three available outcomes (ADR-0007).
 #[tokio::test]
 async fn an_agent_that_lets_no_client_choose_a_model_fails_a_run_that_named_one() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Decides),
     )
     .await;
-    let session = a_session_naming(&harness, None).await;
-    let run = harness
+    let session = a_session_naming(&kestrel, None).await;
+    let run = kestrel
         .enqueue_run_naming(session.id, Some(OTHER_MODEL))
         .await;
-    let run = harness.after_one_turn(run.id).await;
+    let run = kestrel.after_one_turn(run.id).await;
 
     assert_eq!(run.model.as_deref(), Some(OTHER_MODEL));
 
@@ -499,12 +499,12 @@ async fn an_agent_that_lets_no_client_choose_a_model_fails_a_run_that_named_one(
         "the run failed without explaining why its named model could not be selected: {because}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_model_the_agent_does_not_offer_fails_the_run_rather_than_falling_back_to_a_default() {
-    let (harness, _, run) = worked_naming(Script::Speaks, Some("a-model-no-agent-offers")).await;
+    let (kestrel, _, run) = worked_naming(Script::Speaks, Some("a-model-no-agent-offers")).await;
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
@@ -517,12 +517,12 @@ async fn a_model_the_agent_does_not_offer_fails_the_run_rather_than_falling_back
         "unhelpful exit status: {because}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_agent_that_dies_mid_turn_fails_the_run_rather_than_leaving_it_hanging() {
-    let (harness, _, run) = worked(Script::Dies).await;
+    let (kestrel, _, run) = worked(Script::Dies).await;
 
     assert!(
         matches!(run.exit, Some(Exit::Failed { .. })),
@@ -530,5 +530,5 @@ async fn an_agent_that_dies_mid_turn_fails_the_run_rather_than_leaving_it_hangin
         run.exit
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

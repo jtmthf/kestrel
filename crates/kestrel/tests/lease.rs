@@ -11,13 +11,13 @@ use kestrel::domain::{Exit, Run, RunId, RunState, Session};
 use support::environment::Environment;
 use support::repository;
 use support::scripted_agent::Script;
-use support::{Harness, scripted_agent, supervisor};
+use support::{Kestrel, scripted_agent, supervisor};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
-async fn a_session(harness: &Harness) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session(kestrel: &Kestrel) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             repository::NAME,
@@ -25,7 +25,7 @@ async fn a_session(harness: &Harness) -> Session {
             repository::BRANCH,
         )
         .await;
-    harness
+    kestrel
         .declare_agent(
             &organization,
             "builder",
@@ -34,7 +34,7 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
 
-    harness
+    kestrel
         .hold_provider_credential(
             &organization,
             support::PROVIDER_KEY,
@@ -42,14 +42,14 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
 
-    harness.open_session("acme", "kestrel", "builder").await
+    kestrel.open_session("acme", "kestrel", "builder").await
 }
 
-async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
+async fn until(kestrel: &Kestrel, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let run = harness.run(run).await;
+        let run = kestrel.run(run).await;
         if ready(&run) {
             return run;
         }
@@ -64,8 +64,8 @@ async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -
     }
 }
 
-async fn swept(harness: &Harness, run: RunId) -> String {
-    let ended = until(harness, run, "ended", |run| run.state == RunState::Ended).await;
+async fn swept(kestrel: &Kestrel, run: RunId) -> String {
+    let ended = until(kestrel, run, "ended", |run| run.state == RunState::Ended).await;
 
     let Some(Exit::Failed { because }) = ended.exit else {
         panic!(
@@ -97,33 +97,33 @@ fn shortened() -> Timestamp {
 
 #[tokio::test]
 async fn a_run_holds_a_lease_from_the_moment_it_is_claimed() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
 
-    let queued = harness.enqueue_run(session.id).await;
+    let queued = kestrel.enqueue_run(session.id).await;
     assert!(queued.lease_expires_at.is_none());
 
-    let claimed = harness.claim_run().await.expect("a run to claim").run;
+    let claimed = kestrel.claim_run().await.expect("a run to claim").run;
     assert_eq!(claimed.id, queued.id);
     assert!(
         claimed.lease_expires_at > Some(Timestamp::now()),
         "a claimed run holds no lease"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_lease_nothing_holds_out_ends_its_run_failed() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, _) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(session.id).await;
 
-    harness.lease_until(&run, a_moment_ago()).await;
+    kestrel.lease_until(&run, a_moment_ago()).await;
 
-    let because = swept(&harness, run.id).await;
+    let because = swept(&kestrel, run.id).await;
     assert_eq!(
-        harness
+        kestrel
             .transcript(session.id)
             .await
             .last()
@@ -133,113 +133,113 @@ async fn a_lease_nothing_holds_out_ends_its_run_failed() {
         format!("run ended  {}  failed: {because}", run.id)
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_lease_that_expires_leaves_its_session_no_active_run() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, _) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(session.id).await;
 
-    harness.lease_until(&run, a_moment_ago()).await;
-    swept(&harness, run.id).await;
+    kestrel.lease_until(&run, a_moment_ago()).await;
+    swept(&kestrel, run.id).await;
 
     assert!(
-        harness
+        kestrel
             .runs(session.id)
             .await
             .iter()
             .all(|run| run.state != RunState::Working),
         "a session whose run's lease expired still has an active run"
     );
-    let next = harness.enqueue_run(session.id).await;
+    let next = kestrel.enqueue_run(session.id).await;
     assert_eq!(
-        harness.claim_run().await.map(|claimed| claimed.run.id),
+        kestrel.claim_run().await.map(|claimed| claimed.run.id),
         Some(next.id),
         "the run after the one that expired was not dispatched"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn one_parallel_runs_expired_lease_leaves_the_other_run_active() {
-    let harness = Harness::dispatching_up_to(
+    let kestrel = Kestrel::dispatching_up_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Dawdles),
         2,
     )
     .await;
-    let first_session = a_session(&harness).await;
-    let second_session = harness.open_session("acme", "kestrel", "builder").await;
-    let first = harness.enqueue_run(first_session.id).await;
-    let second = harness.enqueue_run(second_session.id).await;
-    let first = until(&harness, first.id, "started", |run| {
+    let first_session = a_session(&kestrel).await;
+    let second_session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let first = kestrel.enqueue_run(first_session.id).await;
+    let second = kestrel.enqueue_run(second_session.id).await;
+    let first = until(&kestrel, first.id, "started", |run| {
         run.started_at.is_some()
     })
     .await;
-    until(&harness, second.id, "started", |run| {
+    until(&kestrel, second.id, "started", |run| {
         run.started_at.is_some()
     })
     .await;
 
-    harness.lease_until(&first, a_moment_ago()).await;
-    swept(&harness, first.id).await;
+    kestrel.lease_until(&first, a_moment_ago()).await;
+    swept(&kestrel, first.id).await;
 
-    assert_eq!(harness.run(second.id).await.state, RunState::Working);
+    assert_eq!(kestrel.run(second.id).await.state, RunState::Working);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_run_failed_by_lease_expiry_is_never_dispatched_again() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, _) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(session.id).await;
 
-    harness.lease_until(&run, a_moment_ago()).await;
-    swept(&harness, run.id).await;
+    kestrel.lease_until(&run, a_moment_ago()).await;
+    swept(&kestrel, run.id).await;
 
     assert!(
-        harness.claim_run().await.is_none(),
+        kestrel.claim_run().await.is_none(),
         "a run failed by its lease expiring was handed out to be dispatched again"
     );
-    assert_eq!(harness.run(run.id).await.state, RunState::Ended);
+    assert_eq!(kestrel.run(run.id).await.state, RunState::Ended);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_due_time_survives_a_control_plane_restart_and_fires_after_it() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, _) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(session.id).await;
 
-    let stopped = harness.kill().await;
+    let stopped = kestrel.kill().await;
     stopped.lease_until(&run, a_moment_ago()).await;
-    let harness = stopped.restart().await;
+    let kestrel = stopped.restart().await;
 
-    swept(&harness, run.id).await;
+    swept(&kestrel, run.id).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_supervisor_holds_its_runs_lease_out_for_the_life_of_the_run() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Dawdles),
     )
     .await;
-    let session = a_session(&harness).await;
-    let run = harness.enqueue_run(session.id).await;
+    let session = a_session(&kestrel).await;
+    let run = kestrel.enqueue_run(session.id).await;
 
-    let working = until(&harness, run.id, "started", |run| run.started_at.is_some()).await;
+    let working = until(&kestrel, run.id, "started", |run| run.started_at.is_some()).await;
     let shortened = shortened();
-    harness.lease_until(&working, shortened).await;
+    kestrel.lease_until(&working, shortened).await;
 
-    let held = until(&harness, run.id, "had its lease held out", |run| {
+    let held = until(&kestrel, run.id, "had its lease held out", |run| {
         run.lease_expires_at > Some(shortened)
     })
     .await;
@@ -247,12 +247,12 @@ async fn a_supervisor_holds_its_runs_lease_out_for_the_life_of_the_run() {
 
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert_eq!(
-        harness.run(run.id).await.state,
+        kestrel.run(run.id).await.state,
         RunState::Working,
         "a run whose supervisor is alive was swept anyway"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[cfg(unix)]
@@ -264,24 +264,24 @@ async fn a_supervisor_that_dies_mid_run_stops_holding_the_lease_out_and_the_run_
         "\"{}\" &\nsupervisor=$!\nsleep 3\nkill -9 $supervisor\nsleep 60",
         supervisor::binary().display()
     ));
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         environment.path(),
         &scripted_agent::playing(Script::Dawdles),
     )
     .await;
-    let session = a_session(&harness).await;
-    let run = harness.enqueue_run(session.id).await;
+    let session = a_session(&kestrel).await;
+    let run = kestrel.enqueue_run(session.id).await;
 
-    let working = until(&harness, run.id, "started", |run| run.started_at.is_some()).await;
+    let working = until(&kestrel, run.id, "started", |run| run.started_at.is_some()).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     // The same lease the script above outlives: a supervisor still alive holds one out well
     // inside this, so what ends this Run is the supervisor being gone.
-    harness.lease_until(&working, shortened()).await;
+    kestrel.lease_until(&working, shortened()).await;
 
-    swept(&harness, run.id).await;
+    swept(&kestrel, run.id).await;
     Environment::named(working.supervisor.as_deref().expect("a supervisor"))
         .is_gone()
         .await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

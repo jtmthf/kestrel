@@ -13,7 +13,7 @@ use std::time::Duration;
 use kestrel::domain::{Exit, Run, RunState, Session};
 use kestrel::log;
 use kestrel::profile::{Contents, Entry};
-use support::Harness;
+use support::Kestrel;
 use support::image::{self, Container};
 
 const PATIENCE: Duration = Duration::from_secs(300);
@@ -113,30 +113,30 @@ async fn claude_answers_on_a_claude_plan_token_before_and_after_a_restart() {
     .await;
 }
 
-/// The login is handed back and the harness torn down before anything is asserted, so a
+/// The login is handed back and the fixture torn down before anything is asserted, so a
 /// failing smoke still leaves the person's login where it found it.
 async fn smoke(subject: Subject) {
-    let harness = Harness::dispatching_runtimes_in(
+    let kestrel = Kestrel::dispatching_runtimes_in(
         image::development(),
         &[(subject.runtime, subject.command)],
     )
     .await;
-    declared(&harness, &subject).await;
+    declared(&kestrel, &subject).await;
 
-    let first = attempt(&harness, &subject, Round::BeforeTheRestart).await;
-    let (harness, second) = match &first {
+    let first = attempt(&kestrel, &subject, Round::BeforeTheRestart).await;
+    let (kestrel, second) = match &first {
         Ok(run) => {
-            let harness = harness.kill_and_restart().await;
+            let kestrel = kestrel.kill_and_restart().await;
             if let Some(instance) = &run.instance {
                 Container::named(instance).destroy();
             }
-            let second = attempt(&harness, &subject, Round::AfterTheRestart).await;
-            (harness, Some(second))
+            let second = attempt(&kestrel, &subject, Round::AfterTheRestart).await;
+            (kestrel, Some(second))
         }
-        Err(_) => (harness, None),
+        Err(_) => (kestrel, None),
     };
-    handed_back(&harness, &subject).await;
-    harness.teardown().await;
+    handed_back(&kestrel, &subject).await;
+    kestrel.teardown().await;
 
     let runtime = subject.runtime;
     let first = first.unwrap_or_else(|failure| panic!("{runtime} {failure}"));
@@ -149,12 +149,12 @@ async fn smoke(subject: Subject) {
     );
 }
 
-async fn declared(harness: &Harness, subject: &Subject) {
-    let organization = harness.declare_organization(ORGANIZATION).await;
-    harness
+async fn declared(kestrel: &Kestrel, subject: &Subject) {
+    let organization = kestrel.declare_organization(ORGANIZATION).await;
+    kestrel
         .declare_project(&organization, PROJECT, &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(
             &organization,
             AGENT,
@@ -162,33 +162,33 @@ async fn declared(harness: &Harness, subject: &Subject) {
             subject.model.as_deref(),
         )
         .await;
-    harness
+    kestrel
         .declare_profile(ORGANIZATION, PROFILE, "smoke")
         .await
         .expect("the profile should declare");
     for (name, value) in &subject.variables {
         let entry = Entry::variable(name).expect("a variable");
-        harness
+        kestrel
             .hold_in_profile(ORGANIZATION, PROFILE, &entry, value)
             .await;
     }
     for login in &subject.files {
         let entry = Entry::file(login.path).expect("a file");
-        harness
+        kestrel
             .hold_in_profile(ORGANIZATION, PROFILE, &entry, &login.as_read)
             .await;
     }
 }
 
-async fn attempt(harness: &Harness, subject: &Subject, round: Round) -> Result<Run, Failure> {
-    let session = harness
+async fn attempt(kestrel: &Kestrel, subject: &Subject, round: Round) -> Result<Run, Failure> {
+    let session = kestrel
         .open_session_with(ORGANIZATION, PROJECT, AGENT, PROFILE)
         .await;
-    let run = harness.post(session.id, "operator", PROMPT).await;
-    let (run, answered) = settled(harness, run).await;
-    let said = said_by_the_agent(harness, &session).await;
+    let run = kestrel.post(session.id, "operator", PROMPT).await;
+    let (run, answered) = settled(kestrel, run).await;
+    let said = said_by_the_agent(kestrel, &session).await;
     if run.state != RunState::Ended {
-        harness.stop_run(run.id).await;
+        kestrel.stop_run(run.id).await;
     }
 
     let failed = match &run.exit {
@@ -211,21 +211,21 @@ async fn attempt(harness: &Harness, subject: &Subject, round: Round) -> Result<R
     Err(Failure {
         round,
         problem: diagnosed(round, answered, &evidence),
-        evidence: secrets(harness, subject).await.redacted(&evidence),
+        evidence: secrets(kestrel, subject).await.redacted(&evidence),
     })
 }
 
 /// Waited for without panicking, because a smoke that times out still hands its login back.
-async fn settled(harness: &Harness, run: Run) -> (Run, bool) {
+async fn settled(kestrel: &Kestrel, run: Run) -> (Run, bool) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let answered = harness
+        let answered = kestrel
             .turns(run.id)
             .await
             .iter()
             .any(|turn| turn.answered_at.is_some());
-        let run = harness.run(run.id).await;
+        let run = kestrel.run(run.id).await;
         if answered || run.state == RunState::Ended || tokio::time::Instant::now() >= deadline {
             return (run, answered);
         }
@@ -233,8 +233,8 @@ async fn settled(harness: &Harness, run: Run) -> (Run, bool) {
     }
 }
 
-async fn said_by_the_agent(harness: &Harness, session: &Session) -> String {
-    harness
+async fn said_by_the_agent(kestrel: &Kestrel, session: &Session) -> String {
+    kestrel
         .transcript(session.id)
         .await
         .into_iter()
@@ -251,8 +251,8 @@ async fn said_by_the_agent(harness: &Harness, session: &Session) -> String {
 
 /// Everything the profile held and holds now, because a login refreshed mid-smoke is as much a
 /// secret as the one it replaced.
-async fn held_now(harness: &Harness) -> Contents {
-    let profile = harness
+async fn held_now(kestrel: &Kestrel) -> Contents {
+    let profile = kestrel
         .profiles(ORGANIZATION)
         .await
         .into_iter()
@@ -260,11 +260,11 @@ async fn held_now(harness: &Harness) -> Contents {
         .find(|profile| profile.name == PROFILE)
         .expect("the smoke's profile");
 
-    harness.profile_contents(&profile).await
+    kestrel.profile_contents(&profile).await
 }
 
-async fn secrets(harness: &Harness, subject: &Subject) -> Secrets {
-    let now = held_now(harness).await;
+async fn secrets(kestrel: &Kestrel, subject: &Subject) -> Secrets {
+    let now = held_now(kestrel).await;
     let held = subject
         .variables
         .iter()
@@ -276,8 +276,8 @@ async fn secrets(harness: &Harness, subject: &Subject) -> Secrets {
     Secrets::of(&held.collect::<Vec<_>>())
 }
 
-async fn handed_back(harness: &Harness, subject: &Subject) {
-    let now = held_now(harness).await;
+async fn handed_back(kestrel: &Kestrel, subject: &Subject) {
+    let now = held_now(kestrel).await;
 
     for login in &subject.files {
         let Some(refreshed) = now.files.get(login.path) else {

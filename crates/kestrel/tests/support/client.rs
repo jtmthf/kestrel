@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use tempfile::TempDir;
 
-use super::{Harness, built};
+use super::{Kestrel, built};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
@@ -262,8 +262,8 @@ pub fn ran_as(control_plane: &str, args: &[&str], invocation: Invocation) -> Fin
 }
 
 /// Runs off the async runtime, so a test can await it beside the control plane it addresses.
-pub async fn ran_by(harness: &Harness, args: &[&str], invocation: Invocation) -> Finished {
-    let operator = harness.operator();
+pub async fn ran_by(kestrel: &Kestrel, args: &[&str], invocation: Invocation) -> Finished {
+    let operator = kestrel.operator();
     let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
 
     tokio::task::spawn_blocking(move || {
@@ -347,12 +347,12 @@ pub fn ran_on_a_terminal_as(
 }
 
 pub async fn ran_on_a_terminal_by(
-    harness: &Harness,
+    kestrel: &Kestrel,
     args: &[&str],
     invocation: Invocation,
     typed: &str,
 ) -> Shown {
-    let operator = harness.operator();
+    let operator = kestrel.operator();
     let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
     let typed = typed.to_owned();
 

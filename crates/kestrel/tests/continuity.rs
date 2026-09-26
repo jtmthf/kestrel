@@ -11,13 +11,13 @@ use kestrel::log::Entry;
 use kestrel_scripted_agent::conversed;
 use support::environment::Environment;
 use support::scripted_agent::{self, Script};
-use support::{Harness, repository, supervisor};
+use support::{Kestrel, repository, supervisor};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
-async fn a_session(harness: &Harness) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session(kestrel: &Kestrel) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             repository::NAME,
@@ -25,10 +25,10 @@ async fn a_session(harness: &Harness) -> Session {
             repository::BRANCH,
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", support::RUNTIME, None)
         .await;
-    harness
+    kestrel
         .hold_provider_credential(
             &organization,
             support::PROVIDER_KEY,
@@ -36,11 +36,11 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
 
-    harness.open_session("acme", "kestrel", "builder").await
+    kestrel.open_session("acme", "kestrel", "builder").await
 }
 
-async fn said(harness: &Harness, session: SessionId) -> Vec<String> {
-    harness
+async fn said(kestrel: &Kestrel, session: SessionId) -> Vec<String> {
+    kestrel
         .transcript(session)
         .await
         .into_iter()
@@ -58,26 +58,26 @@ async fn said(harness: &Harness, session: SessionId) -> Vec<String> {
 /// disk, so an answer that remembers the first prompt came from the same conversation.
 #[tokio::test]
 async fn an_agent_that_can_load_its_session_is_brought_back_into_the_same_conversation() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Revives),
     )
     .await;
-    let session = a_session(&harness).await;
-    let run = harness
+    let session = a_session(&kestrel).await;
+    let run = kestrel
         .post(session.id, "operator", "the first thing to do")
         .await;
-    harness.answered(run.id, 1).await;
+    kestrel.answered(run.id, 1).await;
 
-    harness
+    kestrel
         .post_while_busy(session.id, "operator", "the second thing to do")
         .await
         .expect("a waiting run takes the message as its next prompt");
-    let answered = harness.answered(run.id, 2).await;
+    let answered = kestrel.answered(run.id, 2).await;
 
     assert_eq!(answered.state, RunState::Waiting, "{:?}", answered.exit);
-    assert_eq!(harness.runs(session.id).await.len(), 1);
-    let said = said(&harness, session.id).await;
+    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    let said = said(&kestrel, session.id).await;
     let [first, second] = said.as_slice() else {
         panic!("the agent answered other than twice, or its replay was said again: {said:?}");
     };
@@ -87,8 +87,8 @@ async fn an_agent_that_can_load_its_session_is_brought_back_into_the_same_conver
         "the recovered conversation does not remember the first prompt: {second}"
     );
 
-    harness.stop_run(run.id).await;
-    harness.teardown().await;
+    kestrel.stop_run(run.id).await;
+    kestrel.teardown().await;
 }
 
 /// Stands in for the Agent Runtime: leaves a line in the checkout each time it starts, then
@@ -106,17 +106,17 @@ fn vanishing() -> Environment {
 #[tokio::test]
 async fn an_agent_lost_while_waiting_fails_the_run_and_the_next_run_takes_up_its_checkout() {
     let runtime = vanishing();
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &format!("\"{}\"", runtime.path().display()),
     )
     .await;
-    let session = a_session(&harness).await;
-    let lost = harness.post(session.id, "operator", "start").await;
+    let session = a_session(&kestrel).await;
+    let lost = kestrel.post(session.id, "operator", "start").await;
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let lost = loop {
-        let run = harness.run(lost.id).await;
+        let run = kestrel.run(lost.id).await;
         if run.state == RunState::Ended {
             break run;
         }
@@ -135,20 +135,20 @@ async fn an_agent_lost_while_waiting_fails_the_run_and_the_next_run_takes_up_its
         because.contains("process was lost") && because.contains("cannot resume"),
         "unhelpful exit status: {because}"
     );
-    assert!(harness.turns(lost.id).await[0].answered_at.is_some());
+    assert!(kestrel.turns(lost.id).await[0].answered_at.is_some());
     assert_eq!(
-        harness.show_session(session.id).await.state,
+        kestrel.show_session(session.id).await.state,
         SessionState::Open
     );
     let instance = lost.instance.clone().expect("an instance");
-    assert_eq!(harness.instance(session.id).await, Some(instance.clone()));
+    assert_eq!(kestrel.instance(session.id).await, Some(instance.clone()));
 
-    harness
+    kestrel
         .post_while_busy(session.id, "operator", "pick it back up")
         .await;
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let next = loop {
-        if let Some(next) = harness
+        if let Some(next) = kestrel
             .runs(session.id)
             .await
             .into_iter()
@@ -162,9 +162,9 @@ async fn an_agent_lost_while_waiting_fails_the_run_and_the_next_run_takes_up_its
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
-    harness.answered(next.id, 1).await;
+    kestrel.answered(next.id, 1).await;
 
-    assert_eq!(harness.run(next.id).await.instance, Some(instance.clone()));
+    assert_eq!(kestrel.run(next.id).await.instance, Some(instance.clone()));
     let notes = std::fs::read_to_string(
         Environment::workspace_of(&instance)
             .join(repository::NAME)
@@ -173,5 +173,5 @@ async fn an_agent_lost_while_waiting_fails_the_run_and_the_next_run_takes_up_its
     .expect("the checkout the first run left");
     assert_eq!(notes.lines().count(), 2, "{notes}");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

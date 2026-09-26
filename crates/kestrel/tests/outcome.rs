@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use jiff::SignedDuration;
 use kestrel::domain::{Direction, Exit, Run, Session};
-use support::Harness;
+use support::Kestrel;
 use support::github_stub::{self, GithubStub, RecordedRequest, ScriptedResponse};
 
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -28,9 +28,9 @@ fn eagerly() -> SignedDuration {
 
 /// The Trigger comes before the poll: an Event recorded before the Trigger was declared fires
 /// nothing.
-async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn watching(kestrel: &Kestrel, stub: &GithubStub, carries: &[Direction]) {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -38,10 +38,10 @@ async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    harness
+    kestrel
         .declare_trigger(
             "acme",
             "ready",
@@ -50,7 +50,7 @@ async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
             "builder",
         )
         .await;
-    harness
+    kestrel
         .register_integration(
             "acme",
             "github",
@@ -63,12 +63,12 @@ async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
 }
 
 /// The Session a label opened, with its queued Run claimed the way a work role would claim it.
-async fn working(harness: &Harness) -> (Session, Run) {
+async fn working(kestrel: &Kestrel) -> (Session, Run) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        if let Some(session) = harness.sessions("acme").await.into_iter().next()
-            && let Some(claimed) = harness.claim_run().await
+        if let Some(session) = kestrel.sessions("acme").await.into_iter().next()
+            && let Some(claimed) = kestrel.claim_run().await
         {
             return (session, claimed.run);
         }
@@ -130,14 +130,14 @@ async fn a_run_that_completes_says_so_on_the_issue_that_started_it() {
     let stub = GithubStub::start();
     labelled(&stub);
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    let (session, run) = working(&harness).await;
-    harness
+    let (session, run) = working(&kestrel).await;
+    kestrel
         .said(&run, "Opened https://github.com/jtmthf/kestrel/pull/92.")
         .await;
-    harness.complete_run(&run).await;
+    kestrel.complete_run(&run).await;
 
     let comment = commented(&stub).await;
     let body = said(&comment);
@@ -150,7 +150,7 @@ async fn a_run_that_completes_says_so_on_the_issue_that_started_it() {
     assert!(body.contains(&session.id.to_string()), "{body}");
     assert!(body.contains(&run.id.to_string()), "{body}");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The Organization's credential, presented by the Integration that carried the Event in.
@@ -159,11 +159,11 @@ async fn the_comment_is_posted_with_the_integrations_credential() {
     let stub = GithubStub::start();
     labelled(&stub);
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    let (_, run) = working(&harness).await;
-    harness.complete_run(&run).await;
+    let (_, run) = working(&kestrel).await;
+    kestrel.complete_run(&run).await;
 
     let comment = commented(&stub).await;
 
@@ -177,7 +177,7 @@ async fn the_comment_is_posted_with_the_integrations_credential() {
         comment.headers
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -185,11 +185,11 @@ async fn a_run_that_fails_says_that_it_failed_and_why() {
     let stub = GithubStub::start();
     labelled(&stub);
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    let (_, run) = working(&harness).await;
-    harness
+    let (_, run) = working(&kestrel).await;
+    kestrel
         .fail_run(&run, "the environment could not be provisioned")
         .await;
 
@@ -201,7 +201,7 @@ async fn a_run_that_fails_says_that_it_failed_and_why() {
         "{body}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -209,11 +209,11 @@ async fn one_run_leaves_exactly_one_comment() {
     let stub = GithubStub::start();
     labelled(&stub);
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    let (_, run) = working(&harness).await;
-    harness.complete_run(&run).await;
+    let (_, run) = working(&kestrel).await;
+    kestrel.complete_run(&run).await;
     commented(&stub).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -223,7 +223,7 @@ async fn one_run_leaves_exactly_one_comment() {
         "one run said itself out loud more than once"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A control plane that dies between sending the comment and learning what became of it comes
@@ -234,14 +234,14 @@ async fn a_comment_that_landed_while_the_control_plane_died_is_not_posted_twice(
     let stub = GithubStub::start();
     labelled(&stub);
     stub.script_answer("POST", COMMENTS, ScriptedResponse::answering(502));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    let (_, run) = working(&harness).await;
-    harness.complete_run(&run).await;
+    let (_, run) = working(&kestrel).await;
+    kestrel.complete_run(&run).await;
     let landed = said(&commented(&stub).await);
 
-    let harness = harness.kill_and_restart().await;
+    let kestrel = kestrel.kill_and_restart().await;
     stub.script_answer(
         "GET",
         COMMENTS,
@@ -255,7 +255,7 @@ async fn a_comment_that_landed_while_the_control_plane_died_is_not_posted_twice(
         "the comment already on the issue was posted again after the restart"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A refusal is not a failure of the work: the Run's exit status was decided before anything
@@ -267,11 +267,11 @@ async fn a_comment_that_is_refused_is_tried_again_and_leaves_the_run_as_it_was()
     stub.script_answer("POST", COMMENTS, ScriptedResponse::answering(500));
     stub.script_answer("GET", COMMENTS, github_stub::page(&[]));
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    let (_, run) = working(&harness).await;
-    harness.complete_run(&run).await;
+    let (_, run) = working(&kestrel).await;
+    kestrel.complete_run(&run).await;
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
     while comments_on_the_issue(&stub).len() < 2 {
@@ -283,49 +283,49 @@ async fn a_comment_that_is_refused_is_tried_again_and_leaves_the_run_as_it_was()
     }
 
     assert_eq!(
-        harness.run(run.id).await.exit,
+        kestrel.run(run.id).await.exit,
         Some(Exit::Succeeded),
         "a comment that could not be posted changed how the run ended"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_session_no_event_started_says_nothing_and_that_is_not_an_error() {
     let stub = GithubStub::start();
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    let session = harness.open_session("acme", "kestrel", "builder").await;
-    let (run, _) = harness.dispatch_run(session.id).await;
-    harness.complete_run(&run).await;
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let (run, _) = kestrel.dispatch_run(session.id).await;
+    kestrel.complete_run(&run).await;
 
     nothing_is_said(&stub).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_later_runs_outcome_does_not_reuse_an_earlier_runs_message() {
     let stub = GithubStub::start();
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    let session = harness.open_session("acme", "kestrel", "builder").await;
-    let (first, _) = harness.dispatch_run(session.id).await;
-    harness
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let (first, _) = kestrel.dispatch_run(session.id).await;
+    kestrel
         .said(&first, "The first investigation finished.")
         .await;
-    harness.complete_run(&first).await;
+    kestrel.complete_run(&first).await;
     assert_eq!(
-        harness.run(first.id).await.outcome_message.as_deref(),
+        kestrel.run(first.id).await.outcome_message.as_deref(),
         Some("The first investigation finished.")
     );
 
-    let second = harness.enqueue_run(session.id).await;
-    harness.fail_run(&second, "the environment stopped").await;
-    let ended = harness.run(second.id).await;
+    let second = kestrel.enqueue_run(session.id).await;
+    kestrel.fail_run(&second, "the environment stopped").await;
+    let ended = kestrel.run(second.id).await;
     assert_eq!(
         ended.exit,
         Some(Exit::Failed {
@@ -334,7 +334,7 @@ async fn a_later_runs_outcome_does_not_reuse_an_earlier_runs_message() {
     );
     assert_eq!(ended.outcome_message, None);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The direction an Integration declares is what it does, rather than a label beside it.
@@ -342,13 +342,13 @@ async fn a_later_runs_outcome_does_not_reuse_an_earlier_runs_message() {
 async fn an_integration_that_carries_only_inbound_says_nothing() {
     let stub = GithubStub::start();
     labelled(&stub);
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, INBOUND).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, INBOUND).await;
 
-    let (_, run) = working(&harness).await;
-    harness.complete_run(&run).await;
+    let (_, run) = working(&kestrel).await;
+    kestrel.complete_run(&run).await;
 
     nothing_is_said(&stub).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

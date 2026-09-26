@@ -12,7 +12,7 @@ use kestrel::link::credential::Secret;
 use kestrel::work::{Report, Reported};
 use reqwest::StatusCode;
 use serde_json::json;
-use support::Harness;
+use support::Kestrel;
 use support::link_client::Link;
 use support::scripted_agent::Script;
 use support::supervisor::Supervisor;
@@ -20,23 +20,23 @@ use support::supervisor::Supervisor;
 const PATIENCE: Duration = Duration::from_secs(30);
 const LONG_ENOUGH_TO_BE_SURE: Duration = Duration::from_secs(1);
 
-async fn a_session(harness: &Harness) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session(kestrel: &Kestrel) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 
-    harness.open_session("acme", "kestrel", "builder").await
+    kestrel.open_session("acme", "kestrel", "builder").await
 }
 
-async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
+async fn until(kestrel: &Kestrel, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let run = harness.run(run).await;
+        let run = kestrel.run(run).await;
         if ready(&run) {
             return run;
         }
@@ -51,8 +51,8 @@ async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -
     }
 }
 
-async fn transcript(harness: &Harness, session: &Session) -> Vec<String> {
-    harness
+async fn transcript(kestrel: &Kestrel, session: &Session) -> Vec<String> {
+    kestrel
         .transcript(session.id)
         .await
         .iter()
@@ -60,13 +60,13 @@ async fn transcript(harness: &Harness, session: &Session) -> Vec<String> {
         .collect()
 }
 
-async fn working(harness: &Harness, session: &Session, script: Script) -> (Run, Supervisor) {
-    let (run, credential) = harness.dispatch_run(session.id).await;
+async fn working(kestrel: &Kestrel, session: &Session, script: Script) -> (Run, Supervisor) {
+    let (run, credential) = kestrel.dispatch_run(session.id).await;
     let mut supervisor =
-        Supervisor::provision_playing(&harness.link(), run.id, &credential, script);
+        Supervisor::provision_playing(&kestrel.link(), run.id, &credential, script);
 
     supervisor.wait_until_it_says("reported connected").await;
-    harness.start(&run).await;
+    kestrel.start(&run).await;
     supervisor.wait_until_it_says("reported started").await;
 
     (run, supervisor)
@@ -74,12 +74,12 @@ async fn working(harness: &Harness, session: &Session, script: Script) -> (Run, 
 
 /// Killed while the agent is still working at its turn, and left down until the Environment
 /// has something to say and finds nothing there to say it to.
-async fn killed_mid_run() -> (Harness, Session, Run, Supervisor) {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, mut supervisor) = working(&harness, &session, Script::Lingers).await;
+async fn killed_mid_run() -> (Kestrel, Session, Run, Supervisor) {
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, mut supervisor) = working(&kestrel, &session, Script::Lingers).await;
 
-    let stopped = harness.kill().await;
+    let stopped = kestrel.kill().await;
     supervisor.wait_until_it_says("lost the link").await;
 
     (stopped.restart().await, session, run, supervisor)
@@ -87,22 +87,22 @@ async fn killed_mid_run() -> (Harness, Session, Run, Supervisor) {
 
 #[tokio::test]
 async fn a_turn_in_flight_when_the_control_plane_is_killed_is_answered_after_it_restarts() {
-    let (harness, _, run, supervisor) = killed_mid_run().await;
+    let (kestrel, _, run, supervisor) = killed_mid_run().await;
 
-    let ended = harness.after_one_turn(run.id).await;
+    let ended = kestrel.after_one_turn(run.id).await;
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert!(supervisor.finishes().await.success());
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_transcript_of_a_run_that_outlived_a_restart_has_no_gap_and_no_duplicate() {
-    let (harness, session, run, supervisor) = killed_mid_run().await;
-    harness.after_one_turn(run.id).await;
+    let (kestrel, session, run, supervisor) = killed_mid_run().await;
+    kestrel.after_one_turn(run.id).await;
 
     assert_eq!(
-        transcript(&harness, &session).await,
+        transcript(&kestrel, &session).await,
         vec![
             "participant joined  builder".to_owned(),
             format!("run started  {}", run.id),
@@ -112,7 +112,7 @@ async fn the_transcript_of_a_run_that_outlived_a_restart_has_no_gap_and_no_dupli
         ]
     );
     assert_eq!(
-        harness
+        kestrel
             .transcript(session.id)
             .await
             .iter()
@@ -122,22 +122,22 @@ async fn the_transcript_of_a_run_that_outlived_a_restart_has_no_gap_and_no_dupli
     );
 
     assert!(supervisor.finishes().await.success());
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_environment_comes_back_on_its_own_carrying_the_cursor_it_held() {
-    let (harness, _, run, mut supervisor) = killed_mid_run().await;
+    let (kestrel, _, run, mut supervisor) = killed_mid_run().await;
 
     supervisor.wait_until_it_says("link open after").await;
 
     assert!(
-        harness.run(run.id).await.connected.is_some(),
+        kestrel.run(run.id).await.connected.is_some(),
         "the control plane that came back does not know an environment is on the link"
     );
-    harness.after_one_turn(run.id).await;
+    kestrel.after_one_turn(run.id).await;
     assert!(supervisor.finishes().await.success());
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A lease due sooner than a real one, and further off than the Environment's next heartbeat.
@@ -149,70 +149,70 @@ fn shortened() -> Timestamp {
 /// that reaps it is observably the same sweep that left the live one alone.
 #[tokio::test]
 async fn a_lease_is_not_swept_while_the_environment_that_holds_it_out_is_reconnecting() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, supervisor) = working(&harness, &session, Script::Dawdles).await;
-    let (abandoned, _) = harness
-        .dispatch_run(harness.open_session("acme", "kestrel", "builder").await.id)
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, supervisor) = working(&kestrel, &session, Script::Dawdles).await;
+    let (abandoned, _) = kestrel
+        .dispatch_run(kestrel.open_session("acme", "kestrel", "builder").await.id)
         .await;
 
-    let stopped = harness.kill().await;
+    let stopped = kestrel.kill().await;
     let shortened = shortened();
     stopped.lease_until(&run, shortened).await;
     stopped
         .lease_until(&abandoned, Timestamp::now() - SignedDuration::from_secs(1))
         .await;
-    let harness = stopped.restart().await;
+    let kestrel = stopped.restart().await;
 
-    until(&harness, abandoned.id, "was swept", |run| {
+    until(&kestrel, abandoned.id, "was swept", |run| {
         run.state == RunState::Ended
     })
     .await;
     assert_eq!(
-        harness.run(run.id).await.state,
+        kestrel.run(run.id).await.state,
         RunState::Working,
         "the sweep that reaped the expired lease took the live one with it"
     );
 
-    let held = until(&harness, run.id, "had its lease held out again", |run| {
+    let held = until(&kestrel, run.id, "had its lease held out again", |run| {
         run.lease_expires_at > Some(shortened)
     })
     .await;
     assert_eq!(held.state, RunState::Working);
 
     supervisor.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn restarting_with_no_run_in_flight_changes_nothing() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, _) = harness.dispatch_run(session.id).await;
-    harness.complete_run(&run).await;
-    let before = transcript(&harness, &session).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(session.id).await;
+    kestrel.complete_run(&run).await;
+    let before = transcript(&kestrel, &session).await;
 
-    let harness = harness.kill_and_restart().await;
+    let kestrel = kestrel.kill_and_restart().await;
     tokio::time::sleep(LONG_ENOUGH_TO_BE_SURE).await;
 
-    assert_eq!(transcript(&harness, &session).await, before);
-    assert_eq!(harness.run(run.id).await.exit, Some(Exit::Succeeded));
-    assert_eq!(harness.runs(session.id).await.len(), 1);
+    assert_eq!(transcript(&kestrel, &session).await, before);
+    assert_eq!(kestrel.run(run.id).await.exit, Some(Exit::Succeeded));
+    assert_eq!(kestrel.runs(session.id).await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
-async fn a_run(harness: &Harness) -> (Run, Secret) {
-    let session = a_session(harness).await;
+async fn a_run(kestrel: &Kestrel) -> (Run, Secret) {
+    let session = a_session(kestrel).await;
 
-    harness.dispatch_run(session.id).await
+    kestrel.dispatch_run(session.id).await
 }
 
 #[tokio::test]
 async fn a_report_whose_answer_never_arrived_is_taken_once_when_it_is_sent_again() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
+    let link = Link::to(&kestrel.link());
     let said = Reported {
         seq: Some(1),
         report: Report::Said {
@@ -228,7 +228,7 @@ async fn a_report_whose_answer_never_arrived_is_taken_once_when_it_is_sent_again
     }
 
     assert_eq!(
-        harness
+        kestrel
             .transcript(run.session)
             .await
             .iter()
@@ -240,14 +240,14 @@ async fn a_report_whose_answer_never_arrived_is_taken_once_when_it_is_sent_again
         1
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_report_that_skips_one_the_environment_has_yet_to_send_is_refused() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
+    let link = Link::to(&kestrel.link());
 
     let refused = link
         .report_body(
@@ -258,16 +258,16 @@ async fn a_report_that_skips_one_the_environment_has_yet_to_send_is_refused() {
         .await;
 
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(harness.transcript(run.session).await.len(), 1);
+    assert_eq!(kestrel.transcript(run.session).await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_report_that_changes_the_runs_record_and_is_not_numbered_is_refused() {
-    let harness = Harness::boot().await;
-    let (run, credential) = a_run(&harness).await;
-    let link = Link::to(&harness.link());
+    let kestrel = Kestrel::boot().await;
+    let (run, credential) = a_run(&kestrel).await;
+    let link = Link::to(&kestrel.link());
 
     let refused = link
         .report_body(
@@ -278,7 +278,7 @@ async fn a_report_that_changes_the_runs_record_and_is_not_numbered_is_refused() 
         .await;
 
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(harness.transcript(run.session).await.len(), 1);
+    assert_eq!(kestrel.transcript(run.session).await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

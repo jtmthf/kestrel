@@ -12,7 +12,7 @@ use kestrel::trigger::Rendered;
 use support::github_stub::{self, GithubStub};
 use support::scripted_agent::Script;
 use support::supervisor::Supervisor;
-use support::{A_PROVIDER_KEY, Harness, PROVIDER_KEY, labelled_on, templates};
+use support::{A_PROVIDER_KEY, Kestrel, PROVIDER_KEY, labelled_on, templates};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 const REPOSITORY: &str = "jtmthf/kestrel";
@@ -28,9 +28,9 @@ fn eagerly() -> SignedDuration {
 
 /// An organization with somewhere for work to happen and someone to do it. The Trigger is the
 /// one thing each test declares for itself.
-async fn an_organization(harness: &Harness, name: &str) -> kestrel::domain::Organization {
-    let organization = harness.declare_organization(name).await;
-    harness
+async fn an_organization(kestrel: &Kestrel, name: &str) -> kestrel::domain::Organization {
+    let organization = kestrel.declare_organization(name).await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -38,7 +38,7 @@ async fn an_organization(harness: &Harness, name: &str) -> kestrel::domain::Orga
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
     organization
@@ -46,8 +46,8 @@ async fn an_organization(harness: &Harness, name: &str) -> kestrel::domain::Orga
 
 /// The poll that records what happens on the repository, started after the Trigger the test
 /// is about: an Event recorded before a Trigger was declared fires nothing.
-async fn watching(harness: &Harness, stub: &GithubStub) {
-    harness
+async fn watching(kestrel: &Kestrel, stub: &GithubStub) {
+    kestrel
         .register_integration(
             "acme",
             "github",
@@ -59,8 +59,8 @@ async fn watching(harness: &Harness, stub: &GithubStub) {
         .await;
 }
 
-async fn ready_for_agent(harness: &Harness) {
-    harness
+async fn ready_for_agent(kestrel: &Kestrel) {
+    kestrel
         .declare_trigger(
             "acme",
             "ready",
@@ -71,11 +71,11 @@ async fn ready_for_agent(harness: &Harness) {
         .await;
 }
 
-async fn opened(harness: &Harness, count: usize) -> Vec<Session> {
+async fn opened(kestrel: &Kestrel, count: usize) -> Vec<Session> {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let sessions = harness.sessions("acme").await;
+        let sessions = kestrel.sessions("acme").await;
         if sessions.len() >= count {
             return sessions;
         }
@@ -88,11 +88,11 @@ async fn opened(harness: &Harness, count: usize) -> Vec<Session> {
     }
 }
 
-async fn recorded(harness: &Harness, count: usize) -> Vec<Event> {
+async fn recorded(kestrel: &Kestrel, count: usize) -> Vec<Event> {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let events = harness.events("acme").await;
+        let events = kestrel.events("acme").await;
         if events.len() >= count {
             return events;
         }
@@ -106,12 +106,12 @@ async fn recorded(harness: &Harness, count: usize) -> Vec<Event> {
 
 /// Nothing opening is only observable by waiting for the sweeps that would have opened it, so
 /// this waits for the Event to be recorded and then for several sweeps to pass over it.
-async fn nothing_opens(harness: &Harness) {
-    recorded(harness, 1).await;
+async fn nothing_opens(kestrel: &Kestrel) {
+    recorded(kestrel, 1).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     assert!(
-        harness.sessions("acme").await.is_empty(),
+        kestrel.sessions("acme").await.is_empty(),
         "a session was opened for an event nothing should have fired on"
     );
 }
@@ -120,31 +120,31 @@ async fn nothing_opens(harness: &Harness) {
 async fn labelling_an_issue_opens_a_session_and_enqueues_a_run() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    watching(&kestrel, &stub).await;
 
-    let session = opened(&harness, 1).await.remove(0);
+    let session = opened(&kestrel, 1).await.remove(0);
 
     assert_eq!(session.project.name, "kestrel");
     assert_eq!(session.agent.name, "builder");
 
-    let runs = harness.runs(session.id).await;
+    let runs = kestrel.runs(session.id).await;
     assert_eq!(runs.len(), 1, "a firing enqueues one run");
     assert_eq!(runs[0].state, RunState::Queued);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 async fn ready_rendering(
-    harness: &Harness,
+    kestrel: &Kestrel,
     name: &str,
     brief: &str,
     branch: Option<&str>,
     correlation: Option<&str>,
 ) {
-    harness
+    kestrel
         .declare_trigger_rendering(
             "acme",
             name,
@@ -156,8 +156,8 @@ async fn ready_rendering(
         .await;
 }
 
-async fn first_entry(harness: &Harness, session: &Session) -> Entry {
-    harness
+async fn first_entry(kestrel: &Kestrel, session: &Session) -> Entry {
+    kestrel
         .transcript(session.id)
         .await
         .into_iter()
@@ -170,20 +170,20 @@ async fn first_entry(harness: &Harness, session: &Session) -> Entry {
 async fn the_rendered_brief_is_the_sessions_first_transcript_entry() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
     ready_rendering(
-        &harness,
+        &kestrel,
         "ready",
         "Work {{ event.data.issue.html_url }}: {{ event.data.issue.title }}",
         None,
         None,
     )
     .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    let session = opened(&harness, 1).await.remove(0);
-    let transcript = harness.transcript(session.id).await;
+    let session = opened(&kestrel, 1).await.remove(0);
+    let transcript = kestrel.transcript(session.id).await;
 
     assert_eq!(
         transcript
@@ -202,7 +202,7 @@ async fn the_rendered_brief_is_the_sessions_first_transcript_entry() {
         ]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 const SKILLED: &str = "/implement https://github.com/jtmthf/kestrel/issues/43\n\n\
@@ -210,19 +210,19 @@ const SKILLED: &str = "/implement https://github.com/jtmthf/kestrel/issues/43\n\
 
 /// Opened by a firing whose brief leads with a harness's skill invocation, in a project a
 /// supervisor can check out without reaching GitHub.
-async fn briefed(harness: &Harness, stub: &GithubStub) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn briefed(kestrel: &Kestrel, stub: &GithubStub) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(&organization, "kestrel", &[], "main")
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    harness
+    kestrel
         .hold_provider_credential(&organization, PROVIDER_KEY, A_PROVIDER_KEY)
         .await;
     ready_rendering(
-        harness,
+        kestrel,
         "ready",
         "/implement {{ event.data.issue.html_url }}\n\n\
          Fetch its current body and comments with `gh issue view --comments` first.",
@@ -230,30 +230,30 @@ async fn briefed(harness: &Harness, stub: &GithubStub) -> Session {
         None,
     )
     .await;
-    watching(harness, stub).await;
+    watching(kestrel, stub).await;
 
-    opened(harness, 1).await.remove(0)
+    opened(kestrel, 1).await.remove(0)
 }
 
 /// What the agent was prompted with, which the echoing agent says back.
-async fn prompted(harness: &Harness, session: &Session) -> String {
-    let claimed = harness
+async fn prompted(kestrel: &Kestrel, session: &Session) -> String {
+    let claimed = kestrel
         .claim_run()
         .await
         .expect("the firing's run should claim");
     let mut supervisor = Supervisor::provision_playing(
-        &harness.link(),
+        &kestrel.link(),
         claimed.run.id,
         &claimed.credential,
         Script::Echoes,
     );
     supervisor.wait_until_it_says("reported connected").await;
-    harness.start(&claimed.run).await;
+    kestrel.start(&claimed.run).await;
     supervisor.wait_until_it_says("reported answered").await;
-    harness.stop_run(claimed.run.id).await;
+    kestrel.stop_run(claimed.run.id).await;
     assert!(supervisor.finishes().await.success());
 
-    harness
+    kestrel
         .transcript(session.id)
         .await
         .into_iter()
@@ -271,32 +271,32 @@ async fn prompted(harness: &Harness, session: &Session) -> String {
 async fn the_agent_is_first_prompted_with_exactly_the_brief_its_session_preserved() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    let session = briefed(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    let session = briefed(&kestrel, &stub).await;
 
     assert_eq!(
-        first_entry(&harness, &session).await,
+        first_entry(&kestrel, &session).await,
         Entry::Brief {
             trigger: Some("ready".to_owned()),
             brief: SKILLED.to_owned(),
         }
     );
-    assert_eq!(prompted(&harness, &session).await, SKILLED);
+    assert_eq!(prompted(&kestrel, &session).await, SKILLED);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_brief_something_was_said_after_reaches_the_agent_as_earlier_context() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    let session = briefed(&harness, &stub).await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    let session = briefed(&kestrel, &stub).await;
+    kestrel
         .post_while_busy(session.id, "operator", "and add a test")
         .await;
 
-    let prompt = prompted(&harness, &session).await;
+    let prompt = prompted(&kestrel, &session).await;
 
     assert!(prompt.starts_with("Earlier context"), "{prompt}");
     assert!(
@@ -305,27 +305,27 @@ async fn a_brief_something_was_said_after_reaches_the_agent_as_earlier_context()
     );
     assert!(prompt.contains("and add a test"), "{prompt}");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_session_opens_on_the_branch_and_correlation_its_trigger_renders() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
     ready_rendering(
-        &harness,
+        &kestrel,
         "ready",
         support::BRIEF,
         Some("kestrel/issue-{{ event.data.issue.number }}"),
         Some("{{ event.source }}{{ event.subject }}"),
     )
     .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    let session = opened(&harness, 1).await.remove(0);
-    let shown = harness.show_session(session.id).await;
+    let session = opened(&kestrel, 1).await.remove(0);
+    let shown = kestrel.show_session(session.id).await;
 
     assert_eq!(shown.checkout.branch, "kestrel/issue-43");
     assert_eq!(
@@ -333,26 +333,26 @@ async fn a_session_opens_on_the_branch_and_correlation_its_trigger_renders() {
         Some("https://github.com/jtmthf/kestrel#43")
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_session_whose_trigger_renders_no_branch_opens_on_its_own_cut_from_the_projects() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    watching(&kestrel, &stub).await;
 
-    let session = opened(&harness, 1).await.remove(0);
-    let shown = harness.show_session(session.id).await;
+    let session = opened(&kestrel, 1).await.remove(0);
+    let shown = kestrel.show_session(session.id).await;
 
     assert_eq!(shown.checkout.branch, format!("kestrel/{}", session.id));
     assert_eq!(shown.checkout.base, "main");
     assert_eq!(shown.correlation, None);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A failed firing is recorded rather than retried, so it neither opens a Session on a later
@@ -361,48 +361,48 @@ async fn a_session_whose_trigger_renders_no_branch_opens_on_its_own_cut_from_the
 async fn a_brief_that_cannot_render_fails_the_firing_and_starts_nothing() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
     ready_rendering(
-        &harness,
+        &kestrel,
         "review",
         "Review the pull request on {{ event.data.pull_request.head.ref }}",
         None,
         None,
     )
     .await;
-    ready_for_agent(&harness).await;
-    watching(&harness, &stub).await;
+    ready_for_agent(&kestrel).await;
+    watching(&kestrel, &stub).await;
 
-    opened(&harness, 1).await;
+    opened(&kestrel, 1).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let sessions = harness.sessions("acme").await;
+    let sessions = kestrel.sessions("acme").await;
     assert_eq!(
         sessions.len(),
         1,
         "only the trigger that renders opens work"
     );
-    let Entry::Brief { trigger, .. } = first_entry(&harness, &sessions[0]).await else {
+    let Entry::Brief { trigger, .. } = first_entry(&kestrel, &sessions[0]).await else {
         panic!("a triggered session opens on its brief");
     };
     assert_eq!(trigger.as_deref(), Some("ready"));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_correlation_hit_feeds_the_open_session_without_changing_its_agent() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    let organization = an_organization(&harness, "acme").await;
+    let kestrel = Kestrel::boot().await;
+    let organization = an_organization(&kestrel, "acme").await;
     let correlation = Some("{{ event.source }}{{ event.subject }}");
-    ready_rendering(&harness, "ready", support::BRIEF, None, correlation).await;
-    harness
+    ready_rendering(&kestrel, "ready", support::BRIEF, None, correlation).await;
+    kestrel
         .declare_agent(&organization, "reviewer", "opencode", None)
         .await;
-    harness
+    kestrel
         .declare_trigger_rendering(
             "acme",
             "also-ready",
@@ -412,12 +412,12 @@ async fn a_correlation_hit_feeds_the_open_session_without_changing_its_agent() {
             &templates(support::BRIEF, None, correlation),
         )
         .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    opened(&harness, 1).await;
+    opened(&kestrel, 1).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let sessions = harness.sessions("acme").await;
+    let sessions = kestrel.sessions("acme").await;
     assert_eq!(
         sessions.len(),
         1,
@@ -426,7 +426,7 @@ async fn a_correlation_hit_feeds_the_open_session_without_changing_its_agent() {
     );
     assert_eq!(sessions[0].agent.name, "builder");
     assert!(
-        harness
+        kestrel
             .transcript(sessions[0].id)
             .await
             .iter()
@@ -439,16 +439,16 @@ async fn a_correlation_hit_feeds_the_open_session_without_changing_its_agent() {
             })
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_correlation_miss_can_be_ignored() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    kestrel
         .declare_trigger_rendering_with_miss(
             "acme",
             "ready",
@@ -463,19 +463,19 @@ async fn a_correlation_miss_can_be_ignored() {
             Some(CorrelationMiss::Ignore),
         )
         .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    nothing_opens(&harness).await;
+    nothing_opens(&kestrel).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_correlated_trigger_must_declare_what_it_does_on_a_miss() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
 
-    let refusal = harness
+    let refusal = kestrel
         .try_declare_trigger_rendering_with_miss(
             "acme",
             "ready",
@@ -494,33 +494,33 @@ async fn a_correlated_trigger_must_declare_what_it_does_on_a_miss() {
 
     assert!(refusal.to_string().contains("must declare"));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
     ready_rendering(
-        &harness,
+        &kestrel,
         "ready",
         support::BRIEF,
         None,
         Some("{{ event.source }}{{ event.subject }}"),
     )
     .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    let sealed = opened(&harness, 1).await.remove(0);
-    let active = harness
+    let sealed = opened(&kestrel, 1).await.remove(0);
+    let active = kestrel
         .claim_run()
         .await
         .expect("the firing enqueued a run")
         .run;
-    harness.complete_run(&active).await;
-    harness.seal_session(sealed.id).await;
+    kestrel.complete_run(&active).await;
+    kestrel.seal_session(sealed.id).await;
 
     // Scripted for the events endpoint alone: the comment the completed run posts would
     // otherwise take this response off the shared queue.
@@ -529,7 +529,7 @@ async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
         EVENTS,
         github_stub::page(&[github_stub::labelled(8, 43, READY)]),
     );
-    let sessions = opened(&harness, 2).await;
+    let sessions = opened(&kestrel, 2).await;
     let continuation = sessions
         .into_iter()
         .find(|session| session.id != sealed.id)
@@ -539,21 +539,21 @@ async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
     assert_eq!(continuation.checkout.branch, sealed.checkout.branch);
     assert_eq!(continuation.state, kestrel::domain::SessionState::Open);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_ignoring_trigger_still_continues_a_sealed_session_it_correlates_to() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
     let correlation = templates(
         support::BRIEF,
         None,
         Some("{{ event.source }}{{ event.subject }}"),
     );
-    harness
+    kestrel
         .declare_trigger_rendering_with_miss(
             "acme",
             "ready",
@@ -564,7 +564,7 @@ async fn an_ignoring_trigger_still_continues_a_sealed_session_it_correlates_to()
             Some(CorrelationMiss::Open),
         )
         .await;
-    harness
+    kestrel
         .declare_trigger_rendering_with_miss(
             "acme",
             "failing",
@@ -575,23 +575,23 @@ async fn an_ignoring_trigger_still_continues_a_sealed_session_it_correlates_to()
             Some(CorrelationMiss::Ignore),
         )
         .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    let sealed = opened(&harness, 1).await.remove(0);
-    let active = harness
+    let sealed = opened(&kestrel, 1).await.remove(0);
+    let active = kestrel
         .claim_run()
         .await
         .expect("the firing enqueued a run")
         .run;
-    harness.complete_run(&active).await;
-    harness.seal_session(sealed.id).await;
+    kestrel.complete_run(&active).await;
+    kestrel.seal_session(sealed.id).await;
 
     stub.script_answer(
         "GET",
         EVENTS,
         github_stub::page(&[github_stub::labelled(8, 43, "ci-failed")]),
     );
-    let continuation = opened(&harness, 2)
+    let continuation = opened(&kestrel, 2)
         .await
         .into_iter()
         .find(|session| session.id != sealed.id)
@@ -600,27 +600,27 @@ async fn an_ignoring_trigger_still_continues_a_sealed_session_it_correlates_to()
     assert_eq!(continuation.continues, Some(sealed.id));
     assert_eq!(continuation.correlation, sealed.correlation);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn correlated_events_arriving_during_a_run_drain_into_one_entry_and_one_run() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
     ready_rendering(
-        &harness,
+        &kestrel,
         "ready",
         support::BRIEF,
         None,
         Some("{{ event.source }}{{ event.subject }}"),
     )
     .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    let session = opened(&harness, 1).await.remove(0);
-    let active = harness
+    let session = opened(&kestrel, 1).await.remove(0);
+    let active = kestrel
         .claim_run()
         .await
         .expect("the firing enqueued a run")
@@ -632,8 +632,8 @@ async fn correlated_events_arriving_during_a_run_drain_into_one_entry_and_one_ru
     let deadline = tokio::time::Instant::now() + PATIENCE;
     while {
         let mut fed = 0;
-        for event in harness.events("acme").await {
-            fed += harness
+        for event in kestrel.events("acme").await {
+            fed += kestrel
                 .firings(event.record_id)
                 .await
                 .into_iter()
@@ -649,13 +649,13 @@ async fn correlated_events_arriving_during_a_run_drain_into_one_entry_and_one_ru
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    assert_eq!(harness.runs(session.id).await.len(), 1);
-    harness.complete_run(&active).await;
+    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    kestrel.complete_run(&active).await;
 
-    let runs = harness.runs(session.id).await;
+    let runs = kestrel.runs(session.id).await;
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[1].state, RunState::Queued);
-    let messages = harness
+    let messages = kestrel
         .transcript(session.id)
         .await
         .into_iter()
@@ -678,24 +678,24 @@ async fn correlated_events_arriving_during_a_run_drain_into_one_entry_and_one_ru
         ]]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_session_records_the_event_that_started_it() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    watching(&kestrel, &stub).await;
 
-    let session = opened(&harness, 1).await.remove(0);
-    let events = harness.events("acme").await;
+    let session = opened(&kestrel, 1).await.remove(0);
+    let events = kestrel.events("acme").await;
 
     assert_eq!(session.started_by, Some(events[0].record_id));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The same label going on the same issue twice is one Event however many polls see it, and
@@ -706,15 +706,15 @@ async fn relabelling_the_same_issue_twice_opens_exactly_one_session() {
     let relabelled = github_stub::page(&[github_stub::labelled(7, 43, READY)]);
     stub.script(relabelled.clone());
     stub.script(relabelled);
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    watching(&kestrel, &stub).await;
 
-    opened(&harness, 1).await;
+    opened(&kestrel, 1).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let sessions = harness.sessions("acme").await;
+    let sessions = kestrel.sessions("acme").await;
     assert_eq!(
         sessions.len(),
         1,
@@ -722,17 +722,17 @@ async fn relabelling_the_same_issue_twice_opens_exactly_one_session() {
         sessions.len()
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_event_matching_several_triggers_fires_every_one_of_them() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    kestrel
         .declare_trigger(
             "acme",
             "anything-labelled",
@@ -741,17 +741,17 @@ async fn an_event_matching_several_triggers_fires_every_one_of_them() {
             "builder",
         )
         .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    let sessions = opened(&harness, 2).await;
+    let sessions = opened(&kestrel, 2).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let mut fired = Vec::new();
-    for session in harness.sessions("acme").await {
+    for session in kestrel.sessions("acme").await {
         if let Entry::Brief {
             trigger: Some(trigger),
             ..
-        } = first_entry(&harness, &session).await
+        } = first_entry(&kestrel, &session).await
         {
             fired.push(trigger);
         }
@@ -760,7 +760,7 @@ async fn an_event_matching_several_triggers_fires_every_one_of_them() {
     assert_eq!(sessions.len(), 2);
     assert_eq!(fired, ["anything-labelled", "ready"]);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -771,14 +771,14 @@ async fn an_event_matching_no_trigger_opens_nothing() {
         43,
         "needs-triage",
     )]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    watching(&kestrel, &stub).await;
 
-    nothing_opens(&harness).await;
+    nothing_opens(&kestrel).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// GitHub reports the label coming off as an `unlabeled` event carrying that same label, and
@@ -787,29 +787,29 @@ async fn an_event_matching_no_trigger_opens_nothing() {
 async fn taking_the_label_back_off_fires_nothing() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::unlabelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    watching(&kestrel, &stub).await;
 
-    nothing_opens(&harness).await;
+    nothing_opens(&kestrel).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_disabled_trigger_fires_for_nothing() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    harness.disable_trigger("acme", "ready").await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    kestrel.disable_trigger("acme", "ready").await;
+    watching(&kestrel, &stub).await;
 
-    nothing_opens(&harness).await;
+    nothing_opens(&kestrel).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -819,10 +819,10 @@ async fn a_trigger_that_exceeds_its_firing_budget_disables_without_stopping_anot
         .map(|id| github_stub::labelled(id, id + 36, READY))
         .collect::<Vec<_>>();
     stub.script(github_stub::page(&events));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    kestrel
         .declare_trigger(
             "acme",
             "other",
@@ -831,13 +831,13 @@ async fn a_trigger_that_exceeds_its_firing_budget_disables_without_stopping_anot
             "builder",
         )
         .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    opened(&harness, 10).await;
+    opened(&kestrel, 10).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    assert_eq!(harness.sessions("acme").await.len(), 10);
-    let disabled = harness.show_trigger("acme", "ready").await;
+    assert_eq!(kestrel.sessions("acme").await.len(), 10);
+    let disabled = kestrel.show_trigger("acme", "ready").await;
     assert!(matches!(disabled.state, TriggerState::Disabled(_)));
     assert!(
         disabled
@@ -846,18 +846,18 @@ async fn a_trigger_that_exceeds_its_firing_budget_disables_without_stopping_anot
             .is_some_and(|because| because.contains("exhausted its budget"))
     );
     assert_eq!(
-        harness.show_trigger("acme", "other").await.state,
+        kestrel.show_trigger("acme", "other").await.state,
         TriggerState::Enabled
     );
 
-    harness.enable_trigger("acme", "ready").await;
-    let manually_disabled = harness.disable_trigger("acme", "ready").await;
+    kestrel.enable_trigger("acme", "ready").await;
+    let manually_disabled = kestrel.disable_trigger("acme", "ready").await;
     assert_eq!(
         manually_disabled.disabled_because.as_deref(),
         Some("disabled by an operator")
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -867,14 +867,14 @@ async fn a_trigger_enabled_after_exhausting_its_budget_fires_again_within_the_wi
         .map(|id| github_stub::labelled(id, id + 36, READY))
         .collect::<Vec<_>>();
     stub.script(github_stub::page(&events));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    watching(&kestrel, &stub).await;
 
-    opened(&harness, 10).await;
+    opened(&kestrel, 10).await;
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while harness.show_trigger("acme", "ready").await.state == TriggerState::Enabled {
+    while kestrel.show_trigger("acme", "ready").await.state == TriggerState::Enabled {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the trigger never exhausted its budget"
@@ -882,16 +882,16 @@ async fn a_trigger_enabled_after_exhausting_its_budget_fires_again_within_the_wi
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    harness.enable_trigger("acme", "ready").await;
+    kestrel.enable_trigger("acme", "ready").await;
     stub.script(github_stub::page(&[github_stub::labelled(30, 66, READY)]));
 
-    opened(&harness, 11).await;
+    opened(&kestrel, 11).await;
     assert_eq!(
-        harness.show_trigger("acme", "ready").await.state,
+        kestrel.show_trigger("acme", "ready").await.state,
         TriggerState::Enabled
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// Disabling stops a Trigger firing without forgetting it, so what it was declared to match
@@ -899,12 +899,12 @@ async fn a_trigger_enabled_after_exhausting_its_budget_fires_again_within_the_wi
 #[tokio::test]
 async fn a_trigger_is_named_listed_and_disabled() {
     let stub = GithubStub::start();
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
+    watching(&kestrel, &stub).await;
 
-    let listed = harness.triggers("acme").await;
+    let listed = kestrel.triggers("acme").await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "ready");
     assert_eq!(
@@ -916,19 +916,19 @@ async fn a_trigger_is_named_listed_and_disabled() {
     assert_eq!(listed[0].state, TriggerState::Enabled);
 
     assert!(matches!(
-        harness.disable_trigger("acme", "ready").await.state,
+        kestrel.disable_trigger("acme", "ready").await.state,
         TriggerState::Disabled(_)
     ));
     assert!(matches!(
-        harness.show_trigger("acme", "ready").await.state,
+        kestrel.show_trigger("acme", "ready").await.state,
         TriggerState::Disabled(_)
     ));
     assert_eq!(
-        harness.enable_trigger("acme", "ready").await.state,
+        kestrel.enable_trigger("acme", "ready").await.state,
         TriggerState::Enabled
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// Turning automation on never works a backlog. A Trigger declared against a repository whose
@@ -942,16 +942,16 @@ async fn a_trigger_never_fires_for_events_recorded_before_it_was_declared() {
         github_stub::labelled(8, 44, READY),
         github_stub::labelled(7, 43, READY),
     ]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    watching(&kestrel, &stub).await;
 
-    recorded(&harness, 3).await;
-    ready_for_agent(&harness).await;
+    recorded(&kestrel, 3).await;
+    ready_for_agent(&kestrel).await;
 
-    nothing_opens(&harness).await;
+    nothing_opens(&kestrel).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 fn applying_ready_for(label: &str) -> String {
@@ -980,18 +980,18 @@ async fn applying_a_declaration_file_never_fires_for_events_already_recorded() {
         github_stub::labelled(9, 45, READY),
         github_stub::labelled(8, 44, READY),
     ]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    watching(&harness, &stub).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    watching(&kestrel, &stub).await;
 
-    recorded(&harness, 2).await;
-    harness
+    recorded(&kestrel, 2).await;
+    kestrel
         .apply_triggers("acme", &applying_ready_for(READY))
         .await;
 
-    nothing_opens(&harness).await;
+    nothing_opens(&kestrel).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// Widening what a trigger matches is not a way to reach back for the events the narrower one
@@ -1004,21 +1004,21 @@ async fn reapplying_a_changed_filter_never_fires_for_events_already_recorded() {
         43,
         "needs-triage",
     )]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    kestrel
         .apply_triggers("acme", &applying_ready_for(READY))
         .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    recorded(&harness, 1).await;
-    harness
+    recorded(&kestrel, 1).await;
+    kestrel
         .apply_triggers("acme", &applying_ready_for("needs-triage"))
         .await;
 
-    nothing_opens(&harness).await;
+    nothing_opens(&kestrel).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// An applied trigger is the same rule a declared one is: it fires for what arrives after it,
@@ -1027,30 +1027,30 @@ async fn reapplying_a_changed_filter_never_fires_for_events_already_recorded() {
 async fn an_applied_trigger_fires_for_events_recorded_after_it() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    kestrel
         .apply_triggers("acme", &applying_ready_for(READY))
         .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    let session = opened(&harness, 1).await.remove(0);
+    let session = opened(&kestrel, 1).await.remove(0);
     assert_eq!(session.agent.name, "builder");
 
-    harness.apply_triggers("acme", "triggers: {}").await;
-    assert!(harness.triggers("acme").await.is_empty());
-    assert_eq!(harness.sessions("acme").await.len(), 1);
+    kestrel.apply_triggers("acme", "triggers: {}").await;
+    assert!(kestrel.triggers("acme").await.is_empty());
+    assert_eq!(kestrel.sessions("acme").await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_trigger_fires_only_for_the_source_it_names() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    kestrel
         .declare_trigger(
             "acme",
             "elsewhere",
@@ -1059,11 +1059,11 @@ async fn a_trigger_fires_only_for_the_source_it_names() {
             "builder",
         )
         .await;
-    watching(&harness, &stub).await;
+    watching(&kestrel, &stub).await;
 
-    nothing_opens(&harness).await;
+    nothing_opens(&kestrel).await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A dry run asks only whether the filter matches, so it answers for an Event recorded before
@@ -1072,10 +1072,10 @@ async fn a_trigger_fires_only_for_the_source_it_names() {
 async fn trigger_test_says_whether_a_recorded_event_matches() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    watching(&harness, &stub).await;
-    let event = recorded(&harness, 1).await.remove(0).record_id;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    watching(&kestrel, &stub).await;
+    let event = recorded(&kestrel, 1).await.remove(0).record_id;
 
     for (at, (filter, matches)) in [
         (r#"{"exact": {"type": "com.github.issues.labeled"}}"#, true),
@@ -1129,19 +1129,19 @@ async fn trigger_test_says_whether_a_recorded_event_matches() {
     .enumerate()
     {
         let name = format!("case-{at}");
-        harness
+        kestrel
             .declare_trigger("acme", &name, filter, "kestrel", "builder")
             .await;
 
         assert_eq!(
-            harness.test_trigger("acme", &name, event).await.matches,
+            kestrel.test_trigger("acme", &name, event).await.matches,
             matches,
             "{filter} should {}match the labelled event",
             if matches { "" } else { "not " }
         );
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// An Event belongs to one Organization, and another Organization's Trigger cannot so much as
@@ -1150,10 +1150,10 @@ async fn trigger_test_says_whether_a_recorded_event_matches() {
 async fn a_trigger_is_tested_only_against_its_own_organizations_events() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    an_organization(&harness, "globex").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    an_organization(&kestrel, "globex").await;
+    kestrel
         .declare_trigger(
             "globex",
             "ready",
@@ -1162,10 +1162,10 @@ async fn a_trigger_is_tested_only_against_its_own_organizations_events() {
             "builder",
         )
         .await;
-    watching(&harness, &stub).await;
-    let event = recorded(&harness, 1).await.remove(0).record_id;
+    watching(&kestrel, &stub).await;
+    let event = recorded(&kestrel, 1).await.remove(0).record_id;
 
-    let refusal = harness
+    let refusal = kestrel
         .try_test_trigger("globex", "ready", event)
         .await
         .expect_err("another organization's event should be refused");
@@ -1175,7 +1175,7 @@ async fn a_trigger_is_tested_only_against_its_own_organizations_events() {
         "unhelpful refusal: {refusal}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// What a firing would hand its Session is visible before anything runs.
@@ -1183,11 +1183,11 @@ async fn a_trigger_is_tested_only_against_its_own_organizations_events() {
 async fn trigger_test_renders_the_brief_and_resolves_the_branch() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    watching(&harness, &stub).await;
-    let event = recorded(&harness, 1).await.remove(0).record_id;
-    harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    watching(&kestrel, &stub).await;
+    let event = recorded(&kestrel, 1).await.remove(0).record_id;
+    kestrel
         .declare_trigger_rendering(
             "acme",
             "ready",
@@ -1202,7 +1202,7 @@ async fn trigger_test_renders_the_brief_and_resolves_the_branch() {
         )
         .await;
 
-    let tested = harness.test_trigger("acme", "ready", event).await;
+    let tested = kestrel.test_trigger("acme", "ready", event).await;
 
     assert!(tested.matches);
     assert_eq!(
@@ -1215,7 +1215,7 @@ async fn trigger_test_renders_the_brief_and_resolves_the_branch() {
         }
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A declaration under review is worth testing before it is applied, and testing it applies
@@ -1224,12 +1224,12 @@ async fn trigger_test_renders_the_brief_and_resolves_the_branch() {
 async fn trigger_test_answers_for_a_declaration_not_yet_applied() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    watching(&harness, &stub).await;
-    let event = recorded(&harness, 1).await.remove(0).record_id;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    watching(&kestrel, &stub).await;
+    let event = recorded(&kestrel, 1).await.remove(0).record_id;
 
-    let tested = harness
+    let tested = kestrel
         .test_declared_trigger("acme", &applying_ready_for(READY), "ready", event)
         .await;
 
@@ -1242,22 +1242,22 @@ async fn trigger_test_answers_for_a_declaration_not_yet_applied() {
             correlation: None,
         }
     );
-    assert!(harness.triggers("acme").await.is_empty());
+    assert!(kestrel.triggers("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_trigger_that_renders_no_branch_leaves_the_session_its_own() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    watching(&harness, &stub).await;
-    let event = recorded(&harness, 1).await.remove(0).record_id;
-    ready_for_agent(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    watching(&kestrel, &stub).await;
+    let event = recorded(&kestrel, 1).await.remove(0).record_id;
+    ready_for_agent(&kestrel).await;
 
-    let rendered = harness
+    let rendered = kestrel
         .test_trigger("acme", "ready", event)
         .await
         .rendered
@@ -1266,7 +1266,7 @@ async fn a_trigger_that_renders_no_branch_leaves_the_session_its_own() {
     assert_eq!(rendered.branch, None);
     assert_eq!(rendered.correlation, None);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A labelled issue has no pull request, and a brief that assumes one is a failure rather
@@ -1275,11 +1275,11 @@ async fn a_trigger_that_renders_no_branch_leaves_the_session_its_own() {
 async fn a_brief_that_cannot_render_fails_naming_the_trigger_and_the_event() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    watching(&harness, &stub).await;
-    let event = recorded(&harness, 1).await.remove(0).record_id;
-    harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    watching(&kestrel, &stub).await;
+    let event = recorded(&kestrel, 1).await.remove(0).record_id;
+    kestrel
         .declare_trigger_rendering(
             "acme",
             "review",
@@ -1294,7 +1294,7 @@ async fn a_brief_that_cannot_render_fails_naming_the_trigger_and_the_event() {
         )
         .await;
 
-    let tested = harness.test_trigger("acme", "review", event).await;
+    let tested = kestrel.test_trigger("acme", "review", event).await;
     let failure = format!(
         "{:#}",
         tested
@@ -1314,11 +1314,11 @@ async fn a_brief_that_cannot_render_fails_naming_the_trigger_and_the_event() {
         "the failure does not say why: {failure}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
-async fn hourly(harness: &Harness, brief: &str) -> kestrel::domain::Trigger {
-    harness
+async fn hourly(kestrel: &Kestrel, brief: &str) -> kestrel::domain::Trigger {
+    kestrel
         .try_declare_scheduled_trigger(
             "acme",
             "sweep",
@@ -1331,17 +1331,17 @@ async fn hourly(harness: &Harness, brief: &str) -> kestrel::domain::Trigger {
 
 #[tokio::test]
 async fn a_schedule_elapsing_opens_a_session_the_way_a_matched_event_does() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    let trigger = hourly(&harness, "Sweep the backlog for {{ event.data.trigger }}").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    let trigger = hourly(&kestrel, "Sweep the backlog for {{ event.data.trigger }}").await;
 
-    let minted = harness
+    let minted = kestrel
         .elapse(trigger.declared_at + SignedDuration::from_hours(1))
         .await;
-    let session = opened(&harness, 1).await.remove(0);
+    let session = opened(&kestrel, 1).await.remove(0);
 
     assert_eq!(minted.len(), 1, "one schedule elapsed once");
-    let event = harness.events("acme").await.remove(0);
+    let event = kestrel.events("acme").await.remove(0);
     assert_eq!(event.integration, None, "kestrel minted it");
     assert_eq!(
         event.occurrence.source,
@@ -1355,60 +1355,60 @@ async fn a_schedule_elapsing_opens_a_session_the_way_a_matched_event_does() {
     assert_eq!(session.started_by, Some(event.record_id));
     assert_eq!(session.agent.name, "builder");
     assert_eq!(
-        first_entry(&harness, &session).await,
+        first_entry(&kestrel, &session).await,
         Entry::Brief {
             trigger: Some("sweep".to_owned()),
             brief: "Sweep the backlog for sweep".to_owned(),
         }
     );
-    assert_eq!(harness.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(session.id).await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn elapsings_missed_while_nothing_swept_elapse_once() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    let trigger = hourly(&harness, "Sweep the backlog").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    let trigger = hourly(&kestrel, "Sweep the backlog").await;
     let hours = |count| trigger.declared_at + SignedDuration::from_hours(count);
 
-    assert_eq!(harness.elapse(hours(5)).await.len(), 1);
+    assert_eq!(kestrel.elapse(hours(5)).await.len(), 1);
     assert!(
-        harness.elapse(hours(5)).await.is_empty(),
+        kestrel.elapse(hours(5)).await.is_empty(),
         "the next elapsing is not due until the sixth hour"
     );
-    let next = harness.elapse(hours(6)).await;
+    let next = kestrel.elapse(hours(6)).await;
 
     assert_eq!(next.len(), 1);
     assert_eq!(next[0].time, hours(6));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_disabled_schedule_does_not_elapse() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    let trigger = hourly(&harness, "Sweep the backlog").await;
-    harness.disable_trigger("acme", "sweep").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    let trigger = hourly(&kestrel, "Sweep the backlog").await;
+    kestrel.disable_trigger("acme", "sweep").await;
 
-    let minted = harness
+    let minted = kestrel
         .elapse(trigger.declared_at + SignedDuration::from_hours(3))
         .await;
 
     assert!(minted.is_empty());
-    assert!(harness.events("acme").await.is_empty());
+    assert!(kestrel.events("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_schedule_faster_than_the_firing_budget_is_refused() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
 
-    let refusal = harness
+    let refusal = kestrel
         .try_declare_scheduled_trigger(
             "acme",
             "impatient",
@@ -1422,19 +1422,19 @@ async fn a_schedule_faster_than_the_firing_budget_is_refused() {
         format!("{refusal:#}").contains("fire at most every 6m"),
         "the refusal does not say what would do: {refusal:#}"
     );
-    assert!(harness.triggers("acme").await.is_empty());
+    assert!(kestrel.triggers("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_scheduled_trigger_is_tested_against_its_next_elapsing() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    let trigger = hourly(&harness, "Sweep the backlog due {{ event.time }}").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    let trigger = hourly(&kestrel, "Sweep the backlog due {{ event.time }}").await;
     let due = trigger.declared_at + SignedDuration::from_hours(1);
 
-    let tested = harness.test_scheduled_trigger("acme", "sweep").await;
+    let tested = kestrel.test_scheduled_trigger("acme", "sweep").await;
 
     assert!(tested.matches);
     assert_eq!(tested.elapsing, Some(due));
@@ -1445,52 +1445,52 @@ async fn a_scheduled_trigger_is_tested_against_its_next_elapsing() {
         Some(format!("kestrel/sweep-{}", &due.to_string()[..13]))
     );
     assert!(
-        harness.events("acme").await.is_empty(),
+        kestrel.events("acme").await.is_empty(),
         "a test records nothing"
     );
-    assert!(harness.sessions("acme").await.is_empty());
+    assert!(kestrel.sessions("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_scheduled_trigger_matches_what_its_own_schedule_minted_and_nothing_else() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    let trigger = hourly(&harness, "Sweep the backlog").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    let trigger = hourly(&kestrel, "Sweep the backlog").await;
+    kestrel
         .elapse(trigger.declared_at + SignedDuration::from_hours(1))
         .await;
-    watching(&harness, &stub).await;
-    let events = recorded(&harness, 2).await;
+    watching(&kestrel, &stub).await;
+    let events = recorded(&kestrel, 2).await;
     let (minted, labelled): (Vec<_>, Vec<_>) = events
         .into_iter()
         .partition(|event| event.integration.is_none());
 
     assert!(
-        harness
+        kestrel
             .test_trigger("acme", "sweep", minted[0].record_id)
             .await
             .matches
     );
     assert!(
-        !harness
+        !kestrel
             .test_trigger("acme", "sweep", labelled[0].record_id)
             .await
             .matches
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_webhook_naming_a_schedule_does_not_elapse_it() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    let trigger = hourly(&harness, "Sweep the backlog").await;
-    let webhook = harness
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    let trigger = hourly(&kestrel, "Sweep the backlog").await;
+    let webhook = kestrel
         .register_webhook("acme", "ci", "a-shared-secret")
         .await;
     let forged = serde_json::json!({
@@ -1501,7 +1501,7 @@ async fn a_webhook_naming_a_schedule_does_not_elapse_it() {
         "time": trigger.declared_at.to_string(),
     });
     let answered = reqwest::Client::new()
-        .post(format!("{}{}", harness.link(), webhook.webhook_path()))
+        .post(format!("{}{}", kestrel.link(), webhook.webhook_path()))
         .bearer_auth("a-shared-secret")
         .header("content-type", "application/cloudevents+json")
         .body(forged.to_string())
@@ -1509,31 +1509,31 @@ async fn a_webhook_naming_a_schedule_does_not_elapse_it() {
         .await
         .expect("the webhook answers");
     assert!(answered.status().is_success());
-    let forged = recorded(&harness, 1).await.remove(0);
+    let forged = recorded(&kestrel, 1).await.remove(0);
 
-    harness
+    kestrel
         .elapse(trigger.declared_at + SignedDuration::from_hours(1))
         .await;
-    let session = opened(&harness, 1).await.remove(0);
+    let session = opened(&kestrel, 1).await.remove(0);
 
     assert!(
-        !harness
+        !kestrel
             .test_trigger("acme", "sweep", forged.record_id)
             .await
             .matches
     );
     assert_ne!(session.started_by, Some(forged.record_id));
-    assert_eq!(harness.sessions("acme").await.len(), 1);
+    assert_eq!(kestrel.sessions("acme").await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 fn weekday_mornings() -> Cron {
     Cron::new("0 9 * * 1-5", "America/New_York").expect("a weekday-morning cron should parse")
 }
 
-async fn triage(harness: &Harness, brief: &str) -> kestrel::domain::Trigger {
-    harness
+async fn triage(kestrel: &Kestrel, brief: &str) -> kestrel::domain::Trigger {
+    kestrel
         .try_declare_scheduled_trigger(
             "acme",
             "triage",
@@ -1546,24 +1546,24 @@ async fn triage(harness: &Harness, brief: &str) -> kestrel::domain::Trigger {
 
 #[tokio::test]
 async fn a_cron_schedule_elapsing_opens_a_session_the_way_an_interval_does() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    let trigger = triage(&harness, "Triage for {{ event.data.trigger }}").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    let trigger = triage(&kestrel, "Triage for {{ event.data.trigger }}").await;
     let due = weekday_mornings()
         .after(trigger.declared_at)
         .expect("a weekday morning comes");
 
     assert!(
-        harness
+        kestrel
             .elapse(due - SignedDuration::from_secs(1))
             .await
             .is_empty()
     );
-    let minted = harness.elapse(due).await;
-    let session = opened(&harness, 1).await.remove(0);
+    let minted = kestrel.elapse(due).await;
+    let session = opened(&kestrel, 1).await.remove(0);
 
     assert_eq!(minted.len(), 1);
-    let event = harness.events("acme").await.remove(0);
+    let event = kestrel.events("acme").await.remove(0);
     assert_eq!(event.integration, None, "kestrel minted it");
     assert_eq!(event.occurrence.r#type, "dev.kestrel.schedule.elapsed");
     assert_eq!(
@@ -1576,48 +1576,48 @@ async fn a_cron_schedule_elapsing_opens_a_session_the_way_an_interval_does() {
     assert_eq!(event.occurrence.data["zone"], "America/New_York");
     assert_eq!(session.started_by, Some(event.record_id));
     assert_eq!(
-        first_entry(&harness, &session).await,
+        first_entry(&kestrel, &session).await,
         Entry::Brief {
             trigger: Some("triage".to_owned()),
             brief: "Triage for triage".to_owned(),
         }
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn cron_elapsings_missed_while_nothing_swept_elapse_once() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    let trigger = triage(&harness, "Triage").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    let trigger = triage(&kestrel, "Triage").await;
     let cron = weekday_mornings();
     let due = cron
         .after(trigger.declared_at)
         .expect("a weekday morning comes");
     let much_later = due + SignedDuration::from_hours(24 * 10);
 
-    let caught_up = harness.elapse(much_later).await;
+    let caught_up = kestrel.elapse(much_later).await;
     assert_eq!(caught_up.len(), 1, "ten days of mornings elapse once");
     assert_eq!(caught_up[0].time, due);
-    assert!(harness.elapse(much_later).await.is_empty());
+    assert!(kestrel.elapse(much_later).await.is_empty());
     let next = cron
         .after(much_later)
         .expect("another weekday morning comes");
-    let resumed = harness.elapse(next).await;
+    let resumed = kestrel.elapse(next).await;
 
     assert_eq!(resumed.len(), 1);
     assert_eq!(resumed[0].time, next);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_cron_schedule_faster_than_the_firing_budget_is_refused() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
 
-    let refusal = harness
+    let refusal = kestrel
         .try_declare_scheduled_trigger(
             "acme",
             "impatient",
@@ -1632,21 +1632,21 @@ async fn a_cron_schedule_faster_than_the_firing_budget_is_refused() {
         refusal.contains("as often as every 1m") && refusal.contains("fire at most every 6m"),
         "the refusal does not say what would do: {refusal}"
     );
-    assert!(harness.triggers("acme").await.is_empty());
+    assert!(kestrel.triggers("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_cron_triggered_trigger_is_tested_against_its_next_elapsing() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    let trigger = triage(&harness, "Triage due {{ event.time }}").await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    let trigger = triage(&kestrel, "Triage due {{ event.time }}").await;
     let due = weekday_mornings()
         .after(trigger.declared_at)
         .expect("a weekday morning comes");
 
-    let tested = harness.test_scheduled_trigger("acme", "triage").await;
+    let tested = kestrel.test_scheduled_trigger("acme", "triage").await;
 
     assert!(tested.matches);
     assert_eq!(tested.elapsing, Some(due));
@@ -1655,25 +1655,25 @@ async fn a_cron_triggered_trigger_is_tested_against_its_next_elapsing() {
         format!("Triage due {due}")
     );
     assert!(
-        harness.events("acme").await.is_empty(),
+        kestrel.events("acme").await.is_empty(),
         "a test records nothing"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_trigger_that_fires_on_events_is_tested_against_a_named_one() {
-    let harness = Harness::boot().await;
-    an_organization(&harness, "acme").await;
-    ready_for_agent(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    an_organization(&kestrel, "acme").await;
+    ready_for_agent(&kestrel).await;
 
-    let refusal = harness
+    let refusal = kestrel
         .try_test_trigger_naming_no_event("acme", "ready")
         .await
         .expect_err("a test of a matching trigger needs an event");
 
     assert!(format!("{refusal:#}").contains("so a test names one"));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

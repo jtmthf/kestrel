@@ -1,7 +1,7 @@
 //! The primary test seam (0.1/03): boot a complete control plane in-process against a fresh
 //! temporary SQLite file, drive it through the same paths a person would use, and tear it
 //! down. Assertions live in the language of Sessions, Runs and Transcripts; `Store` and `Log`
-//! stay behind `Harness`, never reached for directly.
+//! stay behind `Kestrel`, never reached for directly.
 
 // Every integration-test binary compiles all of this; a helper one of them does not reach for
 // is not dead, it belongs to a sibling.
@@ -98,7 +98,7 @@ pub fn templates(brief: &str, branch: Option<&str>, correlation: Option<&str>) -
 const LOOPBACK: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
-pub struct Harness {
+pub struct Kestrel {
     data_dir: TempDir,
     store: Store,
     bound: Listen,
@@ -138,7 +138,7 @@ pub struct Stopped {
     environment: Option<Provisions>,
 }
 
-impl Harness {
+impl Kestrel {
     /// Boots with no supervisor to provision an Environment with, so the work role claims
     /// nothing and a test is the only thing dispatching the Runs it opens.
     pub async fn boot() -> Self {
@@ -1106,7 +1106,7 @@ impl Harness {
         work::enqueue(&self.store, session, model).await
     }
 
-    /// Claims what it enqueued, standing in for the work role a `boot`ed harness leaves idle.
+    /// Claims what it enqueued, standing in for the work role a `boot`ed fixture leaves idle.
     pub async fn dispatch_run(&self, session: SessionId) -> (Run, Secret) {
         self.enqueue_run(session).await;
         let claimed = self
@@ -1464,8 +1464,8 @@ async fn destroy_instances(data_dir: &Path, provisions: Option<&Provisions>) {
 }
 
 impl Stopped {
-    pub async fn restart(self) -> Harness {
-        Harness::boot_against(self.data_dir, self.bound, self.environment).await
+    pub async fn restart(self) -> Kestrel {
+        Kestrel::boot_against(self.data_dir, self.bound, self.environment).await
     }
 
     pub async fn run(&self, id: RunId) -> Run {

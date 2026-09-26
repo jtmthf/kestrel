@@ -11,19 +11,19 @@ use kestrel::integration::webhook::WRAPPED;
 use reqwest::StatusCode;
 use sha2::Sha256;
 use support::github_stub::GithubStub;
-use support::{Harness, labelled_on};
+use support::{Kestrel, labelled_on};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 const SECRET: &str = "a-shared-secret";
 const REPOSITORY: &str = "jtmthf/kestrel";
 
-async fn a_webhook(harness: &Harness) -> Integration {
-    harness.declare_organization("acme").await;
-    harness.register_webhook("acme", "ci", SECRET).await
+async fn a_webhook(kestrel: &Kestrel) -> Integration {
+    kestrel.declare_organization("acme").await;
+    kestrel.register_webhook("acme", "ci", SECRET).await
 }
 
-fn post(harness: &Harness, integration: &Integration) -> reqwest::RequestBuilder {
-    reqwest::Client::new().post(format!("{}{}", harness.link(), integration.webhook_path()))
+fn post(kestrel: &Kestrel, integration: &Integration) -> reqwest::RequestBuilder {
+    reqwest::Client::new().post(format!("{}{}", kestrel.link(), integration.webhook_path()))
 }
 
 fn signature(secret: &str, body: &[u8]) -> String {
@@ -53,13 +53,13 @@ fn labelled(issue: i64) -> Vec<u8> {
 }
 
 fn delivered(
-    harness: &Harness,
+    kestrel: &Kestrel,
     integration: &Integration,
     delivery: &str,
     body: Vec<u8>,
     signed_with: &str,
 ) -> reqwest::RequestBuilder {
-    post(harness, integration)
+    post(kestrel, integration)
         .header("content-type", "application/json")
         .header("x-github-event", "issues")
         .header("x-github-delivery", delivery)
@@ -67,8 +67,8 @@ fn delivered(
         .body(body)
 }
 
-async fn only_event(harness: &Harness) -> Event {
-    let events = harness.events("acme").await;
+async fn only_event(kestrel: &Kestrel) -> Event {
+    let events = kestrel.events("acme").await;
     assert_eq!(
         events.len(),
         1,
@@ -79,10 +79,10 @@ async fn only_event(harness: &Harness) -> Event {
 
 #[tokio::test]
 async fn a_binary_cloudevent_is_recorded_as_its_sender_named_it() {
-    let harness = Harness::boot().await;
-    let webhook = a_webhook(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let webhook = a_webhook(&kestrel).await;
 
-    let answered = post(&harness, &webhook)
+    let answered = post(&kestrel, &webhook)
         .bearer_auth(SECRET)
         .header("content-type", "application/json")
         .header("ce-specversion", "1.0")
@@ -95,7 +95,7 @@ async fn a_binary_cloudevent_is_recorded_as_its_sender_named_it() {
         .expect("the webhook answers");
 
     assert_eq!(answered.status(), StatusCode::ACCEPTED);
-    let event = only_event(&harness).await;
+    let event = only_event(&kestrel).await;
     assert_eq!(event.occurrence.id, "build-7");
     assert_eq!(
         event.occurrence.source,
@@ -105,13 +105,13 @@ async fn a_binary_cloudevent_is_recorded_as_its_sender_named_it() {
     assert_eq!(event.occurrence.data, serde_json::json!({"step": "test"}));
     assert_eq!(event.integration, Some(webhook.id));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_structured_cloudevent_is_recorded_once_however_often_it_is_delivered() {
-    let harness = Harness::boot().await;
-    let webhook = a_webhook(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let webhook = a_webhook(&kestrel).await;
     let envelope = serde_json::json!({
         "specversion": "1.0",
         "id": "deploy-1",
@@ -122,7 +122,7 @@ async fn a_structured_cloudevent_is_recorded_once_however_often_it_is_delivered(
     });
 
     for _ in 0..2 {
-        let answered = post(&harness, &webhook)
+        let answered = post(&kestrel, &webhook)
             .bearer_auth(SECRET)
             .header("content-type", "application/cloudevents+json")
             .body(envelope.to_string())
@@ -132,21 +132,21 @@ async fn a_structured_cloudevent_is_recorded_once_however_often_it_is_delivered(
         assert_eq!(answered.status(), StatusCode::ACCEPTED);
     }
 
-    let event = only_event(&harness).await;
+    let event = only_event(&kestrel).await;
     assert_eq!(event.occurrence.id, "deploy-1");
     assert_eq!(event.occurrence.source, "/argo/sensors/deploy");
     assert_eq!(event.occurrence.r#type, "io.argoproj.deployed");
     assert_eq!(event.occurrence.subject.as_deref(), Some("kestrel"));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_post_that_is_no_cloudevent_is_wrapped() {
-    let harness = Harness::boot().await;
-    let webhook = a_webhook(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let webhook = a_webhook(&kestrel).await;
 
-    let answered = post(&harness, &webhook)
+    let answered = post(&kestrel, &webhook)
         .bearer_auth(SECRET)
         .header("content-type", "application/json")
         .body(r#"{"status": "green"}"#)
@@ -155,7 +155,7 @@ async fn a_post_that_is_no_cloudevent_is_wrapped() {
         .expect("the webhook answers");
 
     assert_eq!(answered.status(), StatusCode::ACCEPTED);
-    let event = only_event(&harness).await;
+    let event = only_event(&kestrel).await;
     assert_eq!(event.occurrence.r#type, WRAPPED);
     assert_eq!(event.occurrence.source, webhook.webhook_path());
     assert_eq!(
@@ -163,27 +163,27 @@ async fn a_post_that_is_no_cloudevent_is_wrapped() {
         serde_json::json!({"status": "green"})
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_delivery_that_does_not_authenticate_is_refused_and_leaves_no_event() {
-    let harness = Harness::boot().await;
-    let webhook = a_webhook(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let webhook = a_webhook(&kestrel).await;
 
-    let wrong = post(&harness, &webhook)
+    let wrong = post(&kestrel, &webhook)
         .bearer_auth("not-the-secret")
         .body("hello")
         .send()
         .await
         .expect("the webhook answers");
-    let absent = post(&harness, &webhook)
+    let absent = post(&kestrel, &webhook)
         .body("hello")
         .send()
         .await
         .expect("the webhook answers");
     let nowhere = reqwest::Client::new()
-        .post(format!("{}/webhooks/not-an-integration", harness.link()))
+        .post(format!("{}/webhooks/not-an-integration", kestrel.link()))
         .bearer_auth(SECRET)
         .body("hello")
         .send()
@@ -193,17 +193,17 @@ async fn a_delivery_that_does_not_authenticate_is_refused_and_leaves_no_event() 
     assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(absent.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(nowhere.status(), StatusCode::UNAUTHORIZED);
-    assert!(harness.events("acme").await.is_empty());
+    assert!(kestrel.events("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_oversized_payload_is_refused_without_being_stored() {
-    let harness = Harness::boot().await;
-    let webhook = a_webhook(&harness).await;
+    let kestrel = Kestrel::boot().await;
+    let webhook = a_webhook(&kestrel).await;
 
-    let answered = post(&harness, &webhook)
+    let answered = post(&kestrel, &webhook)
         .bearer_auth(SECRET)
         .header("content-type", "text/plain")
         .body("x".repeat(1024 * 1024 + 1))
@@ -212,37 +212,37 @@ async fn an_oversized_payload_is_refused_without_being_stored() {
         .expect("the webhook answers");
 
     assert_eq!(answered.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(harness.events("acme").await.is_empty());
-    let refusal = harness.integrations("acme").await[0]
+    assert!(kestrel.events("acme").await.is_empty());
+    let refusal = kestrel.integrations("acme").await[0]
         .last_event_refusal
         .clone();
     assert!(refusal.is_some(), "the refusal is visible to an operator");
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_github_delivery_is_verified_by_its_signature() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
     let stub = GithubStub::start();
-    harness.declare_organization("acme").await;
-    let github = harness
+    kestrel.declare_organization("acme").await;
+    let github = kestrel
         .register_signed_github("acme", "github", REPOSITORY, &stub.base_url(), SECRET)
         .await;
 
-    let forged = delivered(&harness, &github, "d-1", labelled(43), "a-guess")
+    let forged = delivered(&kestrel, &github, "d-1", labelled(43), "a-guess")
         .send()
         .await
         .expect("the webhook answers");
     assert_eq!(forged.status(), StatusCode::UNAUTHORIZED);
-    assert!(harness.events("acme").await.is_empty());
+    assert!(kestrel.events("acme").await.is_empty());
 
-    let signed = delivered(&harness, &github, "d-2", labelled(43), SECRET)
+    let signed = delivered(&kestrel, &github, "d-2", labelled(43), SECRET)
         .send()
         .await
         .expect("the webhook answers");
     assert_eq!(signed.status(), StatusCode::ACCEPTED);
-    let event = only_event(&harness).await;
+    let event = only_event(&kestrel).await;
     assert_eq!(event.occurrence.r#type, "com.github.issues.labeled");
     assert_eq!(
         event.occurrence.source,
@@ -250,17 +250,17 @@ async fn a_github_delivery_is_verified_by_its_signature() {
     );
     assert_eq!(event.occurrence.subject.as_deref(), Some("#43"));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// A shared secret is not how GitHub proves a delivery, and a polled integration has no key to
 /// check a signature with.
 #[tokio::test]
 async fn a_github_integration_without_a_signing_secret_accepts_no_delivery() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
     let stub = GithubStub::start();
-    harness.declare_organization("acme").await;
-    let polled = harness
+    kestrel.declare_organization("acme").await;
+    let polled = kestrel
         .register_integration(
             "acme",
             "github",
@@ -271,24 +271,24 @@ async fn a_github_integration_without_a_signing_secret_accepts_no_delivery() {
         )
         .await;
 
-    let answered = delivered(&harness, &polled, "d-1", labelled(43), SECRET)
+    let answered = delivered(&kestrel, &polled, "d-1", labelled(43), SECRET)
         .bearer_auth(SECRET)
         .send()
         .await
         .expect("the webhook answers");
 
     assert_eq!(answered.status(), StatusCode::UNAUTHORIZED);
-    assert!(harness.events("acme").await.is_empty());
+    assert!(kestrel.events("acme").await.is_empty());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_delivered_label_opens_a_session_and_the_repository_is_not_polled() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
     let stub = GithubStub::start();
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -296,10 +296,10 @@ async fn a_delivered_label_opens_a_session_and_the_repository_is_not_polled() {
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    harness
+    kestrel
         .declare_trigger(
             "acme",
             "ready",
@@ -308,18 +308,18 @@ async fn a_delivered_label_opens_a_session_and_the_repository_is_not_polled() {
             "builder",
         )
         .await;
-    let github = harness
+    let github = kestrel
         .register_signed_github("acme", "github", REPOSITORY, &stub.base_url(), SECRET)
         .await;
 
-    let answered = delivered(&harness, &github, "d-1", labelled(43), SECRET)
+    let answered = delivered(&kestrel, &github, "d-1", labelled(43), SECRET)
         .send()
         .await
         .expect("the webhook answers");
     assert_eq!(answered.status(), StatusCode::ACCEPTED);
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while harness.sessions("acme").await.is_empty() {
+    while kestrel.sessions("acme").await.is_empty() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the delivered label never opened a session"
@@ -346,5 +346,5 @@ async fn a_delivered_label_opens_a_session_and_the_repository_is_not_polled() {
         "the issue's blockers were not checked before start: {requests:?}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

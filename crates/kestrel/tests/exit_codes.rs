@@ -3,7 +3,7 @@ mod support;
 use std::net::TcpListener;
 
 use serde_json::json;
-use support::Harness;
+use support::Kestrel;
 use support::client::{Finished, Invocation, ran, ran_by};
 
 const SUCCESS: i32 = 0;
@@ -31,11 +31,11 @@ fn nowhere() -> String {
     format!("http://{address}")
 }
 
-async fn an_organization() -> Harness {
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
+async fn an_organization() -> Kestrel {
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
 
-    harness
+    kestrel
 }
 
 #[test]
@@ -145,9 +145,9 @@ fn guessed_session_and_run_verbs_explain_the_domain_verbs_without_running_them()
 
 #[tokio::test]
 async fn no_organization_in_scope_is_unresolved() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
-    let finished = ran_by(&harness, &["project", "list"], Invocation::default()).await;
+    let finished = ran_by(&kestrel, &["project", "list"], Invocation::default()).await;
 
     exited(&finished, UNRESOLVED);
     assert!(
@@ -155,15 +155,15 @@ async fn no_organization_in_scope_is_unresolved() {
             .err
             .contains("kestrel organization declare default")
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn ambiguous_and_empty_organization_scope_offer_runnable_choices() {
-    let harness = an_organization().await;
-    harness.declare_organization("globex").await;
+    let kestrel = an_organization().await;
+    kestrel.declare_organization("globex").await;
 
-    let ambiguous = ran_by(&harness, &["project", "list"], Invocation::default()).await;
+    let ambiguous = ran_by(&kestrel, &["project", "list"], Invocation::default()).await;
     exited(&ambiguous, UNRESOLVED);
     assert!(ambiguous.err.contains("kestrel status --organization acme"));
     assert!(
@@ -173,21 +173,21 @@ async fn ambiguous_and_empty_organization_scope_offer_runnable_choices() {
     );
 
     let empty = ran_by(
-        &harness,
+        &kestrel,
         &["project", "list"],
         Invocation::default().file(".kestrel/organization", ""),
     )
     .await;
     exited(&empty, UNRESOLVED);
     assert!(empty.err.contains("kestrel status --organization acme"));
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_missing_project_names_the_setup_command_and_keeps_its_category() {
-    let harness = an_organization().await;
+    let kestrel = an_organization().await;
     let finished = ran_by(
-        &harness,
+        &kestrel,
         &["session", "open", "--project", "absent", "--agent", "agent"],
         Invocation::default(),
     )
@@ -199,15 +199,15 @@ async fn a_missing_project_names_the_setup_command_and_keeps_its_category() {
         "{}",
         finished.err
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn corrective_command_names_the_unencoded_organization() {
-    let harness = Harness::boot().await;
-    harness.declare_organization("Acme East").await;
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("Acme East").await;
     let finished = ran_by(
-        &harness,
+        &kestrel,
         &["session", "open", "--project", "absent", "--agent", "agent"],
         Invocation::default(),
     )
@@ -219,14 +219,14 @@ async fn corrective_command_names_the_unencoded_organization() {
         "{}",
         finished.err
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_run_in_the_session_names_the_run_to_stop_and_stays_rejected() {
-    let harness = an_organization().await;
-    let organization = harness.organizations().await.remove(0);
-    let project = harness
+    let kestrel = an_organization().await;
+    let organization = kestrel.organizations().await.remove(0);
+    let project = kestrel
         .declare_project(
             &organization,
             "work",
@@ -234,15 +234,15 @@ async fn a_run_in_the_session_names_the_run_to_stop_and_stays_rejected() {
             "main",
         )
         .await;
-    let agent = harness
+    let agent = kestrel
         .declare_agent(&organization, "worker", "opencode", None)
         .await;
-    let session = harness
+    let session = kestrel
         .open_session("acme", &project.name, &agent.name)
         .await;
-    let run = harness.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
     let finished = ran_by(
-        &harness,
+        &kestrel,
         &["run", "enqueue", "--session", &session.id.to_string()],
         Invocation::default(),
     )
@@ -256,7 +256,7 @@ async fn a_run_in_the_session_names_the_run_to_stop_and_stays_rejected() {
         "{}",
         finished.err
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[test]
@@ -269,25 +269,25 @@ fn credential_help_presents_set_and_forget_together() {
 
 #[tokio::test]
 async fn a_record_that_does_not_exist_is_unresolved() {
-    let harness = an_organization().await;
+    let kestrel = an_organization().await;
 
     for args in [
         &["session", "show", "no-such-session"][..],
         &["trigger", "show", "no-such-trigger"],
         &["project", "list", "--organization", "globex"],
     ] {
-        let finished = ran_by(&harness, args, Invocation::default()).await;
+        let finished = ran_by(&kestrel, args, Invocation::default()).await;
 
         exited(&finished, UNRESOLVED);
     }
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_declined_operation_is_rejected() {
-    let harness = an_organization().await;
+    let kestrel = an_organization().await;
     let declared = ran_by(
-        &harness,
+        &kestrel,
         &["profile", "declare", "max", "--owner", "max"],
         Invocation::default(),
     )
@@ -295,13 +295,13 @@ async fn a_declined_operation_is_rejected() {
     exited(&declared, SUCCESS);
 
     let taken = ran_by(
-        &harness,
+        &kestrel,
         &["profile", "declare", "max", "--owner", "someone-else"],
         Invocation::default(),
     )
     .await;
     let unacceptable = ran_by(
-        &harness,
+        &kestrel,
         &[
             "project",
             "declare",
@@ -317,7 +317,7 @@ async fn a_declined_operation_is_rejected() {
 
     exited(&taken, REJECTED);
     exited(&unacceptable, REJECTED);
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[test]

@@ -9,7 +9,7 @@ use std::time::Duration;
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
 use kestrel::log::Entry;
 use kestrel::work::{Report, Reported};
-use support::Harness;
+use support::Kestrel;
 use support::environment::Environment;
 use support::link_client::Link;
 use support::repository;
@@ -18,9 +18,9 @@ use support::supervisor;
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
-async fn a_session(harness: &Harness) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session(kestrel: &Kestrel) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             repository::NAME,
@@ -28,7 +28,7 @@ async fn a_session(harness: &Harness) -> Session {
             repository::BRANCH,
         )
         .await;
-    harness
+    kestrel
         .declare_agent(
             &organization,
             "builder",
@@ -37,7 +37,7 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
 
-    harness
+    kestrel
         .hold_provider_credential(
             &organization,
             support::PROVIDER_KEY,
@@ -45,14 +45,14 @@ async fn a_session(harness: &Harness) -> Session {
         )
         .await;
 
-    harness.open_session("acme", "kestrel", "builder").await
+    kestrel.open_session("acme", "kestrel", "builder").await
 }
 
-async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
+async fn until(kestrel: &Kestrel, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let run = harness.run(run).await;
+        let run = kestrel.run(run).await;
         if ready(&run) {
             return run;
         }
@@ -68,92 +68,92 @@ async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -
 }
 
 /// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
-async fn ended(harness: &Harness, run: RunId) -> Run {
-    harness.after_one_turn(run).await
+async fn ended(kestrel: &Kestrel, run: RunId) -> Run {
+    kestrel.after_one_turn(run).await
 }
 
 #[tokio::test]
 async fn runs_in_distinct_sessions_start_at_the_same_time() {
-    let harness = Harness::dispatching_up_to(
+    let kestrel = Kestrel::dispatching_up_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Dawdles),
         2,
     )
     .await;
-    let first_session = a_session(&harness).await;
-    let second_session = harness.open_session("acme", "kestrel", "builder").await;
-    let first = harness.enqueue_run(first_session.id).await;
-    let second = harness.enqueue_run(second_session.id).await;
+    let first_session = a_session(&kestrel).await;
+    let second_session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let first = kestrel.enqueue_run(first_session.id).await;
+    let second = kestrel.enqueue_run(second_session.id).await;
 
-    let second = until(&harness, second.id, "started", |run| {
+    let second = until(&kestrel, second.id, "started", |run| {
         run.started_at.is_some()
     })
     .await;
 
-    assert_eq!(harness.run(first.id).await.state, RunState::Working);
+    assert_eq!(kestrel.run(first.id).await.state, RunState::Working);
     assert_eq!(second.state, RunState::Working);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_active_run_limit_queues_excess_work_and_releases_it_as_runs_end() {
-    let harness = Harness::dispatching_up_to(
+    let kestrel = Kestrel::dispatching_up_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Dawdles),
         1,
     )
     .await;
-    let first_session = a_session(&harness).await;
-    let second_session = harness.open_session("acme", "kestrel", "builder").await;
-    let third_session = harness.open_session("acme", "kestrel", "builder").await;
-    let first = harness.enqueue_run(first_session.id).await;
-    let second = harness.enqueue_run(second_session.id).await;
-    let third = harness.enqueue_run(third_session.id).await;
+    let first_session = a_session(&kestrel).await;
+    let second_session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let third_session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let first = kestrel.enqueue_run(first_session.id).await;
+    let second = kestrel.enqueue_run(second_session.id).await;
+    let third = kestrel.enqueue_run(third_session.id).await;
 
-    let first = until(&harness, first.id, "started", |run| {
+    let first = until(&kestrel, first.id, "started", |run| {
         run.started_at.is_some()
     })
     .await;
-    assert_eq!(harness.run(second.id).await.state, RunState::Queued);
-    assert_eq!(harness.run(third.id).await.state, RunState::Queued);
+    assert_eq!(kestrel.run(second.id).await.state, RunState::Queued);
+    assert_eq!(kestrel.run(third.id).await.state, RunState::Queued);
 
-    harness.complete_run(&first).await;
-    let second = until(&harness, second.id, "started", |run| {
+    kestrel.complete_run(&first).await;
+    let second = until(&kestrel, second.id, "started", |run| {
         run.started_at.is_some()
     })
     .await;
-    assert_eq!(harness.run(third.id).await.state, RunState::Queued);
+    assert_eq!(kestrel.run(third.id).await.state, RunState::Queued);
 
-    harness.complete_run(&second).await;
-    let third = until(&harness, third.id, "started", |run| {
+    kestrel.complete_run(&second).await;
+    let third = until(&kestrel, third.id, "started", |run| {
         run.started_at.is_some()
     })
     .await;
     assert_eq!(third.state, RunState::Working);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn stopping_with_several_runs_in_flight_ends_each_and_stops_their_supervisors() {
     let environment = Environment::executing("sleep 300");
-    let harness = Harness::dispatching_up_to(environment.path(), "unused", 2).await;
-    let first_session = a_session(&harness).await;
-    let second_session = harness.open_session("acme", "kestrel", "builder").await;
-    let first = harness.enqueue_run(first_session.id).await;
-    let second = harness.enqueue_run(second_session.id).await;
-    let first = until(&harness, first.id, "reached a supervisor", |run| {
+    let kestrel = Kestrel::dispatching_up_to(environment.path(), "unused", 2).await;
+    let first_session = a_session(&kestrel).await;
+    let second_session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let first = kestrel.enqueue_run(first_session.id).await;
+    let second = kestrel.enqueue_run(second_session.id).await;
+    let first = until(&kestrel, first.id, "reached a supervisor", |run| {
         run.supervisor.is_some()
     })
     .await;
-    let second = until(&harness, second.id, "reached a supervisor", |run| {
+    let second = until(&kestrel, second.id, "reached a supervisor", |run| {
         run.supervisor.is_some()
     })
     .await;
 
-    let stopped = harness.teardown().await;
+    let stopped = kestrel.teardown().await;
 
     for run in [first, second] {
         let ended = stopped.run(run.id).await;
@@ -167,12 +167,12 @@ async fn stopping_with_several_runs_in_flight_ends_each_and_stops_their_supervis
 
 #[tokio::test]
 async fn a_run_enqueued_is_claimed_dispatched_and_reaches_an_instance() {
-    let harness = Harness::dispatching(supervisor::binary()).await;
-    let session = a_session(&harness).await;
+    let kestrel = Kestrel::dispatching(supervisor::binary()).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
     assert_eq!(run.state, RunState::Queued);
-    let ended = ended(&harness, run.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     assert!(
         ended.connected.is_some(),
@@ -181,18 +181,18 @@ async fn a_run_enqueued_is_claimed_dispatched_and_reaches_an_instance() {
     assert!(ended.instance.is_some());
     assert_eq!(ended.exit, Some(Exit::Succeeded));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_run_that_reaches_an_instance_starts_and_ends_in_the_transcript() {
-    let harness = Harness::dispatching(supervisor::binary()).await;
-    let session = a_session(&harness).await;
+    let kestrel = Kestrel::dispatching(supervisor::binary()).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    ended(&kestrel, run.id).await;
 
-    let said: Vec<String> = harness
+    let said: Vec<String> = kestrel
         .transcript(session.id)
         .await
         .iter()
@@ -210,28 +210,28 @@ async fn a_run_that_reaches_an_instance_starts_and_ends_in_the_transcript() {
         ]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_finished_runs_supervisor_is_stopped_and_its_instance_kept_for_the_session() {
-    let harness = Harness::dispatching(supervisor::binary()).await;
-    let session = a_session(&harness).await;
+    let kestrel = Kestrel::dispatching(supervisor::binary()).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     Environment::named(ended.supervisor.as_deref().expect("a supervisor"))
         .is_gone()
         .await;
     let instance = ended.instance.expect("an instance");
-    assert_eq!(harness.instance(session.id).await.as_ref(), Some(&instance));
+    assert_eq!(kestrel.instance(session.id).await.as_ref(), Some(&instance));
     assert!(
         Environment::workspace_of(&instance).is_dir(),
         "the instance went with the run"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// Stands in for the Agent Runtime, so what it finds is what the supervisor checked out
@@ -247,8 +247,8 @@ fn noting_the_checkout() -> Environment {
 }
 
 #[cfg(unix)]
-async fn noted(runtime: &Environment, maximum: usize) -> Harness {
-    Harness::dispatching_up_to(
+async fn noted(runtime: &Environment, maximum: usize) -> Kestrel {
+    Kestrel::dispatching_up_to(
         supervisor::binary(),
         &format!("\"{}\"", runtime.path().display()),
         maximum,
@@ -260,11 +260,11 @@ async fn noted(runtime: &Environment, maximum: usize) -> Harness {
 #[tokio::test]
 async fn a_session_declares_a_branch_of_its_own_and_the_run_starts_on_it() {
     let runtime = noting_the_checkout();
-    let harness = noted(&runtime, 1).await;
-    let session = a_session(&harness).await;
+    let kestrel = noted(&runtime, 1).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert_eq!(session.checkout.branch, format!("kestrel/{}", session.id));
@@ -275,23 +275,23 @@ async fn a_session_declares_a_branch_of_its_own_and_the_run_starts_on_it() {
         "the agent did not start on its session's branch"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn parallel_sessions_work_on_distinct_branches() {
     let runtime = noting_the_checkout();
-    let harness = noted(&runtime, 2).await;
-    let first = a_session(&harness).await;
-    let second = harness.open_session("acme", "kestrel", "builder").await;
+    let kestrel = noted(&runtime, 2).await;
+    let first = a_session(&kestrel).await;
+    let second = kestrel.open_session("acme", "kestrel", "builder").await;
 
     let runs = [
-        harness.enqueue_run(first.id).await,
-        harness.enqueue_run(second.id).await,
+        kestrel.enqueue_run(first.id).await,
+        kestrel.enqueue_run(second.id).await,
     ];
     for run in runs {
-        ended(&harness, run.id).await;
+        ended(&kestrel, run.id).await;
     }
 
     assert_ne!(first.checkout.branch, second.checkout.branch);
@@ -304,53 +304,53 @@ async fn parallel_sessions_work_on_distinct_branches() {
     expected.sort();
     assert_eq!(found, expected);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn a_session_on_a_branch_its_operator_named_starts_on_that_branchs_work() {
     let runtime = noting_the_checkout();
-    let harness = noted(&runtime, 1).await;
-    a_session(&harness).await;
-    let session = harness
+    let kestrel = noted(&runtime, 1).await;
+    a_session(&kestrel).await;
+    let session = kestrel
         .open_session_on("acme", "kestrel", "builder", repository::EXISTING_BRANCH)
         .await;
 
-    let run = harness.enqueue_run(session.id).await;
-    ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    ended(&kestrel, run.id).await;
 
     assert_eq!(
         runtime.wrote("found"),
         format!("{} an existing branch's work", repository::EXISTING_BRANCH)
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn a_branch_the_remote_does_not_have_is_cut_from_the_projects() {
     let runtime = noting_the_checkout();
-    let harness = noted(&runtime, 1).await;
-    a_session(&harness).await;
-    let session = harness
+    let kestrel = noted(&runtime, 1).await;
+    a_session(&kestrel).await;
+    let session = kestrel
         .open_session_on("acme", "kestrel", "builder", "kestrel/issue-43")
         .await;
 
-    let run = harness.enqueue_run(session.id).await;
-    ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    ended(&kestrel, run.id).await;
 
     assert_eq!(
         runtime.wrote("found"),
         "kestrel/issue-43 a project's repository"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
-async fn located(harness: &Harness, session: &Session) -> Vec<PathBuf> {
-    harness
+async fn located(kestrel: &Kestrel, session: &Session) -> Vec<PathBuf> {
+    kestrel
         .transcript(session.id)
         .await
         .into_iter()
@@ -370,35 +370,35 @@ fn checkout_of(instance: &str, repository: &str) -> PathBuf {
 
 #[tokio::test]
 async fn a_runs_agent_is_rooted_in_the_checkout_of_its_sessions_repository() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Locates),
     )
     .await;
-    let session = a_session(&harness).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     let instance = ended.instance.expect("an instance");
     assert_eq!(
-        located(&harness, &session).await,
+        located(&kestrel, &session).await,
         [checkout_of(&instance, repository::NAME)]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_runs_agent_is_rooted_in_the_first_repository_its_session_declares() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Locates),
     )
     .await;
-    a_session(&harness).await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    a_session(&kestrel).await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "both",
@@ -409,14 +409,14 @@ async fn a_runs_agent_is_rooted_in_the_first_repository_its_session_declares() {
             repository::BRANCH,
         )
         .await;
-    let session = harness.open_session("acme", "both", "builder").await;
+    let session = kestrel.open_session("acme", "both", "builder").await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     let instance = ended.instance.expect("an instance");
     assert_eq!(
-        located(&harness, &session).await,
+        located(&kestrel, &session).await,
         [checkout_of(&instance, repository::OTHER)]
     );
     assert!(
@@ -426,19 +426,19 @@ async fn a_runs_agent_is_rooted_in_the_first_repository_its_session_declares() {
         "the session's other repository is not checked out beside the first"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn redeclaring_the_project_does_not_move_where_an_open_sessions_agent_is_rooted() {
-    let harness = Harness::dispatching_to(
+    let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Locates),
     )
     .await;
-    let session = a_session(&harness).await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let session = a_session(&kestrel).await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             repository::NAME,
@@ -450,16 +450,16 @@ async fn redeclaring_the_project_does_not_move_where_an_open_sessions_agent_is_r
         )
         .await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     let instance = ended.instance.expect("an instance");
     assert_eq!(
-        located(&harness, &session).await,
+        located(&kestrel, &session).await,
         [checkout_of(&instance, repository::NAME)]
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// Stands in for the Agent Runtime. On a checkout it has not been on before it leaves work only
@@ -488,11 +488,11 @@ fn leaving_work_behind() -> Environment {
 }
 
 /// The slot is held until the last Run's supervisor is stopped, a moment after the Run ends.
-async fn enqueued_once_free(harness: &Harness, session: &Session) -> Run {
+async fn enqueued_once_free(kestrel: &Kestrel, session: &Session) -> Run {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        match harness.try_enqueue_run(session.id).await {
+        match kestrel.try_enqueue_run(session.id).await {
             Ok(run) => return run,
             Err(error) => assert!(
                 tokio::time::Instant::now() < deadline,
@@ -507,13 +507,13 @@ async fn enqueued_once_free(harness: &Harness, session: &Session) -> Run {
 #[tokio::test]
 async fn a_later_run_finds_the_checkout_exactly_as_the_run_before_it_left_it() {
     let runtime = leaving_work_behind();
-    let harness = noted(&runtime, 1).await;
-    let session = a_session(&harness).await;
+    let kestrel = noted(&runtime, 1).await;
+    let session = a_session(&kestrel).await;
 
-    let first = harness.enqueue_run(session.id).await;
-    let first = ended(&harness, first.id).await;
-    let second = enqueued_once_free(&harness, &session).await;
-    let second = ended(&harness, second.id).await;
+    let first = kestrel.enqueue_run(session.id).await;
+    let first = ended(&kestrel, first.id).await;
+    let second = enqueued_once_free(&kestrel, &session).await;
+    let second = ended(&kestrel, second.id).await;
 
     assert_eq!(first.exit, Some(Exit::Succeeded));
     assert_eq!(second.exit, Some(Exit::Succeeded));
@@ -527,50 +527,50 @@ async fn a_later_run_finds_the_checkout_exactly_as_the_run_before_it_left_it() {
          untracked"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn each_run_has_a_supervisor_of_its_own_and_leaves_no_process_to_the_next() {
     let runtime = leaving_work_behind();
-    let harness = noted(&runtime, 1).await;
-    let session = a_session(&harness).await;
+    let kestrel = noted(&runtime, 1).await;
+    let session = a_session(&kestrel).await;
 
-    let first = harness.enqueue_run(session.id).await;
-    let first = ended(&harness, first.id).await;
+    let first = kestrel.enqueue_run(session.id).await;
+    let first = ended(&kestrel, first.id).await;
     Environment::process(&runtime.wrote("lingering"))
         .is_gone()
         .await;
     let first_supervisor = first.supervisor.expect("a supervisor");
     Environment::named(&first_supervisor).is_gone().await;
 
-    let second = enqueued_once_free(&harness, &session).await;
-    let second = ended(&harness, second.id).await;
+    let second = enqueued_once_free(&kestrel, &session).await;
+    let second = ended(&kestrel, second.id).await;
 
     assert_eq!(first.instance, second.instance);
     assert_ne!(Some(first_supervisor), second.supervisor);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn a_run_whose_instance_is_gone_fails_saying_so_and_the_next_starts_from_the_remote() {
     let runtime = leaving_work_behind();
-    let harness = noted(&runtime, 1).await;
-    let session = a_session(&harness).await;
+    let kestrel = noted(&runtime, 1).await;
+    let session = a_session(&kestrel).await;
 
-    let first = harness.enqueue_run(session.id).await;
-    let first = ended(&harness, first.id).await;
+    let first = kestrel.enqueue_run(session.id).await;
+    let first = ended(&kestrel, first.id).await;
     Environment::named(first.supervisor.as_deref().expect("a supervisor"))
         .is_gone()
         .await;
     let lost = first.instance.clone().expect("an instance");
     std::fs::remove_dir_all(Environment::workspace_of(&lost)).expect("the instance should go");
 
-    let second = enqueued_once_free(&harness, &session).await;
-    let second = ended(&harness, second.id).await;
+    let second = enqueued_once_free(&kestrel, &session).await;
+    let second = ended(&kestrel, second.id).await;
     let Some(Exit::Failed { because }) = &second.exit else {
         panic!("the run ended {:?}, and its instance was gone", second.exit);
     };
@@ -581,10 +581,10 @@ async fn a_run_whose_instance_is_gone_fails_saying_so_and_the_next_starts_from_t
         "the failure does not say what was lost: {because}"
     );
     assert_eq!(second.started_at, None);
-    assert_eq!(harness.instance(session.id).await, None);
+    assert_eq!(kestrel.instance(session.id).await, None);
 
-    let third = enqueued_once_free(&harness, &session).await;
-    let third = ended(&harness, third.id).await;
+    let third = enqueued_once_free(&kestrel, &session).await;
+    let third = ended(&kestrel, third.id).await;
     assert_eq!(third.exit, Some(Exit::Succeeded));
     assert_ne!(third.instance.as_ref(), Some(&lost));
     assert_eq!(
@@ -596,14 +596,14 @@ async fn a_run_whose_instance_is_gone_fails_saying_so_and_the_next_starts_from_t
         .is_gone()
         .await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_checkout_that_fails_names_the_repository_and_branch_and_the_run_never_starts() {
-    let harness = Harness::dispatching(supervisor::binary()).await;
-    let organization = harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::dispatching(supervisor::binary()).await;
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             repository::NAME,
@@ -611,7 +611,7 @@ async fn a_checkout_that_fails_names_the_repository_and_branch_and_the_run_never
             "a-branch-nobody-cut",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(
             &organization,
             "builder",
@@ -619,7 +619,7 @@ async fn a_checkout_that_fails_names_the_repository_and_branch_and_the_run_never
             Some(kestrel_scripted_agent::OTHER_MODEL),
         )
         .await;
-    harness
+    kestrel
         .hold_provider_credential(
             &organization,
             support::PROVIDER_KEY,
@@ -627,10 +627,10 @@ async fn a_checkout_that_fails_names_the_repository_and_branch_and_the_run_never
         )
         .await;
 
-    let session = harness.open_session("acme", "kestrel", "builder").await;
+    let session = kestrel.open_session("acme", "kestrel", "builder").await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
@@ -647,18 +647,18 @@ async fn a_checkout_that_fails_names_the_repository_and_branch_and_the_run_never
         "a run that was never checked out started"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn a_supervisor_that_ends_without_saying_how_the_run_went_leaves_it_failed() {
     let environment = Environment::executing("exit 3");
-    let harness = Harness::dispatching(environment.path()).await;
-    let session = a_session(&harness).await;
+    let kestrel = Kestrel::dispatching(environment.path()).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
@@ -674,16 +674,16 @@ async fn a_supervisor_that_ends_without_saying_how_the_run_went_leaves_it_failed
         .is_gone()
         .await;
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_supervisor_that_reports_its_run_failed_ends_it_failed() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, credential) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, credential) = kestrel.dispatch_run(session.id).await;
 
-    Link::to(&harness.link())
+    Link::to(&kestrel.link())
         .report(
             run.id,
             Some(&credential),
@@ -698,7 +698,7 @@ async fn a_supervisor_that_reports_its_run_failed_ends_it_failed() {
         )
         .await;
 
-    let ended = ended(&harness, run.id).await;
+    let ended = ended(&kestrel, run.id).await;
     assert_eq!(
         ended.exit,
         Some(Exit::Failed {
@@ -706,7 +706,7 @@ async fn a_supervisor_that_reports_its_run_failed_ends_it_failed() {
         })
     );
     assert_eq!(
-        harness
+        kestrel
             .transcript(session.id)
             .await
             .last()
@@ -719,23 +719,23 @@ async fn a_supervisor_that_reports_its_run_failed_ends_it_failed() {
         )
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn a_run_still_in_flight_when_the_control_plane_stops_ends_and_its_supervisor_is_stopped() {
     let environment = Environment::executing("sleep 300");
-    let harness = Harness::dispatching(environment.path()).await;
-    let session = a_session(&harness).await;
+    let kestrel = Kestrel::dispatching(environment.path()).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let in_flight = until(&harness, run.id, "reached a supervisor", |run| {
+    let run = kestrel.enqueue_run(session.id).await;
+    let in_flight = until(&kestrel, run.id, "reached a supervisor", |run| {
         run.supervisor.is_some() && run.state == RunState::Working
     })
     .await;
 
-    let stopped = harness.teardown().await;
+    let stopped = kestrel.teardown().await;
 
     let ended = stopped.run(run.id).await;
     assert_eq!(ended.state, RunState::Ended);
@@ -747,11 +747,11 @@ async fn a_run_still_in_flight_when_the_control_plane_stops_ends_and_its_supervi
 
 #[tokio::test]
 async fn a_run_whose_supervisor_cannot_be_started_ends_rather_than_staying_queued() {
-    let harness = Harness::dispatching(Path::new("/nowhere/kestrel-supervisor")).await;
-    let session = a_session(&harness).await;
+    let kestrel = Kestrel::dispatching(Path::new("/nowhere/kestrel-supervisor")).await;
+    let session = a_session(&kestrel).await;
 
-    let run = harness.enqueue_run(session.id).await;
-    let ended = ended(&harness, run.id).await;
+    let run = kestrel.enqueue_run(session.id).await;
+    let ended = ended(&kestrel, run.id).await;
 
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!("the run ended {:?}, and nothing provisioned it", ended.exit);
@@ -762,16 +762,16 @@ async fn a_run_whose_supervisor_cannot_be_started_ends_rather_than_staying_queue
     );
     assert!(ended.supervisor.is_none());
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_queued_run_is_claimed_once_however_many_claimants_ask_at_once() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let run = harness.enqueue_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let run = kestrel.enqueue_run(session.id).await;
 
-    let (first, second) = tokio::join!(harness.claim_run(), harness.claim_run());
+    let (first, second) = tokio::join!(kestrel.claim_run(), kestrel.claim_run());
 
     let claimed: Vec<RunId> = [first, second]
         .into_iter()
@@ -780,36 +780,36 @@ async fn a_queued_run_is_claimed_once_however_many_claimants_ask_at_once() {
         .collect();
     assert_eq!(claimed, vec![run.id]);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_run_being_executed_is_never_claimed_again() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, _) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(session.id).await;
 
-    assert_eq!(harness.run(run.id).await.state, RunState::Working);
+    assert_eq!(kestrel.run(run.id).await.state, RunState::Working);
     assert!(
-        harness.claim_run().await.is_none(),
+        kestrel.claim_run().await.is_none(),
         "a run already being executed was handed out to be dispatched again"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_run_that_ended_is_never_claimed_again() {
-    let harness = Harness::boot().await;
-    let session = a_session(&harness).await;
-    let (run, _) = harness.dispatch_run(session.id).await;
+    let kestrel = Kestrel::boot().await;
+    let session = a_session(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(session.id).await;
 
-    harness.complete_run(&run).await;
+    kestrel.complete_run(&run).await;
 
     assert!(
-        harness.claim_run().await.is_none(),
+        kestrel.claim_run().await.is_none(),
         "a run that already ended was handed out to be dispatched again"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

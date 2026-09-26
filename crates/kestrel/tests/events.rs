@@ -9,7 +9,7 @@ use std::time::Duration;
 use jiff::SignedDuration;
 use kestrel::domain::{Direction, Event};
 use support::github_stub::{self, GithubStub, ScriptedResponse};
-use support::{Harness, TOKEN};
+use support::{Kestrel, TOKEN};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 const REPOSITORY: &str = "jtmthf/kestrel";
@@ -21,9 +21,9 @@ fn eagerly() -> SignedDuration {
     SignedDuration::from_millis(1)
 }
 
-async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
-    harness.declare_organization("acme").await;
-    harness
+async fn watching(kestrel: &Kestrel, stub: &GithubStub, carries: &[Direction]) {
+    kestrel.declare_organization("acme").await;
+    kestrel
         .register_integration(
             "acme",
             "github",
@@ -35,11 +35,11 @@ async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
         .await;
 }
 
-async fn recorded(harness: &Harness, count: usize) -> Vec<Event> {
+async fn recorded(kestrel: &Kestrel, count: usize) -> Vec<Event> {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let events = harness.events("acme").await;
+        let events = kestrel.events("acme").await;
         if events.len() >= count {
             return events;
         }
@@ -76,10 +76,10 @@ fn labelled_ready(id: i64, issue: i64) -> serde_json::Value {
 async fn events_on_a_watched_repository_are_recorded_and_listed() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[labelled_ready(7, 43)]));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    let events = recorded(&harness, 1).await;
+    let events = recorded(&kestrel, 1).await;
 
     assert_eq!(events.len(), 1);
     assert_eq!(
@@ -93,22 +93,22 @@ async fn events_on_a_watched_repository_are_recorded_and_listed() {
     assert_eq!(data.subject_issue(), Some(43));
     assert_eq!(data.actor(), Some("jtmthf"));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_integration_declares_which_directions_it_carries() {
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
     let stub = GithubStub::start();
-    watching(&harness, &stub, &[Direction::Inbound]).await;
+    watching(&kestrel, &stub, &[Direction::Inbound]).await;
 
-    let registered = harness.integrations("acme").await;
+    let registered = kestrel.integrations("acme").await;
 
     assert_eq!(registered.len(), 1);
     assert!(registered[0].carries(Direction::Inbound));
     assert!(!registered[0].carries(Direction::Outbound));
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The direction is what an Integration does rather than a label beside it: nothing polls one
@@ -117,10 +117,10 @@ async fn an_integration_declares_which_directions_it_carries() {
 async fn an_integration_that_carries_only_outbound_is_never_polled() {
     let outbound_only = GithubStub::start();
     let polling = GithubStub::start();
-    let harness = Harness::boot().await;
+    let kestrel = Kestrel::boot().await;
 
-    harness.declare_organization("acme").await;
-    harness
+    kestrel.declare_organization("acme").await;
+    kestrel
         .register_integration(
             "acme",
             "outbound",
@@ -130,7 +130,7 @@ async fn an_integration_that_carries_only_outbound_is_never_polled() {
             eagerly(),
         )
         .await;
-    harness
+    kestrel
         .register_integration(
             "acme",
             "inbound",
@@ -148,7 +148,7 @@ async fn an_integration_that_carries_only_outbound_is_never_polled() {
         "an integration that carries nothing inbound was polled"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -157,20 +157,20 @@ async fn two_polls_with_an_overlapping_window_record_each_event_once() {
     let overlapping = github_stub::page(&[labelled_ready(8, 44), labelled_ready(7, 43)]);
     stub.script(overlapping.clone());
     stub.script(overlapping);
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    recorded(&harness, 2).await;
+    recorded(&kestrel, 2).await;
     polled(&stub, 2).await;
 
-    let events = harness.events("acme").await;
+    let events = kestrel.events("acme").await;
     assert_eq!(
         events.len(),
         2,
         "the same two events were recorded {} times over",
         events.len()
     );
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -179,9 +179,9 @@ async fn two_integrations_in_one_organization_record_one_producer_event() {
     let second = GithubStub::start();
     first.script(github_stub::page(&[labelled_ready(7, 43)]));
     second.script(github_stub::page(&[labelled_ready(7, 43)]));
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
+    kestrel
         .register_integration(
             "acme",
             "first",
@@ -191,7 +191,7 @@ async fn two_integrations_in_one_organization_record_one_producer_event() {
             eagerly(),
         )
         .await;
-    harness
+    kestrel
         .register_integration(
             "acme",
             "second",
@@ -205,9 +205,9 @@ async fn two_integrations_in_one_organization_record_one_producer_event() {
     polled(&first, 2).await;
     polled(&second, 2).await;
 
-    assert_eq!(harness.events("acme").await.len(), 1);
+    assert_eq!(kestrel.events("acme").await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -215,31 +215,31 @@ async fn polling_resumes_after_a_restart_without_re_recording_what_it_already_sa
     let stub = GithubStub::start();
     let page = github_stub::page(&[labelled_ready(7, 43)]);
     stub.script(page.clone());
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
-    recorded(&harness, 1).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
+    recorded(&kestrel, 1).await;
 
-    let harness = harness.kill_and_restart().await;
+    let kestrel = kestrel.kill_and_restart().await;
     let asked = stub.requests().len();
     stub.script(page);
     polled(&stub, asked + 1).await;
 
-    let events = harness.events("acme").await;
+    let events = kestrel.events("acme").await;
     assert_eq!(
         events.len(),
         1,
         "a restarted control plane recorded what it had already seen"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn the_poll_interval_survives_a_restart() {
     let stub = GithubStub::start();
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
+    kestrel
         .register_integration(
             "acme",
             "github",
@@ -250,17 +250,17 @@ async fn the_poll_interval_survives_a_restart() {
         )
         .await;
 
-    let harness = harness.kill_and_restart().await;
+    let kestrel = kestrel.kill_and_restart().await;
 
     assert_eq!(
-        harness.integrations("acme").await[0]
+        kestrel.integrations("acme").await[0]
             .github()
             .expect("a github integration")
             .interval,
         SignedDuration::from_secs(97)
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -268,10 +268,10 @@ async fn a_rate_limited_poll_loses_no_event_and_records_none_twice() {
     let stub = GithubStub::start();
     stub.script(github_stub::rate_limited());
     stub.script(github_stub::page(&[labelled_ready(7, 43)]));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    let events = recorded(&harness, 1).await;
+    let events = recorded(&kestrel, 1).await;
 
     assert_eq!(events.len(), 1);
     assert_eq!(
@@ -279,7 +279,7 @@ async fn a_rate_limited_poll_loses_no_event_and_records_none_twice() {
         Some(43)
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -296,19 +296,19 @@ async fn a_payload_over_one_mebibyte_is_refused_rather_than_stored() {
         "/issues/comments?",
         github_stub::page(&[github_stub::issue_comment(11, 43, "jack", &oversized)]),
     );
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
     polled(&stub, 4).await;
 
-    let events = harness.events("acme").await;
+    let events = kestrel.events("acme").await;
     assert_eq!(
         events.len(),
         1,
         "the oversized payload was stored and is {} event(s) big",
         events.len()
     );
-    let integration = &harness.integrations("acme").await[0];
+    let integration = &kestrel.integrations("acme").await[0];
     let refusal = integration
         .last_event_refusal
         .as_ref()
@@ -317,14 +317,14 @@ async fn a_payload_over_one_mebibyte_is_refused_rather_than_stored() {
     assert!(refusal.bytes > 1024 * 1024);
     assert_eq!(integration.comments_polled_through, Some(11));
 
-    harness.acknowledge_event_refusal("acme", "github").await;
+    kestrel.acknowledge_event_refusal("acme", "github").await;
     assert!(
-        harness.integrations("acme").await[0]
+        kestrel.integrations("acme").await[0]
             .last_event_refusal
             .is_none()
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -333,15 +333,15 @@ async fn a_transient_failure_loses_no_event_and_records_none_twice() {
     stub.script(ScriptedResponse::answering(502));
     stub.script(github_stub::page(&[labelled_ready(7, 43)]));
     stub.script(github_stub::page(&[labelled_ready(7, 43)]));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    recorded(&harness, 1).await;
+    recorded(&kestrel, 1).await;
     polled(&stub, 3).await;
 
-    assert_eq!(harness.events("acme").await.len(), 1);
+    assert_eq!(kestrel.events("acme").await.len(), 1);
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 /// The credential is the Organization's, and the only place it is ever spoken is the request
@@ -350,10 +350,10 @@ async fn a_transient_failure_loses_no_event_and_records_none_twice() {
 async fn the_organizations_credential_is_what_the_poll_presents() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[labelled_ready(7, 43)]));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
 
-    recorded(&harness, 1).await;
+    recorded(&kestrel, 1).await;
 
     let asked = stub.requests();
     let authorization = asked[0]
@@ -371,16 +371,16 @@ async fn the_organizations_credential_is_what_the_poll_presents() {
         asked[0].url
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_integration_names_a_repository_as_owner_and_name() {
     let stub = GithubStub::start();
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
 
-    let refusal = harness
+    let refusal = kestrel
         .try_register_integration(
             "acme",
             "github",
@@ -397,29 +397,29 @@ async fn an_integration_names_a_repository_as_owner_and_name() {
         "unhelpful refusal: {refusal}"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn an_integration_and_what_it_discovers_belong_to_one_organization() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[labelled_ready(7, 43)]));
-    let harness = Harness::boot().await;
-    watching(&harness, &stub, BOTH).await;
-    harness.declare_organization("globex").await;
+    let kestrel = Kestrel::boot().await;
+    watching(&kestrel, &stub, BOTH).await;
+    kestrel.declare_organization("globex").await;
 
-    recorded(&harness, 1).await;
+    recorded(&kestrel, 1).await;
 
     assert!(
-        harness.integrations("globex").await.is_empty(),
+        kestrel.integrations("globex").await.is_empty(),
         "another organization can see the integration acme registered"
     );
     assert!(
-        harness.events("globex").await.is_empty(),
+        kestrel.events("globex").await.is_empty(),
         "another organization can see the events acme's integration discovered"
     );
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
@@ -428,10 +428,10 @@ async fn two_organizations_keep_separate_copies_of_the_same_producer_event() {
     let globex = GithubStub::start();
     acme.script(github_stub::page(&[labelled_ready(7, 43)]));
     globex.script(github_stub::page(&[labelled_ready(7, 43)]));
-    let harness = Harness::boot().await;
-    harness.declare_organization("acme").await;
-    harness.declare_organization("globex").await;
-    harness
+    let kestrel = Kestrel::boot().await;
+    kestrel.declare_organization("acme").await;
+    kestrel.declare_organization("globex").await;
+    kestrel
         .register_integration(
             "acme",
             "github",
@@ -441,7 +441,7 @@ async fn two_organizations_keep_separate_copies_of_the_same_producer_event() {
             eagerly(),
         )
         .await;
-    harness
+    kestrel
         .register_integration(
             "globex",
             "github",
@@ -454,8 +454,8 @@ async fn two_organizations_keep_separate_copies_of_the_same_producer_event() {
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        let acme_events = harness.events("acme").await;
-        let globex_events = harness.events("globex").await;
+        let acme_events = kestrel.events("acme").await;
+        let globex_events = kestrel.events("globex").await;
         if acme_events.len() == 1 && globex_events.len() == 1 {
             assert_eq!(acme_events[0].occurrence.id, globex_events[0].occurrence.id);
             assert_ne!(acme_events[0].record_id, globex_events[0].record_id);
@@ -468,5 +468,5 @@ async fn two_organizations_keep_separate_copies_of_the_same_producer_event() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    harness.teardown().await;
+    kestrel.teardown().await;
 }

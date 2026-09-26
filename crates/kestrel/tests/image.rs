@@ -12,7 +12,7 @@ use std::time::Duration;
 use jiff::{SignedDuration, Timestamp};
 use kestrel::domain::{Exit, Run, RunId, RunState, Session};
 use kestrel::link::credential::Secret;
-use support::Harness;
+use support::Kestrel;
 use support::image::{self, Environment};
 
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -125,13 +125,13 @@ fn the_supervisor_is_what_the_image_starts_with_nothing_wrapped_around_it() {
 #[ignore = "builds and runs the kestrel-env image"]
 async fn an_environment_the_image_provisions_dials_out_and_the_control_plane_knows_it_is_connected()
 {
-    let harness = Harness::boot_reachable_from_an_environment().await;
-    let (run, credential) = a_run(&harness).await;
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
+    let (run, credential) = a_run(&kestrel).await;
 
-    let mut environment = an_environment(&harness, run.id, &credential);
+    let mut environment = an_environment(&kestrel, run.id, &credential);
     environment.wait_until_it_says("reported connected").await;
 
-    let connected = harness
+    let connected = kestrel
         .run(run.id)
         .await
         .connected
@@ -142,16 +142,16 @@ async fn an_environment_the_image_provisions_dials_out_and_the_control_plane_kno
     );
 
     environment.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
 async fn killing_the_supervisor_in_the_environment_ends_the_run_and_nothing_restarts_it() {
-    let harness = Harness::boot_reachable_from_an_environment().await;
-    let (run, credential) = a_run(&harness).await;
+    let kestrel = Kestrel::boot_reachable_from_an_environment().await;
+    let (run, credential) = a_run(&kestrel).await;
 
-    let mut environment = an_environment(&harness, run.id, &credential);
+    let mut environment = an_environment(&kestrel, run.id, &credential);
     environment.wait_until_it_says("reported connected").await;
 
     environment.kill_the_supervisor();
@@ -168,8 +168,8 @@ async fn killing_the_supervisor_in_the_environment_ends_the_run_and_nothing_rest
         "something brought the supervisor back under its Run"
     );
 
-    harness.lease_until(&run, a_moment_ago()).await;
-    let ended = until(&harness, run.id, "ended", |run| {
+    kestrel.lease_until(&run, a_moment_ago()).await;
+    let ended = until(&kestrel, run.id, "ended", |run| {
         run.state == RunState::Ended
     })
     .await;
@@ -185,7 +185,7 @@ async fn killing_the_supervisor_in_the_environment_ends_the_run_and_nothing_rest
     );
 
     environment.destroy();
-    harness.teardown().await;
+    kestrel.teardown().await;
 }
 
 fn anything_named(names: &[&str]) -> String {
@@ -201,19 +201,19 @@ fn anything_named(names: &[&str]) -> String {
     image::running(&sweep).out
 }
 
-fn an_environment(harness: &Harness, run: RunId, credential: &Secret) -> Environment {
-    Environment::provision(&harness.link_from_an_environment(), run, credential)
+fn an_environment(kestrel: &Kestrel, run: RunId, credential: &Secret) -> Environment {
+    Environment::provision(&kestrel.link_from_an_environment(), run, credential)
 }
 
-async fn a_run(harness: &Harness) -> (Run, Secret) {
-    let session = a_session(harness).await;
+async fn a_run(kestrel: &Kestrel) -> (Run, Secret) {
+    let session = a_session(kestrel).await;
 
-    harness.dispatch_run(session.id).await
+    kestrel.dispatch_run(session.id).await
 }
 
-async fn a_session(harness: &Harness) -> Session {
-    let organization = harness.declare_organization("acme").await;
-    harness
+async fn a_session(kestrel: &Kestrel) -> Session {
+    let organization = kestrel.declare_organization("acme").await;
+    kestrel
         .declare_project(
             &organization,
             "kestrel",
@@ -221,18 +221,18 @@ async fn a_session(harness: &Harness) -> Session {
             "main",
         )
         .await;
-    harness
+    kestrel
         .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 
-    harness.open_session("acme", "kestrel", "builder").await
+    kestrel.open_session("acme", "kestrel", "builder").await
 }
 
-async fn until(harness: &Harness, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
+async fn until(kestrel: &Kestrel, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let run = harness.run(run).await;
+        let run = kestrel.run(run).await;
         if ready(&run) {
             return run;
         }
