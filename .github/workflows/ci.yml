@@ -295,7 +295,7 @@ jobs:
           docker buildx build --platform linux/arm64 --target gh \
             --output type=cacheonly --file images/kestrel-dev/Dockerfile .
 
-  # The one status branch protection and the merge queue name. It runs whether an area ran,
+  # The one status the ruleset and the merge queue require. It runs whether an area ran,
   # failed or was skipped: a job skipped by its condition reports success, and only a check
   # that never reports at all strands a pull request.
   gate:
