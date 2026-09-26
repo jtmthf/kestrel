@@ -6,9 +6,9 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqliteConnection};
 
-use crate::domain::{Exit, RunId, Session, SessionId, SessionState};
+use crate::domain::{Exit, RunId, Workspace, WorkspaceId, WorkspaceState};
 
-/// What changed a Session's shared state. Never what happened inside a Run.
+/// What changed a Workspace's shared state. Never what happened inside a Run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Entry {
@@ -106,36 +106,36 @@ impl<'a> Log<'a> {
         Self { connection }
     }
 
-    /// The state is read in the statement that appends rather than off the `Session` handed
+    /// The state is read in the statement that appends rather than off the `Workspace` handed
     /// in, so one sealed after the caller read it refuses all the same.
-    pub async fn append(&mut self, session: &Session, entry: Entry) -> Result<TranscriptEntry> {
+    pub async fn append(&mut self, workspace: &Workspace, entry: Entry) -> Result<TranscriptEntry> {
         let appended_at = Timestamp::now();
 
         let appended = sqlx::query(
-            "INSERT INTO transcript_entry (session_id, organization_id, seq, body, appended_at)
+            "INSERT INTO transcript_entry (workspace_id, organization_id, seq, body, appended_at)
              SELECT
                  ?,
                  ?,
-                 (SELECT COALESCE(MAX(seq), 0) + 1 FROM transcript_entry WHERE session_id = ?),
+                 (SELECT COALESCE(MAX(seq), 0) + 1 FROM transcript_entry WHERE workspace_id = ?),
                  ?,
                  ?
-             WHERE EXISTS (SELECT 1 FROM session WHERE id = ? AND state = ?)
+             WHERE EXISTS (SELECT 1 FROM workspace WHERE id = ? AND state = ?)
              RETURNING seq",
         )
-        .bind(session.id.to_string())
-        .bind(session.organization.id.to_string())
-        .bind(session.id.to_string())
+        .bind(workspace.id.to_string())
+        .bind(workspace.organization.id.to_string())
+        .bind(workspace.id.to_string())
         .bind(serde_json::to_string(&entry)?)
         .bind(appended_at.to_string())
-        .bind(session.id.to_string())
-        .bind(SessionState::Open.as_str())
+        .bind(workspace.id.to_string())
+        .bind(WorkspaceState::Open.as_str())
         .fetch_optional(&mut *self.connection)
         .await
-        .with_context(|| format!("appending to the transcript of session {}", session.id))?
+        .with_context(|| format!("appending to the transcript of workspace {}", workspace.id))?
         .with_context(|| {
             format!(
-                "the session {} is sealed, and accepts no new transcript entry",
-                session.id
+                "the workspace {} is sealed, and accepts no new transcript entry",
+                workspace.id
             )
         })?;
 
@@ -146,25 +146,25 @@ impl<'a> Log<'a> {
         })
     }
 
-    pub async fn last_said_for_run(&mut self, session: &Session) -> Result<Option<String>> {
+    pub async fn last_said_for_run(&mut self, workspace: &Workspace) -> Result<Option<String>> {
         let latest = sqlx::query(
             "SELECT body
              FROM transcript_entry
-             WHERE session_id = ? AND json_extract(body, '$.kind') = 'said'
+             WHERE workspace_id = ? AND json_extract(body, '$.kind') = 'said'
                AND json_extract(body, '$.participant') = ?
                AND seq > COALESCE((
                    SELECT MAX(seq) FROM transcript_entry
-                   WHERE session_id = ? AND json_extract(body, '$.kind') = 'run_ended'
+                   WHERE workspace_id = ? AND json_extract(body, '$.kind') = 'run_ended'
                ), 0)
              ORDER BY seq DESC
              LIMIT 1",
         )
-        .bind(session.id.to_string())
-        .bind(&session.agent.name)
-        .bind(session.id.to_string())
+        .bind(workspace.id.to_string())
+        .bind(&workspace.agent.name)
+        .bind(workspace.id.to_string())
         .fetch_optional(&mut *self.connection)
         .await
-        .with_context(|| format!("reading the transcript of session {}", session.id))?;
+        .with_context(|| format!("reading the transcript of workspace {}", workspace.id))?;
 
         let Some(row) = latest else {
             return Ok(None);
@@ -174,7 +174,7 @@ impl<'a> Log<'a> {
             Entry::Said {
                 participant,
                 message,
-            } if participant == session.agent.name => Some(message),
+            } if participant == workspace.agent.name => Some(message),
             _ => None,
         })
     }
@@ -183,22 +183,22 @@ impl<'a> Log<'a> {
     /// response to report.
     pub async fn said_since(
         &mut self,
-        session: &Session,
+        workspace: &Workspace,
         seq: i64,
         participant: &str,
     ) -> Result<Vec<String>> {
         let rows = sqlx::query(
             "SELECT body
              FROM transcript_entry
-             WHERE session_id = ? AND seq > ?
+             WHERE workspace_id = ? AND seq > ?
                AND json_extract(body, '$.kind') = 'said'
              ORDER BY seq",
         )
-        .bind(session.id.to_string())
+        .bind(workspace.id.to_string())
         .bind(seq)
         .fetch_all(&mut *self.connection)
         .await
-        .with_context(|| format!("reading what was said in session {}", session.id))?;
+        .with_context(|| format!("reading what was said in workspace {}", workspace.id))?;
 
         let mut said = Vec::new();
         for row in rows {
@@ -217,19 +217,19 @@ impl<'a> Log<'a> {
 
     /// The Brief, if nobody has said anything since it: participants joining and Runs starting
     /// are not something said.
-    pub async fn unfollowed_brief(&mut self, session: &Session) -> Result<Option<String>> {
+    pub async fn unfollowed_brief(&mut self, workspace: &Workspace) -> Result<Option<String>> {
         let said = sqlx::query(
             "SELECT body
              FROM transcript_entry
-             WHERE session_id = ?
+             WHERE workspace_id = ?
                AND json_extract(body, '$.kind') NOT IN ('participant_joined', 'run_started')
              ORDER BY seq
              LIMIT 2",
         )
-        .bind(session.id.to_string())
+        .bind(workspace.id.to_string())
         .fetch_all(&mut *self.connection)
         .await
-        .with_context(|| format!("reading the transcript of session {}", session.id))?;
+        .with_context(|| format!("reading the transcript of workspace {}", workspace.id))?;
 
         let [only] = said.as_slice() else {
             return Ok(None);
@@ -242,33 +242,33 @@ impl<'a> Log<'a> {
 
     pub async fn page(
         &mut self,
-        session: &Session,
+        workspace: &Workspace,
         from: Option<Cursor>,
         window: Window,
     ) -> Result<Page, Unreadable> {
-        let from = self.position(session, from).await?;
+        let from = self.position(workspace, from).await?;
 
-        Ok(self.after(session, from, window).await?)
+        Ok(self.after(workspace, from, window).await?)
     }
 
     async fn position(
         &mut self,
-        session: &Session,
+        workspace: &Workspace,
         cursor: Option<Cursor>,
     ) -> Result<Option<Cursor>, Unreadable> {
         let Some(cursor) = cursor else {
             return Ok(None);
         };
 
-        if cursor.session != session.id {
+        if cursor.workspace != workspace.id {
             return Err(Unreadable::Cursor(format!(
                 "the cursor {cursor} walks another transcript"
             )));
         }
 
         let known =
-            sqlx::query("SELECT seq FROM transcript_entry WHERE session_id = ? AND seq = ?")
-                .bind(session.id.to_string())
+            sqlx::query("SELECT seq FROM transcript_entry WHERE workspace_id = ? AND seq = ?")
+                .bind(workspace.id.to_string())
                 .bind(cursor.seq)
                 .fetch_optional(&mut *self.connection)
                 .await?;
@@ -285,23 +285,23 @@ impl<'a> Log<'a> {
     /// more are waiting without asking a second time.
     async fn after(
         &mut self,
-        session: &Session,
+        workspace: &Workspace,
         from: Option<Cursor>,
         window: Window,
     ) -> Result<Page> {
         let rows = sqlx::query(
             "SELECT seq, body, appended_at
              FROM transcript_entry
-             WHERE session_id = ? AND seq > ?
+             WHERE workspace_id = ? AND seq > ?
              ORDER BY seq
              LIMIT ?",
         )
-        .bind(session.id.to_string())
+        .bind(workspace.id.to_string())
         .bind(from.map_or(0, |cursor| cursor.seq))
         .bind(i64::try_from(window.0 + 1)?)
         .fetch_all(&mut *self.connection)
         .await
-        .with_context(|| format!("reading the transcript of session {}", session.id))?;
+        .with_context(|| format!("reading the transcript of workspace {}", workspace.id))?;
 
         let more = rows.len() > window.0;
         let entries = rows
@@ -320,7 +320,7 @@ impl<'a> Log<'a> {
             cursor: entries
                 .last()
                 .map(|entry| Cursor {
-                    session: session.id,
+                    workspace: workspace.id,
                     seq: entry.seq,
                 })
                 .or(from),
@@ -340,19 +340,19 @@ pub struct Page {
 /// still walks after the process that issued it is gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {
-    session: SessionId,
+    workspace: WorkspaceId,
     seq: i64,
 }
 
 impl Cursor {
-    pub const fn at(session: SessionId, seq: i64) -> Self {
-        Self { session, seq }
+    pub const fn at(workspace: WorkspaceId, seq: i64) -> Self {
+        Self { workspace, seq }
     }
 }
 
 impl fmt::Display for Cursor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.session, self.seq)
+        write!(f, "{}:{}", self.workspace, self.seq)
     }
 }
 
@@ -361,10 +361,10 @@ impl FromStr for Cursor {
 
     fn from_str(text: &str) -> Result<Self> {
         let unreadable = || format!("{text} is no cursor");
-        let (session, seq) = text.split_once(':').with_context(unreadable)?;
+        let (workspace, seq) = text.split_once(':').with_context(unreadable)?;
 
         Ok(Self {
-            session: session.parse().with_context(unreadable)?,
+            workspace: workspace.parse().with_context(unreadable)?,
             seq: seq.parse().with_context(unreadable)?,
         })
     }

@@ -1,4 +1,4 @@
-//! An Instance is archived when its Session seals only if a real checkout says everything in it
+//! An Instance is archived when its Workspace seals only if a real checkout says everything in it
 //! can be recovered from the remote; one that may hold the only copy of some work is held until a
 //! person releases it.
 
@@ -7,7 +7,7 @@ mod support;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use kestrel::domain::{Exit, Run, RunState, Session, SessionState};
+use kestrel::domain::{Exit, Run, RunState, Workspace, WorkspaceState};
 use support::Kestrel;
 use support::environment::Environment;
 use support::repository;
@@ -19,7 +19,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 const COMMIT: &str = "git -C kestrel -c user.name=kestrel -c user.email=kestrel@example.com \
                       commit --quiet";
 
-async fn a_session(kestrel: &Kestrel) -> Session {
+async fn a_workspace(kestrel: &Kestrel) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(
@@ -45,7 +45,7 @@ async fn a_session(kestrel: &Kestrel) -> Session {
         )
         .await;
 
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 /// Stands in for the Harness: does something to the checkout, then hands over to the agent.
@@ -66,11 +66,11 @@ async fn dispatching_to(harness: &Environment) -> Kestrel {
     .await
 }
 
-/// Ended, and with its supervisor gone, so nothing but what its checkout holds keeps its Session.
+/// Ended, and with its supervisor gone, so nothing but what its checkout holds keeps its Workspace.
 /// A Run that answers rather than failing waits between turns until something stops it (ADR-0024),
 /// so this stops it itself once it has answered, the way a person or a seal would.
-async fn over(kestrel: &Kestrel, session: &Session) -> Run {
-    let run = kestrel.enqueue_run(session.id).await;
+async fn over(kestrel: &Kestrel, workspace: &Workspace) -> Run {
+    let run = kestrel.enqueue_run(workspace.id).await;
     let answered = kestrel.answered(run.id, 1).await;
     if answered.state != RunState::Ended {
         kestrel.stop_run(run.id).await;
@@ -109,22 +109,19 @@ async fn eventually(what: &str, done: impl AsyncFn() -> bool) {
 }
 
 async fn archived(instance: &str) {
-    let workspace = Environment::workspace_of(instance);
-    eventually(&format!("archiving {instance}"), async || {
-        !workspace.exists()
-    })
-    .await;
+    let root = Environment::root_of(instance);
+    eventually(&format!("archiving {instance}"), async || !root.exists()).await;
 }
 
-/// Long enough that a sweep that was going to seal this Session has run several times over.
-async fn stays_open(kestrel: &Kestrel, session: &Session) {
+/// Long enough that a sweep that was going to seal this Workspace has run several times over.
+async fn stays_open(kestrel: &Kestrel, workspace: &Workspace) {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     assert_eq!(
-        kestrel.show_session(session.id).await.state,
-        SessionState::Open,
-        "the session {} sealed itself with its instance holding work",
-        session.id
+        kestrel.show_workspace(workspace.id).await.state,
+        WorkspaceState::Open,
+        "the workspace {} sealed itself with its instance holding work",
+        workspace.id
     );
 }
 
@@ -136,38 +133,38 @@ async fn clean_research_work_seals_when_idle_and_its_instance_is_archived() {
          echo built > kestrel/target/output",
     );
     let kestrel = dispatching_to(&harness).await;
-    let session = a_session(&kestrel).await;
-    let run = over(&kestrel, &session).await;
+    let workspace = a_workspace(&kestrel).await;
+    let run = over(&kestrel, &workspace).await;
     assert_eq!(run.exit, Some(Exit::Succeeded));
     let instance = run.instance.expect("an instance");
     assert!(kestrel.held_instances("acme").await.is_empty());
 
-    kestrel.last_active(&session, a_day_ago()).await;
+    kestrel.last_active(&workspace, a_day_ago()).await;
 
-    let session_id = session.id;
-    eventually("the idle sweep sealing the session", async || {
-        kestrel.show_session(session_id).await.state == SessionState::Sealed
+    let workspace_id = workspace.id;
+    eventually("the idle sweep sealing the workspace", async || {
+        kestrel.show_workspace(workspace_id).await.state == WorkspaceState::Sealed
     })
     .await;
     archived(&instance).await;
-    assert_eq!(kestrel.instance(session.id).await, None);
+    assert_eq!(kestrel.instance(workspace.id).await, None);
 
     kestrel.teardown().await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_pushed_checkout_is_archived_when_its_session_seals() {
+async fn a_pushed_checkout_is_archived_when_its_workspace_seals() {
     let harness = working(&format!(
         "echo committed > kestrel/committed; git -C kestrel add committed; \
          {COMMIT} --message 'pushed work'; git -C kestrel push --quiet origin HEAD"
     ));
     let kestrel = dispatching_to(&harness).await;
-    let session = a_session(&kestrel).await;
-    let run = over(&kestrel, &session).await;
+    let workspace = a_workspace(&kestrel).await;
+    let run = over(&kestrel, &workspace).await;
     assert_eq!(run.exit, Some(Exit::Succeeded));
 
-    kestrel.seal_session(session.id).await;
+    kestrel.seal_workspace(workspace.id).await;
 
     archived(&run.instance.expect("an instance")).await;
 
@@ -183,43 +180,43 @@ async fn unpublished_work_outlasts_the_idle_window_held_with_a_reason_until_rele
          echo uncommitted >> kestrel/README.md; echo untracked > kestrel/untracked"
     ));
     let kestrel = dispatching_to(&harness).await;
-    let session = a_session(&kestrel).await;
-    let run = over(&kestrel, &session).await;
+    let workspace = a_workspace(&kestrel).await;
+    let run = over(&kestrel, &workspace).await;
     assert_eq!(run.exit, Some(Exit::Succeeded));
     let instance = run.instance.expect("an instance");
 
-    kestrel.last_active(&session, a_day_ago()).await;
-    stays_open(&kestrel, &session).await;
+    kestrel.last_active(&workspace, a_day_ago()).await;
+    stays_open(&kestrel, &workspace).await;
 
     let held = kestrel.held_instances("acme").await;
     assert_eq!(held.len(), 1);
-    assert_eq!(held[0].session, session.id);
+    assert_eq!(held[0].workspace, workspace.id);
     assert_eq!(held[0].instance, instance);
     assert_eq!(
         held[0].because,
         format!(
             "{} on {} has 1 unpushed commit, 1 uncommitted change, 1 untracked file",
             repository::url(),
-            session.checkout.branch
+            workspace.checkout.branch
         )
     );
     let refused = kestrel
-        .try_seal_session(session.id)
+        .try_seal_workspace(workspace.id)
         .await
-        .expect_err("a session whose instance holds the only copy of its work sealed");
+        .expect_err("a workspace whose instance holds the only copy of its work sealed");
     assert!(
         refused.to_string().contains(&held[0].because),
         "the refusal does not say what is held: {refused}"
     );
-    assert!(Environment::workspace_of(&instance).is_dir());
+    assert!(Environment::root_of(&instance).is_dir());
 
-    assert_eq!(kestrel.release_instance(session.id).await, instance);
+    assert_eq!(kestrel.release_instance(workspace.id).await, instance);
 
     archived(&instance).await;
     assert!(kestrel.held_instances("acme").await.is_empty());
     assert_eq!(
         kestrel
-            .transcript(session.id)
+            .transcript(workspace.id)
             .await
             .last()
             .expect("a transcript entry")
@@ -230,10 +227,11 @@ async fn unpublished_work_outlasts_the_idle_window_held_with_a_reason_until_rele
             held[0].because
         )
     );
-    let session_id = session.id;
-    eventually("the idle sweep sealing the released session", async || {
-        kestrel.show_session(session_id).await.state == SessionState::Sealed
-    })
+    let workspace_id = workspace.id;
+    eventually(
+        "the idle sweep sealing the released workspace",
+        async || kestrel.show_workspace(workspace_id).await.state == WorkspaceState::Sealed,
+    )
     .await;
 
     kestrel.teardown().await;
@@ -244,36 +242,36 @@ async fn unpublished_work_outlasts_the_idle_window_held_with_a_reason_until_rele
 async fn a_run_that_fails_without_reporting_its_checkout_holds_its_instance() {
     let environment = Environment::executing("exit 3");
     let kestrel = Kestrel::dispatching(environment.path()).await;
-    let session = a_session(&kestrel).await;
-    let run = over(&kestrel, &session).await;
+    let workspace = a_workspace(&kestrel).await;
+    let run = over(&kestrel, &workspace).await;
     assert!(matches!(run.exit, Some(Exit::Failed { .. })));
     let instance = run.instance.expect("an instance");
 
-    kestrel.last_active(&session, a_day_ago()).await;
-    stays_open(&kestrel, &session).await;
+    kestrel.last_active(&workspace, a_day_ago()).await;
+    stays_open(&kestrel, &workspace).await;
 
     let held = kestrel.held_instances("acme").await;
     assert_eq!(held.len(), 1);
     assert_eq!(held[0].instance, instance);
     assert_eq!(held[0].because, "no run reported what its checkout holds");
     kestrel
-        .try_seal_session(session.id)
+        .try_seal_workspace(workspace.id)
         .await
-        .expect_err("a session whose instance nobody reported on sealed");
-    assert!(Environment::workspace_of(&instance).is_dir());
+        .expect_err("a workspace whose instance nobody reported on sealed");
+    assert!(Environment::root_of(&instance).is_dir());
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_session_with_no_instance_has_nothing_to_release() {
+async fn a_workspace_with_no_instance_has_nothing_to_release() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
+    let workspace = a_workspace(&kestrel).await;
 
     let refused = kestrel
-        .try_release_instance(session.id)
+        .try_release_instance(workspace.id)
         .await
-        .expect_err("a session that never ran released an instance");
+        .expect_err("a workspace that never ran released an instance");
 
     assert!(refused.to_string().contains("no instance"), "{refused}");
 
@@ -282,19 +280,19 @@ async fn a_session_with_no_instance_has_nothing_to_release() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_waiting_run_ends_when_its_clean_session_seals_idle() {
+async fn a_waiting_run_ends_when_its_clean_workspace_seals_idle() {
     let harness = working("true");
     let kestrel = dispatching_to(&harness).await;
-    let session = a_session(&kestrel).await;
-    let run = kestrel.enqueue_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let waiting = kestrel.answered(run.id, 1).await;
     assert_eq!(waiting.state, RunState::Waiting);
 
-    kestrel.last_active(&session, a_day_ago()).await;
+    kestrel.last_active(&workspace, a_day_ago()).await;
 
-    let session_id = session.id;
-    eventually("the idle sweep sealing the session", async || {
-        kestrel.show_session(session_id).await.state == SessionState::Sealed
+    let workspace_id = workspace.id;
+    eventually("the idle sweep sealing the workspace", async || {
+        kestrel.show_workspace(workspace_id).await.state == WorkspaceState::Sealed
     })
     .await;
     assert_eq!(kestrel.run(run.id).await.exit, Some(Exit::Succeeded));
@@ -308,12 +306,12 @@ async fn a_waiting_run_ends_when_its_clean_session_seals_idle() {
 async fn a_waiting_run_over_unpublished_work_outlasts_the_idle_window() {
     let harness = working("echo untracked > kestrel/untracked");
     let kestrel = dispatching_to(&harness).await;
-    let session = a_session(&kestrel).await;
-    let run = kestrel.enqueue_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let waiting = kestrel.answered(run.id, 1).await;
 
-    kestrel.last_active(&session, a_day_ago()).await;
-    stays_open(&kestrel, &session).await;
+    kestrel.last_active(&workspace, a_day_ago()).await;
+    stays_open(&kestrel, &workspace).await;
 
     assert_eq!(kestrel.run(run.id).await.state, RunState::Waiting);
     let held = kestrel.held_instances("acme").await;

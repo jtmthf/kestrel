@@ -17,5 +17,5 @@ CREATE TABLE subscription_profile_entry (
     PRIMARY KEY (profile_id, kind, name)
 ) STRICT;
 
-ALTER TABLE session ADD COLUMN subscription_profile_id TEXT REFERENCES subscription_profile (id);
+ALTER TABLE workspace ADD COLUMN subscription_profile_id TEXT REFERENCES subscription_profile (id);
 ALTER TABLE trigger ADD COLUMN subscription_profile_id TEXT REFERENCES subscription_profile (id);

@@ -5,7 +5,7 @@ mod support;
 
 use std::time::Duration;
 
-use kestrel::domain::{Exit, Run, RunId, Session};
+use kestrel::domain::{Exit, Run, RunId, Workspace};
 use kestrel_scripted_agent::{OTHER_MODEL, Script};
 use reqwest::StatusCode;
 use support::environment::Environment;
@@ -23,8 +23,8 @@ async fn confiding() -> Kestrel {
     .await
 }
 
-/// A Session ready to run in an Organization that holds one Provider Credential, or none.
-async fn a_session(kestrel: &Kestrel, organization: &str, held: Option<&str>) -> Session {
+/// A Workspace ready to run in an Organization that holds one Provider Credential, or none.
+async fn a_workspace(kestrel: &Kestrel, organization: &str, held: Option<&str>) -> Workspace {
     let declared = kestrel.declare_organization(organization).await;
     kestrel
         .declare_project(
@@ -44,7 +44,7 @@ async fn a_session(kestrel: &Kestrel, organization: &str, held: Option<&str>) ->
     }
 
     kestrel
-        .open_session(organization, repository::NAME, "builder")
+        .open_workspace(organization, repository::NAME, "builder")
         .await
 }
 
@@ -53,9 +53,9 @@ async fn ended(kestrel: &Kestrel, run: RunId) -> Run {
     kestrel.after_one_turn(run).await
 }
 
-async fn transcript(kestrel: &Kestrel, session: &Session) -> String {
+async fn transcript(kestrel: &Kestrel, workspace: &Workspace) -> String {
     kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .iter()
         .map(|entry| entry.entry.to_string())
@@ -68,18 +68,18 @@ async fn transcript(kestrel: &Kestrel, session: &Session) -> String {
 #[tokio::test]
 async fn a_run_carries_the_credential_its_organization_holds_into_the_harness() {
     let kestrel = confiding().await;
-    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
+    let workspace = a_workspace(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
 
-    let run = kestrel.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let ended = ended(&kestrel, run.id).await;
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert!(
-        transcript(&kestrel, &session)
+        transcript(&kestrel, &workspace)
             .await
             .contains(&format!("{PROVIDER_KEY}={A_PROVIDER_KEY}")),
         "the credential never reached the agent: {}",
-        transcript(&kestrel, &session).await
+        transcript(&kestrel, &workspace).await
     );
 
     kestrel.teardown().await;
@@ -88,8 +88,8 @@ async fn a_run_carries_the_credential_its_organization_holds_into_the_harness() 
 #[tokio::test]
 async fn one_organizations_credential_does_not_reach_anothers_run() {
     let kestrel = confiding().await;
-    a_session(&kestrel, "acme", Some("the-acme-key")).await;
-    let globex = a_session(&kestrel, "globex", Some("the-globex-key")).await;
+    a_workspace(&kestrel, "acme", Some("the-acme-key")).await;
+    let globex = a_workspace(&kestrel, "globex", Some("the-globex-key")).await;
 
     let run = kestrel.enqueue_run(globex.id).await;
     ended(&kestrel, run.id).await;
@@ -110,9 +110,9 @@ async fn one_organizations_credential_does_not_reach_anothers_run() {
 #[tokio::test]
 async fn a_run_whose_organization_holds_no_credential_fails_before_an_instance() {
     let kestrel = confiding().await;
-    let session = a_session(&kestrel, "acme", None).await;
+    let workspace = a_workspace(&kestrel, "acme", None).await;
 
-    let run = kestrel.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let ended = ended(&kestrel, run.id).await;
 
     let Some(Exit::Failed { because }) = &ended.exit else {
@@ -143,9 +143,9 @@ async fn nothing_a_supervisor_is_started_with_carries_a_credential() {
          exit 3",
     );
     let kestrel = Kestrel::dispatching(environment.path()).await;
-    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
+    let workspace = a_workspace(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
 
-    let run = kestrel.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     ended(&kestrel, run.id).await;
 
     let provisioned = environment.wrote("variables");
@@ -166,8 +166,8 @@ async fn nothing_a_supervisor_is_started_with_carries_a_credential() {
 #[tokio::test]
 async fn an_environment_that_is_never_told_to_start_takes_no_credential() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
-    let (run, credential) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
+    let (run, credential) = kestrel.dispatch_run(workspace.id).await;
 
     let mut supervisor = Supervisor::provision(&kestrel.link(), run.id, &credential);
     supervisor.wait_until_it_says("reported connected").await;
@@ -186,10 +186,10 @@ async fn an_environment_that_is_never_told_to_start_takes_no_credential() {
 #[tokio::test]
 async fn the_credentials_a_run_needs_reach_nobody_but_that_run() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
-    let (run, credential) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
+    let (run, credential) = kestrel.dispatch_run(workspace.id).await;
     let (elsewhere, _) = kestrel
-        .dispatch_run(a_session(&kestrel, "globex", None).await.id)
+        .dispatch_run(a_workspace(&kestrel, "globex", None).await.id)
         .await;
     let link = Link::to(&kestrel.link());
 
@@ -207,13 +207,13 @@ async fn the_credentials_a_run_needs_reach_nobody_but_that_run() {
     kestrel.teardown().await;
 }
 
-/// A credential is invalidated when its Run ends, so the Session's next Run finds nothing on the
+/// A credential is invalidated when its Run ends, so the Workspace's next Run finds nothing on the
 /// Instance that could ask for the provider keys again.
 #[tokio::test]
 async fn a_run_that_has_ended_hands_out_no_credential() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
-    let (run, credential) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
+    let (run, credential) = kestrel.dispatch_run(workspace.id).await;
     let link = Link::to(&kestrel.link());
     assert_eq!(
         link.credentials(run.id, Some(&credential)).await.status(),
@@ -284,14 +284,14 @@ async fn a_run_that_used_a_credential_records_it_nowhere() {
         &scripted_agent::playing(Script::Speaks),
     )
     .await;
-    let session = a_session(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
+    let workspace = a_workspace(&kestrel, "acme", Some(A_PROVIDER_KEY)).await;
 
-    let run = kestrel.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let ended = ended(&kestrel, run.id).await;
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert!(
-        !transcript(&kestrel, &session)
+        !transcript(&kestrel, &workspace)
             .await
             .contains(A_PROVIDER_KEY)
     );

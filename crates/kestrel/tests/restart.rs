@@ -7,7 +7,7 @@ mod support;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use kestrel::domain::{Exit, Run, RunId, RunState, Session};
+use kestrel::domain::{Exit, Run, RunId, RunState, Workspace};
 use kestrel::link::credential::Secret;
 use kestrel::work::{Report, Reported};
 use reqwest::StatusCode;
@@ -20,7 +20,7 @@ use support::supervisor::Supervisor;
 const PATIENCE: Duration = Duration::from_secs(30);
 const LONG_ENOUGH_TO_BE_SURE: Duration = Duration::from_secs(1);
 
-async fn a_session(kestrel: &Kestrel) -> Session {
+async fn a_workspace(kestrel: &Kestrel) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(&organization, "kestrel", &[], "main")
@@ -29,7 +29,7 @@ async fn a_session(kestrel: &Kestrel) -> Session {
         .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 async fn until(kestrel: &Kestrel, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
@@ -51,17 +51,17 @@ async fn until(kestrel: &Kestrel, run: RunId, what: &str, ready: impl Fn(&Run) -
     }
 }
 
-async fn transcript(kestrel: &Kestrel, session: &Session) -> Vec<String> {
+async fn transcript(kestrel: &Kestrel, workspace: &Workspace) -> Vec<String> {
     kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .iter()
         .map(|entry| entry.entry.to_string())
         .collect()
 }
 
-async fn working(kestrel: &Kestrel, session: &Session, script: Script) -> (Run, Supervisor) {
-    let (run, credential) = kestrel.dispatch_run(session.id).await;
+async fn working(kestrel: &Kestrel, workspace: &Workspace, script: Script) -> (Run, Supervisor) {
+    let (run, credential) = kestrel.dispatch_run(workspace.id).await;
     let mut supervisor =
         Supervisor::provision_playing(&kestrel.link(), run.id, &credential, script);
 
@@ -74,15 +74,15 @@ async fn working(kestrel: &Kestrel, session: &Session, script: Script) -> (Run, 
 
 /// Killed while the agent is still working at its turn, and left down until the Environment
 /// has something to say and finds nothing there to say it to.
-async fn killed_mid_run() -> (Kestrel, Session, Run, Supervisor) {
+async fn killed_mid_run() -> (Kestrel, Workspace, Run, Supervisor) {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (run, mut supervisor) = working(&kestrel, &session, Script::Lingers).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (run, mut supervisor) = working(&kestrel, &workspace, Script::Lingers).await;
 
     let stopped = kestrel.kill().await;
     supervisor.wait_until_it_says("lost the link").await;
 
-    (stopped.restart().await, session, run, supervisor)
+    (stopped.restart().await, workspace, run, supervisor)
 }
 
 #[tokio::test]
@@ -98,11 +98,11 @@ async fn a_turn_in_flight_when_the_control_plane_is_killed_is_answered_after_it_
 
 #[tokio::test]
 async fn the_transcript_of_a_run_that_outlived_a_restart_has_no_gap_and_no_duplicate() {
-    let (kestrel, session, run, supervisor) = killed_mid_run().await;
+    let (kestrel, workspace, run, supervisor) = killed_mid_run().await;
     kestrel.after_one_turn(run.id).await;
 
     assert_eq!(
-        transcript(&kestrel, &session).await,
+        transcript(&kestrel, &workspace).await,
         vec![
             "participant joined  builder".to_owned(),
             format!("run started  {}", run.id),
@@ -113,7 +113,7 @@ async fn the_transcript_of_a_run_that_outlived_a_restart_has_no_gap_and_no_dupli
     );
     assert_eq!(
         kestrel
-            .transcript(session.id)
+            .transcript(workspace.id)
             .await
             .iter()
             .map(|entry| entry.seq)
@@ -150,10 +150,15 @@ fn shortened() -> Timestamp {
 #[tokio::test]
 async fn a_lease_is_not_swept_while_the_environment_that_holds_it_out_is_reconnecting() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (run, supervisor) = working(&kestrel, &session, Script::Dawdles).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (run, supervisor) = working(&kestrel, &workspace, Script::Dawdles).await;
     let (abandoned, _) = kestrel
-        .dispatch_run(kestrel.open_session("acme", "kestrel", "builder").await.id)
+        .dispatch_run(
+            kestrel
+                .open_workspace("acme", "kestrel", "builder")
+                .await
+                .id,
+        )
         .await;
 
     let stopped = kestrel.kill().await;
@@ -187,25 +192,25 @@ async fn a_lease_is_not_swept_while_the_environment_that_holds_it_out_is_reconne
 #[tokio::test]
 async fn restarting_with_no_run_in_flight_changes_nothing() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (run, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(workspace.id).await;
     kestrel.complete_run(&run).await;
-    let before = transcript(&kestrel, &session).await;
+    let before = transcript(&kestrel, &workspace).await;
 
     let kestrel = kestrel.kill_and_restart().await;
     tokio::time::sleep(LONG_ENOUGH_TO_BE_SURE).await;
 
-    assert_eq!(transcript(&kestrel, &session).await, before);
+    assert_eq!(transcript(&kestrel, &workspace).await, before);
     assert_eq!(kestrel.run(run.id).await.exit, Some(Exit::Succeeded));
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
 
     kestrel.teardown().await;
 }
 
 async fn a_run(kestrel: &Kestrel) -> (Run, Secret) {
-    let session = a_session(kestrel).await;
+    let workspace = a_workspace(kestrel).await;
 
-    kestrel.dispatch_run(session.id).await
+    kestrel.dispatch_run(workspace.id).await
 }
 
 #[tokio::test]
@@ -229,7 +234,7 @@ async fn a_report_whose_answer_never_arrived_is_taken_once_when_it_is_sent_again
 
     assert_eq!(
         kestrel
-            .transcript(run.session)
+            .transcript(run.workspace)
             .await
             .iter()
             .filter(|entry| entry
@@ -258,7 +263,7 @@ async fn a_report_that_skips_one_the_environment_has_yet_to_send_is_refused() {
         .await;
 
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(kestrel.transcript(run.session).await.len(), 1);
+    assert_eq!(kestrel.transcript(run.workspace).await.len(), 1);
 
     kestrel.teardown().await;
 }
@@ -278,7 +283,7 @@ async fn a_report_that_changes_the_runs_record_and_is_not_numbered_is_refused() 
         .await;
 
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(kestrel.transcript(run.session).await.len(), 1);
+    assert_eq!(kestrel.transcript(run.workspace).await.len(), 1);
 
     kestrel.teardown().await;
 }

@@ -1,9 +1,9 @@
-//! The two refusals a Session owes its own definition: one Run in it at a time, and a sealed
-//! Session that accepts no more work.
+//! The two refusals a Workspace owes its own definition: one Run in it at a time, and a sealed
+//! Workspace that accepts no more work.
 
 mod support;
 
-use kestrel::domain::{RunState, Session, SessionState};
+use kestrel::domain::{RunState, Workspace, WorkspaceState};
 use kestrel::log::Window;
 use support::Kestrel;
 
@@ -22,27 +22,27 @@ async fn declare_fixture(kestrel: &Kestrel) {
         .await;
 }
 
-async fn a_session(kestrel: &Kestrel) -> Session {
+async fn a_workspace(kestrel: &Kestrel) -> Workspace {
     declare_fixture(kestrel).await;
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 #[tokio::test]
-async fn a_second_run_enqueued_in_a_session_that_already_has_one_is_refused() {
+async fn a_second_run_enqueued_in_a_workspace_that_already_has_one_is_refused() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let queued = kestrel.enqueue_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let queued = kestrel.enqueue_run(workspace.id).await;
 
     let refusal = kestrel
-        .try_enqueue_run(session.id)
+        .try_enqueue_run(workspace.id)
         .await
-        .expect_err("a session takes one run at a time");
+        .expect_err("a workspace takes one run at a time");
 
     assert!(
         refusal.to_string().contains(&queued.id.to_string()),
         "the refusal does not name the run holding the slot: {refusal}"
     );
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
 
     kestrel.teardown().await;
 }
@@ -50,13 +50,13 @@ async fn a_second_run_enqueued_in_a_session_that_already_has_one_is_refused() {
 #[tokio::test]
 async fn a_run_that_is_slow_or_blocked_still_occupies_the_slot_and_nothing_else_takes_it() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (blocked, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (blocked, _) = kestrel.dispatch_run(workspace.id).await;
 
     assert_eq!(kestrel.run(blocked.id).await.state, RunState::Working);
     assert!(
-        kestrel.try_enqueue_run(session.id).await.is_err(),
-        "a session with a run in flight took a second one"
+        kestrel.try_enqueue_run(workspace.id).await.is_err(),
+        "a workspace with a run in flight took a second one"
     );
     assert!(
         kestrel.claim_run().await.is_none(),
@@ -67,31 +67,31 @@ async fn a_run_that_is_slow_or_blocked_still_occupies_the_slot_and_nothing_else_
 }
 
 #[tokio::test]
-async fn a_run_in_one_session_leaves_every_other_session_free_to_take_one() {
+async fn a_run_in_one_workspace_leaves_every_other_workspace_free_to_take_one() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    kestrel.dispatch_run(session.id).await;
-    let elsewhere = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = a_workspace(&kestrel).await;
+    kestrel.dispatch_run(workspace.id).await;
+    let elsewhere = kestrel.open_workspace("acme", "kestrel", "builder").await;
 
     let run = kestrel.enqueue_run(elsewhere.id).await;
 
     assert_eq!(
         kestrel.claim_run().await.map(|claimed| claimed.run.id),
         Some(run.id),
-        "a run in another session was not dispatched"
+        "a run in another workspace was not dispatched"
     );
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_run_that_ended_hands_its_sessions_slot_to_the_next_one() {
+async fn a_run_that_ended_hands_its_workspaces_slot_to_the_next_one() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (first, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (first, _) = kestrel.dispatch_run(workspace.id).await;
 
     kestrel.complete_run(&first).await;
-    let next = kestrel.enqueue_run(session.id).await;
+    let next = kestrel.enqueue_run(workspace.id).await;
 
     assert_eq!(
         kestrel.claim_run().await.map(|claimed| claimed.run.id),
@@ -102,76 +102,79 @@ async fn a_run_that_ended_hands_its_sessions_slot_to_the_next_one() {
 }
 
 #[tokio::test]
-async fn sealing_a_session_with_a_run_still_in_flight_is_refused() {
+async fn sealing_a_workspace_with_a_run_still_in_flight_is_refused() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (in_flight, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (in_flight, _) = kestrel.dispatch_run(workspace.id).await;
 
     let refusal = kestrel
-        .try_seal_session(session.id)
+        .try_seal_workspace(workspace.id)
         .await
-        .expect_err("a session with a run in flight does not seal");
+        .expect_err("a workspace with a run in flight does not seal");
 
     assert!(
         refusal.to_string().contains(&in_flight.id.to_string()),
         "the refusal does not name the run still in flight: {refusal}"
     );
     assert_eq!(
-        kestrel.show_session(session.id).await.state,
-        SessionState::Open
+        kestrel.show_workspace(workspace.id).await.state,
+        WorkspaceState::Open
     );
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_session_whose_runs_have_all_ended_seals() {
+async fn a_workspace_whose_runs_have_all_ended_seals() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (run, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(workspace.id).await;
     kestrel.complete_run(&run).await;
 
-    let sealed = kestrel.seal_session(session.id).await;
+    let sealed = kestrel.seal_workspace(workspace.id).await;
 
-    assert_eq!(sealed.state, SessionState::Sealed);
+    assert_eq!(sealed.state, WorkspaceState::Sealed);
     assert!(sealed.sealed_at.is_some());
-    assert_eq!(kestrel.show_session(session.id).await.state, sealed.state);
+    assert_eq!(
+        kestrel.show_workspace(workspace.id).await.state,
+        sealed.state
+    );
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_session_that_never_ran_anything_seals() {
+async fn a_workspace_that_never_ran_anything_seals() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
+    let workspace = a_workspace(&kestrel).await;
 
     assert_eq!(
-        kestrel.seal_session(session.id).await.state,
-        SessionState::Sealed
+        kestrel.seal_workspace(workspace.id).await.state,
+        WorkspaceState::Sealed
     );
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_sealed_session_is_fully_readable_including_its_whole_transcript() {
+async fn a_sealed_workspace_is_fully_readable_including_its_whole_transcript() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (run, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(workspace.id).await;
     kestrel.said(&run, "what it did").await;
     kestrel.complete_run(&run).await;
-    let before = kestrel.transcript(session.id).await;
+    let before = kestrel.transcript(workspace.id).await;
 
-    kestrel.seal_session(session.id).await;
+    kestrel.seal_workspace(workspace.id).await;
 
-    let shown = kestrel.show_session(session.id).await;
+    let shown = kestrel.show_workspace(workspace.id).await;
     assert_eq!(shown.organization.name, "acme");
     assert_eq!(shown.project.name, "kestrel");
     assert_eq!(shown.agent.name, "builder");
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
 
     let after: Vec<String> = kestrel
-        .walk(session.id, None, Window::of(1).expect("a window"))
+        .walk(workspace.id, None, Window::of(1).expect("a window"))
         .await
         .iter()
         .map(|entry| entry.entry.to_string())
@@ -189,37 +192,37 @@ async fn a_sealed_session_is_fully_readable_including_its_whole_transcript() {
 }
 
 #[tokio::test]
-async fn a_sealed_session_refuses_a_new_run() {
+async fn a_sealed_workspace_refuses_a_new_run() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    kestrel.seal_session(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    kestrel.seal_workspace(workspace.id).await;
 
     let refusal = kestrel
-        .try_enqueue_run(session.id)
+        .try_enqueue_run(workspace.id)
         .await
-        .expect_err("a sealed session takes no run");
+        .expect_err("a sealed workspace takes no run");
 
     assert!(
         refusal.to_string().contains("sealed"),
         "unhelpful refusal: {refusal}"
     );
-    assert!(kestrel.runs(session.id).await.is_empty());
+    assert!(kestrel.runs(workspace.id).await.is_empty());
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_sealed_session_refuses_a_turn() {
+async fn a_sealed_workspace_refuses_a_turn() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (run, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(workspace.id).await;
     kestrel.complete_run(&run).await;
-    kestrel.seal_session(session.id).await;
+    kestrel.seal_workspace(workspace.id).await;
 
     let refusal = kestrel
         .try_start(&run)
         .await
-        .expect_err("a sealed session takes no turn");
+        .expect_err("a sealed workspace takes no turn");
 
     assert!(
         refusal.to_string().contains("sealed"),
@@ -230,119 +233,119 @@ async fn a_sealed_session_refuses_a_turn() {
 }
 
 #[tokio::test]
-async fn a_sealed_session_refuses_a_new_transcript_entry() {
+async fn a_sealed_workspace_refuses_a_new_transcript_entry() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (run, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (run, _) = kestrel.dispatch_run(workspace.id).await;
     kestrel.complete_run(&run).await;
-    kestrel.seal_session(session.id).await;
-    let transcript = kestrel.transcript(session.id).await.len();
+    kestrel.seal_workspace(workspace.id).await;
+    let transcript = kestrel.transcript(workspace.id).await.len();
 
     let refusal = kestrel
         .try_said(&run, "one word more")
         .await
-        .expect_err("a sealed session takes no transcript entry");
+        .expect_err("a sealed workspace takes no transcript entry");
 
     assert!(
         refusal.to_string().contains("sealed"),
         "unhelpful refusal: {refusal}"
     );
-    assert_eq!(kestrel.transcript(session.id).await.len(), transcript);
+    assert_eq!(kestrel.transcript(workspace.id).await.len(), transcript);
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_sealed_session_is_never_reopened() {
+async fn a_sealed_workspace_is_never_reopened() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let sealed = kestrel.seal_session(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let sealed = kestrel.seal_workspace(workspace.id).await;
 
     let refusal = kestrel
-        .try_seal_session(session.id)
+        .try_seal_workspace(workspace.id)
         .await
-        .expect_err("a sealed session is never sealed a second time");
+        .expect_err("a sealed workspace is never sealed a second time");
 
     assert!(
         refusal.to_string().contains("already sealed"),
         "unhelpful refusal: {refusal}"
     );
-    let still = kestrel.show_session(session.id).await;
-    assert_eq!(still.state, SessionState::Sealed);
+    let still = kestrel.show_workspace(workspace.id).await;
+    assert_eq!(still.state, WorkspaceState::Sealed);
     assert_eq!(still.sealed_at, sealed.sealed_at);
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_sealed_session_stays_sealed_across_a_restart() {
+async fn a_sealed_workspace_stays_sealed_across_a_restart() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    kestrel.seal_session(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    kestrel.seal_workspace(workspace.id).await;
 
     let kestrel = kestrel.kill_and_restart().await;
 
     assert_eq!(
-        kestrel.show_session(session.id).await.state,
-        SessionState::Sealed
+        kestrel.show_workspace(workspace.id).await.state,
+        WorkspaceState::Sealed
     );
-    assert!(kestrel.try_enqueue_run(session.id).await.is_err());
+    assert!(kestrel.try_enqueue_run(workspace.id).await.is_err());
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn work_that_continues_a_sealed_session_opens_a_new_one_that_records_it() {
+async fn work_that_continues_a_sealed_workspace_opens_a_new_one_that_records_it() {
     let kestrel = Kestrel::boot().await;
-    let sealed = a_session(&kestrel).await;
-    kestrel.seal_session(sealed.id).await;
+    let sealed = a_workspace(&kestrel).await;
+    kestrel.seal_workspace(sealed.id).await;
 
     let continuing = kestrel
-        .continue_session("acme", "kestrel", "builder", sealed.id)
+        .continue_workspace("acme", "kestrel", "builder", sealed.id)
         .await;
 
     assert_ne!(continuing.id, sealed.id);
-    assert_eq!(continuing.state, SessionState::Open);
+    assert_eq!(continuing.state, WorkspaceState::Open);
     assert_eq!(
-        kestrel.show_session(continuing.id).await.continues,
+        kestrel.show_workspace(continuing.id).await.continues,
         Some(sealed.id),
-        "the new session does not record the sealed one"
+        "the new workspace does not record the sealed one"
     );
     assert_eq!(
         kestrel.continuations(sealed.id).await,
         vec![continuing.id],
-        "the sealed session does not read the one that continues it"
+        "the sealed workspace does not read the one that continues it"
     );
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_session_that_continues_a_sealed_one_takes_runs_of_its_own() {
+async fn a_workspace_that_continues_a_sealed_one_takes_runs_of_its_own() {
     let kestrel = Kestrel::boot().await;
-    let sealed = a_session(&kestrel).await;
-    kestrel.seal_session(sealed.id).await;
+    let sealed = a_workspace(&kestrel).await;
+    kestrel.seal_workspace(sealed.id).await;
 
     let continuing = kestrel
-        .continue_session("acme", "kestrel", "builder", sealed.id)
+        .continue_workspace("acme", "kestrel", "builder", sealed.id)
         .await;
     let run = kestrel.enqueue_run(continuing.id).await;
 
-    assert_eq!(kestrel.run(run.id).await.session, continuing.id);
+    assert_eq!(kestrel.run(run.id).await.workspace, continuing.id);
     assert!(kestrel.runs(sealed.id).await.is_empty());
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_session_that_is_still_open_is_continued_in_rather_than_after() {
+async fn a_workspace_that_is_still_open_is_continued_in_rather_than_after() {
     let kestrel = Kestrel::boot().await;
-    let open = a_session(&kestrel).await;
+    let open = a_workspace(&kestrel).await;
 
     let refusal = kestrel
-        .try_open_session("acme", "kestrel", "builder", Some(open.id))
+        .try_open_workspace("acme", "kestrel", "builder", Some(open.id))
         .await
-        .expect_err("an open session is not continued");
+        .expect_err("an open workspace is not continued");
 
     assert!(
         refusal.to_string().contains("open"),
@@ -353,10 +356,10 @@ async fn a_session_that_is_still_open_is_continued_in_rather_than_after() {
 }
 
 #[tokio::test]
-async fn a_sealed_session_in_another_organization_is_not_continued() {
+async fn a_sealed_workspace_in_another_organization_is_not_continued() {
     let kestrel = Kestrel::boot().await;
-    let sealed = a_session(&kestrel).await;
-    kestrel.seal_session(sealed.id).await;
+    let sealed = a_workspace(&kestrel).await;
+    kestrel.seal_workspace(sealed.id).await;
 
     let globex = kestrel.declare_organization("globex").await;
     kestrel
@@ -372,14 +375,14 @@ async fn a_sealed_session_in_another_organization_is_not_continued() {
         .await;
 
     let refusal = kestrel
-        .try_open_session("globex", "kestrel", "builder", Some(sealed.id))
+        .try_open_workspace("globex", "kestrel", "builder", Some(sealed.id))
         .await
-        .expect_err("a session in another organization is not continued");
+        .expect_err("a workspace in another organization is not continued");
 
     assert!(
         refusal
             .to_string()
-            .contains("no session in the organization globex matches"),
+            .contains("no workspace in the organization globex matches"),
         "the refusal is not scoped to the organization the invocation named: {refusal}"
     );
 

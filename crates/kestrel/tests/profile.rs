@@ -1,9 +1,9 @@
 //! Subscription Profiles: a person's login, sealed beside the Provider Credentials, reaching only
-//! the Runs of Sessions that name it, and outliving every Instance it is written into.
+//! the Runs of Workspaces that name it, and outliving every Instance it is written into.
 
 mod support;
 
-use kestrel::domain::{Exit, Run, RunState, Session};
+use kestrel::domain::{Exit, Run, RunState, Workspace};
 use kestrel::profile::Entry;
 use kestrel_scripted_agent::{LOGIN, REFRESHED, Script};
 use reqwest::StatusCode;
@@ -54,9 +54,9 @@ fn login_file() -> Entry {
     Entry::file(LOGIN).expect("a file")
 }
 
-async fn transcript(kestrel: &Kestrel, session: &Session) -> String {
+async fn transcript(kestrel: &Kestrel, workspace: &Workspace) -> String {
     kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .iter()
         .map(|entry| entry.entry.to_string())
@@ -64,11 +64,11 @@ async fn transcript(kestrel: &Kestrel, session: &Session) -> String {
         .join("\n")
 }
 
-/// Only an explicit stop, a sealed Session, or a failure ends a Run (ADR-0024): a Run whose
+/// Only an explicit stop, a sealed Workspace, or a failure ends a Run (ADR-0024): a Run whose
 /// agent answered stays open between turns until this stops it, and one that already failed
 /// before an agent ever answered is left as it ended.
-async fn worked(kestrel: &Kestrel, session: &Session) -> (Run, String) {
-    let run = kestrel.enqueue_run(session.id).await;
+async fn worked(kestrel: &Kestrel, workspace: &Workspace) -> (Run, String) {
+    let run = kestrel.enqueue_run(workspace.id).await;
     let mut run = kestrel.answered(run.id, 1).await;
     if run.state != RunState::Ended {
         kestrel.stop_run(run.id).await;
@@ -84,19 +84,19 @@ async fn worked(kestrel: &Kestrel, session: &Session) -> (Run, String) {
         .await;
     }
 
-    (run, transcript(kestrel, session).await)
+    (run, transcript(kestrel, workspace).await)
 }
 
 #[tokio::test]
-async fn a_run_reaches_a_model_with_its_sessions_profile_and_no_provider_account() {
+async fn a_run_reaches_a_model_with_its_workspaces_profile_and_no_provider_account() {
     let kestrel = playing(Script::Confides).await;
     declared(&kestrel, "opencode").await;
     a_profile(&kestrel, "jack", "Jack", &subscription_key(), JACKS_KEY).await;
-    let session = kestrel
-        .open_session_with("acme", repository::NAME, "builder", "jack")
+    let workspace = kestrel
+        .open_workspace_with("acme", repository::NAME, "builder", "jack")
         .await;
 
-    let (run, said) = worked(&kestrel, &session).await;
+    let (run, said) = worked(&kestrel, &workspace).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded), "{said}");
     assert!(
@@ -108,7 +108,7 @@ async fn a_run_reaches_a_model_with_its_sessions_profile_and_no_provider_account
 }
 
 #[tokio::test]
-async fn one_persons_profile_reaches_no_session_that_does_not_name_it() {
+async fn one_persons_profile_reaches_no_workspace_that_does_not_name_it() {
     let kestrel = playing(Script::Confides).await;
     declared(&kestrel, "opencode").await;
     a_profile(&kestrel, "jack", "Jack", &subscription_key(), JACKS_KEY).await;
@@ -119,10 +119,10 @@ async fn one_persons_profile_reaches_no_session_that_does_not_name_it() {
         .await;
 
     let alexs = kestrel
-        .open_session_with("acme", repository::NAME, "builder", "alex")
+        .open_workspace_with("acme", repository::NAME, "builder", "alex")
         .await;
     let nobodys = kestrel
-        .open_session("acme", repository::NAME, "builder")
+        .open_workspace("acme", repository::NAME, "builder")
         .await;
     let (_, alex_said) = worked(&kestrel, &alexs).await;
     let (_, nobody_said) = worked(&kestrel, &nobodys).await;
@@ -134,13 +134,13 @@ async fn one_persons_profile_reaches_no_session_that_does_not_name_it() {
     );
     assert!(
         !nobody_said.contains(JACKS_KEY) && !nobody_said.contains(ALEXS_KEY),
-        "a session naming no profile was spawned with one: {nobody_said}"
+        "a workspace naming no profile was spawned with one: {nobody_said}"
     );
 
     kestrel.teardown().await;
 }
 
-/// The scripted agent rewrites its login the way a harness refreshes one, and a second Session
+/// The scripted agent rewrites its login the way a harness refreshes one, and a second Workspace
 /// is a fresh Instance: what it finds is what the first Run handed back.
 #[tokio::test]
 async fn a_login_refreshed_on_one_instance_is_the_one_the_next_instance_starts_from() {
@@ -149,7 +149,7 @@ async fn a_login_refreshed_on_one_instance_is_the_one_the_next_instance_starts_f
     a_profile(&kestrel, "jack", "Jack", &login_file(), FIRST_LOGIN).await;
 
     let first = kestrel
-        .open_session_with("acme", repository::NAME, "builder", "jack")
+        .open_workspace_with("acme", repository::NAME, "builder", "jack")
         .await;
     let (run, said) = worked(&kestrel, &first).await;
     assert_eq!(run.exit, Some(Exit::Succeeded), "{said}");
@@ -159,13 +159,13 @@ async fn a_login_refreshed_on_one_instance_is_the_one_the_next_instance_starts_f
     );
 
     let second = kestrel
-        .open_session_with("acme", repository::NAME, "builder", "jack")
+        .open_workspace_with("acme", repository::NAME, "builder", "jack")
         .await;
     let (next, said) = worked(&kestrel, &second).await;
 
     assert_ne!(
         next.instance, run.instance,
-        "the second session reused an instance"
+        "the second workspace reused an instance"
     );
     assert!(
         said.contains(&format!("logged in as {FIRST_LOGIN}{REFRESHED}")),
@@ -182,11 +182,11 @@ async fn an_instance_holds_no_login_once_its_run_has_ended() {
     let kestrel = playing(Script::Refreshes).await;
     declared(&kestrel, "opencode").await;
     a_profile(&kestrel, "jack", "Jack", &login_file(), FIRST_LOGIN).await;
-    let session = kestrel
-        .open_session_with("acme", repository::NAME, "builder", "jack")
+    let workspace = kestrel
+        .open_workspace_with("acme", repository::NAME, "builder", "jack")
         .await;
 
-    let (run, said) = worked(&kestrel, &session).await;
+    let (run, said) = worked(&kestrel, &workspace).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded), "{said}");
     let instance = run
@@ -204,7 +204,7 @@ async fn an_instance_holds_no_login_once_its_run_has_ended() {
     kestrel.teardown().await;
 }
 
-/// Nothing of what the profile holds is said anywhere a Session is read from.
+/// Nothing of what the profile holds is said anywhere a Workspace is read from.
 #[tokio::test]
 async fn a_run_spawned_with_a_profile_records_it_nowhere() {
     let kestrel = playing(Script::Speaks).await;
@@ -213,17 +213,17 @@ async fn a_run_spawned_with_a_profile_records_it_nowhere() {
     kestrel
         .hold_in_profile("acme", "jack", &login_file(), FIRST_LOGIN)
         .await;
-    let session = kestrel
-        .open_session_with("acme", repository::NAME, "builder", "jack")
+    let workspace = kestrel
+        .open_workspace_with("acme", repository::NAME, "builder", "jack")
         .await;
 
-    let (run, said) = worked(&kestrel, &session).await;
+    let (run, said) = worked(&kestrel, &workspace).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded), "{said}");
     for secret in [JACKS_KEY, FIRST_LOGIN] {
         assert!(!said.contains(secret), "{said}");
         assert!(!format!("{run:?}").contains(secret));
-        assert!(!format!("{session:?}").contains(secret));
+        assert!(!format!("{workspace:?}").contains(secret));
     }
 
     kestrel.teardown().await;
@@ -300,11 +300,11 @@ async fn a_run_whose_profile_holds_no_login_fails_before_an_instance() {
         .declare_profile("acme", "jack", "Jack")
         .await
         .expect("the profile should declare");
-    let session = kestrel
-        .open_session_with("acme", repository::NAME, "builder", "jack")
+    let workspace = kestrel
+        .open_workspace_with("acme", repository::NAME, "builder", "jack")
         .await;
 
-    let (run, _) = worked(&kestrel, &session).await;
+    let (run, _) = worked(&kestrel, &workspace).await;
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!("the run ended {:?} on a profile holding nothing", run.exit);
@@ -327,7 +327,7 @@ async fn runs_on_a_serialized_harness_sharing_a_profile_are_dispatched_one_at_a_
     a_profile(&kestrel, "jack", "Jack", &login_file(), FIRST_LOGIN).await;
     a_profile(&kestrel, "alex", "Alex", &login_file(), FIRST_LOGIN).await;
     let open = |agent: &'static str, profile: &'static str| {
-        kestrel.open_session_with("acme", repository::NAME, agent, profile)
+        kestrel.open_workspace_with("acme", repository::NAME, agent, profile)
     };
     let (jacks, jacks_again, alexs, jacks_other_harness) = (
         open("builder", "jack").await,
@@ -335,8 +335,8 @@ async fn runs_on_a_serialized_harness_sharing_a_profile_are_dispatched_one_at_a_
         open("builder", "alex").await,
         open("reviewer", "jack").await,
     );
-    for session in [&jacks, &jacks_again, &alexs, &jacks_other_harness] {
-        kestrel.enqueue_run(session.id).await;
+    for workspace in [&jacks, &jacks_again, &alexs, &jacks_other_harness] {
+        kestrel.enqueue_run(workspace.id).await;
     }
 
     let mut claimed = Vec::new();
@@ -344,12 +344,12 @@ async fn runs_on_a_serialized_harness_sharing_a_profile_are_dispatched_one_at_a_
         claimed.push(next.run);
     }
 
-    let sessions: Vec<_> = claimed.iter().map(|run| run.session).collect();
-    assert_eq!(sessions, [jacks.id, alexs.id, jacks_other_harness.id]);
+    let workspaces: Vec<_> = claimed.iter().map(|run| run.workspace).collect();
+    assert_eq!(workspaces, [jacks.id, alexs.id, jacks_other_harness.id]);
 
     kestrel.complete_run(&claimed[0]).await;
     assert_eq!(
-        kestrel.claim_run().await.map(|next| next.run.session),
+        kestrel.claim_run().await.map(|next| next.run.workspace),
         Some(jacks_again.id)
     );
 
@@ -362,10 +362,10 @@ async fn a_run_refreshes_only_the_files_its_profile_already_holds() {
     let kestrel = Kestrel::boot().await;
     declared(&kestrel, "opencode").await;
     a_profile(&kestrel, "jack", "Jack", &login_file(), FIRST_LOGIN).await;
-    let session = kestrel
-        .open_session_with("acme", repository::NAME, "builder", "jack")
+    let workspace = kestrel
+        .open_workspace_with("acme", repository::NAME, "builder", "jack")
         .await;
-    let (run, credential) = kestrel.dispatch_run(session.id).await;
+    let (run, credential) = kestrel.dispatch_run(workspace.id).await;
 
     let answered = Link::to(&kestrel.link())
         .refresh(
@@ -379,7 +379,7 @@ async fn a_run_refreshes_only_the_files_its_profile_already_holds() {
         .await;
 
     assert_eq!(answered.status(), StatusCode::NO_CONTENT);
-    let profile = session.profile.expect("the session names a profile");
+    let profile = workspace.profile.expect("the workspace names a profile");
     let contents = kestrel.profile_contents(&profile).await;
     assert_eq!(
         contents.files.into_iter().collect::<Vec<_>>(),
@@ -394,10 +394,10 @@ async fn a_run_that_has_ended_refreshes_nothing() {
     let kestrel = Kestrel::boot().await;
     declared(&kestrel, "opencode").await;
     a_profile(&kestrel, "jack", "Jack", &login_file(), FIRST_LOGIN).await;
-    let session = kestrel
-        .open_session_with("acme", repository::NAME, "builder", "jack")
+    let workspace = kestrel
+        .open_workspace_with("acme", repository::NAME, "builder", "jack")
         .await;
-    let (run, credential) = kestrel.dispatch_run(session.id).await;
+    let (run, credential) = kestrel.dispatch_run(workspace.id).await;
     kestrel.complete_run(&run).await;
 
     let answered = Link::to(&kestrel.link())
@@ -405,7 +405,7 @@ async fn a_run_that_has_ended_refreshes_nothing() {
         .await;
 
     assert_eq!(answered.status(), StatusCode::UNAUTHORIZED);
-    let profile = session.profile.expect("the session names a profile");
+    let profile = workspace.profile.expect("the workspace names a profile");
     assert_eq!(
         kestrel.profile_contents(&profile).await.files[LOGIN],
         FIRST_LOGIN

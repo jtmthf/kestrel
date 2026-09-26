@@ -9,7 +9,7 @@ mod support;
 use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver};
-use kestrel::domain::{Exit, Run, RunId, Session, SessionId};
+use kestrel::domain::{Exit, Run, RunId, Workspace, WorkspaceId};
 use support::Kestrel;
 use support::image::{self, Container};
 use support::scripted_agent::{self, Script};
@@ -28,7 +28,7 @@ async fn working(script: Script) -> Kestrel {
     .await
 }
 
-async fn a_session(kestrel: &Kestrel) -> Session {
+async fn a_workspace(kestrel: &Kestrel) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(&organization, "kestrel", &[REPOSITORY.to_owned()], BRANCH)
@@ -50,7 +50,7 @@ async fn a_session(kestrel: &Kestrel) -> Session {
         )
         .await;
 
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 async fn until(kestrel: &Kestrel, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {
@@ -98,13 +98,13 @@ async fn started(kestrel: &Kestrel, run: RunId) -> Run {
 }
 
 /// A Run's exit is recorded as soon as it is decided, before its supervisor is confirmed gone;
-/// a session does not free its slot until that confirmation lands, which for a dead container
+/// a workspace does not free its slot until that confirmation lands, which for a dead container
 /// can take a reconciliation pass rather than the commit that ended the Run (ADR-0002).
-async fn enqueue_when_free(kestrel: &Kestrel, session: SessionId) -> Run {
+async fn enqueue_when_free(kestrel: &Kestrel, workspace: WorkspaceId) -> Run {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        match kestrel.try_enqueue_run(session).await {
+        match kestrel.try_enqueue_run(workspace).await {
             Ok(run) => return run,
             Err(error) => {
                 assert!(
@@ -123,15 +123,15 @@ async fn enqueue_when_free(kestrel: &Kestrel, session: SessionId) -> Run {
 #[ignore = "builds and runs the kestrel-env image"]
 async fn the_scripted_run_ends_the_same_way_in_a_container_as_it_does_in_a_process() {
     let kestrel = working(Script::Speaks).await;
-    let session = a_session(&kestrel).await;
+    let workspace = a_workspace(&kestrel).await;
 
-    let run = kestrel.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let ended = ended(&kestrel, run.id).await;
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert_eq!(
         kestrel
-            .transcript(session.id)
+            .transcript(workspace.id)
             .await
             .iter()
             .map(|entry| entry.entry.to_string())
@@ -150,9 +150,9 @@ async fn the_scripted_run_ends_the_same_way_in_a_container_as_it_does_in_a_proce
 #[ignore = "builds and runs the kestrel-env image"]
 async fn an_instance_is_a_container_that_outlives_its_run_but_not_its_supervisor() {
     let kestrel = working(Script::Speaks).await;
-    let session = a_session(&kestrel).await;
+    let workspace = a_workspace(&kestrel).await;
 
-    let run = kestrel.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let ended = ended(&kestrel, run.id).await;
 
     let instance = ended.instance.as_deref().expect("an instance");
@@ -176,9 +176,9 @@ async fn an_instance_is_a_container_that_outlives_its_run_but_not_its_supervisor
 #[ignore = "builds and runs the kestrel-env image"]
 async fn a_projects_repositories_and_its_branch_are_in_the_container() {
     let kestrel = working(Script::Dawdles).await;
-    let session = a_session(&kestrel).await;
+    let workspace = a_workspace(&kestrel).await;
 
-    let run = kestrel.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let container = Container::named(
         started(&kestrel, run.id)
             .await
@@ -195,13 +195,13 @@ async fn a_projects_repositories_and_its_branch_are_in_the_container() {
         "--show-current",
     ]);
     assert_eq!(
-        branch.out, session.checkout.branch,
-        "the workspace is not on its session's branch: {branch:?}"
+        branch.out, workspace.checkout.branch,
+        "the checkout is not on its workspace's branch: {branch:?}"
     );
     let readme = container.exec(&["test", "-f", "/workspace/kestrel/README.md"]);
     assert_eq!(
         readme.code, 0,
-        "the repository is not in the workspace: {readme:?}"
+        "the repository is not on the instance: {readme:?}"
     );
 
     kestrel.teardown().await;
@@ -215,9 +215,9 @@ async fn a_projects_repositories_and_its_branch_are_in_the_container() {
 #[ignore = "builds and runs the kestrel-env image"]
 async fn a_container_that_dies_mid_run_is_detected_and_the_next_run_starts_it_again() {
     let kestrel = working(Script::Dawdles).await;
-    let session = a_session(&kestrel).await;
+    let workspace = a_workspace(&kestrel).await;
 
-    let run = kestrel.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let container = Container::named(
         started(&kestrel, run.id)
             .await
@@ -244,7 +244,7 @@ async fn a_container_that_dies_mid_run_is_detected_and_the_next_run_starts_it_ag
         "a run whose container died still holds a lease"
     );
 
-    let next = enqueue_when_free(&kestrel, session.id).await;
+    let next = enqueue_when_free(&kestrel, workspace.id).await;
     let next = started(&kestrel, next.id).await;
     assert_eq!(
         next.instance, ended.instance,
@@ -262,8 +262,8 @@ async fn a_container_that_dies_mid_run_is_detected_and_the_next_run_starts_it_ag
 #[ignore = "builds and runs the kestrel-env image"]
 async fn every_operation_in_the_contract_works_against_a_container() {
     let kestrel = Kestrel::boot_reachable_from_an_environment().await;
-    let session = a_session(&kestrel).await;
-    let (run, credential) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (run, credential) = kestrel.dispatch_run(workspace.id).await;
 
     // Provisioned through the port rather than through the work role, so the operations no
     // Run makes are exercised on the same Instance as the ones it does.

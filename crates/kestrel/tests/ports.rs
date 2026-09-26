@@ -49,7 +49,7 @@ fn no_sql_is_issued_from_anywhere_but_store_and_log() {
             !fs::read_to_string(&file)
                 .expect("a readable source file")
                 .contains("sqlx"),
-            "{} reaches for sqlx; a session's whole truth is Store's and Log's to hold",
+            "{} reaches for sqlx; a workspace's whole truth is Store's and Log's to hold",
             file.display()
         );
     }

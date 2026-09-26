@@ -1,15 +1,17 @@
 use anyhow::{Result, bail};
 use jiff::{SignedDuration, Timestamp};
 
-use crate::domain::{Exit, Organization, Run, RunId, RunState, Session, SessionId, SessionState};
+use crate::domain::{
+    Exit, Organization, Run, RunId, RunState, Workspace, WorkspaceId, WorkspaceState,
+};
 use crate::fanout::{self, Change};
 use crate::instance;
 use crate::log::{Cursor, Entry, Page, Unreadable, Window};
-use crate::store::session::{Opening, Unfinished};
+use crate::store::workspace::{Opening, Unfinished};
 use crate::store::{Store, Tx};
 use crate::work;
 
-/// Generous, because kestrel has no signal that a human is watching a Session: duration is
+/// Generous, because kestrel has no signal that a human is watching a Workspace: duration is
 /// standing in for presence.
 const IDLE: SignedDuration = SignedDuration::from_hours(24);
 
@@ -21,7 +23,7 @@ pub async fn open(
     profile: Option<&str>,
     branch: Option<&str>,
     continues: Option<&str>,
-) -> Result<Session> {
+) -> Result<Workspace> {
     let mut tx = store.begin().await?;
 
     let organization = tx.organizations().named(organization).await?;
@@ -36,8 +38,8 @@ pub async fn open(
         None => None,
     };
 
-    let session = tx
-        .sessions()
+    let workspace = tx
+        .workspaces()
         .open(Opening {
             organization: &organization,
             project: &project,
@@ -51,51 +53,51 @@ pub async fn open(
         .await?;
     tx.log()
         .append(
-            &session,
+            &workspace,
             Entry::ParticipantJoined {
-                participant: session.agent.name.clone(),
+                participant: workspace.agent.name.clone(),
             },
         )
         .await?;
 
     tx.commit().await?;
-    fanout::publish(Change::SessionOpened(&session));
+    fanout::publish(Change::WorkspaceOpened(&workspace));
 
-    Ok(session)
+    Ok(workspace)
 }
 
-pub async fn seal(store: &Store, id: SessionId) -> Result<Session> {
+pub async fn seal(store: &Store, id: WorkspaceId) -> Result<Workspace> {
     let mut tx = store.begin().await?;
-    let session = tx.sessions().get(id).await?;
+    let workspace = tx.workspaces().get(id).await?;
 
-    if session.state == SessionState::Sealed {
-        bail!("the session {id} is already sealed, and a sealed session is never reopened");
+    if workspace.state == WorkspaceState::Sealed {
+        bail!("the workspace {id} is already sealed, and a sealed workspace is never reopened");
     }
-    let unfinished = unfinished_run(&mut tx, &session).await?;
+    let unfinished = unfinished_run(&mut tx, &workspace).await?;
     if let Some(holding) = unfinished.in_flight() {
-        bail!("the run {holding} is still in flight in the session {id}");
+        bail!("the run {holding} is still in flight in the workspace {id}");
     }
     if let Some(waiting) = unfinished.waiting() {
         work::stopping(&mut tx, &waiting, Exit::Succeeded).await?;
     }
-    instance::archive_on_seal(&mut tx, &session).await?;
+    instance::archive_on_seal(&mut tx, &workspace).await?;
 
-    let sealed_at = tx.sessions().seal(&session).await?;
+    let sealed_at = tx.workspaces().seal(&workspace).await?;
     tx.commit().await?;
 
-    let sealed = Session {
-        state: SessionState::Sealed,
+    let sealed = Workspace {
+        state: WorkspaceState::Sealed,
         sealed_at: Some(sealed_at),
-        ..session
+        ..workspace
     };
-    fanout::publish(Change::SessionSealed(&sealed));
+    fanout::publish(Change::WorkspaceSealed(&sealed));
 
     Ok(sealed)
 }
 
 /// Unattended sealing, through the same command a person seals with, so nothing here can
 /// decide differently to `seal`.
-pub async fn seal_idle(store: &Store) -> Result<Vec<Session>> {
+pub async fn seal_idle(store: &Store) -> Result<Vec<Workspace>> {
     let mut sealed = Vec::new();
 
     for id in idle(store).await? {
@@ -105,20 +107,20 @@ pub async fn seal_idle(store: &Store) -> Result<Vec<Session>> {
     Ok(sealed)
 }
 
-async fn idle(store: &Store) -> Result<Vec<SessionId>> {
+async fn idle(store: &Store) -> Result<Vec<WorkspaceId>> {
     let mut tx = store.begin().await?;
     let mut idle = Vec::new();
 
-    for session in tx.sessions().idle(Timestamp::now() - IDLE).await? {
-        let holds_unpublished_work = match tx.sessions().kept_instance(session.id).await? {
+    for workspace in tx.workspaces().idle(Timestamp::now() - IDLE).await? {
+        let holds_unpublished_work = match tx.workspaces().kept_instance(workspace.id).await? {
             Some(kept) => {
-                instance::unpublished(&session.checkout.repositories, kept.observed.as_deref())
+                instance::unpublished(&workspace.checkout.repositories, kept.observed.as_deref())
                     .is_some()
             }
             None => false,
         };
-        if !holds_unpublished_work && unfinished_run(&mut tx, &session).await?.idle() {
-            idle.push(session.id);
+        if !holds_unpublished_work && unfinished_run(&mut tx, &workspace).await?.idle() {
+            idle.push(workspace.id);
         }
     }
 
@@ -130,8 +132,11 @@ pub(crate) struct UnfinishedRun {
     held_input: bool,
 }
 
-pub(crate) async fn unfinished_run(tx: &mut Tx<'_>, session: &Session) -> Result<UnfinishedRun> {
-    Ok(match tx.sessions().unfinished_run(session).await? {
+pub(crate) async fn unfinished_run(
+    tx: &mut Tx<'_>,
+    workspace: &Workspace,
+) -> Result<UnfinishedRun> {
+    Ok(match tx.workspaces().unfinished_run(workspace).await? {
         Some(Unfinished { run, held_input }) => UnfinishedRun {
             run: Some(run),
             held_input,
@@ -184,30 +189,30 @@ impl UnfinishedRun {
     }
 }
 
-pub async fn show(store: &Store, id: SessionId) -> Result<Session> {
-    store.begin().await?.sessions().get(id).await
+pub async fn show(store: &Store, id: WorkspaceId) -> Result<Workspace> {
+    store.begin().await?.workspaces().get(id).await
 }
 
-pub async fn sessions(store: &Store, organization: &str) -> Result<Vec<Session>> {
+pub async fn workspaces(store: &Store, organization: &str) -> Result<Vec<Workspace>> {
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
 
-    tx.sessions().all(&organization).await
+    tx.workspaces().all(&organization).await
 }
 
-pub async fn continuations(store: &Store, id: SessionId) -> Result<Vec<SessionId>> {
-    store.begin().await?.sessions().continuations(id).await
+pub async fn continuations(store: &Store, id: WorkspaceId) -> Result<Vec<WorkspaceId>> {
+    store.begin().await?.workspaces().continuations(id).await
 }
 
 pub async fn post(
     store: &Store,
-    id: SessionId,
+    id: WorkspaceId,
     participant: &str,
     message: &str,
 ) -> Result<Option<Run>> {
     let mut tx = store.begin().await?;
-    let session = tx.sessions().get(id).await?;
-    let run = post_in(&mut tx, &session, participant, message).await?;
+    let workspace = tx.workspaces().get(id).await?;
+    let run = post_in(&mut tx, &workspace, participant, message).await?;
     tx.commit().await?;
 
     Ok(run)
@@ -215,42 +220,47 @@ pub async fn post(
 
 pub(crate) async fn post_in(
     tx: &mut Tx<'_>,
-    session: &Session,
+    workspace: &Workspace,
     participant: &str,
     message: &str,
 ) -> Result<Option<Run>> {
-    session.accepts("message")?;
+    workspace.accepts("message")?;
 
-    let unfinished = unfinished_run(tx, session).await?;
+    let unfinished = unfinished_run(tx, workspace).await?;
     match unfinished.post_destination() {
         PostDestination::Start => {
-            said(tx, session, participant, message).await?;
-            Ok(Some(tx.sessions().enqueue_run(session, None).await?))
+            said(tx, workspace, participant, message).await?;
+            Ok(Some(tx.workspaces().enqueue_run(workspace, None).await?))
         }
         PostDestination::Brief => {
-            said(tx, session, participant, message).await?;
+            said(tx, workspace, participant, message).await?;
             Ok(None)
         }
         PostDestination::Held => {
-            tx.sessions()
-                .add_pending_message(session, participant, message)
+            tx.workspaces()
+                .add_pending_message(workspace, participant, message)
                 .await?;
             Ok(None)
         }
         // Held even for a waiting Run: its next turn waits for an active-work slot.
         PostDestination::Wake(waiting) => {
-            tx.sessions()
-                .add_pending_message(session, participant, message)
+            tx.workspaces()
+                .add_pending_message(workspace, participant, message)
                 .await?;
             Ok(Some(waiting.clone()))
         }
     }
 }
 
-async fn said(tx: &mut Tx<'_>, session: &Session, participant: &str, message: &str) -> Result<()> {
+async fn said(
+    tx: &mut Tx<'_>,
+    workspace: &Workspace,
+    participant: &str,
+    message: &str,
+) -> Result<()> {
     tx.log()
         .append(
-            session,
+            workspace,
             Entry::Said {
                 participant: participant.to_owned(),
                 message: message.to_owned(),
@@ -263,34 +273,34 @@ async fn said(tx: &mut Tx<'_>, session: &Session, participant: &str, message: &s
 
 pub async fn transcript(
     store: &Store,
-    id: SessionId,
+    id: WorkspaceId,
     from: Option<Cursor>,
     window: Window,
 ) -> Result<Page, Unreadable> {
     let mut tx = store.begin().await?;
-    let session = tx.sessions().get(id).await?;
+    let workspace = tx.workspaces().get(id).await?;
 
-    tx.log().page(&session, from, window).await
+    tx.log().page(&workspace, from, window).await
 }
 
-pub async fn resolve(store: &Store, organization: &str, reference: &str) -> Result<Session> {
+pub async fn resolve(store: &Store, organization: &str, reference: &str) -> Result<Workspace> {
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
 
-    tx.sessions().resolved(&organization, reference).await
+    tx.workspaces().resolved(&organization, reference).await
 }
 
-/// Only a sealed Session is continued: work an open one could still take belongs in it.
+/// Only a sealed Workspace is continued: work an open one could still take belongs in it.
 async fn continued(
     tx: &mut Tx<'_>,
     organization: &Organization,
     reference: &str,
-) -> Result<Session> {
-    let sealed = tx.sessions().resolved(organization, reference).await?;
+) -> Result<Workspace> {
+    let sealed = tx.workspaces().resolved(organization, reference).await?;
 
-    if sealed.state != SessionState::Sealed {
+    if sealed.state != WorkspaceState::Sealed {
         bail!(
-            "the session {} is open, and work continues in it rather than after it",
+            "the workspace {} is open, and work continues in it rather than after it",
             sealed.id
         );
     }
@@ -308,7 +318,7 @@ mod tests {
             id: RunId::generate(),
             name: "run".into(),
             organization: OrganizationId::generate(),
-            session: SessionId::generate(),
+            workspace: WorkspaceId::generate(),
             state,
             waiting_for: None,
             exit: None,

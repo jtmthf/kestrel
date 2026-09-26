@@ -1,4 +1,4 @@
-//! Operator diagnostics. Not the `Log` port, which is a Session's Transcript.
+//! Operator diagnostics. Not the `Log` port, which is a Workspace's Transcript.
 
 use std::io::IsTerminal;
 

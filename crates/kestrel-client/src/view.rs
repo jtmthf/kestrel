@@ -89,10 +89,10 @@ pub const TRIGGER_TEST: View = View::Detail(&[
     "brief",
 ]);
 pub const TRIGGER_STATE: View = View::Value("state");
-pub const FIRED: View = View::Detail(&["outcome", "session", "run", "event", "correlation"]);
-pub const SESSIONS: View = View::Rows(&["id", "name", "state", "project", "agent", "started_by"]);
+pub const FIRED: View = View::Detail(&["outcome", "workspace", "run", "event", "correlation"]);
+pub const WORKSPACES: View = View::Rows(&["id", "name", "state", "project", "agent", "started_by"]);
 pub const ENTRIES: View = View::Rows(&["seq", "appended_at", "entry"]);
-pub const SESSION: View = View::Detail(&[
+pub const WORKSPACE: View = View::Detail(&[
     "id",
     "name",
     "organization",
@@ -125,7 +125,7 @@ pub const RUNS: View = View::Rows(&[
 pub const RUN: View = View::Detail(&[
     "id",
     "name",
-    "session",
+    "workspace",
     "state",
     "waiting_for",
     "exit.status",
@@ -144,7 +144,7 @@ pub const RUN: View = View::Detail(&[
     "usage",
 ]);
 pub const STOPPED: View = View::Value("exit.status");
-pub const INSTANCES: View = View::Rows(&["session", "instance", "because"]);
+pub const INSTANCES: View = View::Rows(&["workspace", "instance", "because"]);
 pub const RELEASED: View = View::Value("instance");
 pub const STATUS: View = View::Detail(&[
     "control_plane",
@@ -154,7 +154,7 @@ pub const STATUS: View = View::Detail(&[
     "projects",
     "agents",
     "triggers",
-    "sessions",
+    "workspaces",
     "integrations",
     "credentials",
     "profiles",
@@ -170,7 +170,7 @@ pub const UNRESOLVED: View = View::Detail(&[
 ]);
 pub const EXIT_CODES: View = View::Detail(&["code", "name", "meaning", "branch"]);
 
-pub const STARTED: View = View::Detail(&["organization", "project", "agent", "session", "run"]);
+pub const STARTED: View = View::Detail(&["organization", "project", "agent", "workspace", "run"]);
 
 /// What a creation answers back is the identifier the next command is given.
 pub const DECLARED: View = View::Value("id");

@@ -1,4 +1,4 @@
-//! A Session starts with its Trigger's Agent, or the one an `agent:<name>` label chooses from
+//! A Workspace starts with its Trigger's Agent, or the one an `agent:<name>` label chooses from
 //! those the Trigger allows, and keeps that Agent's harness and model for as long as it is open.
 
 mod support;
@@ -6,7 +6,7 @@ mod support;
 use std::time::Duration;
 
 use jiff::SignedDuration;
-use kestrel::domain::{Direction, Exit, Run, RunId, Session};
+use kestrel::domain::{Direction, Exit, Run, RunId, Workspace};
 use kestrel_scripted_agent::{DEFAULT_MODEL, OTHER_MODEL};
 use serde_json::Value;
 use support::github_stub::{self, GithubStub};
@@ -80,16 +80,16 @@ async fn labelled(kestrel: &Kestrel, labels: &[&str]) -> GithubStub {
     stub
 }
 
-async fn opened(kestrel: &Kestrel) -> Session {
+async fn opened(kestrel: &Kestrel) -> Workspace {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        if let Some(session) = kestrel.sessions("acme").await.into_iter().next() {
-            return kestrel.show_session(session.id).await;
+        if let Some(workspace) = kestrel.workspaces("acme").await.into_iter().next() {
+            return kestrel.show_workspace(workspace.id).await;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "no session was ever opened"
+            "no workspace was ever opened"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -114,8 +114,8 @@ async fn refused(kestrel: &Kestrel) -> String {
             if let Some(firing) = shown["firings"].as_array().and_then(|all| all.first()) {
                 assert_eq!(firing["outcome"], "failed", "{firing}");
                 assert!(
-                    kestrel.sessions("acme").await.is_empty(),
-                    "a failed firing opened a session"
+                    kestrel.workspaces("acme").await.is_empty(),
+                    "a failed firing opened a workspace"
                 );
                 return firing["failure"].as_str().expect("a reason").to_owned();
             }
@@ -134,16 +134,16 @@ async fn ended(kestrel: &Kestrel, run: RunId) -> Run {
 }
 
 #[tokio::test]
-async fn with_no_agent_label_a_session_starts_with_the_triggers_agent() {
+async fn with_no_agent_label_a_workspace_starts_with_the_triggers_agent() {
     let kestrel = Kestrel::boot().await;
     an_organization(&kestrel).await;
     let _github = labelled(&kestrel, &["bug"]).await;
 
-    let session = opened(&kestrel).await;
+    let workspace = opened(&kestrel).await;
 
-    assert_eq!(session.agent.name, "builder");
-    assert_eq!(session.agent.harness, support::HARNESS);
-    assert_eq!(session.agent.model.as_deref(), Some(DEFAULT_MODEL));
+    assert_eq!(workspace.agent.name, "builder");
+    assert_eq!(workspace.agent.harness, support::HARNESS);
+    assert_eq!(workspace.agent.model.as_deref(), Some(DEFAULT_MODEL));
 
     kestrel.teardown().await;
 }
@@ -154,11 +154,11 @@ async fn one_agent_label_chooses_an_agent_the_trigger_allows() {
     an_organization(&kestrel).await;
     let _github = labelled(&kestrel, &["agent:codex"]).await;
 
-    let session = opened(&kestrel).await;
+    let workspace = opened(&kestrel).await;
 
-    assert_eq!(session.agent.name, "codex");
-    assert_eq!(session.agent.harness, "codex");
-    assert_eq!(session.agent.model.as_deref(), Some(OTHER_MODEL));
+    assert_eq!(workspace.agent.name, "codex");
+    assert_eq!(workspace.agent.harness, "codex");
+    assert_eq!(workspace.agent.model.as_deref(), Some(OTHER_MODEL));
 
     kestrel.teardown().await;
 }
@@ -193,7 +193,7 @@ async fn labels_choosing_two_agents_start_nothing_and_say_why() {
 }
 
 #[tokio::test]
-async fn a_label_on_work_that_feeds_an_open_session_changes_nothing_about_its_agent() {
+async fn a_label_on_work_that_feeds_an_open_workspace_changes_nothing_about_its_agent() {
     let kestrel = Kestrel::boot().await;
     an_organization(&kestrel).await;
     let stub = GithubStub::start();
@@ -211,29 +211,32 @@ async fn a_label_on_work_that_feeds_an_open_session_changes_nothing_about_its_ag
         )
         .await;
     watching(&kestrel, &stub).await;
-    let session = opened(&kestrel).await;
+    let workspace = opened(&kestrel).await;
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while kestrel.transcript(session.id).await.len() < 3 {
+    while kestrel.transcript(workspace.id).await.len() < 3 {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the second event never fed the session"
+            "the second event never fed the workspace"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    assert_eq!(kestrel.sessions("acme").await.len(), 1);
-    assert_eq!(kestrel.show_session(session.id).await.agent.name, "codex");
+    assert_eq!(kestrel.workspaces("acme").await.len(), 1);
+    assert_eq!(
+        kestrel.show_workspace(workspace.id).await.agent.name,
+        "codex"
+    );
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn an_open_sessions_agent_keeps_the_harness_and_model_it_opened_with() {
+async fn an_open_workspaces_agent_keeps_the_harness_and_model_it_opened_with() {
     let kestrel = Kestrel::boot().await;
     an_organization(&kestrel).await;
-    let session = kestrel.open_session("acme", "kestrel", "codex").await;
-    let organization = &session.organization;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "codex").await;
+    let organization = &workspace.organization;
 
     kestrel
         .declare_agent(organization, "codex", support::HARNESS, None)
@@ -242,10 +245,10 @@ async fn an_open_sessions_agent_keeps_the_harness_and_model_it_opened_with() {
         .set_agent_model(organization, "codex", Some(DEFAULT_MODEL))
         .await;
 
-    let shown = kestrel.show_session(session.id).await;
+    let shown = kestrel.show_workspace(workspace.id).await;
     assert_eq!(shown.agent.harness, "codex");
     assert_eq!(shown.agent.model.as_deref(), Some(OTHER_MODEL));
-    let later = kestrel.open_session("acme", "kestrel", "codex").await;
+    let later = kestrel.open_workspace("acme", "kestrel", "codex").await;
     assert_eq!(later.agent.harness, support::HARNESS);
     assert_eq!(later.agent.model.as_deref(), Some(DEFAULT_MODEL));
 
@@ -266,13 +269,13 @@ async fn the_work_role_runs_the_harness_and_model_a_label_chose() {
     .await;
     an_organization(&kestrel).await;
     let _github = labelled(&kestrel, &["agent:codex"]).await;
-    let session = opened(&kestrel).await;
-    let organization = &session.organization;
+    let workspace = opened(&kestrel).await;
+    let organization = &workspace.organization;
     kestrel
         .set_agent_model(organization, "codex", Some(DEFAULT_MODEL))
         .await;
 
-    let run = kestrel.runs(session.id).await.remove(0);
+    let run = kestrel.runs(workspace.id).await.remove(0);
     let run = ended(&kestrel, run.id).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded), "{:?}", run.exit);
@@ -285,8 +288,8 @@ async fn the_work_role_runs_the_harness_and_model_a_label_chose() {
 async fn a_harness_the_work_role_cannot_spawn_fails_the_run_and_says_which() {
     let kestrel = Kestrel::dispatching(supervisor::binary()).await;
     an_organization(&kestrel).await;
-    let session = kestrel.open_session("acme", "kestrel", "claude").await;
-    let run = kestrel.enqueue_run(session.id).await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "claude").await;
+    let run = kestrel.enqueue_run(workspace.id).await;
 
     let run = ended(&kestrel, run.id).await;
 

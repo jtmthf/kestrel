@@ -8,7 +8,7 @@ use kestrel::compute::Instance;
 use serde_json::json;
 
 /// The work every conformance Run is provisioned for. An agent reads it as the instructions
-/// its workspace came with, which is the only lever a Run has over what an agent does: nothing
+/// its checkout came with, which is the only lever a Run has over what an agent does: nothing
 /// on the link carries work at 0.1, so every Run's prompt is the same sentence.
 const AGENTS_MD: &str = "\
 # The work
@@ -125,7 +125,7 @@ impl Lineage {
     pub fn configure(self, instance: &mut Instance) {
         instance
             .write_file("AGENTS.md", AGENTS_MD.as_bytes())
-            .expect("the work should reach the workspace");
+            .expect("the work should reach the instance");
 
         if self == Lineage::Native {
             instance

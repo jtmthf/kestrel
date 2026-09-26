@@ -7,18 +7,18 @@ ALTER TABLE run ADD COLUMN supervisor_state TEXT NOT NULL DEFAULT 'absent'
 ALTER TABLE run ADD COLUMN supervisor TEXT;
 
 CREATE TABLE pending_message (
-    session_id TEXT NOT NULL REFERENCES session (id),
+    workspace_id TEXT NOT NULL REFERENCES workspace (id),
     organization_id TEXT NOT NULL REFERENCES organization (id),
     seq INTEGER NOT NULL,
     participant TEXT NOT NULL,
     body TEXT NOT NULL,
     received_at TEXT NOT NULL,
-    PRIMARY KEY (session_id, seq)
+    PRIMARY KEY (workspace_id, seq)
 ) STRICT;
 
 CREATE TABLE follow_up (
     event_record_id TEXT PRIMARY KEY REFERENCES event (record_id),
     organization_id TEXT NOT NULL REFERENCES organization (id),
-    session_id TEXT NOT NULL REFERENCES session (id),
+    workspace_id TEXT NOT NULL REFERENCES workspace (id),
     received_at TEXT NOT NULL
 ) STRICT;

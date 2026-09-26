@@ -15,7 +15,7 @@ use support::client::{self, Client};
 use support::github_stub::{self, GithubStub};
 use support::{Kestrel, TOKEN};
 
-async fn an_open_session(kestrel: &Kestrel, said: usize) -> (String, kestrel::domain::Run) {
+async fn an_open_workspace(kestrel: &Kestrel, said: usize) -> (String, kestrel::domain::Run) {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(
@@ -28,18 +28,18 @@ async fn an_open_session(kestrel: &Kestrel, said: usize) -> (String, kestrel::do
     kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let (run, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let (run, _) = kestrel.dispatch_run(workspace.id).await;
     for message in 1..=said {
         kestrel.said(&run, &format!("message {message}")).await;
     }
 
-    (session.id.to_string(), run)
+    (workspace.id.to_string(), run)
 }
 
-async fn recorded_seqs(kestrel: &Kestrel, session: &str) -> Vec<i64> {
+async fn recorded_seqs(kestrel: &Kestrel, workspace: &str) -> Vec<i64> {
     kestrel
-        .transcript(session.parse().expect("a session id"))
+        .transcript(workspace.parse().expect("a workspace id"))
         .await
         .iter()
         .map(|entry| entry.seq)
@@ -148,8 +148,8 @@ const CREDENTIAL: &str = "variable";
 const INTEGRATION: &str = "id,kind,repository,carries,polled_every,webhook_path,last_event_refusal";
 const EVENT: &str = "record,integration,event";
 const TRIGGER: &str = "id,name,state,brief";
-const SESSION: &str = "id,name,state,continues";
-const RUN: &str = "id,name,session,state,model";
+const WORKSPACE: &str = "id,name,state,continues";
+const RUN: &str = "id,name,workspace,state,model";
 const ENTRY: &str = "seq,entry";
 
 /// Every answer is checked against what the published document says the operation answers.
@@ -271,28 +271,28 @@ fn trigger_at(organization: &str, trigger: &str) -> String {
         .replace("{trigger}", trigger)
 }
 
-fn session_at(organization: &str, session: &str) -> String {
-    operator::SESSION
+fn workspace_at(organization: &str, workspace: &str) -> String {
+    operator::WORKSPACE
         .replace("{organization}", organization)
-        .replace("{session}", session)
+        .replace("{workspace}", workspace)
 }
 
-fn session_messages_at(organization: &str, session: &str) -> String {
-    operator::SESSION_MESSAGES
+fn workspace_messages_at(organization: &str, workspace: &str) -> String {
+    operator::WORKSPACE_MESSAGES
         .replace("{organization}", organization)
-        .replace("{session}", session)
+        .replace("{workspace}", workspace)
 }
 
-fn session_seal_at(organization: &str, session: &str) -> String {
-    operator::SESSION_SEAL
+fn workspace_seal_at(organization: &str, workspace: &str) -> String {
+    operator::WORKSPACE_SEAL
         .replace("{organization}", organization)
-        .replace("{session}", session)
+        .replace("{workspace}", workspace)
 }
 
-fn runs_of(organization: &str, session: &str) -> String {
+fn runs_of(organization: &str, workspace: &str) -> String {
     operator::RUNS
         .replace("{organization}", organization)
-        .replace("{session}", session)
+        .replace("{workspace}", workspace)
 }
 
 fn run_at(organization: &str, run: &str) -> String {
@@ -301,10 +301,10 @@ fn run_at(organization: &str, run: &str) -> String {
         .replace("{run}", run)
 }
 
-fn transcript_of(organization: &str, session: &str) -> String {
+fn transcript_of(organization: &str, workspace: &str) -> String {
     operator::TRANSCRIPT
         .replace("{organization}", organization)
-        .replace("{session}", session)
+        .replace("{workspace}", workspace)
 }
 
 fn failed(finished: &client::Finished) -> &str {
@@ -436,7 +436,7 @@ async fn a_client_declares_and_lists_projects_and_agents() {
     assert_eq!(agents[0]["harness"], "opencode");
     assert_eq!(agents[0]["model"], "claude-opus-5");
 
-    let opened = kestrel.open_session("acme", "kestrel", "builder").await;
+    let opened = kestrel.open_workspace("acme", "kestrel", "builder").await;
     assert_eq!(
         opened.project.id.to_string(),
         project[0]["id"].as_str().expect("an id")
@@ -699,12 +699,12 @@ async fn a_trigger_applied_after_an_event_never_fires_for_that_event() {
             &client(
                 &kestrel,
                 &[
-                    "session",
+                    "workspace",
                     "list",
                     "--organization",
                     "acme",
                     "--json",
-                    SESSION,
+                    WORKSPACE,
                 ],
             )
             .await,
@@ -787,7 +787,7 @@ async fn an_inconsistent_declaration_changes_nothing() {
 }
 
 #[tokio::test]
-async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
+async fn a_client_operates_workspaces_and_runs_without_opening_a_database() {
     let kestrel = Kestrel::boot().await;
     succeeded(&client(&kestrel, &["organization", "declare", "acme"]).await);
     succeeded(
@@ -819,7 +819,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         &client(
             &kestrel,
             &[
-                "session",
+                "workspace",
                 "open",
                 "--organization",
                 "acme",
@@ -828,41 +828,46 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
                 "--agent",
                 "builder",
                 "--json",
-                SESSION,
+                WORKSPACE,
             ],
         )
         .await,
     );
-    let session = opened[0]["id"].as_str().expect("a session id").to_owned();
-    let session_name = generated_name(&opened[0]).to_owned();
+    let workspace = opened[0]["id"].as_str().expect("a workspace id").to_owned();
+    let workspace_name = generated_name(&opened[0]).to_owned();
 
     let listed = recorded(
         &client(
             &kestrel,
             &[
-                "session",
+                "workspace",
                 "list",
                 "--organization",
                 "acme",
                 "--json",
-                SESSION,
+                WORKSPACE,
             ],
         )
         .await,
     );
     assert_eq!(listed, opened);
-    let shown =
-        recorded(&client(&kestrel, &["session", "show", &session, "--json", SESSION]).await);
+    let shown = recorded(
+        &client(
+            &kestrel,
+            &["workspace", "show", &workspace, "--json", WORKSPACE],
+        )
+        .await,
+    );
     assert_eq!(shown, opened);
-    assert_eq!(shown[0]["name"], session_name);
+    assert_eq!(shown[0]["name"], workspace_name);
 
     let posted = recorded(
         &client(
             &kestrel,
             &[
-                "session",
+                "workspace",
                 "post",
-                &session,
+                &workspace,
                 "start with the operator boundary",
                 "--json",
                 RUN,
@@ -872,13 +877,13 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
     );
     let run = posted[0]["id"].as_str().expect("a run id");
     let first_run_name = generated_name(&posted[0]).to_owned();
-    assert_eq!(posted[0]["session"], session);
+    assert_eq!(posted[0]["workspace"], workspace);
     assert_eq!(posted[0]["state"], "queued");
     assert_eq!(
         recorded(
             &client(
                 &kestrel,
-                &["run", "list", "--session", &session, "--json", RUN]
+                &["run", "list", "--workspace", &workspace, "--json", RUN]
             )
             .await
         ),
@@ -891,15 +896,20 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         .expect("the posted run should wait for the worker");
     assert_eq!(completed.run.id.to_string(), run);
     kestrel.complete_run(&completed.run).await;
-    let sealed =
-        recorded(&client(&kestrel, &["session", "seal", &session, "--json", SESSION]).await);
+    let sealed = recorded(
+        &client(
+            &kestrel,
+            &["workspace", "seal", &workspace, "--json", WORKSPACE],
+        )
+        .await,
+    );
     assert_eq!(sealed[0]["state"], "sealed");
 
     let continued = recorded(
         &client(
             &kestrel,
             &[
-                "session",
+                "workspace",
                 "open",
                 "--organization",
                 "acme",
@@ -908,23 +918,23 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
                 "--agent",
                 "builder",
                 "--continues",
-                &session,
+                &workspace,
                 "--json",
-                SESSION,
+                WORKSPACE,
             ],
         )
         .await,
     );
-    let continuing = continued[0]["id"].as_str().expect("a continuing session");
-    assert_ne!(generated_name(&continued[0]), session_name);
-    assert_eq!(continued[0]["continues"], session);
+    let continuing = continued[0]["id"].as_str().expect("a continuing workspace");
+    assert_ne!(generated_name(&continued[0]), workspace_name);
+    assert_eq!(continued[0]["continues"], workspace);
     let enqueued = recorded(
         &client(
             &kestrel,
             &[
                 "run",
                 "enqueue",
-                "--session",
+                "--workspace",
                 continuing,
                 "--model",
                 "claude-opus-5",
@@ -935,13 +945,13 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         .await,
     );
     assert_ne!(generated_name(&enqueued[0]), first_run_name);
-    assert_eq!(enqueued[0]["session"], continuing);
+    assert_eq!(enqueued[0]["workspace"], continuing);
     assert_eq!(enqueued[0]["model"], "claude-opus-5");
     assert_eq!(
         recorded(
             &client(
                 &kestrel,
-                &["run", "list", "--session", continuing, "--json", RUN]
+                &["run", "list", "--workspace", continuing, "--json", RUN]
             )
             .await
         ),
@@ -952,7 +962,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
 }
 
 #[tokio::test]
-async fn a_client_names_a_session_by_name_identifier_prefix_and_latest() {
+async fn a_client_names_a_workspace_by_name_identifier_prefix_and_latest() {
     let kestrel = Kestrel::boot().await;
     let organization = kestrel.declare_organization("acme").await;
     kestrel
@@ -967,41 +977,56 @@ async fn a_client_names_a_session_by_name_identifier_prefix_and_latest() {
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
 
-    let first = kestrel.open_session("acme", "kestrel", "builder").await;
-    let second = kestrel.open_session("acme", "kestrel", "builder").await;
+    let first = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let second = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let (first_id, second_id) = (first.id.to_string(), second.id.to_string());
 
     let by_name = recorded(
         &client(
             &kestrel,
-            &["session", "show", &second.name, "--json", SESSION],
+            &["workspace", "show", &second.name, "--json", WORKSPACE],
         )
         .await,
     );
     assert_eq!(by_name[0]["id"], second_id);
 
-    let by_id =
-        recorded(&client(&kestrel, &["session", "show", &first_id, "--json", SESSION]).await);
+    let by_id = recorded(
+        &client(
+            &kestrel,
+            &["workspace", "show", &first_id, "--json", WORKSPACE],
+        )
+        .await,
+    );
     assert_eq!(by_id[0]["name"], first.name);
 
     let prefix = shortest_prefix_of(&first_id, &[&second_id]);
     assert!(
         prefix.len() < first_id.len(),
-        "two sessions opened into the one identifier"
+        "two workspaces opened into the one identifier"
     );
-    let by_prefix =
-        recorded(&client(&kestrel, &["session", "show", &prefix, "--json", SESSION]).await);
+    let by_prefix = recorded(
+        &client(
+            &kestrel,
+            &["workspace", "show", &prefix, "--json", WORKSPACE],
+        )
+        .await,
+    );
     assert_eq!(by_prefix[0]["id"], first_id);
 
-    let latest =
-        recorded(&client(&kestrel, &["session", "show", "latest", "--json", SESSION]).await);
+    let latest = recorded(
+        &client(
+            &kestrel,
+            &["workspace", "show", "latest", "--json", WORKSPACE],
+        )
+        .await,
+    );
     assert_eq!(latest[0]["id"], second_id);
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_session_reference_matching_several_is_refused_naming_them() {
+async fn a_workspace_reference_matching_several_is_refused_naming_them() {
     let kestrel = Kestrel::boot().await;
     let organization = kestrel.declare_organization("acme").await;
     kestrel
@@ -1016,10 +1041,10 @@ async fn a_session_reference_matching_several_is_refused_naming_them() {
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
     for _ in 0..17 {
-        kestrel.open_session("acme", "kestrel", "builder").await;
+        kestrel.open_workspace("acme", "kestrel", "builder").await;
     }
 
-    let listed = recorded(&client(&kestrel, &["session", "list", "--json", "id,name"]).await);
+    let listed = recorded(&client(&kestrel, &["workspace", "list", "--json", "id,name"]).await);
     let mut by_leading: HashMap<char, Vec<(String, String)>> = HashMap::new();
     for record in &listed {
         let id = record["id"].as_str().expect("an identifier").to_owned();
@@ -1037,7 +1062,7 @@ async fn a_session_reference_matching_several_is_refused_naming_them() {
         .find(|(_, matching)| matching.len() > 1)
         .expect("seventeen identifiers over sixteen leading digits share one");
 
-    let refused = client(&kestrel, &["session", "show", &leading.to_string()]).await;
+    let refused = client(&kestrel, &["workspace", "show", &leading.to_string()]).await;
     let said = failed(&refused);
 
     assert!(said.contains("ambiguous"), "{said}");
@@ -1055,7 +1080,7 @@ async fn a_session_reference_matching_several_is_refused_naming_them() {
 }
 
 #[tokio::test]
-async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
+async fn a_workspace_reference_never_reaches_across_the_organizations_in_scope() {
     let kestrel = Kestrel::boot().await;
     for name in ["acme", "globex"] {
         let organization = kestrel.declare_organization(name).await;
@@ -1071,13 +1096,13 @@ async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
             .declare_agent(&organization, "builder", "opencode", None)
             .await;
     }
-    let acme = kestrel.open_session("acme", "kestrel", "builder").await;
-    let globex = kestrel.open_session("globex", "kestrel", "builder").await;
+    let acme = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let globex = kestrel.open_workspace("globex", "kestrel", "builder").await;
 
     let refused = client(
         &kestrel,
         &[
-            "session",
+            "workspace",
             "show",
             &acme.id.to_string(),
             "--organization",
@@ -1087,7 +1112,7 @@ async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
     .await;
     let said = failed(&refused);
     assert!(
-        said.contains("no session in the organization globex matches"),
+        said.contains("no workspace in the organization globex matches"),
         "{said}"
     );
 
@@ -1095,13 +1120,13 @@ async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
         &client(
             &kestrel,
             &[
-                "session",
+                "workspace",
                 "show",
                 "latest",
                 "--organization",
                 "globex",
                 "--json",
-                SESSION,
+                WORKSPACE,
             ],
         )
         .await,
@@ -1111,9 +1136,9 @@ async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
     let refused = client(
         &kestrel,
         &[
-            "session",
+            "workspace",
             "show",
-            "no-such-session",
+            "no-such-workspace",
             "--organization",
             "globex",
         ],
@@ -1144,10 +1169,10 @@ async fn a_client_names_a_run_by_name_identifier_prefix_and_latest() {
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
 
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let first = kestrel.enqueue_run(session.id).await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let first = kestrel.enqueue_run(workspace.id).await;
     kestrel.stop_run(first.id).await;
-    let second = kestrel.enqueue_run(session.id).await;
+    let second = kestrel.enqueue_run(workspace.id).await;
     let (first_id, second_id) = (first.id.to_string(), second.id.to_string());
 
     let by_name = recorded(&client(&kestrel, &["run", "show", &second.name, "--json", RUN]).await);
@@ -1167,7 +1192,7 @@ async fn a_client_names_a_run_by_name_identifier_prefix_and_latest() {
 }
 
 #[tokio::test]
-async fn session_and_run_names_remain_unique_when_creation_retries_collisions() {
+async fn workspace_and_run_names_remain_unique_when_creation_retries_collisions() {
     let kestrel = Kestrel::boot().await;
     let organization = kestrel.declare_organization("acme").await;
     kestrel
@@ -1182,13 +1207,13 @@ async fn session_and_run_names_remain_unique_when_creation_retries_collisions() 
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
 
-    let mut session_names = HashSet::new();
+    let mut workspace_names = HashSet::new();
     let mut run_names = HashSet::new();
     for _ in 0..100 {
-        let session = kestrel.open_session("acme", "kestrel", "builder").await;
-        assert!(session_names.insert(session.name));
+        let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+        assert!(workspace_names.insert(workspace.name));
 
-        let run = kestrel.enqueue_run(session.id).await;
+        let run = kestrel.enqueue_run(workspace.id).await;
         assert!(run_names.insert(run.name));
     }
 
@@ -1332,7 +1357,7 @@ async fn a_client_manages_triggers_without_opening_a_database() {
     assert_eq!(changed[0]["id"], trigger);
     assert_eq!(changed[0]["brief"], "Triage {{ event.type }}");
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    assert!(kestrel.sessions("acme").await.is_empty());
+    assert!(kestrel.workspaces("acme").await.is_empty());
 
     let test = vec![
         "trigger",
@@ -1581,7 +1606,7 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
 }
 
 #[tokio::test]
-async fn the_operator_documents_session_and_run_answers_and_refusals() {
+async fn the_operator_documents_workspace_and_run_answers_and_refusals() {
     let kestrel = Kestrel::boot().await;
     let organization = kestrel.declare_organization("acme").await;
     kestrel
@@ -1595,28 +1620,28 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    let sessions = operator::SESSIONS.replace("{organization}", "acme");
+    let workspaces = operator::WORKSPACES.replace("{organization}", "acme");
 
-    let (status, _) = got(&kestrel, &sessions).await;
+    let (status, _) = got(&kestrel, &workspaces).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = declared(
         &kestrel,
-        &sessions,
+        &workspaces,
         &json!({ "project": "nowhere", "agent": "builder" }),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, opened) = declared(
         &kestrel,
-        &sessions,
+        &workspaces,
         &json!({ "project": "kestrel", "agent": "builder" }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    let session = opened["id"].as_str().expect("a session id");
-    let shown = session_at("acme", session);
-    let messages = session_messages_at("acme", session);
-    let runs = runs_of("acme", session);
+    let workspace = opened["id"].as_str().expect("a workspace id");
+    let shown = workspace_at("acme", workspace);
+    let messages = workspace_messages_at("acme", workspace);
+    let runs = runs_of("acme", workspace);
 
     let (status, _) = got(&kestrel, &shown).await;
     assert_eq!(status, StatusCode::OK);
@@ -1627,7 +1652,7 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(posted["session"], session);
+    assert_eq!(posted["workspace"], workspace);
     let (status, _) = got(&kestrel, &runs).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = declared(&kestrel, &runs, &json!({})).await;
@@ -1637,7 +1662,7 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     let run_name = posted["name"].as_str().expect("a generated run name");
     let (status, shown_run) = got(&kestrel, &run_at("acme", run_id)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(shown_run["session"], session);
+    assert_eq!(shown_run["workspace"], workspace);
     let (status, named_run) = got(&kestrel, &run_at("acme", run_name)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(named_run["id"], run_id);
@@ -1647,28 +1672,28 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
         .await
         .expect("the posted run should wait for the worker");
     kestrel.complete_run(&run.run).await;
-    let seal = session_seal_at("acme", session);
+    let seal = workspace_seal_at("acme", workspace);
     let (status, _) = declared(&kestrel, &seal, &json!({})).await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = declared(&kestrel, &seal, &json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     let (status, _) = declared(
         &kestrel,
-        &sessions,
-        &json!({ "project": "kestrel", "agent": "builder", "continues": session }),
+        &workspaces,
+        &json!({ "project": "kestrel", "agent": "builder", "continues": workspace }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    let session_name = opened["name"].as_str().expect("a generated session name");
+    let workspace_name = opened["name"].as_str().expect("a generated workspace name");
     let (status, _) = declared(
         &kestrel,
-        &sessions,
-        &json!({ "project": "kestrel", "agent": "builder", "continues": session_name }),
+        &workspaces,
+        &json!({ "project": "kestrel", "agent": "builder", "continues": workspace_name }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let nowhere = session_at("acme", "01a0a2d8-baf8-7c02-99fa-7280f174c14a");
+    let nowhere = workspace_at("acme", "01a0a2d8-baf8-7c02-99fa-7280f174c14a");
     let (status, _) = got(&kestrel, &nowhere).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -1676,7 +1701,7 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
 }
 
 #[tokio::test]
-async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_not_an_outage() {
+async fn sealing_a_workspace_whose_instance_holds_unpublished_work_is_a_conflict_not_an_outage() {
     let kestrel = Kestrel::boot().await;
     let organization = kestrel.declare_organization("acme").await;
     kestrel
@@ -1690,9 +1715,9 @@ async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_n
     kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
 
-    let queued = kestrel.enqueue_run(session.id).await;
+    let queued = kestrel.enqueue_run(workspace.id).await;
     let claimed = kestrel
         .occupy_run()
         .await
@@ -1717,9 +1742,13 @@ async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_n
         .await;
     kestrel.complete_run(&claimed).await;
 
-    let session_id = session.id.to_string();
-    let (status, refusal) =
-        declared(&kestrel, &session_seal_at("acme", &session_id), &json!({})).await;
+    let workspace_id = workspace.id.to_string();
+    let (status, refusal) = declared(
+        &kestrel,
+        &workspace_seal_at("acme", &workspace_id),
+        &json!({}),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
     let message = refusal["message"].as_str().expect("a message");
@@ -1728,7 +1757,7 @@ async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_n
         "{refusal}"
     );
 
-    let rejected = client(&kestrel, &["session", "seal", &session_id]).await;
+    let rejected = client(&kestrel, &["workspace", "seal", &workspace_id]).await;
     assert!(
         failed(&rejected).contains("may hold the only copy of its work"),
         "{}",
@@ -1810,15 +1839,15 @@ async fn a_start_declares_its_setup_and_reaches_a_run_carrying_its_brief() {
     ] {
         assert_eq!(started[kind], json!({ "name": name, "created": true }));
     }
-    assert_eq!(started["run"]["session"], started["session"]["id"]);
+    assert_eq!(started["run"]["workspace"], started["workspace"]["id"]);
     assert_eq!(started["run"]["state"], "queued");
-    let session = started["session"]["id"]
+    let workspace = started["workspace"]["id"]
         .as_str()
-        .expect("a session id")
+        .expect("a workspace id")
         .parse()
-        .expect("a session identifier");
+        .expect("a workspace identifier");
     assert_eq!(
-        kestrel.transcript(session).await[0].entry,
+        kestrel.transcript(workspace).await[0].entry,
         Entry::Brief {
             trigger: None,
             brief: "Fix the flaky test".to_owned(),
@@ -1833,7 +1862,7 @@ async fn a_start_declares_its_setup_and_reaches_a_run_carrying_its_brief() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{again}");
     assert_eq!(again["project"]["created"], false);
-    assert_ne!(again["session"]["id"], started["session"]["id"]);
+    assert_ne!(again["workspace"]["id"], started["workspace"]["id"]);
 
     kestrel.teardown().await;
 }
@@ -1862,7 +1891,7 @@ async fn a_start_that_would_change_a_declaration_leaves_nothing_behind() {
     assert!(
         listed_nothing(
             &kestrel,
-            &operator::SESSIONS.replace("{organization}", "acme")
+            &operator::WORKSPACES.replace("{organization}", "acme")
         )
         .await
     );
@@ -2660,20 +2689,20 @@ async fn an_event_nobody_recorded_is_refused() {
 #[tokio::test]
 async fn a_client_in_its_own_process_reads_a_transcript_over_the_operator_boundary() {
     let kestrel = Kestrel::boot().await;
-    let (session, _) = an_open_session(&kestrel, 2).await;
-    let (operator, reading) = (kestrel.operator(), session.clone());
+    let (workspace, _) = an_open_workspace(&kestrel, 2).await;
+    let (operator, reading) = (kestrel.operator(), workspace.clone());
 
     let read = tokio::task::spawn_blocking(move || {
         client::ran(
             &operator,
-            &["session", "transcript", &reading, "--json", ENTRY],
+            &["workspace", "transcript", &reading, "--json", ENTRY],
         )
     })
     .await
     .expect("the client should run");
 
     assert!(read.status.success(), "the client failed:\n{}", read.err);
-    assert_eq!(seqs(&read.out), recorded_seqs(&kestrel, &session).await);
+    assert_eq!(seqs(&read.out), recorded_seqs(&kestrel, &workspace).await);
     let said: Value = serde_json::from_str(&read.out[read.out.len() - 1]).expect("an entry");
     assert_eq!(said["entry"]["kind"], "said");
     assert_eq!(said["entry"]["message"], "message 2");
@@ -2694,13 +2723,13 @@ async fn a_client_in_its_own_process_reads_a_transcript_over_the_operator_bounda
 #[tokio::test]
 async fn a_client_handed_a_cursor_reads_only_what_came_after_it() {
     let kestrel = Kestrel::boot().await;
-    let (session, run) = an_open_session(&kestrel, 1).await;
+    let (workspace, run) = an_open_workspace(&kestrel, 1).await;
     let operator = kestrel.operator();
 
     let first = {
-        let (operator, session) = (operator.clone(), session.clone());
+        let (operator, workspace) = (operator.clone(), workspace.clone());
         tokio::task::spawn_blocking(move || {
-            client::ran(&operator, &["session", "transcript", &session])
+            client::ran(&operator, &["workspace", "transcript", &workspace])
         })
         .await
         .expect("the client should run")
@@ -2716,7 +2745,7 @@ async fn a_client_handed_a_cursor_reads_only_what_came_after_it() {
     let second = tokio::task::spawn_blocking(move || {
         client::ran(
             &operator,
-            &["session", "transcript", &session, "--cursor", &cursor],
+            &["workspace", "transcript", &workspace, "--cursor", &cursor],
         )
     })
     .await
@@ -2736,15 +2765,15 @@ async fn a_client_handed_a_cursor_reads_only_what_came_after_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_following_client_resumes_across_a_restart_without_repeating_an_entry() {
     let kestrel = Kestrel::boot().await;
-    let (session, run) = an_open_session(&kestrel, 2).await;
-    let before = recorded_seqs(&kestrel, &session).await.len();
+    let (workspace, run) = an_open_workspace(&kestrel, 2).await;
+    let before = recorded_seqs(&kestrel, &workspace).await.len();
 
     let mut client = Client::spawn(
         &kestrel.operator(),
         &[
-            "session",
+            "workspace",
             "transcript",
-            &session,
+            &workspace,
             "--follow",
             "--json",
             ENTRY,
@@ -2762,7 +2791,7 @@ async fn a_following_client_resumes_across_a_restart_without_repeating_an_entry(
     let kestrel = kestrel.teardown().await.restart().await;
     kestrel.said(&run, "said after the restart").await;
     kestrel
-        .seal_session(session.parse().expect("a session id"))
+        .seal_workspace(workspace.parse().expect("a workspace id"))
         .await;
 
     let finished = tokio::task::block_in_place(|| client.finish());
@@ -2773,7 +2802,7 @@ async fn a_following_client_resumes_across_a_restart_without_repeating_an_entry(
         "the client failed:\n{}",
         finished.err
     );
-    assert_eq!(seqs(&read), recorded_seqs(&kestrel, &session).await);
+    assert_eq!(seqs(&read), recorded_seqs(&kestrel, &workspace).await);
     assert!(
         read.last()
             .expect("an entry")
@@ -2784,7 +2813,7 @@ async fn a_following_client_resumes_across_a_restart_without_repeating_an_entry(
 }
 
 #[tokio::test]
-async fn a_client_asking_for_no_such_session_is_refused() {
+async fn a_client_asking_for_no_such_workspace_is_refused() {
     let kestrel = Kestrel::boot().await;
     kestrel.declare_organization("acme").await;
     let operator = kestrel.operator();
@@ -2793,7 +2822,7 @@ async fn a_client_asking_for_no_such_session_is_refused() {
         client::ran(
             &operator,
             &[
-                "session",
+                "workspace",
                 "transcript",
                 "01a0a2d8-baf8-7c02-99fa-7280f174c14a",
             ],
@@ -2805,7 +2834,7 @@ async fn a_client_asking_for_no_such_session_is_refused() {
     assert!(!read.status.success());
     assert!(
         read.err
-            .contains("no session in the organization acme matches"),
+            .contains("no workspace in the organization acme matches"),
         "{}",
         read.err
     );
@@ -2816,14 +2845,14 @@ async fn a_client_asking_for_no_such_session_is_refused() {
 #[tokio::test]
 async fn a_cursor_from_another_transcript_is_refused_rather_than_restarting_the_walk() {
     let kestrel = Kestrel::boot().await;
-    let (session, _) = an_open_session(&kestrel, 1).await;
+    let (workspace, _) = an_open_workspace(&kestrel, 1).await;
     let elsewhere = format!("{}:1", RunId::generate());
 
     let response = reqwest::Client::new()
         .get(format!(
             "{}{}",
             kestrel.operator(),
-            transcript_of("acme", &session)
+            transcript_of("acme", &workspace)
         ))
         .header("last-event-id", elsewhere)
         .send()
@@ -2838,7 +2867,7 @@ async fn a_cursor_from_another_transcript_is_refused_rather_than_restarting_the_
 #[tokio::test]
 async fn the_operator_boundary_and_the_link_are_served_apart() {
     let kestrel = Kestrel::boot().await;
-    let (session, run) = an_open_session(&kestrel, 0).await;
+    let (workspace, run) = an_open_workspace(&kestrel, 0).await;
     let client = reqwest::Client::new();
 
     let link_on_the_operator_listener = client
@@ -2854,7 +2883,7 @@ async fn the_operator_boundary_and_the_link_are_served_apart() {
         .get(format!(
             "{}{}?follow=false",
             kestrel.link(),
-            transcript_of("acme", &session)
+            transcript_of("acme", &workspace)
         ))
         .send()
         .await
@@ -2876,13 +2905,13 @@ async fn the_operator_boundary_and_the_link_are_served_apart() {
 #[tokio::test]
 async fn the_operator_boundary_asks_for_no_credential() {
     let kestrel = Kestrel::boot().await;
-    let (session, _) = an_open_session(&kestrel, 0).await;
+    let (workspace, _) = an_open_workspace(&kestrel, 0).await;
 
     let response = reqwest::Client::new()
         .get(format!(
             "{}{}?follow=false",
             kestrel.operator(),
-            transcript_of("acme", &session)
+            transcript_of("acme", &workspace)
         ))
         .send()
         .await
@@ -2946,12 +2975,12 @@ fn the_published_operator_document_describes_the_boundary_the_control_plane_serv
         (operator::EVENT_REFUSAL, "delete"),
         (operator::EVENTS, "get"),
         (operator::EVENT, "get"),
-        (operator::SESSIONS, "get"),
-        (operator::SESSIONS, "post"),
-        (operator::SESSION, "get"),
-        (operator::SESSION_MESSAGES, "post"),
-        (operator::SESSION_SEAL, "post"),
-        (operator::SESSION_INSTANCE_RELEASE, "post"),
+        (operator::WORKSPACES, "get"),
+        (operator::WORKSPACES, "post"),
+        (operator::WORKSPACE, "get"),
+        (operator::WORKSPACE_MESSAGES, "post"),
+        (operator::WORKSPACE_SEAL, "post"),
+        (operator::WORKSPACE_INSTANCE_RELEASE, "post"),
         (operator::RUNS, "get"),
         (operator::RUNS, "post"),
         (operator::RUN, "get"),

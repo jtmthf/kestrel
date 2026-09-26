@@ -20,7 +20,7 @@ use std::fmt;
 use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver, Instance, Supervisor};
-use kestrel::domain::{Exit, Run, RunId, Session, Usage};
+use kestrel::domain::{Exit, Run, RunId, Usage, Workspace};
 use kestrel::link::credential::Secret;
 use support::Kestrel;
 use support::diagnostics::Diagnostics;
@@ -49,7 +49,7 @@ const UNOFFERED_LOGIN: &str = "a-login-no-agent-offers";
 struct Driven {
     lineage: Lineage,
     run: Run,
-    session: Session,
+    workspace: Workspace,
     instance: Instance,
     supervisor: Supervisor,
     diagnostics: Diagnostics,
@@ -61,10 +61,10 @@ impl Driven {
     }
 
     async fn logged_in_with(kestrel: &Kestrel, lineage: Lineage, model: &str, auth: &str) -> Self {
-        let session = a_session(kestrel, lineage, model).await;
-        let (run, credential) = kestrel.dispatch_run(session.id).await;
+        let workspace = a_workspace(kestrel, lineage, model).await;
+        let (run, credential) = kestrel.dispatch_run(workspace.id).await;
         let (mut instance, supervisor, mut diagnostics) =
-            provisioned(kestrel, lineage, &session, run.id, &credential, auth);
+            provisioned(kestrel, lineage, &workspace, run.id, &credential, auth);
 
         diagnostics.wait_until_it_says("reported connected").await;
         lineage.configure(&mut instance);
@@ -73,7 +73,7 @@ impl Driven {
         Self {
             lineage,
             run,
-            session: kestrel.show_session(session.id).await,
+            workspace: kestrel.show_workspace(workspace.id).await,
             instance,
             supervisor,
             diagnostics,
@@ -157,7 +157,7 @@ impl fmt::Display for Driven {
 fn provisioned(
     kestrel: &Kestrel,
     lineage: Lineage,
-    session: &Session,
+    workspace: &Workspace,
     run: RunId,
     credential: &Secret,
     auth: &str,
@@ -178,7 +178,7 @@ fn provisioned(
         ("KESTREL_AGENT_AUTH".to_owned(), auth.to_owned()),
         (
             "KESTREL_AGENT_MODEL".to_owned(),
-            session.agent.model.clone().unwrap_or_default(),
+            workspace.agent.model.clone().unwrap_or_default(),
         ),
     ];
     variables.extend(lineage.variables());
@@ -204,7 +204,7 @@ fn provisioned(
     )
 }
 
-async fn a_session(kestrel: &Kestrel, lineage: Lineage, model: &str) -> Session {
+async fn a_workspace(kestrel: &Kestrel, lineage: Lineage, model: &str) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(&organization, "kestrel", &[], "main")
@@ -218,7 +218,7 @@ async fn a_session(kestrel: &Kestrel, lineage: Lineage, model: &str) -> Session 
             .await;
     }
 
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 /// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
@@ -226,9 +226,9 @@ async fn ended(kestrel: &Kestrel, driven: &Driven) -> Run {
     kestrel.after_one_turn_within(driven.run.id, PATIENCE).await
 }
 
-async fn transcript(kestrel: &Kestrel, session: &Session) -> Vec<String> {
+async fn transcript(kestrel: &Kestrel, workspace: &Workspace) -> Vec<String> {
     kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .iter()
         .map(|entry| entry.entry.to_string())
@@ -283,7 +283,7 @@ async fn a_turn_once(lineage: Lineage) -> Judged {
     let ended = ended(&kestrel, &driven).await;
     driven.diagnostics.drain();
 
-    let said = transcript(&kestrel, &driven.session).await.join("\n");
+    let said = transcript(&kestrel, &driven.workspace).await.join("\n");
     let because = match &ended.exit {
         Some(Exit::Failed { because }) => because.as_str(),
         _ => "",

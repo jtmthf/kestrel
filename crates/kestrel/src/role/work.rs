@@ -11,15 +11,15 @@ use tracing::{info, warn};
 
 use crate::cli::Role;
 use crate::compute::{Driver, Exited, Instance, Supervisor};
-use crate::domain::{Exit, Run, RunId, Session};
+use crate::domain::{Exit, Run, RunId, Workspace};
 use crate::instance;
 use crate::link;
 use crate::profile;
 use crate::provider;
-use crate::session;
 use crate::store::Store;
 use crate::timer;
 use crate::work::{self, Claimed, Occupied};
+use crate::workspace;
 
 /// Nothing subscribes to `Fanout` at 0.1 (ADR-0005), so a queued Run is found by asking
 /// `Store` again rather than by being told.
@@ -80,7 +80,7 @@ enum Ended {
 }
 
 /// The wheel keeps time whether or not this role has anywhere to dispatch a Run, because a
-/// lease left unswept wedges a Session no matter who was going to execute it.
+/// lease left unswept wedges a Workspace no matter who was going to execute it.
 pub async fn run(
     store: Store,
     dispatch: Option<Dispatch>,
@@ -156,24 +156,24 @@ async fn execute(
     Claimed { run, credential }: Claimed,
     shutdown: &CancellationToken,
 ) -> Result<()> {
-    let session = match session::show(store, run.session).await {
-        Ok(session) => session,
+    let workspace = match workspace::show(store, run.workspace).await {
+        Ok(workspace) => workspace,
         Err(error) => {
             work::fail(
                 store,
                 &run,
-                &format!("the run's session could not be read: {error}"),
+                &format!("the run's workspace could not be read: {error}"),
             )
             .await?;
             return Ok(());
         }
     };
 
-    if let Err(error) = a_way_to_reach_a_model(store, dispatch, &session).await {
+    if let Err(error) = a_way_to_reach_a_model(store, dispatch, &workspace).await {
         work::fail(store, &run, &error.to_string()).await?;
         return Ok(());
     }
-    let command = match dispatch.spawns(&session.agent.harness) {
+    let command = match dispatch.spawns(&workspace.agent.harness) {
         Ok(command) => command,
         Err(error) => {
             work::fail(store, &run, &error.to_string()).await?;
@@ -181,7 +181,7 @@ async fn execute(
         }
     };
 
-    let Some(mut instance) = instance(store, dispatch, &run, &session).await? else {
+    let Some(mut instance) = instance(store, dispatch, &run, &workspace).await? else {
         return Ok(());
     };
     work::executes_on(store, &run, instance.name()).await?;
@@ -211,7 +211,7 @@ async fn execute(
             "KESTREL_AGENT_MODEL",
             run.model
                 .as_deref()
-                .or(session.agent.model.as_deref())
+                .or(workspace.agent.model.as_deref())
                 .unwrap_or_default(),
         ),
     ]) {
@@ -243,15 +243,15 @@ async fn execute(
     Ok(())
 }
 
-/// The Session's own Instance, or a fresh one for a Session that has none. `None` once the Run
+/// The Workspace's own Instance, or a fresh one for a Workspace that has none. `None` once the Run
 /// has been ended for want of one.
 async fn instance(
     store: &Store,
     dispatch: &Dispatch,
     run: &Run,
-    session: &Session,
+    workspace: &Workspace,
 ) -> Result<Option<Instance>> {
-    let Some(kept) = work::instance(store, session.id).await? else {
+    let Some(kept) = work::instance(store, workspace.id).await? else {
         return match dispatch.driver.provision(run.id) {
             Ok(instance) => Ok(Some(instance)),
             Err(error) => {
@@ -270,10 +270,10 @@ async fn instance(
         Ok(Some(instance)) => Ok(Some(instance)),
         Ok(None) => {
             let because = format!(
-                "the instance {kept} this session's work was on is gone, and whatever it held \
-                 that was never pushed went with it; the session's next run starts on a fresh \
+                "the instance {kept} this workspace's work was on is gone, and whatever it held \
+                 that was never pushed went with it; the workspace's next run starts on a fresh \
                  instance from the branch {} as the remote has it",
-                session.checkout.branch
+                workspace.checkout.branch
             );
             work::instance_lost(store, run, &because).await?;
             Ok(None)
@@ -335,31 +335,32 @@ async fn archive(store: &Store, driver: &Driver) -> Result<()> {
     Ok(())
 }
 
-/// A Harness reaches a model with the Session's Subscription Profile, a Provider
+/// A Harness reaches a model with the Workspace's Subscription Profile, a Provider
 /// Credential its Organization holds, or an ACP login kestrel was configured with. A Run with
 /// none of them fails here rather than inside an Instance provisioned to find that out.
 async fn a_way_to_reach_a_model(
     store: &Store,
     dispatch: &Dispatch,
-    session: &Session,
+    workspace: &Workspace,
 ) -> Result<()> {
-    if let Some(named) = &session.profile {
+    if let Some(named) = &workspace.profile {
         if profile::holds_anything(store, named).await? {
             return Ok(());
         }
         bail!(
-            "the subscription profile {} this session names holds no login",
+            "the subscription profile {} this workspace names holds no login",
             named.name
         );
     }
-    if dispatch.logs_the_agent_in() || provider::holds_any(store, session.organization.id).await? {
+    if dispatch.logs_the_agent_in() || provider::holds_any(store, workspace.organization.id).await?
+    {
         return Ok(());
     }
 
     bail!(
         "the organization {} holds no provider credential, and this run's harness was \
          given no other way to reach a model",
-        session.organization.name
+        workspace.organization.name
     )
 }
 

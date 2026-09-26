@@ -265,8 +265,8 @@ fn an_operation_outside_the_filter_is_refused_and_the_refusal_says_what_it_was()
 async fn a_run_provisions_an_instance_and_stops_its_supervisor_through_the_filter() {
     let stack = Stack::up();
     let namespace = compose::namespace_for(&docker::repository());
-    let session = a_session(&stack);
-    let run = stack.ran(&["run", "enqueue", "--session", &session]);
+    let workspace = a_workspace(&stack);
+    let run = stack.ran(&["run", "enqueue", "--workspace", &workspace]);
 
     let instance = compose::until("the run to reach an instance", || {
         listed(&stack, &run).instance
@@ -310,20 +310,20 @@ async fn a_run_provisions_an_instance_and_stops_its_supervisor_through_the_filte
 
 #[test]
 #[ignore = "builds images and brings a stack up"]
-fn the_stack_comes_back_up_with_every_session_it_had() {
+fn the_stack_comes_back_up_with_every_workspace_it_had() {
     let stack = Stack::up();
-    let session = a_session(&stack);
-    let shown = stack.ran(&["session", "show", &session, "--json", SESSION]);
-    let transcript = stack.ran(&["session", "transcript", &session, "--json", "seq,entry"]);
+    let workspace = a_workspace(&stack);
+    let shown = stack.ran(&["workspace", "show", &workspace, "--json", WORKSPACE]);
+    let transcript = stack.ran(&["workspace", "transcript", &workspace, "--json", "seq,entry"]);
 
     stack.comes_back();
 
     assert_eq!(
-        stack.ran(&["session", "show", &session, "--json", SESSION]),
+        stack.ran(&["workspace", "show", &workspace, "--json", WORKSPACE]),
         shown
     );
     assert_eq!(
-        stack.ran(&["session", "transcript", &session, "--json", "seq,entry"]),
+        stack.ran(&["workspace", "transcript", &workspace, "--json", "seq,entry"]),
         transcript
     );
     assert!(
@@ -335,22 +335,22 @@ fn the_stack_comes_back_up_with_every_session_it_had() {
 /// The commands `USAGE.md` walks a reader through, run by the installed Client against the
 /// port the stack publishes, minus the two its neighbours already cover:
 /// `a_run_provisions_an_instance_and_stops_its_supervisor_through_the_filter` covers enqueueing
-/// a Run, and `the_stack_comes_back_up_with_every_session_it_had` covers surviving a restart.
+/// a Run, and `the_stack_comes_back_up_with_every_workspace_it_had` covers surviving a restart.
 #[test]
 #[ignore = "builds images and brings a stack up"]
 fn the_commands_usage_documents_are_the_commands_that_work() {
     let stack = Stack::up();
-    let session = a_session(&stack);
+    let workspace = a_workspace(&stack);
 
-    let opened = shown(&stack, &session);
-    assert_eq!(opened["id"], session);
+    let opened = shown(&stack, &workspace);
+    assert_eq!(opened["id"], workspace);
     assert_eq!(opened["organization"], "acme");
     assert_eq!(opened["project"], "kestrel");
     assert_eq!(opened["agent"], "builder");
     assert_eq!(opened["state"], "open");
     assert!(opened["opened_at"].is_string(), "{opened}");
 
-    let transcript = stack.client(&["session", "transcript", "latest"]);
+    let transcript = stack.client(&["workspace", "transcript", "latest"]);
     assert!(
         transcript.out[0]
             .ends_with("\t{\"kind\":\"participant_joined\",\"participant\":\"builder\"}"),
@@ -358,24 +358,24 @@ fn the_commands_usage_documents_are_the_commands_that_work() {
         transcript.out
     );
     assert!(
-        transcript.err.contains(&format!("cursor  {session}:1")),
+        transcript.err.contains(&format!("cursor  {workspace}:1")),
         "USAGE.md shows the cursor on stderr, and the transcript said:\n{}",
         transcript.err
     );
 
-    stack.ran(&["session", "seal", "latest"]);
+    stack.ran(&["workspace", "seal", "latest"]);
 
     assert_eq!(
-        shown(&stack, &session)["state"],
+        shown(&stack, &workspace)["state"],
         "sealed",
-        "USAGE.md says sealing is visible on the Session, and it was not"
+        "USAGE.md says sealing is visible on the Workspace, and it was not"
     );
 }
 
-const SESSION: &str = "id,name,organization,project,agent,checkout,state,opened_at";
+const WORKSPACE: &str = "id,name,organization,project,agent,checkout,state,opened_at";
 
-fn shown(stack: &Stack, session: &str) -> Value {
-    let shown = stack.ran(&["session", "show", session, "--json", SESSION]);
+fn shown(stack: &Stack, workspace: &str) -> Value {
+    let shown = stack.ran(&["workspace", "show", workspace, "--json", WORKSPACE]);
 
     serde_json::from_str(&shown).unwrap_or_else(|error| panic!("{shown} is no record: {error}"))
 }
@@ -385,7 +385,7 @@ fn model(rendered: support::docker::Ran) -> Value {
         .unwrap_or_else(|error| panic!("docker compose config did not render JSON:\n{error}"))
 }
 
-fn a_session(stack: &Stack) -> String {
+fn a_workspace(stack: &Stack) -> String {
     stack.ran(&["organization", "declare", "acme"]);
     stack.ran(&[
         "project",
@@ -406,7 +406,7 @@ fn a_session(stack: &Stack) -> String {
     );
 
     stack.ran(&[
-        "session",
+        "workspace",
         "open",
         "--project",
         "kestrel",

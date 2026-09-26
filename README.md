@@ -1,7 +1,7 @@
 # kestrel
 
 kestrel runs coding agents on your own infrastructure, triggered by the events your team already
-produces: Slack threads, Linear tickets, GitHub issues and PRs, webhooks, schedules. Sessions live in
+produces: Slack threads, Linear tickets, GitHub issues and PRs, webhooks, schedules. Workspaces live in
 isolated environments, survive restarts, and anyone on the team can join one mid-flight.
 
 The point is to move engineers from *in* the loop to *on* the loop. Agent work that only happens when
@@ -12,8 +12,8 @@ point without losing what came before.
 
 ## Status
 
-Early, and honest about it: rung `0.1` is under construction. Sessions are durable — declare an
-organization, a project and an agent, open a session against them, and its state and transcript
+Early, and honest about it: rung `0.1` is under construction. Workspaces are durable — declare an
+organization, a project and an agent, open a workspace against them, and its state and transcript
 are still there after the process is killed. Runs execute: enqueue one and the control plane
 provisions an isolated container, clones the project's repositories into it, and drives opencode
 there by speaking the Agent Client Protocol over the link in
@@ -22,12 +22,12 @@ run it is executing, and reconnects to with its cursor when the control plane re
 Beside the link, on a listener of its own, the control plane serves the operator boundary in
 [`openapi/operator.json`](openapi/operator.json), and it is the only way in: `kestrel`, the Client
 an operator installs, declares and lists organizations, projects and agents over it, sets and
-forgets provider credentials and the subscription profiles a session names, registers integrations
+forgets provider credentials and the subscription profiles a workspace names, registers integrations
 and reads the events they record, and
-`kestrel session transcript --follow` streams a session's transcript over it, all from outside the
+`kestrel workspace transcript --follow` streams a workspace's transcript over it, all from outside the
 control plane's process. What stops a run short of useful work is that
 nothing carries a task to it: every run asks its agent the same fixed question, and nothing triggers
-or schedules one, so every session is opened by hand.
+or schedules one, so every workspace is opened by hand.
 [`USAGE.md`](USAGE.md) walks all of that on your own machine and says where it stops. The repo also
 holds the vocabulary, in [`CONTEXT.md`](CONTEXT.md), and the full planning trail in the issue
 tracker, where every decision below is written down with its reasoning and the objections it
@@ -47,7 +47,7 @@ One command, no kestrel configuration file, and no values for an operator to sup
 asks for none of its own, and vendor credentials are the only thing it ever will. Three images
 come up: the control plane, the image a run executes in, and the filtered socket proxy the Docker
 daemon is reached through. The database is on a named volume, so bringing the stack down and up
-again keeps every session and its transcript.
+again keeps every workspace and its transcript.
 
 The stack publishes the operator boundary on the host's loopback, at `127.0.0.1:7718`, and kestrel's
 surface is the Client that reaches it, installed on its own:
@@ -80,25 +80,25 @@ carry the whole product, and they are defined precisely in [`CONTEXT.md`](CONTEX
 
 - **Trigger**: a standing, configured rule that matches events from systems kestrel does not own and
   starts work. GitHub, Slack, Linear, generic webhook, and schedule are first-party, and every one of
-  them round-trips, so the surface that started a session receives the result there.
-- **Session**: the durable, joinable thread of work. It owns its history and its participants,
+  them round-trips, so the surface that started a workspace receives the result there.
+- **Workspace**: the durable, joinable thread of work. It owns its history and its participants,
   survives restarts, and contains many runs over its life.
 - **Run**: one execution of a harness inside one environment, with a start, an end, and an
-  exit status. At most one run is active in a session at a time, which is what makes turn-taking a
+  exit status. At most one run is active in a workspace at a time, which is what makes turn-taking a
   correctness property.
 - **Environment**: the isolated compute a run executes in. Disposable, provisioned by a pluggable
   compute backend, and destroyed when the run finishes.
 - **Workflow**: a standing declaration of a roster of agents that may be enqueued, and the caps and
   failure tolerances that bound one enactment of it. The sequence is not declared: a run grows it at
-  runtime by enqueueing further sessions, and nothing outside the roster may be enqueued. One
-  enactment is a campaign, which owns the sessions enqueued under it, the concurrency and spend caps
+  runtime by enqueueing further workspaces, and nothing outside the roster may be enqueued. One
+  enactment is a campaign, which owns the workspaces enqueued under it, the concurrency and spend caps
   binding them, and the scope a cancellation applies to.
 
-Participants in a session are humans or agents, and the session makes no structural distinction
-between them: a person joining a running session and an agent taking a turn are the same kind of
+Participants in a workspace are humans or agents, and the workspace makes no structural distinction
+between them: a person joining a running workspace and an agent taking a turn are the same kind of
 thing happening to the same record. That symmetry is deliberate, and it is what lets a run hand the
-turn to a human without the session having to become a different object. Handing work to another
-*agent* is a different act: it enqueues a new session rather than taking a turn in this one.
+turn to a human without the workspace having to become a different object. Handing work to another
+*agent* is a different act: it enqueues a new workspace rather than taking a turn in this one.
 
 ## Who it is for
 
@@ -127,7 +127,7 @@ use them; none is a prerequisite for the default path.
 ## What v1 means
 
 v1 is a stability lock. It freezes the implementation and commits to no breaking changes until v2:
-semver on the public API, migrations that never lose sessions, a documented upgrade path, and a
+semver on the public API, migrations that never lose workspaces, a documented upgrade path, and a
 deprecation policy. The day it lands is the day this project is willing to stop changing its mind,
 which puts it deliberately far out; the `0.x` line carries real, recommended releases and is where
 people will live for a long time.
@@ -144,7 +144,7 @@ the project controls. Twelve capabilities are the content of that freeze:
    receives its outcome. A schedule has no external recipient, so its result is visible in kestrel.
    Generic CloudEvents ingestion is the core and the named integrations are adapters over it, so
    another source is a contribution rather than a fork. Operators can dry-run a Trigger against a
-   sample or recorded Event without opening a Session, and trace every evaluation, including
+   sample or recorded Event without opening a Workspace, and trace every evaluation, including
    nonmatches and ignored Firings. Scheduled Triggers support intervals and time-zone-aware cron
    expressions; their Events take the same recorded path as external Events. An Event
    supplies data, never authority.
@@ -167,33 +167,33 @@ the project controls. Twelve capabilities are the content of that freeze:
    at all. A run whose agent names a model the harness cannot honour fails rather than quietly
    running a different one. The Client shows the requested and effective model and explains a
    harness capability mismatch.
-5. **Persistent sessions**: a session survives everything except deliberate deletion, and an
+5. **Persistent workspaces**: a workspace survives everything except deliberate deletion, and an
    environment survives nothing. Process restart, environment teardown, and control-plane upgrade all
-   preserve the session and its full transcript, and a run interrupted by a restart ends with an
-   explicit exit status. Sessions do not stay open forever: an idle one is sealed, which ends it
-   without deleting it — a sealed session is readable and is never reopened, and work that would have
-   continued it starts a new session that records the sealed one. Nothing expires a transcript entry
+   preserve the workspace and its full transcript, and a run interrupted by a restart ends with an
+   explicit exit status. Workspaces do not stay open forever: an idle one is sealed, which ends it
+   without deleting it — a sealed workspace is readable and is never reopened, and work that would have
+   continued it starts a new workspace that records the sealed one. Nothing expires a transcript entry
    at any age; there is no retention knob, only deletion you asked for. The Client distinguishes that
-   durable Session from the Harness's ACP conversation continuity, and shows the branch, pull
+   durable Workspace from the Harness's ACP conversation continuity, and shows the branch, pull
    request or merge request, and unpublished work that can be recovered or reviewed.
 6. **Pluggable storage**: SQLite for the single-machine path, Postgres for production.
 7. **Multiplayer**: one uniform promise, designed to the weakest transport kestrel supports, so every
    deployment gets the same guarantees and the faster ones are only faster. People can discover,
-   read, join and take turns in authorized Sessions; Policy checks those operations separately.
+   read, join and take turns in authorized Workspaces; Policy checks those operations separately.
    Presence is best-effort and never gates correctness, and sharing a link grants no authority.
 8. **Workflows**: a declared roster rather than a declared sequence, with the sequence grown at
-   runtime by runs enqueueing further sessions against it, under a campaign's caps and failure
+   runtime by runs enqueueing further workspaces against it, under a campaign's caps and failure
    tolerances. A handoff is an enqueue and never a message: kestrel delivers ordering and once-only
-   dispatch, there is no coordination bus, and the brief passes as the new session's first transcript
+   dispatch, there is no coordination bus, and the brief passes as the new workspace's first transcript
    entry, which makes a handoff auditable and joinable by construction rather than private. Work runs
-   concurrently *across* sessions while at most one run is ever active *within* one — Temporal, Step
+   concurrently *across* workspaces while at most one run is ever active *within* one — Temporal, Step
    Functions, Prefect and Restate all draw that line the other way, which is why it is worth stating
-   rather than assuming. The Client shows a navigable Campaign graph with child Sessions,
+   rather than assuming. The Client shows a navigable Campaign graph with child Workspaces,
    dependencies, status, blocked reasons and spend; authorized people can follow up, pause, resume
    and cancel.
 9. **Governance**: an audit record, policy enforced at the execution layer rather than by prompt, and
    a real path for routing an approval outward to the human the policy authorizes to resolve it —
-   who is usually not in the session, and does not join it by answering. Operators sign in through
+   who is usually not in the workspace, and does not join it by answering. Operators sign in through
    OIDC or SAML, with identity-provider groups mapped to Organization access grants; a local
    administrator path serves the single-machine installation. External approvers remain verified
    external principals, without mandatory kestrel accounts. Authorized operators can search and
@@ -254,7 +254,7 @@ default compute pairing so that choice never lands on whoever is adopting it.
 
 kestrel is not the first thing in this shape and does not claim to be. Open-Inspect is MIT licensed,
 built on opencode, ships multiplayer and multi-source triggers, and is worth reading before you read
-anything here; its control plane is bound to Cloudflare Durable Objects, which hand it a per-session
+anything here; its control plane is bound to Cloudflare Durable Objects, which hand it a per-workspace
 single-threaded actor, colocated SQLite, hibernatable WebSockets, and a per-object alarm, and those
 happen to be exactly the four hard parts of durable multiplayer. OpenHands covers much of the same
 ground, with governance apparently behind an enterprise tier.

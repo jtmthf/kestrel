@@ -1,6 +1,6 @@
 mod support;
 
-use kestrel::domain::{Exit, RunId, SessionId};
+use kestrel::domain::{Exit, RunId, WorkspaceId};
 use kestrel::log::Entry;
 use serde_json::Value;
 use support::client::{Finished, Invocation, Shown, ran_by, ran_on_a_terminal_by};
@@ -8,7 +8,7 @@ use support::scripted_agent::{self, Script};
 use support::{A_PROVIDER_KEY, Kestrel, PROVIDER_KEY, repository, supervisor};
 
 const BRIEF: &str = "Make the README say what kestrel is";
-const STARTED: &str = "organization,project,agent,session,session_id,run,run_id";
+const STARTED: &str = "organization,project,agent,workspace,workspace_id,run,run_id";
 const QUESTION: &str = "apply this plan?";
 
 fn in_a_fresh_clone() -> Invocation {
@@ -74,8 +74,8 @@ async fn declared(kestrel: &Kestrel) -> Vec<String> {
             declared.push(format!("credential {}", held.variable));
         }
         declared.push(format!(
-            "sessions {}",
-            kestrel.sessions(&organization.name).await.len()
+            "workspaces {}",
+            kestrel.workspaces(&organization.name).await.len()
         ));
     }
 
@@ -110,10 +110,10 @@ async fn one_command_takes_a_fresh_clone_and_an_empty_control_plane_to_a_run_car
     assert_eq!(started["organization"], "default");
     assert_eq!(started["project"], repository::NAME);
     assert_eq!(started["agent"], "opencode");
-    let session: SessionId = started["session_id"]
+    let workspace: WorkspaceId = started["workspace_id"]
         .as_str()
         .and_then(|id| id.parse().ok())
-        .expect("a session identifier");
+        .expect("a workspace identifier");
     let run: RunId = started["run_id"]
         .as_str()
         .and_then(|id| id.parse().ok())
@@ -121,7 +121,7 @@ async fn one_command_takes_a_fresh_clone_and_an_empty_control_plane_to_a_run_car
 
     let ended = kestrel.after_one_turn(run).await;
     assert_eq!(ended.exit, Some(Exit::Succeeded));
-    let transcript = kestrel.transcript(session).await;
+    let transcript = kestrel.transcript(workspace).await;
     assert_eq!(
         transcript[0].entry,
         Entry::Brief {
@@ -300,7 +300,7 @@ async fn a_plan_the_control_plane_refuses_leaves_no_partial_setup() {
     );
     assert!(kestrel.agents(&acme).await.is_empty());
     assert!(kestrel.provider_credentials_held(&acme).await.is_empty());
-    assert!(kestrel.sessions("acme").await.is_empty());
+    assert!(kestrel.workspaces("acme").await.is_empty());
 
     kestrel.teardown().await;
 }
@@ -321,7 +321,7 @@ async fn a_declaration_the_plan_would_change_is_named_before_anything_is_sent() 
     let refused = ran_by(&kestrel, &["start", "--brief", BRIEF], in_a_fresh_clone()).await;
 
     refused_naming(&refused, &["--project"]);
-    assert!(kestrel.sessions("acme").await.is_empty());
+    assert!(kestrel.workspaces("acme").await.is_empty());
 
     kestrel.teardown().await;
 }
@@ -411,7 +411,7 @@ async fn on_a_terminal_the_plan_is_explained_and_taught_and_declining_it_changes
         "declare the Organization default",
         &format!("declare the Project {}", repository::NAME),
         "declare the Agent opencode",
-        "open a Session",
+        "open a Workspace",
     ] {
         assert!(
             before.iter().any(|line| line.contains(taught)),
@@ -437,7 +437,7 @@ async fn on_a_terminal_yes_applies_the_plan_without_asking() {
 
     assert!(applied.status.success(), "{}", applied.said);
     assert!(!applied.said.contains(QUESTION), "{}", applied.said);
-    assert_eq!(kestrel.sessions("default").await.len(), 1);
+    assert_eq!(kestrel.workspaces("default").await.len(), 1);
 
     kestrel.teardown().await;
 }
@@ -456,7 +456,7 @@ async fn with_output_on_a_terminal_and_input_piped_nothing_is_asked() {
 
     assert!(applied.status.success(), "{}", applied.said);
     assert!(!applied.said.contains(QUESTION), "{}", applied.said);
-    assert_eq!(kestrel.sessions("default").await.len(), 1);
+    assert_eq!(kestrel.workspaces("default").await.len(), 1);
 
     kestrel.teardown().await;
 }

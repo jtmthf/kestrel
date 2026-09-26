@@ -135,8 +135,8 @@ mod tests {
 
     #[test]
     fn more_detail_keeps_the_exit_code() {
-        let failed = anyhow!(Failed::new(Exit::Unresolved, "no session matches abc"))
-            .context("showing the session")
+        let failed = anyhow!(Failed::new(Exit::Unresolved, "no workspace matches abc"))
+            .context("showing the workspace")
             .context("and more besides");
 
         assert_eq!(Exit::of(&failed), Exit::Unresolved);

@@ -19,17 +19,17 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::domain::{Checkout, Run, RunId, Session};
+use crate::domain::{Checkout, Run, RunId, Workspace};
 use crate::link::credential::Secret;
 use crate::log::{self, Cursor, Unreadable, Window};
 use crate::profile;
 use crate::provider;
-use crate::session;
 use crate::store::{Store, Tx};
 use crate::work::{self, ReportRefused, Reported};
+use crate::workspace;
 
 pub const CREDENTIALS: &str = "/link/runs/{run}/credentials";
-/// The Transcript of the Session the Run belongs to. Named for what crosses the link rather
+/// The Transcript of the Workspace the Run belongs to. Named for what crosses the link rather
 /// than for what it is, because the supervisor is a courier and may not know (ADR-0002).
 pub const ENTRIES: &str = "/link/runs/{run}/entries";
 pub const INSTRUCTIONS: &str = "/link/runs/{run}/instructions";
@@ -125,20 +125,20 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
 /// recognises the skill invocation it may lead with.
 pub async fn start(store: &Store, run: &Run) -> Result<SentInstruction> {
     let mut tx = store.begin().await?;
-    let session = tx.sessions().get(run.session).await?;
-    session.accepts("turn")?;
-    let prompt = tx.log().unfollowed_brief(&session).await?;
+    let workspace = tx.workspaces().get(run.workspace).await?;
+    workspace.accepts("turn")?;
+    let prompt = tx.log().unfollowed_brief(&workspace).await?;
     let sent = tx
-        .sessions()
+        .workspaces()
         .send_instruction(
             run,
             Instruction::Start {
-                checkout: session.checkout.clone(),
+                checkout: workspace.checkout.clone(),
                 prompt,
             },
         )
         .await?;
-    tx.sessions().first_turn(run).await?;
+    tx.workspaces().first_turn(run).await?;
     tx.commit().await?;
 
     Ok(sent)
@@ -146,10 +146,10 @@ pub async fn start(store: &Store, run: &Run) -> Result<SentInstruction> {
 
 /// The next turn of a waiting Run, in the same agent conversation (ADR-0024).
 pub(crate) async fn prompt(tx: &mut Tx<'_>, run: &Run, prompt: String) -> Result<()> {
-    tx.sessions()
+    tx.workspaces()
         .send_instruction(run, Instruction::Prompt { prompt })
         .await?;
-    tx.sessions()
+    tx.workspaces()
         .prompt_turn(run)
         .await?
         .ok_or_else(|| anyhow::anyhow!("the run {} is not waiting for a prompt", run.id))?;
@@ -169,14 +169,14 @@ pub async fn instruct(
 async fn sent(
     store: &Store,
     run: &Run,
-    instruction: impl FnOnce(&Session) -> Instruction,
+    instruction: impl FnOnce(&Workspace) -> Instruction,
 ) -> Result<SentInstruction> {
     let mut tx = store.begin().await?;
-    let session = tx.sessions().get(run.session).await?;
-    session.accepts("turn")?;
+    let workspace = tx.workspaces().get(run.workspace).await?;
+    workspace.accepts("turn")?;
     let sent = tx
-        .sessions()
-        .send_instruction(run, instruction(&session))
+        .workspaces()
+        .send_instruction(run, instruction(&workspace))
         .await?;
     tx.commit().await?;
 
@@ -217,7 +217,7 @@ async fn instructions(
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)))
 }
 
-/// The Provider Credentials of the Run's Organization and the Subscription Profile its Session
+/// The Provider Credentials of the Run's Organization and the Subscription Profile its Workspace
 /// names, decrypted here and held nowhere else: a supervisor asks as it spawns its
 /// Harness, and an idle one never asks.
 async fn credentials(
@@ -228,7 +228,7 @@ async fn credentials(
     let run = authenticated(&control_plane, &headers, &run).await?;
     let mut variables = provider::reaching(&control_plane.store, run.organization).await?;
     let mut files = BTreeMap::new();
-    if let Some(named) = session::show(&control_plane.store, run.session)
+    if let Some(named) = workspace::show(&control_plane.store, run.workspace)
         .await?
         .profile
     {
@@ -253,12 +253,12 @@ async fn refresh_credentials(
     Json(refreshed): Json<Refreshed>,
 ) -> Result<StatusCode, Refused> {
     let run = authenticated(&control_plane, &headers, &run).await?;
-    let Some(named) = session::show(&control_plane.store, run.session)
+    let Some(named) = workspace::show(&control_plane.store, run.workspace)
         .await?
         .profile
     else {
         return Err(Refused::BadRequest(
-            "this run's session names no subscription profile to refresh".to_owned(),
+            "this run's workspace names no subscription profile to refresh".to_owned(),
         ));
     };
     let taken = profile::refresh(&control_plane.store, &named, &refreshed.files).await?;
@@ -288,7 +288,7 @@ async fn entries(
     let window = Window::or_default(paging.window)
         .map_err(|error| Refused::BadRequest(error.to_string()))?;
 
-    let page = session::transcript(&control_plane.store, run.session, from, window).await?;
+    let page = workspace::transcript(&control_plane.store, run.workspace, from, window).await?;
 
     Ok(Json(Entries {
         entries: page
@@ -319,10 +319,10 @@ async fn report(
 
 async fn waiting(store: &Store, run: RunId, cursor: i64) -> Result<Waiting> {
     let mut tx = store.begin().await?;
-    let the_run_ended = tx.sessions().run(run).await?.ended_at.is_some();
+    let the_run_ended = tx.workspaces().run(run).await?.ended_at.is_some();
 
     Ok(Waiting {
-        instructions: tx.sessions().instructions_after(run, cursor).await?,
+        instructions: tx.workspaces().instructions_after(run, cursor).await?,
         the_run_ended,
     })
 }
@@ -337,7 +337,7 @@ async fn authenticated(
 
     let mut tx = control_plane.store.begin().await?;
     let credential = tx
-        .sessions()
+        .workspaces()
         .credential(&secret.digest())
         .await?
         .ok_or(Refused::Unauthorized("no credential kestrel issued"))?;
@@ -349,7 +349,7 @@ async fn authenticated(
         return Err(Refused::Forbidden("the credential belongs to another run"));
     }
 
-    Ok(tx.sessions().run(run).await?)
+    Ok(tx.workspaces().run(run).await?)
 }
 
 fn bearer(headers: &HeaderMap) -> Option<Secret> {

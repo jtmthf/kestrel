@@ -61,7 +61,7 @@ impl Environment {
         Pid(pid.parse().unwrap_or_else(|_| panic!("{pid} is not a pid")))
     }
 
-    pub fn workspace_of(instance: &str) -> PathBuf {
+    pub fn root_of(instance: &str) -> PathBuf {
         let name = instance
             .strip_prefix("local-exec/")
             .unwrap_or_else(|| panic!("{instance} is not a local instance"));

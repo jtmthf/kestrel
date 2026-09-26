@@ -29,11 +29,14 @@ pub fn command(message: &str, organization: Option<&str>) -> Option<String> {
             .split_whitespace()
             .next()?;
         Some(format!("kestrel run stop {}", quoted(run)))
-    } else if let Some(rest) = message.strip_prefix("the session ") {
-        if let Some((session, _)) = rest.split_once(" is open, and work continues") {
-            Some(format!("kestrel run enqueue --session {}", quoted(session)))
-        } else if let Some((session, _)) = rest.split_once("'s instance ") {
-            Some(format!("kestrel instance release {}", quoted(session)))
+    } else if let Some(rest) = message.strip_prefix("the workspace ") {
+        if let Some((workspace, _)) = rest.split_once(" is open, and work continues") {
+            Some(format!(
+                "kestrel run enqueue --workspace {}",
+                quoted(workspace)
+            ))
+        } else if let Some((workspace, _)) = rest.split_once("'s instance ") {
+            Some(format!("kestrel instance release {}", quoted(workspace)))
         } else {
             None
         }

@@ -3,7 +3,7 @@
 
 mod support;
 
-use kestrel::domain::{Run, Session, SessionState};
+use kestrel::domain::{Run, Workspace, WorkspaceState};
 use kestrel::log::{Cursor, Unreadable, Window};
 use support::Kestrel;
 
@@ -32,29 +32,29 @@ async fn the_fixture_boots_a_complete_control_plane_against_a_fresh_database_and
 }
 
 #[tokio::test]
-async fn a_session_opens_against_a_project_and_an_agent() {
+async fn a_workspace_opens_against_a_project_and_an_agent() {
     let kestrel = Kestrel::boot().await;
     declare_fixture(&kestrel).await;
 
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let shown = kestrel.show_session(session.id).await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let shown = kestrel.show_workspace(workspace.id).await;
 
-    assert_eq!(shown.id, session.id);
+    assert_eq!(shown.id, workspace.id);
     assert_eq!(shown.organization.name, "acme");
     assert_eq!(shown.project.name, "kestrel");
     assert_eq!(shown.agent.name, "builder");
-    assert_eq!(shown.state, SessionState::Open);
+    assert_eq!(shown.state, WorkspaceState::Open);
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn opening_a_session_records_the_agent_joining_it_as_its_first_transcript_entry() {
+async fn opening_a_workspace_records_the_agent_joining_it_as_its_first_transcript_entry() {
     let kestrel = Kestrel::boot().await;
     declare_fixture(&kestrel).await;
 
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let transcript = kestrel.transcript(session.id).await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let transcript = kestrel.transcript(workspace.id).await;
 
     assert_eq!(transcript.len(), 1);
     assert_eq!(transcript[0].seq, 1);
@@ -71,8 +71,8 @@ async fn every_durable_record_carries_its_organization() {
     let kestrel = Kestrel::boot().await;
     declare_fixture(&kestrel).await;
 
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let shown = kestrel.show_session(session.id).await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let shown = kestrel.show_workspace(workspace.id).await;
 
     assert_eq!(shown.project.organization, shown.organization.id);
     assert_eq!(shown.agent.organization, shown.organization.id);
@@ -81,10 +81,10 @@ async fn every_durable_record_carries_its_organization() {
 }
 
 #[tokio::test]
-async fn a_project_redeclared_after_a_session_opens_moves_none_of_its_checkout() {
+async fn a_project_redeclared_after_a_workspace_opens_moves_none_of_its_checkout() {
     let kestrel = Kestrel::boot().await;
     declare_fixture(&kestrel).await;
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let organization = kestrel.declare_organization("acme").await;
 
     kestrel
@@ -96,13 +96,13 @@ async fn a_project_redeclared_after_a_session_opens_moves_none_of_its_checkout()
         )
         .await;
 
-    let shown = kestrel.show_session(session.id).await;
+    let shown = kestrel.show_workspace(workspace.id).await;
     assert_eq!(
         shown.checkout.repositories,
         vec!["https://github.com/jtmthf/kestrel".to_owned()]
     );
     assert_eq!(shown.checkout.base, "main");
-    assert_eq!(shown.checkout, session.checkout);
+    assert_eq!(shown.checkout, workspace.checkout);
 
     kestrel.teardown().await;
 }
@@ -138,18 +138,18 @@ async fn declaring_a_project_and_an_agent_lists_them_back() {
 }
 
 #[tokio::test]
-async fn a_session_outlives_the_control_plane_being_killed_and_restarted() {
+async fn a_workspace_outlives_the_control_plane_being_killed_and_restarted() {
     let kestrel = Kestrel::boot().await;
     declare_fixture(&kestrel).await;
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
 
-    let before = kestrel.show_session(session.id).await;
-    let before_transcript = kestrel.transcript(session.id).await;
+    let before = kestrel.show_workspace(workspace.id).await;
+    let before_transcript = kestrel.transcript(workspace.id).await;
 
     let kestrel = kestrel.kill_and_restart().await;
 
-    let after = kestrel.show_session(session.id).await;
-    let after_transcript = kestrel.transcript(session.id).await;
+    let after = kestrel.show_workspace(workspace.id).await;
+    let after_transcript = kestrel.transcript(workspace.id).await;
 
     assert_eq!(after.id, before.id);
     assert_eq!(after.state, before.state);
@@ -192,25 +192,25 @@ async fn two_kestrels_running_at_once_do_not_share_state() {
 }
 
 /// One entry for the Agent joining, and one for each thing it said.
-async fn a_transcript_of(kestrel: &Kestrel, said: usize) -> (Session, Run) {
+async fn a_transcript_of(kestrel: &Kestrel, said: usize) -> (Workspace, Run) {
     declare_fixture(kestrel).await;
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let (run, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let (run, _) = kestrel.dispatch_run(workspace.id).await;
 
     for message in 1..=said {
         kestrel.said(&run, &format!("message {message}")).await;
     }
 
-    (session, run)
+    (workspace, run)
 }
 
 fn two() -> Window {
     Window::of(2).expect("two entries is a window")
 }
 
-async fn walked(kestrel: &Kestrel, session: &Session, from: Option<Cursor>) -> Vec<i64> {
+async fn walked(kestrel: &Kestrel, workspace: &Workspace, from: Option<Cursor>) -> Vec<i64> {
     kestrel
-        .walk(session.id, from, two())
+        .walk(workspace.id, from, two())
         .await
         .iter()
         .map(|entry| entry.seq)
@@ -220,10 +220,10 @@ async fn walked(kestrel: &Kestrel, session: &Session, from: Option<Cursor>) -> V
 #[tokio::test]
 async fn a_read_returns_at_most_one_window_of_entries_and_a_cursor() {
     let kestrel = Kestrel::boot().await;
-    let (session, _) = a_transcript_of(&kestrel, 4).await;
+    let (workspace, _) = a_transcript_of(&kestrel, 4).await;
 
     let page = kestrel
-        .page(session.id, None, two())
+        .page(workspace.id, None, two())
         .await
         .expect("the transcript should page");
 
@@ -239,10 +239,10 @@ async fn a_read_returns_at_most_one_window_of_entries_and_a_cursor() {
 #[tokio::test]
 async fn paging_walks_a_transcript_longer_than_one_window_with_no_gap_and_no_duplicate() {
     let kestrel = Kestrel::boot().await;
-    let (session, _) = a_transcript_of(&kestrel, 6).await;
+    let (workspace, _) = a_transcript_of(&kestrel, 6).await;
 
     assert_eq!(
-        walked(&kestrel, &session, None).await,
+        walked(&kestrel, &workspace, None).await,
         (1..=7).collect::<Vec<_>>()
     );
 
@@ -252,16 +252,16 @@ async fn paging_walks_a_transcript_longer_than_one_window_with_no_gap_and_no_dup
 #[tokio::test]
 async fn a_cursor_still_walks_the_transcript_after_the_control_plane_restarts() {
     let kestrel = Kestrel::boot().await;
-    let (session, _) = a_transcript_of(&kestrel, 3).await;
+    let (workspace, _) = a_transcript_of(&kestrel, 3).await;
     let held = kestrel
-        .page(session.id, None, two())
+        .page(workspace.id, None, two())
         .await
         .expect("the transcript should page")
         .cursor;
 
     let kestrel = kestrel.kill_and_restart().await;
 
-    assert_eq!(walked(&kestrel, &session, held).await, vec![3, 4]);
+    assert_eq!(walked(&kestrel, &workspace, held).await, vec![3, 4]);
 
     kestrel.teardown().await;
 }
@@ -269,9 +269,9 @@ async fn a_cursor_still_walks_the_transcript_after_the_control_plane_restarts() 
 #[tokio::test]
 async fn entries_appended_part_way_through_a_walk_land_after_what_was_already_walked() {
     let kestrel = Kestrel::boot().await;
-    let (session, run) = a_transcript_of(&kestrel, 3).await;
+    let (workspace, run) = a_transcript_of(&kestrel, 3).await;
     let held = kestrel
-        .page(session.id, None, two())
+        .page(workspace.id, None, two())
         .await
         .expect("the transcript should page")
         .cursor;
@@ -280,9 +280,9 @@ async fn entries_appended_part_way_through_a_walk_land_after_what_was_already_wa
         .said(&run, "said while the read was in flight")
         .await;
 
-    assert_eq!(walked(&kestrel, &session, held).await, vec![3, 4, 5]);
+    assert_eq!(walked(&kestrel, &workspace, held).await, vec![3, 4, 5]);
     assert_eq!(
-        kestrel.transcript(session.id).await[4].entry.to_string(),
+        kestrel.transcript(workspace.id).await[4].entry.to_string(),
         "said  builder  said while the read was in flight"
     );
 
@@ -292,15 +292,15 @@ async fn entries_appended_part_way_through_a_walk_land_after_what_was_already_wa
 #[tokio::test]
 async fn a_cursor_that_walks_another_transcript_is_refused() {
     let kestrel = Kestrel::boot().await;
-    let (session, _) = a_transcript_of(&kestrel, 3).await;
-    let elsewhere = kestrel.open_session("acme", "kestrel", "builder").await;
+    let (workspace, _) = a_transcript_of(&kestrel, 3).await;
+    let elsewhere = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let held = kestrel
         .page(elsewhere.id, None, two())
         .await
         .expect("the transcript should page")
         .cursor;
 
-    let refusal = kestrel.page(session.id, held, two()).await;
+    let refusal = kestrel.page(workspace.id, held, two()).await;
 
     assert!(
         matches!(refusal, Err(Unreadable::Cursor(_))),
@@ -313,12 +313,12 @@ async fn a_cursor_that_walks_another_transcript_is_refused() {
 #[tokio::test]
 async fn a_cursor_naming_no_entry_is_refused_rather_than_restarting_the_walk() {
     let kestrel = Kestrel::boot().await;
-    let (session, _) = a_transcript_of(&kestrel, 3).await;
-    let nowhere: Cursor = format!("{}:99", session.id)
+    let (workspace, _) = a_transcript_of(&kestrel, 3).await;
+    let nowhere: Cursor = format!("{}:99", workspace.id)
         .parse()
-        .expect("a cursor is a session and a seq");
+        .expect("a cursor is a workspace and a seq");
 
-    let refusal = kestrel.page(session.id, Some(nowhere), two()).await;
+    let refusal = kestrel.page(workspace.id, Some(nowhere), two()).await;
 
     assert!(
         matches!(refusal, Err(Unreadable::Cursor(_))),

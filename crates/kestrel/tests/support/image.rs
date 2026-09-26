@@ -162,7 +162,7 @@ impl Container {
         .out
     }
 
-    /// An Instance outlives its Session's Runs, so a test that provisions one removes it.
+    /// An Instance outlives its Workspace's Runs, so a test that provisions one removes it.
     pub fn destroy(&self) {
         docker::ran(&["rm", "--force", "--volumes", &self.0]);
     }

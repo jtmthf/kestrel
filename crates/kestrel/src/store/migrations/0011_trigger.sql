@@ -37,7 +37,7 @@ CREATE TABLE firing (
     trigger_id TEXT NOT NULL REFERENCES trigger (id),
     event_record_id TEXT NOT NULL REFERENCES event (record_id),
     organization_id TEXT NOT NULL REFERENCES organization (id),
-    session_id TEXT REFERENCES session (id),
+    workspace_id TEXT REFERENCES workspace (id),
     outcome TEXT NOT NULL
         CHECK (outcome IN ('opened', 'fed', 'ignored', 'held', 'canceled', 'failed')),
     failure TEXT,
@@ -46,7 +46,7 @@ CREATE TABLE firing (
     considered_at TEXT,
     fired_at TEXT NOT NULL,
     PRIMARY KEY (trigger_id, event_record_id),
-    CHECK ((outcome IN ('opened', 'fed')) = (session_id IS NOT NULL)),
+    CHECK ((outcome IN ('opened', 'fed')) = (workspace_id IS NOT NULL)),
     CHECK ((outcome IN ('held', 'canceled', 'failed')) = (failure IS NOT NULL)),
     CHECK ((outcome = 'held') = (considered_at IS NOT NULL)),
     CHECK (worked_ahead IS NULL OR outcome = 'opened')
@@ -54,8 +54,8 @@ CREATE TABLE firing (
 
 CREATE INDEX firing_held ON firing (trigger_id, correlation) WHERE outcome = 'held';
 
-ALTER TABLE session ADD COLUMN event_record_id TEXT REFERENCES event (record_id);
-ALTER TABLE session ADD COLUMN correlation TEXT;
+ALTER TABLE workspace ADD COLUMN event_record_id TEXT REFERENCES event (record_id);
+ALTER TABLE workspace ADD COLUMN correlation TEXT;
 
-CREATE UNIQUE INDEX session_open_correlation ON session (organization_id, correlation)
+CREATE UNIQUE INDEX workspace_open_correlation ON workspace (organization_id, correlation)
     WHERE state = 'open' AND correlation IS NOT NULL;

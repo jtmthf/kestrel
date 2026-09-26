@@ -8,7 +8,7 @@ mod support;
 use std::time::Duration;
 
 use jiff::SignedDuration;
-use kestrel::domain::{Direction, Exit, Run, Session};
+use kestrel::domain::{Direction, Exit, Run, Workspace};
 use support::Kestrel;
 use support::github_stub::{self, GithubStub, RecordedRequest, ScriptedResponse};
 
@@ -62,19 +62,19 @@ async fn watching(kestrel: &Kestrel, stub: &GithubStub, carries: &[Direction]) {
         .await;
 }
 
-/// The Session a label opened, with its queued Run claimed the way a work role would claim it.
-async fn working(kestrel: &Kestrel) -> (Session, Run) {
+/// The Workspace a label opened, with its queued Run claimed the way a work role would claim it.
+async fn working(kestrel: &Kestrel) -> (Workspace, Run) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        if let Some(session) = kestrel.sessions("acme").await.into_iter().next()
+        if let Some(workspace) = kestrel.workspaces("acme").await.into_iter().next()
             && let Some(claimed) = kestrel.claim_run().await
         {
-            return (session, claimed.run);
+            return (workspace, claimed.run);
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "no session was ever opened with a run to claim in it"
+            "no workspace was ever opened with a run to claim in it"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -133,7 +133,7 @@ async fn a_run_that_completes_says_so_on_the_issue_that_started_it() {
     let kestrel = Kestrel::boot().await;
     watching(&kestrel, &stub, BOTH).await;
 
-    let (session, run) = working(&kestrel).await;
+    let (workspace, run) = working(&kestrel).await;
     kestrel
         .said(&run, "Opened https://github.com/jtmthf/kestrel/pull/92.")
         .await;
@@ -147,7 +147,7 @@ async fn a_run_that_completes_says_so_on_the_issue_that_started_it() {
         body.contains("> Opened https://github.com/jtmthf/kestrel/pull/92."),
         "the agent's last message is where a link to its pull request lives: {body}"
     );
-    assert!(body.contains(&session.id.to_string()), "{body}");
+    assert!(body.contains(&workspace.id.to_string()), "{body}");
     assert!(body.contains(&run.id.to_string()), "{body}");
 
     kestrel.teardown().await;
@@ -292,13 +292,13 @@ async fn a_comment_that_is_refused_is_tried_again_and_leaves_the_run_as_it_was()
 }
 
 #[tokio::test]
-async fn a_session_no_event_started_says_nothing_and_that_is_not_an_error() {
+async fn a_workspace_no_event_started_says_nothing_and_that_is_not_an_error() {
     let stub = GithubStub::start();
     let kestrel = Kestrel::boot().await;
     watching(&kestrel, &stub, BOTH).await;
 
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let (run, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let (run, _) = kestrel.dispatch_run(workspace.id).await;
     kestrel.complete_run(&run).await;
 
     nothing_is_said(&stub).await;
@@ -312,8 +312,8 @@ async fn a_later_runs_outcome_does_not_reuse_an_earlier_runs_message() {
     let kestrel = Kestrel::boot().await;
     watching(&kestrel, &stub, BOTH).await;
 
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let (first, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let (first, _) = kestrel.dispatch_run(workspace.id).await;
     kestrel
         .said(&first, "The first investigation finished.")
         .await;
@@ -323,7 +323,7 @@ async fn a_later_runs_outcome_does_not_reuse_an_earlier_runs_message() {
         Some("The first investigation finished.")
     );
 
-    let second = kestrel.enqueue_run(session.id).await;
+    let second = kestrel.enqueue_run(workspace.id).await;
     kestrel.fail_run(&second, "the environment stopped").await;
     let ended = kestrel.run(second.id).await;
     assert_eq!(

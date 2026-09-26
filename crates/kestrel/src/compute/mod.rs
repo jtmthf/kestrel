@@ -79,7 +79,7 @@ impl Instance {
         &self.name
     }
 
-    /// Relative to the Instance's Workspace, as every path either driver takes is.
+    /// Relative to the Instance's root, as every path either driver takes is.
     pub fn exec(&mut self, command: &[&str]) -> io::Result<Streaming> {
         self.provisioned.exec(command)
     }

@@ -6,11 +6,11 @@ mod support;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use kestrel::domain::{Run, RunId, RunState, Session, SessionState};
+use kestrel::domain::{Run, RunId, RunState, Workspace, WorkspaceState};
 use kestrel::work::Claimed;
 use support::Kestrel;
 
-async fn a_session(kestrel: &Kestrel) -> Session {
+async fn a_workspace(kestrel: &Kestrel) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(
@@ -24,7 +24,7 @@ async fn a_session(kestrel: &Kestrel) -> Session {
         .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 fn claimed(first: Option<Claimed>, second: Option<Claimed>) -> Vec<RunId> {
@@ -38,13 +38,13 @@ fn claimed(first: Option<Claimed>, second: Option<Claimed>) -> Vec<RunId> {
 struct Blocked {
     blocker: Run,
     dependent: Run,
-    waiting: Session,
+    waiting: Workspace,
 }
 
 async fn a_run_blocked_on_an_active_one(kestrel: &Kestrel) -> Blocked {
-    let session = a_session(kestrel).await;
-    let (blocker, _) = kestrel.dispatch_run(session.id).await;
-    let waiting = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = a_workspace(kestrel).await;
+    let (blocker, _) = kestrel.dispatch_run(workspace.id).await;
+    let waiting = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let dependent = kestrel.enqueue_run(waiting.id).await;
     kestrel.block_run(&dependent, &blocker).await;
 
@@ -55,15 +55,15 @@ async fn a_run_blocked_on_an_active_one(kestrel: &Kestrel) -> Blocked {
     }
 }
 
-/// Long enough that a sweep that was going to seal this Session has run several times over.
-async fn stays_open(kestrel: &Kestrel, session: &Session) {
+/// Long enough that a sweep that was going to seal this Workspace has run several times over.
+async fn stays_open(kestrel: &Kestrel, workspace: &Workspace) {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     assert_eq!(
-        kestrel.show_session(session.id).await.state,
-        SessionState::Open,
-        "the session {} sealed itself while a blocked run was still waiting in it",
-        session.id
+        kestrel.show_workspace(workspace.id).await.state,
+        WorkspaceState::Open,
+        "the workspace {} sealed itself while a blocked run was still waiting in it",
+        workspace.id
     );
 }
 
@@ -94,11 +94,11 @@ async fn a_run_with_an_active_blocker_is_claimed_only_after_its_blocker_ends_suc
 #[tokio::test]
 async fn a_run_blocked_on_many_is_not_claimed_until_every_blocker_has_ended_successfully() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (first, _) = kestrel.dispatch_run(session.id).await;
-    let elsewhere = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = a_workspace(&kestrel).await;
+    let (first, _) = kestrel.dispatch_run(workspace.id).await;
+    let elsewhere = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let (second, _) = kestrel.dispatch_run(elsewhere.id).await;
-    let waiting = kestrel.open_session("acme", "kestrel", "builder").await;
+    let waiting = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let dependent = kestrel.enqueue_run(waiting.id).await;
     kestrel.block_run(&dependent, &first).await;
     kestrel.block_run(&dependent, &second).await;
@@ -124,11 +124,11 @@ async fn a_run_blocked_on_many_is_not_claimed_until_every_blocker_has_ended_succ
 #[tokio::test]
 async fn a_run_blocked_on_queued_blockers_is_claimed_only_after_they_are_claimed_and_end() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let first = kestrel.enqueue_run(session.id).await;
-    let elsewhere = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = a_workspace(&kestrel).await;
+    let first = kestrel.enqueue_run(workspace.id).await;
+    let elsewhere = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let second = kestrel.enqueue_run(elsewhere.id).await;
-    let waiting = kestrel.open_session("acme", "kestrel", "builder").await;
+    let waiting = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let dependent = kestrel.enqueue_run(waiting.id).await;
     kestrel.block_run(&dependent, &first).await;
     kestrel.block_run(&dependent, &second).await;
@@ -166,15 +166,15 @@ async fn a_run_blocked_on_queued_blockers_is_claimed_only_after_they_are_claimed
 #[tokio::test]
 async fn a_blocked_run_enqueued_first_is_skipped_and_never_reorders_the_runs_behind_it() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (blocker, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (blocker, _) = kestrel.dispatch_run(workspace.id).await;
 
-    let blocked_session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let blocked = kestrel.enqueue_run(blocked_session.id).await;
-    let first_eligible_session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let first_eligible = kestrel.enqueue_run(first_eligible_session.id).await;
-    let second_eligible_session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let second_eligible = kestrel.enqueue_run(second_eligible_session.id).await;
+    let blocked_workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let blocked = kestrel.enqueue_run(blocked_workspace.id).await;
+    let first_eligible_workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let first_eligible = kestrel.enqueue_run(first_eligible_workspace.id).await;
+    let second_eligible_workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let second_eligible = kestrel.enqueue_run(second_eligible_workspace.id).await;
     kestrel.block_run(&blocked, &blocker).await;
 
     assert_eq!(
@@ -225,7 +225,7 @@ async fn a_run_blocked_on_a_failed_blocker_is_never_claimed() {
         "a failed blocker did not make its dependent unreachable"
     );
 
-    let behind = kestrel.open_session("acme", "kestrel", "builder").await;
+    let behind = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let next_in_line = kestrel.enqueue_run(behind.id).await;
     assert_eq!(
         kestrel.claim_run().await.map(|claimed| claimed.run.id),
@@ -290,7 +290,7 @@ async fn a_blocked_run_keeps_its_turn_however_long_it_waits() {
 async fn a_run_with_an_unresolved_blocker_is_passed_over_however_many_claimants_ask_at_once() {
     let kestrel = Kestrel::boot().await;
     let Blocked { dependent, .. } = a_run_blocked_on_an_active_one(&kestrel).await;
-    let behind = kestrel.open_session("acme", "kestrel", "builder").await;
+    let behind = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let eligible = kestrel.enqueue_run(behind.id).await;
 
     let (first, second) = tokio::join!(kestrel.claim_run(), kestrel.claim_run());

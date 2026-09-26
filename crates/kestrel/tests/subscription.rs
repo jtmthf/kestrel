@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use kestrel::domain::{Exit, Run, RunState, Session};
+use kestrel::domain::{Exit, Run, RunState, Workspace};
 use kestrel::log;
 use kestrel::profile::{Contents, Entry};
 use support::Kestrel;
@@ -181,12 +181,12 @@ async fn declared(kestrel: &Kestrel, subject: &Subject) {
 }
 
 async fn attempt(kestrel: &Kestrel, subject: &Subject, round: Round) -> Result<Run, Failure> {
-    let session = kestrel
-        .open_session_with(ORGANIZATION, PROJECT, AGENT, PROFILE)
+    let workspace = kestrel
+        .open_workspace_with(ORGANIZATION, PROJECT, AGENT, PROFILE)
         .await;
-    let run = kestrel.post(session.id, "operator", PROMPT).await;
+    let run = kestrel.post(workspace.id, "operator", PROMPT).await;
     let (run, answered) = settled(kestrel, run).await;
-    let said = said_by_the_agent(kestrel, &session).await;
+    let said = said_by_the_agent(kestrel, &workspace).await;
     if run.state != RunState::Ended {
         kestrel.stop_run(run.id).await;
     }
@@ -233,16 +233,16 @@ async fn settled(kestrel: &Kestrel, run: Run) -> (Run, bool) {
     }
 }
 
-async fn said_by_the_agent(kestrel: &Kestrel, session: &Session) -> String {
+async fn said_by_the_agent(kestrel: &Kestrel, workspace: &Workspace) -> String {
     kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .into_iter()
         .filter_map(|entry| match entry.entry {
             log::Entry::Said {
                 participant,
                 message,
-            } if participant == session.agent.name => Some(message),
+            } if participant == workspace.agent.name => Some(message),
             _ => None,
         })
         .collect::<Vec<_>>()

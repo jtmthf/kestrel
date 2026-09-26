@@ -8,10 +8,10 @@ mod support;
 use std::time::Duration;
 
 use jiff::Timestamp;
-use kestrel::domain::{Run, RunState, Session};
+use kestrel::domain::{Run, RunState, Workspace};
 use support::Kestrel;
 
-async fn a_session(kestrel: &Kestrel) -> Session {
+async fn a_workspace(kestrel: &Kestrel) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(
@@ -25,13 +25,13 @@ async fn a_session(kestrel: &Kestrel) -> Session {
         .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 async fn a_dependent_blocked_on_an_active_run(kestrel: &Kestrel) -> (Run, Run) {
-    let session = a_session(kestrel).await;
-    let (blocker, _) = kestrel.dispatch_run(session.id).await;
-    let waiting = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = a_workspace(kestrel).await;
+    let (blocker, _) = kestrel.dispatch_run(workspace.id).await;
+    let waiting = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let dependent = kestrel.enqueue_run(waiting.id).await;
     kestrel.block_run(&dependent, &blocker).await;
 
@@ -60,11 +60,11 @@ async fn a_run_blocked_on_a_failed_blocker_becomes_unreachable() {
 #[tokio::test]
 async fn one_blocker_failing_is_enough_however_many_others_have_not_resolved() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (succeeds, _) = kestrel.dispatch_run(session.id).await;
-    let elsewhere = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = a_workspace(&kestrel).await;
+    let (succeeds, _) = kestrel.dispatch_run(workspace.id).await;
+    let elsewhere = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let (fails, _) = kestrel.dispatch_run(elsewhere.id).await;
-    let waiting = kestrel.open_session("acme", "kestrel", "builder").await;
+    let waiting = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let dependent = kestrel.enqueue_run(waiting.id).await;
     kestrel.block_run(&dependent, &succeeds).await;
     kestrel.block_run(&dependent, &fails).await;
@@ -139,7 +139,7 @@ async fn a_blocker_failed_by_its_lease_expiring_makes_its_dependent_unreachable(
 async fn a_run_blocked_on_a_run_that_just_turned_unreachable_is_unreachable_too() {
     let kestrel = Kestrel::boot().await;
     let (blocker, first) = a_dependent_blocked_on_an_active_run(&kestrel).await;
-    let waiting = kestrel.open_session("acme", "kestrel", "builder").await;
+    let waiting = kestrel.open_workspace("acme", "kestrel", "builder").await;
     let second = kestrel.enqueue_run(waiting.id).await;
     kestrel.block_run(&second, &first).await;
 

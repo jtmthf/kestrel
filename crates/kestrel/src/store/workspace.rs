@@ -5,7 +5,7 @@ use sqlx::{Row, SqliteConnection};
 
 use crate::domain::{
     Agent, Checkout, Connected, Cost, Event, Exit, Organization, Project, Run, RunId, RunState,
-    Session, SessionId, SessionState, SubscriptionProfile, Turn, Usage,
+    SubscriptionProfile, Turn, Usage, Workspace, WorkspaceId, WorkspaceState,
 };
 use crate::instance::Observed;
 use crate::link::credential::Credential;
@@ -16,7 +16,7 @@ use crate::store::{agent, due, organization, profile, project, timestamp};
 macro_rules! runs_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, name, organization_id, session_id, state, waiting_for, exit, exit_because, outcome_message, instance, supervisor,
+            "SELECT id, name, organization_id, workspace_id, state, waiting_for, exit, exit_because, outcome_message, instance, supervisor,
                     enqueued_at, started_at, ended_at, lease_expires_at, connected_at,
                     supervisor_version, model, worked_model, context_used, context_size, cost_amount,
                     cost_currency
@@ -32,12 +32,12 @@ macro_rules! profile_free {
         concat!(
             "NOT EXISTS (
              SELECT 1
-             FROM session AS s
-             JOIN session AS o
+             FROM workspace AS s
+             JOIN workspace AS o
                ON o.subscription_profile_id = s.subscription_profile_id
               AND o.harness = s.harness
-             JOIN run AS a ON a.session_id = o.id
-             WHERE s.id = r.session_id
+             JOIN run AS a ON a.workspace_id = o.id
+             WHERE s.id = r.workspace_id
                AND s.harness IN (SELECT value FROM json_each(?))
                AND a.state = ?
          )"
@@ -54,10 +54,10 @@ pub enum Taken {
     Skipped,
 }
 
-/// A Session's Instance, and what its checkout was last observed to hold: `None` until a Run on it
-/// reports, and forgotten whenever another Run starts on it.
+/// A Workspace's Instance, and what its checkout was last observed to hold: `None` until a Run on
+/// it reports, and forgotten whenever another Run starts on it.
 pub struct Kept {
-    pub session: SessionId,
+    pub workspace: WorkspaceId,
     pub instance: String,
     pub observed: Option<Vec<Observed>>,
 }
@@ -72,27 +72,27 @@ pub struct Opening<'a> {
     pub project: &'a Project,
     pub agent: &'a Agent,
     pub profile: Option<&'a SubscriptionProfile>,
-    /// None declares the Session a branch of its own.
+    /// None declares the Workspace a branch of its own.
     pub branch: Option<&'a str>,
     pub correlation: Option<&'a str>,
-    pub continues: Option<&'a Session>,
+    pub continues: Option<&'a Workspace>,
     pub started_by: Option<&'a Event>,
 }
 
-pub struct Sessions<'a> {
+pub struct Workspaces<'a> {
     connection: &'a mut SqliteConnection,
 }
 
-impl<'a> Sessions<'a> {
+impl<'a> Workspaces<'a> {
     pub(crate) fn over(connection: &'a mut SqliteConnection) -> Self {
         Self { connection }
     }
 
-    pub async fn open(&mut self, opening: Opening<'_>) -> Result<Session> {
+    pub async fn open(&mut self, opening: Opening<'_>) -> Result<Workspace> {
         let opened_at = Timestamp::now();
-        let id = SessionId::generate();
-        let session = loop {
-            let session = Session {
+        let id = WorkspaceId::generate();
+        let workspace = loop {
+            let workspace = Workspace {
                 id,
                 name: generated_name(),
                 organization: opening.organization.clone(),
@@ -107,7 +107,7 @@ impl<'a> Sessions<'a> {
                         .map_or_else(|| format!("kestrel/{id}"), ToOwned::to_owned),
                 },
                 correlation: opening.correlation.map(ToOwned::to_owned),
-                state: SessionState::Open,
+                state: WorkspaceState::Open,
                 opened_at,
                 last_active_at: opened_at,
                 sealed_at: None,
@@ -116,118 +116,120 @@ impl<'a> Sessions<'a> {
             };
 
             let inserted = sqlx::query(
-                "INSERT INTO session
+                "INSERT INTO workspace
                      (id, name, organization_id, project_id, agent_id, harness, model,
                       subscription_profile_id, base, branch, correlation, state, opened_at,
                       last_active_at, continues, event_record_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT (organization_id, name) DO NOTHING",
             )
-            .bind(session.id.to_string())
-            .bind(&session.name)
-            .bind(session.organization.id.to_string())
-            .bind(session.project.id.to_string())
-            .bind(session.agent.id.to_string())
-            .bind(&session.agent.harness)
-            .bind(&session.agent.model)
+            .bind(workspace.id.to_string())
+            .bind(&workspace.name)
+            .bind(workspace.organization.id.to_string())
+            .bind(workspace.project.id.to_string())
+            .bind(workspace.agent.id.to_string())
+            .bind(&workspace.agent.harness)
+            .bind(&workspace.agent.model)
             .bind(
-                session
+                workspace
                     .profile
                     .as_ref()
                     .map(|profile| profile.id.to_string()),
             )
-            .bind(&session.checkout.base)
-            .bind(&session.checkout.branch)
-            .bind(&session.correlation)
-            .bind(session.state.as_str())
-            .bind(session.opened_at.to_string())
-            .bind(due(session.last_active_at))
-            .bind(session.continues.map(|sealed| sealed.to_string()))
-            .bind(session.started_by.map(|event| event.to_string()))
+            .bind(&workspace.checkout.base)
+            .bind(&workspace.checkout.branch)
+            .bind(&workspace.correlation)
+            .bind(workspace.state.as_str())
+            .bind(workspace.opened_at.to_string())
+            .bind(due(workspace.last_active_at))
+            .bind(workspace.continues.map(|sealed| sealed.to_string()))
+            .bind(workspace.started_by.map(|event| event.to_string()))
             .execute(&mut *self.connection)
             .await
-            .context("opening a session")?;
+            .context("opening a workspace")?;
 
             if inserted.rows_affected() == 1 {
-                break session;
+                break workspace;
             }
         };
 
-        for (position, url) in session.checkout.repositories.iter().enumerate() {
+        for (position, url) in workspace.checkout.repositories.iter().enumerate() {
             sqlx::query(
-                "INSERT INTO session_repository (session_id, organization_id, position, url)
+                "INSERT INTO workspace_repository (workspace_id, organization_id, position, url)
                  VALUES (?, ?, ?, ?)",
             )
-            .bind(session.id.to_string())
-            .bind(session.organization.id.to_string())
+            .bind(workspace.id.to_string())
+            .bind(workspace.organization.id.to_string())
             .bind(i64::try_from(position)?)
             .bind(url)
             .execute(&mut *self.connection)
             .await
-            .with_context(|| format!("fixing the repository {url} to the session {id}"))?;
+            .with_context(|| format!("fixing the repository {url} to the workspace {id}"))?;
         }
 
-        Ok(session)
+        Ok(workspace)
     }
 
     pub async fn holding_correlation(
         &mut self,
         organization: &Organization,
         correlation: &str,
-    ) -> Result<Option<SessionId>> {
+    ) -> Result<Option<WorkspaceId>> {
         sqlx::query(
-            "SELECT id FROM session WHERE organization_id = ? AND state = ? AND correlation = ?",
+            "SELECT id FROM workspace WHERE organization_id = ? AND state = ? AND correlation = ?",
         )
         .bind(organization.id.to_string())
-        .bind(SessionState::Open.as_str())
+        .bind(WorkspaceState::Open.as_str())
         .bind(correlation)
         .fetch_optional(&mut *self.connection)
         .await
-        .with_context(|| format!("reading which open session holds the correlation {correlation}"))?
+        .with_context(|| {
+            format!("reading which open workspace holds the correlation {correlation}")
+        })?
         .map(|row| Ok(row.get::<String, _>("id").parse()?))
         .transpose()
     }
 
-    pub async fn seal(&mut self, session: &Session) -> Result<Timestamp> {
+    pub async fn seal(&mut self, workspace: &Workspace) -> Result<Timestamp> {
         let sealed_at = Timestamp::now();
 
-        sqlx::query("UPDATE session SET state = ?, sealed_at = ? WHERE id = ?")
-            .bind(SessionState::Sealed.as_str())
+        sqlx::query("UPDATE workspace SET state = ?, sealed_at = ? WHERE id = ?")
+            .bind(WorkspaceState::Sealed.as_str())
             .bind(sealed_at.to_string())
-            .bind(session.id.to_string())
+            .bind(workspace.id.to_string())
             .execute(&mut *self.connection)
             .await
-            .with_context(|| format!("sealing the session {}", session.id))?;
+            .with_context(|| format!("sealing the workspace {}", workspace.id))?;
 
         Ok(sealed_at)
     }
 
-    pub async fn record_active(&mut self, session: SessionId, at: Timestamp) -> Result<()> {
-        sqlx::query("UPDATE session SET last_active_at = ? WHERE id = ?")
+    pub async fn record_active(&mut self, workspace: WorkspaceId, at: Timestamp) -> Result<()> {
+        sqlx::query("UPDATE workspace SET last_active_at = ? WHERE id = ?")
             .bind(due(at))
-            .bind(session.to_string())
+            .bind(workspace.to_string())
             .execute(&mut *self.connection)
             .await
-            .with_context(|| format!("recording the session {session} active"))?;
+            .with_context(|| format!("recording the workspace {workspace} active"))?;
 
         Ok(())
     }
 
-    pub async fn idle(&mut self, before: Timestamp) -> Result<Vec<Session>> {
+    pub async fn idle(&mut self, before: Timestamp) -> Result<Vec<Workspace>> {
         let ids = sqlx::query(
             "SELECT id
-             FROM session
+             FROM workspace
              WHERE state = ? AND last_active_at <= ?
              ORDER BY last_active_at, id",
         )
-        .bind(SessionState::Open.as_str())
+        .bind(WorkspaceState::Open.as_str())
         .bind(due(before))
         .fetch_all(&mut *self.connection)
         .await
-        .context("sweeping idle sessions")?
+        .context("sweeping idle workspaces")?
         .iter()
         .map(|row| Ok(row.get::<String, _>("id").parse()?))
-        .collect::<Result<Vec<SessionId>>>()?;
+        .collect::<Result<Vec<WorkspaceId>>>()?;
 
         let mut idle = Vec::with_capacity(ids.len());
         for id in ids {
@@ -237,22 +239,26 @@ impl<'a> Sessions<'a> {
         Ok(idle)
     }
 
-    pub async fn get(&mut self, id: SessionId) -> Result<Session> {
+    pub async fn get(&mut self, id: WorkspaceId) -> Result<Workspace> {
         read(self.connection, id).await
     }
 
-    pub async fn find(&mut self, id: SessionId) -> Result<Option<Session>> {
+    pub async fn find(&mut self, id: WorkspaceId) -> Result<Option<Workspace>> {
         find(self.connection, id).await
     }
 
-    /// Resolves what an operator typed to exactly one Session in the organization, refusing
+    /// Resolves what an operator typed to exactly one Workspace in the organization, refusing
     /// when nothing matched or when several did.
-    pub async fn resolved(&mut self, organization: &Organization, typed: &str) -> Result<Session> {
+    pub async fn resolved(
+        &mut self,
+        organization: &Organization,
+        typed: &str,
+    ) -> Result<Workspace> {
         let reference = Reference::read(typed);
 
         if reference.is_latest() {
             let latest = sqlx::query(
-                "SELECT id FROM session
+                "SELECT id FROM workspace
                  WHERE organization_id = ?
                  ORDER BY opened_at DESC, id DESC
                  LIMIT 1",
@@ -260,9 +266,9 @@ impl<'a> Sessions<'a> {
             .bind(organization.id.to_string())
             .fetch_optional(&mut *self.connection)
             .await
-            .context("reading the most recent session")?;
+            .context("reading the most recent workspace")?;
             let Some(latest) = latest else {
-                return Err(reference::missing("session", &organization.name, typed));
+                return Err(reference::missing("workspace", &organization.name, typed));
             };
 
             return read(
@@ -275,19 +281,19 @@ impl<'a> Sessions<'a> {
         let given = reference
             .given()
             .expect("a reference that is not the latest names one");
-        let named = sqlx::query("SELECT id FROM session WHERE organization_id = ? AND name = ?")
+        let named = sqlx::query("SELECT id FROM workspace WHERE organization_id = ? AND name = ?")
             .bind(organization.id.to_string())
             .bind(given)
             .fetch_optional(&mut *self.connection)
             .await
-            .context("reading a session by its generated name")?;
+            .context("reading a workspace by its generated name")?;
         if let Some(named) = named {
             return read(&mut *self.connection, named.get::<String, _>("id").parse()?).await;
         }
 
         if let Some(prefix) = reference.prefix() {
             let matched = sqlx::query(
-                "SELECT id, name FROM session
+                "SELECT id, name FROM workspace
                  WHERE organization_id = ? AND REPLACE(LOWER(id), '-', '') LIKE ? || '%'
                  ORDER BY name, id",
             )
@@ -295,7 +301,7 @@ impl<'a> Sessions<'a> {
             .bind(prefix)
             .fetch_all(&mut *self.connection)
             .await
-            .context("reading sessions by identifier prefix")?
+            .context("reading workspaces by identifier prefix")?
             .iter()
             .map(candidate)
             .collect::<Vec<_>>();
@@ -305,7 +311,7 @@ impl<'a> Sessions<'a> {
                 [only] => return read(&mut *self.connection, only.id.parse()?).await,
                 _ => {
                     return Err(reference::ambiguous(
-                        "session",
+                        "workspace",
                         &organization.name,
                         given,
                         &matched,
@@ -314,10 +320,10 @@ impl<'a> Sessions<'a> {
             }
         }
 
-        Err(reference::missing("session", &organization.name, given))
+        Err(reference::missing("workspace", &organization.name, given))
     }
 
-    /// A Run on the same terms as a Session.
+    /// A Run on the same terms as a Workspace.
     pub async fn resolved_run(&mut self, organization: &Organization, typed: &str) -> Result<Run> {
         let reference = Reference::read(typed);
 
@@ -383,56 +389,60 @@ impl<'a> Sessions<'a> {
         Err(reference::missing("run", &organization.name, given))
     }
 
-    pub async fn all(&mut self, organization: &Organization) -> Result<Vec<Session>> {
-        let ids =
-            sqlx::query("SELECT id FROM session WHERE organization_id = ? ORDER BY opened_at, id")
-                .bind(organization.id.to_string())
-                .fetch_all(&mut *self.connection)
-                .await
-                .context("reading an organization's sessions")?
-                .iter()
-                .map(|row| Ok(row.get::<String, _>("id").parse()?))
-                .collect::<Result<Vec<SessionId>>>()?;
+    pub async fn all(&mut self, organization: &Organization) -> Result<Vec<Workspace>> {
+        let ids = sqlx::query(
+            "SELECT id FROM workspace WHERE organization_id = ? ORDER BY opened_at, id",
+        )
+        .bind(organization.id.to_string())
+        .fetch_all(&mut *self.connection)
+        .await
+        .context("reading an organization's workspaces")?
+        .iter()
+        .map(|row| Ok(row.get::<String, _>("id").parse()?))
+        .collect::<Result<Vec<WorkspaceId>>>()?;
 
-        let mut sessions = Vec::with_capacity(ids.len());
+        let mut workspaces = Vec::with_capacity(ids.len());
         for id in ids {
-            sessions.push(read(&mut *self.connection, id).await?);
+            workspaces.push(read(&mut *self.connection, id).await?);
         }
 
-        Ok(sessions)
+        Ok(workspaces)
     }
 
-    /// Read on its own rather than with the Session: every path that reports a Run reads one,
+    /// Read on its own rather than with the Workspace: every path that reports a Run reads one,
     /// and none of them looks at what continues it.
-    pub async fn continuations(&mut self, sealed: SessionId) -> Result<Vec<SessionId>> {
-        sqlx::query("SELECT id FROM session WHERE continues = ? ORDER BY opened_at, id")
+    pub async fn continuations(&mut self, sealed: WorkspaceId) -> Result<Vec<WorkspaceId>> {
+        sqlx::query("SELECT id FROM workspace WHERE continues = ? ORDER BY opened_at, id")
             .bind(sealed.to_string())
             .fetch_all(&mut *self.connection)
             .await
-            .with_context(|| format!("reading what continues the session {sealed}"))?
+            .with_context(|| format!("reading what continues the workspace {sealed}"))?
             .iter()
             .map(|row| Ok(row.get::<String, _>("id").parse()?))
             .collect()
     }
 
     /// Held from the moment work is enqueued rather than dispatched: two Runs queued in one
-    /// Session would otherwise both be handed out.
-    pub(crate) async fn unfinished_run(&mut self, session: &Session) -> Result<Option<Unfinished>> {
+    /// Workspace would otherwise both be handed out.
+    pub(crate) async fn unfinished_run(
+        &mut self,
+        workspace: &Workspace,
+    ) -> Result<Option<Unfinished>> {
         let holding = sqlx::query(
             "SELECT r.*,
-                    EXISTS (SELECT 1 FROM pending_message p WHERE p.session_id = r.session_id) AS held_input
+                    EXISTS (SELECT 1 FROM pending_message p WHERE p.workspace_id = r.workspace_id) AS held_input
              FROM run r
-             WHERE r.session_id = ?
+             WHERE r.workspace_id = ?
                AND (r.state NOT IN (?, ?) OR r.supervisor_state = 'present')
              ORDER BY r.enqueued_at, r.id
              LIMIT 1",
         )
-        .bind(session.id.to_string())
+        .bind(workspace.id.to_string())
         .bind(RunState::Ended.as_str())
         .bind(RunState::Unreachable.as_str())
         .fetch_optional(&mut *self.connection)
         .await
-        .with_context(|| format!("reading what run the session {} has", session.id))?;
+        .with_context(|| format!("reading what run the workspace {} has", workspace.id))?;
 
         holding
             .map(|row| {
@@ -448,20 +458,20 @@ impl<'a> Sessions<'a> {
         &mut self,
         organization: &Organization,
         correlation: &str,
-    ) -> Result<Option<Session>> {
+    ) -> Result<Option<Workspace>> {
         let sealed = sqlx::query(
-            "SELECT id FROM session
+            "SELECT id FROM workspace
              WHERE organization_id = ? AND state = ? AND correlation = ?
              ORDER BY sealed_at DESC, id DESC
              LIMIT 1",
         )
         .bind(organization.id.to_string())
-        .bind(SessionState::Sealed.as_str())
+        .bind(WorkspaceState::Sealed.as_str())
         .bind(correlation)
         .fetch_optional(&mut *self.connection)
         .await
         .with_context(|| {
-            format!("reading which sealed session held the correlation {correlation}")
+            format!("reading which sealed workspace held the correlation {correlation}")
         })?;
 
         let Some(sealed) = sealed else {
@@ -472,13 +482,13 @@ impl<'a> Sessions<'a> {
         Ok(Some(read(&mut *self.connection, id).await?))
     }
 
-    pub async fn enqueue_run(&mut self, session: &Session, model: Option<&str>) -> Result<Run> {
+    pub async fn enqueue_run(&mut self, workspace: &Workspace, model: Option<&str>) -> Result<Run> {
         let run = loop {
             let run = Run {
                 id: RunId::generate(),
                 name: generated_name(),
-                organization: session.organization.id,
-                session: session.id,
+                organization: workspace.organization.id,
+                workspace: workspace.id,
                 state: RunState::Queued,
                 waiting_for: None,
                 exit: None,
@@ -496,71 +506,81 @@ impl<'a> Sessions<'a> {
             };
 
             let inserted = sqlx::query(
-                "INSERT INTO run (id, name, organization_id, session_id, state, model, enqueued_at)
+                "INSERT INTO run (id, name, organization_id, workspace_id, state, model, enqueued_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT (organization_id, name) DO NOTHING",
             )
             .bind(run.id.to_string())
             .bind(&run.name)
             .bind(run.organization.to_string())
-            .bind(run.session.to_string())
+            .bind(run.workspace.to_string())
             .bind(run.state.as_str())
             .bind(&run.model)
             .bind(due(run.enqueued_at))
             .execute(&mut *self.connection)
             .await
-            .with_context(|| format!("enqueueing a run in the session {}", session.id))?;
+            .with_context(|| format!("enqueueing a run in the workspace {}", workspace.id))?;
 
             if inserted.rows_affected() == 1 {
                 break run;
             }
         };
 
-        self.record_active(session.id, run.enqueued_at).await?;
+        self.record_active(workspace.id, run.enqueued_at).await?;
 
         Ok(run)
     }
 
     pub async fn add_pending_message(
         &mut self,
-        session: &Session,
+        workspace: &Workspace,
         participant: &str,
         body: &str,
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO pending_message (
-                 session_id, organization_id, seq, participant, body, received_at
+                 workspace_id, organization_id, seq, participant, body, received_at
              )
              SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?
              FROM pending_message
-             WHERE session_id = ?",
+             WHERE workspace_id = ?",
         )
-        .bind(session.id.to_string())
-        .bind(session.organization.id.to_string())
+        .bind(workspace.id.to_string())
+        .bind(workspace.organization.id.to_string())
         .bind(participant)
         .bind(body)
         .bind(due(Timestamp::now()))
-        .bind(session.id.to_string())
+        .bind(workspace.id.to_string())
         .execute(&mut *self.connection)
         .await
-        .with_context(|| format!("holding a pending message in the session {}", session.id))?;
+        .with_context(|| {
+            format!(
+                "holding a pending message in the workspace {}",
+                workspace.id
+            )
+        })?;
 
         Ok(())
     }
 
     pub async fn take_pending_messages(
         &mut self,
-        session: &Session,
+        workspace: &Workspace,
     ) -> Result<Vec<PendingMessage>> {
         let rows = sqlx::query(
             "DELETE FROM pending_message
-             WHERE session_id = ?
+             WHERE workspace_id = ?
              RETURNING participant, body, seq",
         )
-        .bind(session.id.to_string())
+        .bind(workspace.id.to_string())
         .fetch_all(&mut *self.connection)
         .await
-        .with_context(|| format!("taking pending messages from the session {}", session.id))?;
+        .with_context(|| {
+            format!(
+                "taking pending messages from the workspace {}",
+                workspace.id
+            )
+        })?;
 
         let mut messages = rows
             .iter()
@@ -723,9 +743,9 @@ impl<'a> Sessions<'a> {
         run(&row)
     }
 
-    pub async fn runs(&mut self, session: &Session) -> Result<Vec<Run>> {
-        sqlx::query(runs_where!("session_id = ? ORDER BY enqueued_at, id"))
-            .bind(session.id.to_string())
+    pub async fn runs(&mut self, workspace: &Workspace) -> Result<Vec<Run>> {
+        sqlx::query(runs_where!("workspace_id = ? ORDER BY enqueued_at, id"))
+            .bind(workspace.id.to_string())
             .fetch_all(&mut *self.connection)
             .await?
             .iter()
@@ -775,55 +795,57 @@ impl<'a> Sessions<'a> {
         Ok(())
     }
 
-    pub async fn instance(&mut self, session: SessionId) -> Result<Option<String>> {
-        let row = sqlx::query("SELECT instance FROM session WHERE id = ?")
-            .bind(session.to_string())
+    pub async fn instance(&mut self, workspace: WorkspaceId) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT instance FROM workspace WHERE id = ?")
+            .bind(workspace.to_string())
             .fetch_one(&mut *self.connection)
             .await
-            .with_context(|| format!("reading the instance of the session {session}"))?;
+            .with_context(|| format!("reading the instance of the workspace {workspace}"))?;
 
         Ok(row.get("instance"))
     }
 
-    /// `None` forgets an Instance that is gone, so the Session's next Run provisions another.
+    /// `None` forgets an Instance that is gone, so the Workspace's next Run provisions another.
     pub async fn record_instance(
         &mut self,
-        session: SessionId,
+        workspace: WorkspaceId,
         instance: Option<&str>,
     ) -> Result<()> {
-        sqlx::query("UPDATE session SET instance = ?, observed = NULL WHERE id = ?")
+        sqlx::query("UPDATE workspace SET instance = ?, observed = NULL WHERE id = ?")
             .bind(instance)
-            .bind(session.to_string())
+            .bind(workspace.to_string())
             .execute(&mut *self.connection)
             .await
-            .with_context(|| format!("recording the instance of the session {session}"))?;
+            .with_context(|| format!("recording the instance of the workspace {workspace}"))?;
 
         Ok(())
     }
 
     pub async fn record_observed(
         &mut self,
-        session: SessionId,
+        workspace: WorkspaceId,
         observed: &[Observed],
     ) -> Result<()> {
-        sqlx::query("UPDATE session SET observed = ? WHERE id = ? AND instance IS NOT NULL")
+        sqlx::query("UPDATE workspace SET observed = ? WHERE id = ? AND instance IS NOT NULL")
             .bind(serde_json::to_string(observed)?)
-            .bind(session.to_string())
+            .bind(workspace.to_string())
             .execute(&mut *self.connection)
             .await
-            .with_context(|| format!("recording what the session {session}'s checkout holds"))?;
+            .with_context(|| {
+                format!("recording what the workspace {workspace}'s checkout holds")
+            })?;
 
         Ok(())
     }
 
-    pub async fn kept_instance(&mut self, session: SessionId) -> Result<Option<Kept>> {
+    pub async fn kept_instance(&mut self, workspace: WorkspaceId) -> Result<Option<Kept>> {
         sqlx::query(
-            "SELECT id, instance, observed FROM session WHERE id = ? AND instance IS NOT NULL",
+            "SELECT id, instance, observed FROM workspace WHERE id = ? AND instance IS NOT NULL",
         )
-        .bind(session.to_string())
+        .bind(workspace.to_string())
         .fetch_optional(&mut *self.connection)
         .await
-        .with_context(|| format!("reading the instance of the session {session}"))?
+        .with_context(|| format!("reading the instance of the workspace {workspace}"))?
         .map(|row| kept(&row))
         .transpose()
     }
@@ -831,29 +853,30 @@ impl<'a> Sessions<'a> {
     pub async fn kept_instances(&mut self, organization: &Organization) -> Result<Vec<Kept>> {
         sqlx::query(
             "SELECT id, instance, observed
-             FROM session
+             FROM workspace
              WHERE organization_id = ? AND instance IS NOT NULL
              ORDER BY last_active_at, id",
         )
         .bind(organization.id.to_string())
         .fetch_all(&mut *self.connection)
         .await
-        .context("reading the instances sessions keep")?
+        .context("reading the instances workspaces keep")?
         .iter()
         .map(kept)
         .collect()
     }
 
-    /// The Session lets go of its Instance at once, so no Run is handed one about to be destroyed.
-    pub async fn archive_instance(&mut self, session: &Session, instance: &str) -> Result<()> {
-        self.record_instance(session.id, None).await?;
+    /// The Workspace lets go of its Instance at once, so no Run is handed one about to be
+    /// destroyed.
+    pub async fn archive_instance(&mut self, workspace: &Workspace, instance: &str) -> Result<()> {
+        self.record_instance(workspace.id, None).await?;
         sqlx::query(
-            "INSERT INTO instance_archive (instance, organization_id, session_id, queued_at)
+            "INSERT INTO instance_archive (instance, organization_id, workspace_id, queued_at)
              VALUES (?, ?, ?, ?)",
         )
         .bind(instance)
-        .bind(session.organization.id.to_string())
-        .bind(session.id.to_string())
+        .bind(workspace.organization.id.to_string())
+        .bind(workspace.id.to_string())
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.connection)
         .await
@@ -872,14 +895,14 @@ impl<'a> Sessions<'a> {
     pub async fn live_instance_count(&mut self, organization: &Organization) -> Result<usize> {
         let count: i64 = sqlx::query_scalar(
             "SELECT
-                 (SELECT COUNT(*) FROM session WHERE organization_id = ? AND instance IS NOT NULL)
+                 (SELECT COUNT(*) FROM workspace WHERE organization_id = ? AND instance IS NOT NULL)
                + (SELECT COUNT(*) FROM instance_archive WHERE organization_id = ?)
                + (SELECT COUNT(*)
                   FROM run
-                  JOIN session ON session.id = run.session_id
+                  JOIN workspace ON workspace.id = run.workspace_id
                   WHERE run.organization_id = ?
                     AND run.state IN (SELECT value FROM json_each(?))
-                    AND session.instance IS NULL)",
+                    AND workspace.instance IS NULL)",
         )
         .bind(organization.id.to_string())
         .bind(organization.id.to_string())
@@ -1078,7 +1101,7 @@ impl<'a> Sessions<'a> {
         if ended.rows_affected() == 0 {
             return Ok(false);
         }
-        self.record_active(run.session, Timestamp::now()).await?;
+        self.record_active(run.workspace, Timestamp::now()).await?;
 
         Ok(true)
     }
@@ -1231,7 +1254,7 @@ impl<'a> Sessions<'a> {
                  (SELECT COALESCE(MAX(seq), 0) + 1 FROM turn WHERE run_id = ?),
                  ?,
                  (SELECT COALESCE(MAX(seq), 0) FROM transcript_entry
-                   WHERE session_id = (SELECT session_id FROM run WHERE id = ?))
+                   WHERE workspace_id = (SELECT workspace_id FROM run WHERE id = ?))
              )
              RETURNING seq",
         )
@@ -1315,7 +1338,7 @@ impl<'a> Sessions<'a> {
         let row = sqlx::query(concat!(
             "SELECT r.id, MIN(p.received_at) AS since
              FROM run AS r
-             JOIN pending_message AS p ON p.session_id = r.session_id
+             JOIN pending_message AS p ON p.workspace_id = r.workspace_id
              WHERE r.state = ? AND ",
             profile_free!(),
             "
@@ -1354,18 +1377,18 @@ fn live() -> Result<String> {
     )?)
 }
 
-pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Result<Session> {
+pub(crate) async fn read(connection: &mut SqliteConnection, id: WorkspaceId) -> Result<Workspace> {
     find(connection, id)
         .await?
-        .with_context(|| format!("no session {id}"))
+        .with_context(|| format!("no workspace {id}"))
 }
 
-async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option<Session>> {
+async fn find(connection: &mut SqliteConnection, id: WorkspaceId) -> Result<Option<Workspace>> {
     let Some(row) = sqlx::query(
         "SELECT name, organization_id, project_id, agent_id, harness, model, subscription_profile_id,
                 base, branch, correlation, state, opened_at, last_active_at, sealed_at,
                 continues, event_record_id
-         FROM session
+         FROM workspace
          WHERE id = ?",
     )
     .bind(id.to_string())
@@ -1383,7 +1406,7 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
         row.get::<String, _>("project_id").parse()?,
     )
     .await?;
-    // What the Agent was declared as when the session opened, not what it has been redeclared as.
+    // What the Agent was declared as when the workspace opened, not what it has been redeclared as.
     let agent = Agent {
         harness: row.get("harness"),
         model: row.get("model"),
@@ -1398,16 +1421,17 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
         Some(id) => Some(profile::with_id(connection, id.parse()?).await?),
         None => None,
     };
-    let repositories =
-        sqlx::query("SELECT url FROM session_repository WHERE session_id = ? ORDER BY position")
-            .bind(id.to_string())
-            .fetch_all(&mut *connection)
-            .await?
-            .iter()
-            .map(|row| row.get("url"))
-            .collect();
+    let repositories = sqlx::query(
+        "SELECT url FROM workspace_repository WHERE workspace_id = ? ORDER BY position",
+    )
+    .bind(id.to_string())
+    .fetch_all(&mut *connection)
+    .await?
+    .iter()
+    .map(|row| row.get("url"))
+    .collect();
 
-    Ok(Some(Session {
+    Ok(Some(Workspace {
         id,
         name: row.get("name"),
         organization,
@@ -1450,7 +1474,7 @@ fn run(row: &SqliteRow) -> Result<Run> {
         id: row.get::<String, _>("id").parse()?,
         name: row.get("name"),
         organization: row.get::<String, _>("organization_id").parse()?,
-        session: row.get::<String, _>("session_id").parse()?,
+        workspace: row.get::<String, _>("workspace_id").parse()?,
         state: row.get::<String, _>("state").parse()?,
         waiting_for: row.get("waiting_for"),
         exit: exit
@@ -1505,7 +1529,7 @@ fn generated_name() -> String {
 
 fn kept(row: &SqliteRow) -> Result<Kept> {
     Ok(Kept {
-        session: row.get::<String, _>("id").parse()?,
+        workspace: row.get::<String, _>("id").parse()?,
         instance: row.get("instance"),
         observed: row
             .get::<Option<String>, _>("observed")

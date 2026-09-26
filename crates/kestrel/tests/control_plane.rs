@@ -130,18 +130,18 @@ fn the_image_makes_and_migrates_its_database_on_a_volume_with_nothing_on_it() {
 /// two versions of the migrations.
 #[test]
 #[ignore = "builds and runs the kestrel image"]
-fn a_container_started_over_an_existing_database_migrates_it_and_loses_no_session() {
+fn a_container_started_over_an_existing_database_migrates_it_and_loses_no_workspace() {
     let volume = Volume::empty();
     let first = Started::with(&volume, &["serve"]);
-    let session = a_session(first.operator());
-    let shown = session_shown(first.operator(), &session);
-    let transcript = transcribed(first.operator(), &session);
+    let workspace = a_workspace(first.operator());
+    let shown = workspace_shown(first.operator(), &workspace);
+    let transcript = transcribed(first.operator(), &workspace);
     first.stop();
 
     let upgraded = Started::with(&volume, &["serve"]);
 
-    assert_eq!(session_shown(upgraded.operator(), &session), shown);
-    assert_eq!(transcribed(upgraded.operator(), &session), transcript);
+    assert_eq!(workspace_shown(upgraded.operator(), &workspace), shown);
+    assert_eq!(transcribed(upgraded.operator(), &workspace), transcript);
     assert!(
         !transcript.is_empty(),
         "nothing was transcribed for the upgrade to keep"
@@ -161,13 +161,13 @@ fn ran(operator: &str, command: &[&str]) -> String {
     ran.out.join("\n")
 }
 
-fn session_shown(operator: &str, session: &str) -> Vec<Value> {
+fn workspace_shown(operator: &str, workspace: &str) -> Vec<Value> {
     client::ran(
         operator,
         &[
-            "session",
+            "workspace",
             "show",
-            session,
+            workspace,
             "--json",
             "id,name,state,checkout,opened_at",
         ],
@@ -175,15 +175,15 @@ fn session_shown(operator: &str, session: &str) -> Vec<Value> {
     .records()
 }
 
-fn transcribed(operator: &str, session: &str) -> Vec<Value> {
+fn transcribed(operator: &str, workspace: &str) -> Vec<Value> {
     client::ran(
         operator,
-        &["session", "transcript", session, "--json", "seq,entry"],
+        &["workspace", "transcript", workspace, "--json", "seq,entry"],
     )
     .records()
 }
 
-fn a_session(operator: &str) -> String {
+fn a_workspace(operator: &str) -> String {
     ran(operator, &["organization", "declare", "acme"]);
     ran(
         operator,
@@ -205,7 +205,7 @@ fn a_session(operator: &str) -> String {
     ran(
         operator,
         &[
-            "session",
+            "workspace",
             "open",
             "--project",
             "kestrel",

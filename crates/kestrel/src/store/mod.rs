@@ -3,8 +3,8 @@ pub mod integration;
 pub mod organization;
 pub mod profile;
 pub mod project;
-pub mod session;
 pub mod trigger;
+pub mod workspace;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -21,8 +21,8 @@ use crate::store::integration::Integrations;
 use crate::store::organization::Organizations;
 use crate::store::profile::Profiles;
 use crate::store::project::Projects;
-use crate::store::session::Sessions;
 use crate::store::trigger::Triggers;
+use crate::store::workspace::Workspaces;
 
 const DATABASE: &str = "kestrel.db";
 
@@ -97,8 +97,8 @@ impl Tx<'_> {
         Agents::over(&mut self.transaction)
     }
 
-    pub fn sessions(&mut self) -> Sessions<'_> {
-        Sessions::over(&mut self.transaction)
+    pub fn workspaces(&mut self) -> Workspaces<'_> {
+        Workspaces::over(&mut self.transaction)
     }
 
     pub fn integrations(&mut self) -> Integrations<'_> {
@@ -181,15 +181,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_transaction_that_fails_part_way_leaves_neither_the_session_nor_its_entry() {
+    async fn a_transaction_that_fails_part_way_leaves_neither_the_workspace_nor_its_entry() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).await.unwrap();
         let (organization, project, agent) = declared(&store).await;
 
         let mut tx = store.begin().await.unwrap();
-        let session = tx
-            .sessions()
-            .open(session::Opening {
+        let workspace = tx
+            .workspaces()
+            .open(workspace::Opening {
                 organization: &organization,
                 project: &project,
                 agent: &agent,
@@ -203,7 +203,7 @@ mod tests {
             .unwrap();
         tx.log()
             .append(
-                &session,
+                &workspace,
                 Entry::ParticipantJoined {
                     participant: agent.name.clone(),
                 },
@@ -213,7 +213,7 @@ mod tests {
         drop(tx);
 
         let mut tx = store.begin().await.unwrap();
-        assert!(tx.sessions().get(session.id).await.is_err());
+        assert!(tx.workspaces().get(workspace.id).await.is_err());
         let entries: i64 = sqlx::query("SELECT COUNT(*) AS entries FROM transcript_entry")
             .fetch_one(&mut *tx.transaction)
             .await

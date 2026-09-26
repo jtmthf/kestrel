@@ -7,14 +7,14 @@ use crate::declined::Declined;
 use crate::domain::{
     Connection, Delivery, Direction, Event, EventRecordId, EventRefusal, GithubConnection,
     Integration, IntegrationId, IntegrationKind, Occurrence, Organization, OrganizationId, Run,
-    RunId, Session,
+    RunId, Workspace,
 };
 use crate::integration::credential::Token;
 use crate::integration::github;
 use crate::integration::webhook::Verifier;
 use crate::keyring::Keyring;
 use crate::link::credential::Secret;
-use crate::store::{due, session, timestamp};
+use crate::store::{due, timestamp, workspace};
 
 /// The largest payload an Event may carry. An event stream is systems kestrel does not
 /// control, so one that overflows the store is refused rather than grown to fit.
@@ -393,9 +393,9 @@ impl<'a> Integrations<'a> {
              WHERE event.type = ? AND follow_up.event_record_id IS NULL
                AND EXISTS (
                    SELECT 1
-                   FROM session
-                   JOIN event AS origin ON origin.record_id = session.event_record_id
-                   WHERE session.organization_id = event.organization_id
+                   FROM workspace
+                   JOIN event AS origin ON origin.record_id = workspace.event_record_id
+                   WHERE workspace.organization_id = event.organization_id
                      AND origin.integration_id = event.integration_id
                      AND origin.source = event.source
                      AND origin.subject = event.subject
@@ -421,17 +421,17 @@ impl<'a> Integrations<'a> {
         .collect()
     }
 
-    pub async fn session_for_follow_up(&mut self, event: &Event) -> Result<Option<Session>> {
+    pub async fn workspace_for_follow_up(&mut self, event: &Event) -> Result<Option<Workspace>> {
         let candidates = sqlx::query(
-            "SELECT session.id AS session_id, origin.*
-             FROM session
-             JOIN event AS origin ON origin.record_id = session.event_record_id
-             WHERE session.organization_id = ?
+            "SELECT workspace.id AS workspace_id, origin.*
+             FROM workspace
+             JOIN event AS origin ON origin.record_id = workspace.event_record_id
+             WHERE workspace.organization_id = ?
                AND origin.integration_id = ?
                AND origin.source = ?
                AND origin.subject = ?
                AND origin.time <= ?
-             ORDER BY session.opened_at DESC, session.id DESC",
+             ORDER BY workspace.opened_at DESC, workspace.id DESC",
         )
         .bind(event.organization.to_string())
         .bind(event.integration.map(|integration| integration.to_string()))
@@ -444,22 +444,25 @@ impl<'a> Integrations<'a> {
         for row in candidates {
             if github::at_or_after(&event.occurrence, &self::event(&row)?.occurrence) {
                 return Ok(Some(
-                    session::read(self.connection, row.get::<String, _>("session_id").parse()?)
-                        .await?,
+                    workspace::read(
+                        self.connection,
+                        row.get::<String, _>("workspace_id").parse()?,
+                    )
+                    .await?,
                 ));
             }
         }
         Ok(None)
     }
 
-    pub async fn record_follow_up(&mut self, event: &Event, session: &Session) -> Result<()> {
+    pub async fn record_follow_up(&mut self, event: &Event, workspace: &Workspace) -> Result<()> {
         sqlx::query(
-            "INSERT INTO follow_up (event_record_id, organization_id, session_id, received_at)
+            "INSERT INTO follow_up (event_record_id, organization_id, workspace_id, received_at)
              VALUES (?, ?, ?, ?)",
         )
         .bind(event.record_id.to_string())
         .bind(event.organization.to_string())
-        .bind(session.id.to_string())
+        .bind(workspace.id.to_string())
         .bind(Timestamp::now().to_string())
         .execute(&mut *self.connection)
         .await

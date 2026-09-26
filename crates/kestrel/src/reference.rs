@@ -1,4 +1,4 @@
-//! What an operator typed where a Session or a Run is named: its generated name, its UUID,
+//! What an operator typed where a Workspace or a Run is named: its generated name, its UUID,
 //! any unambiguous prefix of one, or the most recent in scope.
 
 use anyhow::Error;
