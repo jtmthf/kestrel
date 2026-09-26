@@ -14,7 +14,7 @@ pub struct Declared {
     pub filter: Filter,
     pub templates: Templates,
     pub on_miss: Option<CorrelationMiss>,
-    pub workspace: String,
+    pub project: String,
     pub agent: String,
     pub allows: Vec<String>,
     pub profile: Option<String>,
@@ -64,7 +64,7 @@ struct Entry {
     branch: Option<String>,
     correlation: Option<String>,
     on_miss: Option<String>,
-    workspace: String,
+    project: String,
     agent: String,
     #[serde(default)]
     allows: Vec<String>,
@@ -105,14 +105,14 @@ fn declared(name: &str, entry: Entry) -> Result<Declared> {
         filter: Filter::from_json(&entry.filter).context("its filter")?,
         templates,
         on_miss,
-        workspace: entry.workspace,
+        project: entry.project,
         agent: entry.agent,
         allows: entry.allows,
         profile: entry.profile,
     })
 }
 
-/// One transaction, so a declaration naming a workspace or agent that does not exist changes
+/// One transaction, so a declaration naming a project or agent that does not exist changes
 /// nothing; a dry run is that transaction rolled back.
 pub async fn apply(
     store: &Store,
@@ -126,9 +126,9 @@ pub async fn apply(
     let mut changes = Vec::new();
 
     for declared in declarations {
-        let workspace = tx
-            .workspaces()
-            .named(&organization, &declared.workspace)
+        let project = tx
+            .projects()
+            .named(&organization, &declared.project)
             .await?;
         let agent = tx.agents().named(&organization, &declared.agent).await?;
         let allows = allowed(&mut tx, &organization, &declared.allows).await?;
@@ -150,7 +150,7 @@ pub async fn apply(
                     &fires,
                     &declared.templates,
                     declared.on_miss,
-                    &workspace,
+                    &project,
                     &agent,
                     &allows,
                     profile.as_ref(),
@@ -173,7 +173,7 @@ pub async fn apply(
                     &fires,
                     &declared.templates,
                     declared.on_miss,
-                    &workspace,
+                    &project,
                     &agent,
                     &allows,
                     profile.as_ref(),
@@ -239,7 +239,7 @@ fn described(declared: &Declared) -> Described {
         &declared.filter,
         &declared.templates,
         declared.on_miss,
-        &declared.workspace,
+        &declared.project,
         &declared.agent,
         &declared.allows,
         declared.profile.as_deref(),
@@ -251,7 +251,7 @@ fn described_trigger(trigger: &Trigger) -> Described {
         &trigger.filter(),
         &trigger.templates,
         trigger.on_miss,
-        &trigger.workspace.name,
+        &trigger.project.name,
         &trigger.agent.name,
         &trigger
             .allows
@@ -269,7 +269,7 @@ fn describe(
     filter: &Filter,
     templates: &Templates,
     on_miss: Option<CorrelationMiss>,
-    workspace: &str,
+    project: &str,
     agent: &str,
     allows: &[String],
     profile: Option<&str>,
@@ -280,7 +280,7 @@ fn describe(
 
     [
         ("matches", Some(filter.to_string())),
-        ("workspace", Some(workspace.to_owned())),
+        ("project", Some(project.to_owned())),
         ("agent", Some(agent.to_owned())),
         ("allows", (!allows.is_empty()).then(|| allows.join(", "))),
         ("profile", profile.map(str::to_owned)),

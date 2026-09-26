@@ -16,7 +16,7 @@ const IDLE: SignedDuration = SignedDuration::from_hours(24);
 pub async fn open(
     store: &Store,
     organization: &str,
-    workspace: &str,
+    project: &str,
     agent: &str,
     profile: Option<&str>,
     branch: Option<&str>,
@@ -25,7 +25,7 @@ pub async fn open(
     let mut tx = store.begin().await?;
 
     let organization = tx.organizations().named(organization).await?;
-    let workspace = tx.workspaces().named(&organization, workspace).await?;
+    let project = tx.projects().named(&organization, project).await?;
     let agent = tx.agents().named(&organization, agent).await?;
     let profile = match profile {
         Some(profile) => Some(tx.profiles().named(&organization, profile).await?),
@@ -40,7 +40,7 @@ pub async fn open(
         .sessions()
         .open(Opening {
             organization: &organization,
-            workspace: &workspace,
+            project: &project,
             agent: &agent,
             profile: profile.as_ref(),
             branch,

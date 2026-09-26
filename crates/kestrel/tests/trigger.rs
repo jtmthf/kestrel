@@ -31,7 +31,7 @@ fn eagerly() -> SignedDuration {
 async fn an_organization(harness: &Harness, name: &str) -> kestrel::domain::Organization {
     let organization = harness.declare_organization(name).await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -127,7 +127,7 @@ async fn labelling_an_issue_opens_a_session_and_enqueues_a_run() {
 
     let session = opened(&harness, 1).await.remove(0);
 
-    assert_eq!(session.workspace.name, "kestrel");
+    assert_eq!(session.project.name, "kestrel");
     assert_eq!(session.agent.name, "builder");
 
     let runs = harness.runs(session.id).await;
@@ -208,12 +208,12 @@ async fn the_rendered_brief_is_the_sessions_first_transcript_entry() {
 const SKILLED: &str = "/implement https://github.com/jtmthf/kestrel/issues/43\n\n\
                        Fetch its current body and comments with `gh issue view --comments` first.";
 
-/// Opened by a firing whose brief leads with a harness's skill invocation, in a workspace a
+/// Opened by a firing whose brief leads with a harness's skill invocation, in a project a
 /// supervisor can check out without reaching GitHub.
 async fn briefed(harness: &Harness, stub: &GithubStub) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", "opencode", None)
@@ -337,7 +337,7 @@ async fn a_session_opens_on_the_branch_and_correlation_its_trigger_renders() {
 }
 
 #[tokio::test]
-async fn a_session_whose_trigger_renders_no_branch_opens_on_its_own_cut_from_the_workspaces() {
+async fn a_session_whose_trigger_renders_no_branch_opens_on_its_own_cut_from_the_projects() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let harness = Harness::boot().await;
@@ -911,7 +911,7 @@ async fn a_trigger_is_named_listed_and_disabled() {
         listed[0].fires.to_string(),
         r#"source = "https://github.com/jtmthf/kestrel" and type = "com.github.issues.labeled" and data.label.name = "ready-for-agent""#
     );
-    assert_eq!(listed[0].workspace.name, "kestrel");
+    assert_eq!(listed[0].project.name, "kestrel");
     assert_eq!(listed[0].agent.name, "builder");
     assert_eq!(listed[0].state, TriggerState::Enabled);
 
@@ -965,7 +965,7 @@ triggers:
         - exact: {{type: com.github.issues.labeled}}
         - exact: {{data.label.name: {label}}}
     brief: "Work on {{{{ event.data.issue.title }}}}"
-    workspace: kestrel
+    project: kestrel
     agent: builder
 "#
     )

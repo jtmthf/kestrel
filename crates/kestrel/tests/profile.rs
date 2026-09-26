@@ -26,7 +26,7 @@ async fn playing(script: Script) -> Harness {
 async fn declared(harness: &Harness, runtime: &str) {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             repository::NAME,
             &[repository::url().to_owned()],

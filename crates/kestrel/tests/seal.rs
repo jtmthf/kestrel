@@ -10,7 +10,7 @@ use support::Harness;
 async fn declare_fixture(harness: &Harness) {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -166,7 +166,7 @@ async fn a_sealed_session_is_fully_readable_including_its_whole_transcript() {
 
     let shown = harness.show_session(session.id).await;
     assert_eq!(shown.organization.name, "acme");
-    assert_eq!(shown.workspace.name, "kestrel");
+    assert_eq!(shown.project.name, "kestrel");
     assert_eq!(shown.agent.name, "builder");
     assert_eq!(harness.runs(session.id).await.len(), 1);
 
@@ -360,7 +360,7 @@ async fn a_sealed_session_in_another_organization_is_not_continued() {
 
     let globex = harness.declare_organization("globex").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &globex,
             "kestrel",
             &["https://github.com/globex/kestrel".to_owned()],

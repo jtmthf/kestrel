@@ -159,7 +159,7 @@ fn configured_with(model: &Model) -> String {
 async fn a_session(harness: &Harness) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", "opencode", Some(MODEL))

@@ -57,12 +57,12 @@ ANTHROPIC_API_KEY=… kestrel start --credential ANTHROPIC_API_KEY \
   --brief "Make the README say what kestrel is"
 ```
 
-It reads the clone for what it can: origin is the workspace's repository and names the workspace,
+It reads the clone for what it can: origin is the project's repository and names the project,
 origin's owner names the organization while none exists, and origin's default branch is the one the
 work happens on. Whatever already exists is used rather than redeclared: the only organization, the
-workspace already declaring that repository, and the only agent. Before it changes anything it
+project already declaring that repository, and the only agent. Before it changes anything it
 prints every value on stderr, why it is that value, and the flag that says otherwise. Every value
-has one: `--organization`, `--workspace`, `--repository`, `--branch`, `--agent`, `--runtime`,
+has one: `--organization`, `--project`, `--repository`, `--branch`, `--agent`, `--runtime`,
 `--model` and `--credential`. `--credential` names an environment variable of the Client's, and the
 organization holds what that variable holds, replacing any credential it held under that name, so
 the key never appears on a command line.
@@ -73,8 +73,8 @@ whether to apply it; declining changes nothing and exits 0. That is the only que
 nothing says and nothing can infer, such as the repository outside a clone,
 fails the command with exit code 2 and names the flag that would say it. Everything it declares,
 the session it opens, and the run it enqueues land together or not at all, and it never changes a
-declaration that exists: an agent or workspace by that name declared differently refuses the start,
-naming the flag that would choose another, and leaves nothing behind. Stdout carries what it reached — the organization, workspace, agent,
+declaration that exists: an agent or project by that name declared differently refuses the start,
+naming the flag that would choose another, and leaves nothing behind. Stdout carries what it reached — the organization, project, agent,
 session and run — so `--json session,run` hands a script the names every command below takes.
 
 The sections below reach the same run one declaration at a time.
@@ -84,7 +84,7 @@ The sections below reach the same run one declaration at a time.
 Three declarations, in this order, because each needs the one before it. Each prints the identifier
 of what it declared, and nothing else, so `$(…)` captures it. A declaration describes what should
 exist, so running one again is safe: an unchanged one changes nothing, and a changed one updates the
-workspace or agent by that name in place, keeping its identifier.
+project or agent by that name in place, keeping its identifier.
 
 An **organization** is the outermost boundary. Every record kestrel keeps belongs to exactly one:
 
@@ -101,11 +101,11 @@ When the bound is full, clean idle Instances are archived oldest-first; work wai
 every idle Instance may hold unpublished work. A follow-up in an existing Session keeps using its
 Instance regardless of the bound.
 
-A **workspace** is what a session's work happens against — repositories and the base branch each
+A **project** is what a session's work happens against — repositories and the base branch each
 session's own branch is cut from. Repeat `--repository` to name more than one.
 
 ```sh
-kestrel workspace declare kestrel \
+kestrel project declare kestrel \
   --repository https://github.com/openkestrel/kestrel \
   --branch main
 ```
@@ -145,7 +145,7 @@ kestrel agent declare codex --runtime codex
 A session takes its agent's runtime and model when it opens and keeps them while it is open:
 redeclaring the agent, or changing its model, changes the sessions opened after that.
 
-`kestrel organization list`, `kestrel workspace list` and `kestrel agent list` show what you have
+`kestrel organization list`, `kestrel project list` and `kestrel agent list` show what you have
 declared.
 
 ## Open a session
@@ -154,18 +154,18 @@ A **session** is the durable thread of work. It survives restarts, owns a transc
 many runs over its life.
 
 ```sh
-kestrel session open --workspace kestrel --agent builder
+kestrel session open --project kestrel --agent builder
 ```
 
 It prints the session's identifier. Everything below takes a session as that identifier, as any
 prefix of it that names only one, as the generated name `session show` prints, or as `latest` for
 the one opened most recently.
 
-The session fixes the workspace's repositories as they are now and declares a branch of its own,
+The session fixes the project's repositories as they are now and declares a branch of its own,
 `kestrel/<session>`, so sessions opened side by side never work on one another's branch. Pass
 `--branch` to work on an existing branch instead. Before the agent starts, the supervisor on the
 session's instance clones each repository and checks that branch out, cutting it from the
-workspace's when the repository does not have it yet; a checkout that fails ends the run naming the
+project's when the repository does not have it yet; a checkout that fails ends the run naming the
 repository and the branch. A later run on the same instance finds the checkout exactly as the run
 before it left it, pushed or not. The control plane itself runs no git.
 
@@ -177,7 +177,7 @@ kestrel session show latest
 id              01a07846-49fa-7dc0-a44b-183a63794ee3
 name            grand-acorn-simpjvvl
 organization    acme
-workspace       kestrel
+project         kestrel
 agent           builder
 profile         -
 base            main
@@ -221,7 +221,7 @@ kestrel run enqueue --session latest
 ```
 
 Within seconds the control plane claims it, provisions a container for the session, and starts a
-supervisor in it that clones the workspace's repositories and spawns an agent runtime, dialling back
+supervisor in it that clones the project's repositories and spawns an agent runtime, dialling back
 over the link. The container is the session's **instance**: every later run in the session starts a
 supervisor of its own in the same one.
 
@@ -274,7 +274,7 @@ decide it has finished. Carry on to the next section, which ends it.
 
 **Where the model call goes.** You supplied no provider credentials and the run reached a model
 anyway: opencode falls back to its own hosted provider when it has none of its own, so the contents
-of the cloned workspace are read by inference that is not running on your machine.
+of the cloned repositories are read by inference that is not running on your machine.
 
 **The control plane never holds the Docker socket.** It provisions that container through a proxy
 that forwards the requests the compute driver makes and refuses everything else, and nothing an
@@ -330,7 +330,7 @@ key instead.
 Name the profile when you open the session, or give a trigger's declaration `profile: jack`:
 
 ```sh
-kestrel session open --workspace kestrel --agent codex --profile jack
+kestrel session open --project kestrel --agent codex --profile jack
 ```
 
 A session that names a profile needs no provider credential, and a follow-up that continues it keeps
@@ -473,7 +473,7 @@ work is pushed or its instance released.
 Work that would have continued it starts a new session that records the sealed one:
 
 ```sh
-kestrel session open --workspace kestrel --agent builder --continues latest
+kestrel session open --project kestrel --agent builder --continues latest
 ```
 
 Both ends of that link are visible. The new session shows what it continues, and the sealed one
@@ -490,7 +490,7 @@ kestrel session show latest --json id,state,continues
 ## Hand kestrel an issue
 
 Every session above you opened by hand. A **trigger** is the standing rule that opens one for you:
-what it matches, and the agent and workspace it starts that work with.
+what it matches, and the agent and project it starts that work with.
 
 kestrel has to be able to see the repository first. An **integration** is a credentialed connection
 to an external system, and it declares which directions it carries — events inbound, kestrel's
@@ -576,7 +576,7 @@ triggers:
     branch: kestrel/issue-{{ event.subject | replace("#", "") }}
     correlation: "{{ event.source }}{{ event.subject }}"
     on_miss: open
-    workspace: kestrel
+    project: kestrel
     agent: builder
     allows: [codex, claude]
 ```
@@ -599,7 +599,7 @@ kestrel trigger apply -f .kestrel/triggers.yaml
 + delegated
     matches
       + source = "https://github.com/openkestrel/kestrel" and type = "com.github.issue_comment.created" and ((data.user.login = "jtmthf" and data.body starts with "@kestrel") or (data.comment.user.login = "jtmthf" and data.comment.body starts with "@kestrel"))
-    workspace
+    project
       + kestrel
     agent
       + builder
@@ -620,7 +620,7 @@ kestrel trigger apply -f .kestrel/triggers.yaml
 The file is the whole of what applies: a trigger you change in it is changed, a trigger you take
 out of it is removed, and applying the same file again prints `no changes`. Add `--dry-run` to see
 the diff without making it, and `-f -` to read the file from standard input. An apply is one
-transaction, so a file naming an agent or workspace that does not exist changes nothing. Keep one
+transaction, so a file naming an agent or project that does not exist changes nothing. Keep one
 declaration file per organization: an apply removes every trigger an earlier apply made that this
 file does not declare.
 
@@ -677,7 +677,7 @@ kestrel trigger declare ready \
   ]}' \
   --brief @.kestrel/briefs/ready.md \
   --branch 'kestrel/issue-{{ event.data.issue.number }}' \
-  --workspace kestrel \
+  --project kestrel \
   --agent builder
 ```
 
@@ -756,13 +756,13 @@ kestrel session list
 ```
 
 ```
-id                                    name                  state  workspace  agent    started by
-01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04  brisk-heron-kqpzmwdt  open   kestrel    builder  01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
+id                                    name                  state  project  agent    started by
+01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04  brisk-heron-kqpzmwdt  open   kestrel  builder  01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
 ```
 
 The last column is the event that started it. `kestrel session show` prints it beside the branch
 the trigger rendered, which the session works on for its whole life; the supervisor cuts that
-branch from the workspace's when the repository does not have it yet. The rendered brief is the session's
+branch from the project's when the repository does not have it yet. The rendered brief is the session's
 first transcript entry:
 
 ```
@@ -863,7 +863,7 @@ holding a month of events, and for an apply that changes a trigger: the changed 
 only what is recorded from then on, so widening a filter never reaches back for what the narrower
 one passed over.
 
-**The event chooses nothing.** The agent, the workspace and the model come from the declaration you
+**The event chooses nothing.** The agent, the project and the model come from the declaration you
 applied; only the data comes from the event. A label or an `agent=` in a command only chooses among
 agents the declaration allows. Anyone who can label an issue on a public repository could otherwise
 pick which agent's credentials the run gets
@@ -872,8 +872,8 @@ pick which agent's credentials the run gets
 `kestrel trigger list` shows each one, and what it matches:
 
 ```
-id                                    name       state    workspace  agent    every  cron  filter
-01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel    builder  -      -     {"all":[{"exact":{"source":"https://github.com/openkestrel/kestrel"}},…]}
+id                                    name       state    project  agent    every  cron  filter
+01a0b47c-6453-7450-a970-c567e92bf109  delegated  enabled  kestrel  builder  -      -     {"all":[{"exact":{"source":"https://github.com/openkestrel/kestrel"}},…]}
 ```
 
 Before trusting a trigger with work, ask it about an event kestrel already recorded. A test starts
@@ -931,7 +931,7 @@ kestrel trigger declare sweep \
   --every 24h \
   --brief 'Sweep the backlog for stale issues as of {{ event.time }}' \
   --branch 'kestrel/sweep-{{ event.id[:10] }}' \
-  --workspace kestrel \
+  --project kestrel \
   --agent builder
 ```
 
@@ -954,7 +954,7 @@ kestrel trigger declare triage \
   --cron '0 9 * * 1-5' \
   --zone America/New_York \
   --brief 'Triage what arrived since yesterday, as of {{ event.time }}' \
-  --workspace kestrel \
+  --project kestrel \
   --agent builder
 ```
 

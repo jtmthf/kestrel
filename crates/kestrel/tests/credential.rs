@@ -27,7 +27,7 @@ async fn confiding() -> Harness {
 async fn a_session(harness: &Harness, organization: &str, held: Option<&str>) -> Session {
     let declared = harness.declare_organization(organization).await;
     harness
-        .declare_workspace(
+        .declare_project(
             &declared,
             repository::NAME,
             &[repository::url().to_owned()],

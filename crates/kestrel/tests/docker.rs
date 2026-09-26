@@ -16,7 +16,7 @@ use support::scripted_agent::{self, Script};
 
 const PATIENCE: Duration = Duration::from_secs(120);
 
-/// A repository the container can reach, which a Workspace on this machine is not.
+/// A repository the container can reach, which a Project on this machine is not.
 const REPOSITORY: &str = "https://github.com/jtmthf/kestrel";
 const BRANCH: &str = "main";
 
@@ -31,7 +31,7 @@ async fn working(script: Script) -> Harness {
 async fn a_session(harness: &Harness) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[REPOSITORY.to_owned()], BRANCH)
+        .declare_project(&organization, "kestrel", &[REPOSITORY.to_owned()], BRANCH)
         .await;
     harness
         .declare_agent(
@@ -174,7 +174,7 @@ async fn an_instance_is_a_container_that_outlives_its_run_but_not_its_supervisor
 
 #[tokio::test]
 #[ignore = "builds and runs the kestrel-env image"]
-async fn a_workspaces_repositories_and_its_branch_are_in_the_container() {
+async fn a_projects_repositories_and_its_branch_are_in_the_container() {
     let harness = working(Script::Dawdles).await;
     let session = a_session(&harness).await;
 

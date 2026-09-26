@@ -6,7 +6,7 @@ opaque ([ADR-0002](../../docs/adr/0002-two-deployables-the-environment-dials-out
 It carries three things: the **supervisor**, **opencode**, and **git**. Nothing else.
 [ADR-0007](../../docs/adr/0007-acp-is-the-agent-runtime-contract.md) took the `claude` binary out,
 and Node left with it — opencode speaks ACP natively, so nothing stands between the supervisor and
-the agent. A **Workspace**'s setup layers project dependencies on top; injecting the supervisor into
+the agent. A **Project**'s setup layers project dependencies on top; injecting the supervisor into
 a bring-your-own image is the `0.7` escape hatch, and installing an agent from the ACP Registry is
 `0.7` work under the constraints ADR-0007 records. Nothing here downloads an agent.
 
@@ -71,7 +71,7 @@ one thing the shipped path does not do.
 The supervisor dials the link outward and the image exposes no port: an Environment needs egress and
 nothing else, which is the capability every deployment target has.
 
-It runs as the unprivileged `kestrel` user in `/workspace`, where a Workspace's repositories are
+It runs as the unprivileged `kestrel` user in `/workspace`, where a Project's repositories are
 checked out side by side. An ACP session's working directory is the checkout of the first of them. Anything written into an Environment from
 outside has to land owned by that user, and a derived image that installs packages needs `USER root`
 first.

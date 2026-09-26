@@ -8,7 +8,7 @@ use support::scripted_agent::{self, Script};
 use support::{A_PROVIDER_KEY, Harness, PROVIDER_KEY, repository, supervisor};
 
 const BRIEF: &str = "Make the README say what kestrel is";
-const STARTED: &str = "organization,workspace,agent,session,session_id,run,run_id";
+const STARTED: &str = "organization,project,agent,session,session_id,run,run_id";
 const QUESTION: &str = "apply this plan?";
 
 fn in_a_fresh_clone() -> Invocation {
@@ -58,10 +58,10 @@ async fn declared(harness: &Harness) -> Vec<String> {
     let mut declared = Vec::new();
     for organization in harness.organizations().await {
         declared.push(format!("organization {}", organization.name));
-        for workspace in harness.workspaces(&organization).await {
+        for project in harness.projects(&organization).await {
             declared.push(format!(
-                "workspace {} {:?} {}",
-                workspace.name, workspace.repositories, workspace.branch
+                "project {} {:?} {}",
+                project.name, project.repositories, project.branch
             ));
         }
         for agent in harness.agents(&organization).await {
@@ -108,7 +108,7 @@ async fn one_command_takes_a_fresh_clone_and_an_empty_control_plane_to_a_run_car
 
     let started = started.records().remove(0);
     assert_eq!(started["organization"], "default");
-    assert_eq!(started["workspace"], repository::NAME);
+    assert_eq!(started["project"], repository::NAME);
     assert_eq!(started["agent"], "opencode");
     let session: SessionId = started["session_id"]
         .as_str()
@@ -157,7 +157,7 @@ async fn every_inferred_value_is_explained_before_anything_is_applied() {
         .collect();
     for (line, (what, flag)) in explained.iter().zip([
         ("organization", "--organization"),
-        ("workspace", "--workspace"),
+        ("project", "--project"),
         ("repository", "--repository"),
         ("branch", "--branch"),
         ("agent", "--agent"),
@@ -197,7 +197,7 @@ async fn flags_say_every_value_nothing_needs_inferring() {
             BRIEF,
             "--organization",
             "acme",
-            "--workspace",
+            "--project",
             "widgets",
             "--repository",
             repository::url(),
@@ -216,11 +216,11 @@ async fn flags_say_every_value_nothing_needs_inferring() {
 
     let started = started.records().remove(0);
     assert_eq!(started["organization"], "acme");
-    assert_eq!(started["workspace"], "widgets");
+    assert_eq!(started["project"], "widgets");
     assert_eq!(started["agent"], "builder");
     let acme = &harness.organizations().await[0];
     assert_eq!(
-        harness.workspaces(acme).await[0].branch,
+        harness.projects(acme).await[0].branch,
         repository::EXISTING_BRANCH
     );
 
@@ -257,7 +257,7 @@ async fn with_several_organizations_and_none_named_it_fails_naming_the_flag() {
 
     refused_naming(&refused, &["--organization", "acme", "globex"]);
     for organization in harness.organizations().await {
-        assert!(harness.workspaces(&organization).await.is_empty());
+        assert!(harness.projects(&organization).await.is_empty());
     }
 
     harness.teardown().await;
@@ -268,7 +268,7 @@ async fn a_plan_the_control_plane_refuses_leaves_no_partial_setup() {
     let harness = Harness::boot().await;
     let acme = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &acme,
             repository::NAME,
             &[repository::url().to_owned()],
@@ -282,7 +282,7 @@ async fn a_plan_the_control_plane_refuses_leaves_no_partial_setup() {
             "start",
             "--brief",
             BRIEF,
-            "--workspace",
+            "--project",
             repository::NAME,
             "--repository",
             repository::other_url(),
@@ -295,7 +295,7 @@ async fn a_plan_the_control_plane_refuses_leaves_no_partial_setup() {
 
     assert_eq!(refused.status.code(), Some(4), "{}", refused.err);
     assert_eq!(
-        harness.workspaces(&acme).await[0].repositories,
+        harness.projects(&acme).await[0].repositories,
         [repository::url()]
     );
     assert!(harness.agents(&acme).await.is_empty());
@@ -310,7 +310,7 @@ async fn a_declaration_the_plan_would_change_is_named_before_anything_is_sent() 
     let harness = Harness::boot().await;
     let acme = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &acme,
             repository::NAME,
             &[repository::other_url().to_owned()],
@@ -320,7 +320,7 @@ async fn a_declaration_the_plan_would_change_is_named_before_anything_is_sent() 
 
     let refused = ran_by(&harness, &["start", "--brief", BRIEF], in_a_fresh_clone()).await;
 
-    refused_naming(&refused, &["--workspace"]);
+    refused_naming(&refused, &["--project"]);
     assert!(harness.sessions("acme").await.is_empty());
 
     harness.teardown().await;
@@ -357,7 +357,7 @@ async fn on_a_terminal_confirming_once_applies_the_plan_the_noninteractive_start
     );
     assert_eq!(resolved(&confirmed.said), resolved(&applied.err));
     let (confirmed, applied) = (reached(&confirmed), applied.records().remove(0));
-    for field in ["organization", "workspace", "agent"] {
+    for field in ["organization", "project", "agent"] {
         assert_eq!(confirmed[field], applied[field], "{field}");
     }
     assert_eq!(
@@ -391,7 +391,7 @@ async fn on_a_terminal_the_plan_is_explained_and_taught_and_declining_it_changes
     assert_eq!(resolved(&before.join("\n")).len(), 8, "{}", shown.said);
     for flag in [
         "--organization",
-        "--workspace",
+        "--project",
         "--repository",
         "--branch",
         "--agent",
@@ -409,7 +409,7 @@ async fn on_a_terminal_the_plan_is_explained_and_taught_and_declining_it_changes
     }
     for taught in [
         "declare the Organization default",
-        &format!("declare the Workspace {}", repository::NAME),
+        &format!("declare the Project {}", repository::NAME),
         "declare the Agent opencode",
         "open a Session",
     ] {

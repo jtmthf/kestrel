@@ -615,7 +615,7 @@
         ]
       },
       "CheckoutObserved": {
-        "description": "What git says of each of the Workspace's repositories once the agent has stopped working in it, reported before the Run finishes. The control plane judges from it whether the Instance holds work that exists nowhere else; a Run that finishes without one leaves its Instance held.",
+        "description": "What git says of each of the Project's repositories once the agent has stopped working in it, reported before the Run finishes. The control plane judges from it whether the Instance holds work that exists nowhere else; a Run that finishes without one leaves its Instance held.",
         "type": "object",
         "properties": {
           "kind": {

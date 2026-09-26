@@ -1,4 +1,4 @@
-//! An Event supplies data and never authority (ADR-0013): the Agent and the Workspace a
+//! An Event supplies data and never authority (ADR-0013): the Agent and the Project a
 //! firing starts work with are named in the declaration a human applied, never in the Event.
 
 use std::collections::BTreeSet;
@@ -79,7 +79,7 @@ pub struct Declaration<'a> {
     pub fires: &'a Fires,
     pub templates: &'a Templates,
     pub on_miss: Option<CorrelationMiss>,
-    pub workspace: &'a str,
+    pub project: &'a str,
     pub agent: &'a str,
     pub allows: &'a [String],
     pub profile: Option<&'a str>,
@@ -169,9 +169,9 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
 
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(declaration.organization).await?;
-    let workspace = tx
-        .workspaces()
-        .named(&organization, declaration.workspace)
+    let project = tx
+        .projects()
+        .named(&organization, declaration.project)
         .await?;
     let agent = tx.agents().named(&organization, declaration.agent).await?;
     let allows = allowed(&mut tx, &organization, declaration.allows).await?;
@@ -192,7 +192,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
                 declaration.fires,
                 declaration.templates,
                 declaration.on_miss,
-                &workspace,
+                &project,
                 &agent,
                 &allows,
                 profile.as_ref(),
@@ -208,7 +208,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
                     declaration.fires,
                     declaration.templates,
                     declaration.on_miss,
-                    &workspace,
+                    &project,
                     &agent,
                     &allows,
                     profile.as_ref(),
@@ -224,7 +224,7 @@ pub async fn declare(store: &Store, declaration: Declaration<'_>) -> Result<Trig
                     declaration.fires,
                     declaration.templates,
                     declaration.on_miss,
-                    &workspace,
+                    &project,
                     &agent,
                     &allows,
                     profile.as_ref(),
@@ -247,7 +247,7 @@ fn same_declaration(
     fires: &Fires,
     templates: &Templates,
     on_miss: Option<CorrelationMiss>,
-    workspace: &crate::domain::Workspace,
+    project: &crate::domain::Project,
     agent: &Agent,
     allows: &[Agent],
     profile: Option<&crate::domain::SubscriptionProfile>,
@@ -266,7 +266,7 @@ fn same_declaration(
     trigger.fires == *fires
         && trigger.templates == *templates
         && trigger.on_miss == on_miss
-        && trigger.workspace.id == workspace.id
+        && trigger.project.id == project.id
         && trigger.agent.id == agent.id
         && names(&trigger.allows) == names(allows)
         && trigger.profile.as_ref().map(|profile| profile.id) == profile.map(|profile| profile.id)
@@ -373,9 +373,9 @@ pub async fn test_declared(
         let organization = tx.organizations().named(organization).await?;
         Trigger {
             id: TriggerId::generate(),
-            workspace: tx
-                .workspaces()
-                .named(&organization, &declared.workspace)
+            project: tx
+                .projects()
+                .named(&organization, &declared.project)
                 .await?,
             agent: tx.agents().named(&organization, &declared.agent).await?,
             allows: allowed(&mut tx, &organization, &declared.allows).await?,
@@ -813,7 +813,7 @@ async fn firing(
         .sessions()
         .open(Opening {
             organization: &trigger.organization,
-            workspace: &trigger.workspace,
+            project: &trigger.project,
             agent,
             profile: trigger.profile.as_ref(),
             branch: continues

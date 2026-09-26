@@ -22,7 +22,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 async fn dogfooding(harness: &Harness, stub: &GithubStub) {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     for (agent, runtime) in [
         ("builder", "opencode"),

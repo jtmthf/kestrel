@@ -13,7 +13,7 @@ async fn an_organization_holding_two_agents() -> Harness {
     let harness = Harness::boot().await;
     let acme = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&acme, "kestrel", &[REPOSITORY.to_owned()], "main")
+        .declare_project(&acme, "kestrel", &[REPOSITORY.to_owned()], "main")
         .await;
     harness
         .declare_agent(&acme, "builder", "opencode", Some("claude-opus-5"))
@@ -135,11 +135,11 @@ async fn a_terminal_gets_lines_it_can_hold_and_a_pipe_gets_them_whole() {
     let repositories = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
         .map(|name| format!("https://github.com/jtmthf/{name}-a-rather-long-repository-name"));
     harness
-        .declare_workspace(&acme, "kestrel", &repositories, "main")
+        .declare_project(&acme, "kestrel", &repositories, "main")
         .await;
 
-    let watched = on_a_terminal(&harness, &["workspace", "list"], 60).await;
-    let scripted = piped(&harness, &["workspace", "list"]).await;
+    let watched = on_a_terminal(&harness, &["project", "list"], 60).await;
+    let scripted = piped(&harness, &["project", "list"]).await;
 
     for line in watched.lines() {
         assert!(

@@ -13,15 +13,15 @@ point without losing what came before.
 ## Status
 
 Early, and honest about it: rung `0.1` is under construction. Sessions are durable — declare an
-organization, a workspace and an agent, open a session against them, and its state and transcript
+organization, a project and an agent, open a session against them, and its state and transcript
 are still there after the process is killed. Runs execute: enqueue one and the control plane
-provisions an isolated container, clones the workspace into it, and drives opencode there by
-speaking the Agent Client Protocol over the link in [`openapi/link.json`](openapi/link.json), which
+provisions an isolated container, clones the project's repositories into it, and drives opencode
+there by speaking the Agent Client Protocol over the link in [`openapi/link.json`](openapi/link.json), which
 the environment dials out to, authenticating as the run it is executing, and reconnects to with its
 cursor when the control plane restarts under it. Beside the link, on a listener of its own, the
 control plane serves the operator boundary in [`openapi/operator.json`](openapi/operator.json), and
 it is the only way in: `kestrel`, the Client an operator installs, declares and lists organizations,
-workspaces and agents over it, sets and forgets provider credentials and the subscription profiles a
+projects and agents over it, sets and forgets provider credentials and the subscription profiles a
 session names, registers integrations and reads the events they record, and
 `kestrel session transcript --follow` streams a session's transcript over it, all from outside the
 control plane's process. What stops a run short of useful work is that
@@ -202,7 +202,7 @@ the project controls. Twelve capabilities are the content of that freeze:
     state, files and diffs, take a turn, and answer an Approval or Question. By v1 it handles routine
     work and administration after initial installation, with prompt feedback, accessible and
     responsive interaction. The CLI remains useful for scripting and power use.
-11. **Managed Skills**: an Organization catalog holds versioned Skills selected by Workspaces and
+11. **Managed Skills**: an Organization catalog holds versioned Skills selected by Projects and
     Agents. kestrel stages them at the Agent Runtime's filesystem convention; the runtime chooses
     when to load one or invoke it as a command. A repository Skill of the same name wins unless
     Policy denies it, and the effective source is visible without overwriting repository files. A
@@ -210,7 +210,7 @@ the project controls. Twelve capabilities are the content of that freeze:
     delivered to it and records Skills the agent advertises using, without inventing a use claim
     when the agent reports none.
 12. **MCP extensibility**: kestrel supplies its own MCP tools and Organization-managed external MCP
-    servers selected by Workspaces and Agents. Stdio works across supported runtimes; HTTP is used
+    servers selected by Projects and Agents. Stdio works across supported runtimes; HTTP is used
     when the runtime advertises it, with SSE compatibility where needed. Unsupported transport
     fails visibly. kestrel mediates external tool calls under Policy, records them in the Audit
     Record, and supplies per-server, per-Run credentials without ambient secrets in the runtime.

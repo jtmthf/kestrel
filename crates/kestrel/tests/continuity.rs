@@ -18,7 +18,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 async fn a_session(harness: &Harness) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             repository::NAME,
             &[repository::url().to_owned()],

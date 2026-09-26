@@ -21,7 +21,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 async fn a_session(harness: &Harness) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             repository::NAME,
             &[repository::url().to_owned()],
@@ -271,7 +271,7 @@ async fn a_session_declares_a_branch_of_its_own_and_the_run_starts_on_it() {
     assert_eq!(session.checkout.base, repository::BRANCH);
     assert_eq!(
         runtime.wrote("found"),
-        format!("{} a workspace's repository", session.checkout.branch),
+        format!("{} a project's repository", session.checkout.branch),
         "the agent did not start on its session's branch"
     );
 
@@ -298,8 +298,8 @@ async fn parallel_sessions_work_on_distinct_branches() {
     let mut found: Vec<String> = runtime.wrote("found").lines().map(str::to_owned).collect();
     found.sort();
     let mut expected = vec![
-        format!("{} a workspace's repository", first.checkout.branch),
-        format!("{} a workspace's repository", second.checkout.branch),
+        format!("{} a project's repository", first.checkout.branch),
+        format!("{} a project's repository", second.checkout.branch),
     ];
     expected.sort();
     assert_eq!(found, expected);
@@ -330,7 +330,7 @@ async fn a_session_on_a_branch_its_operator_named_starts_on_that_branchs_work() 
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_branch_the_remote_does_not_have_is_cut_from_the_workspaces() {
+async fn a_branch_the_remote_does_not_have_is_cut_from_the_projects() {
     let runtime = noting_the_checkout();
     let harness = noted(&runtime, 1).await;
     a_session(&harness).await;
@@ -343,7 +343,7 @@ async fn a_branch_the_remote_does_not_have_is_cut_from_the_workspaces() {
 
     assert_eq!(
         runtime.wrote("found"),
-        "kestrel/issue-43 a workspace's repository"
+        "kestrel/issue-43 a project's repository"
     );
 
     harness.teardown().await;
@@ -399,7 +399,7 @@ async fn a_runs_agent_is_rooted_in_the_first_repository_its_session_declares() {
     a_session(&harness).await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "both",
             &[
@@ -430,7 +430,7 @@ async fn a_runs_agent_is_rooted_in_the_first_repository_its_session_declares() {
 }
 
 #[tokio::test]
-async fn redeclaring_the_workspace_does_not_move_where_an_open_sessions_agent_is_rooted() {
+async fn redeclaring_the_project_does_not_move_where_an_open_sessions_agent_is_rooted() {
     let harness = Harness::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Locates),
@@ -439,7 +439,7 @@ async fn redeclaring_the_workspace_does_not_move_where_an_open_sessions_agent_is
     let session = a_session(&harness).await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             repository::NAME,
             &[
@@ -604,7 +604,7 @@ async fn a_checkout_that_fails_names_the_repository_and_branch_and_the_run_never
     let harness = Harness::dispatching(supervisor::binary()).await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             repository::NAME,
             &[repository::url().to_owned()],
@@ -634,7 +634,7 @@ async fn a_checkout_that_fails_names_the_repository_and_branch_and_the_run_never
 
     let Some(Exit::Failed { because }) = &ended.exit else {
         panic!(
-            "the run ended {:?}, and its workspace names a branch that is not there",
+            "the run ended {:?}, and its project names a branch that is not there",
             ended.exit
         );
     };

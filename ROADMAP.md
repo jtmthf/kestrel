@@ -188,7 +188,7 @@ reserved for `0.4`, while retaining the external identity decision in
 
 **Operators can inspect decisions as well as answer them.** A Trigger dry-run evaluates a sample or
 recorded Event without starting a Session or changing what will fire next. It shows matching,
-correlation, rendered Brief and the reviewed Agent, Workspace, model and Policy that would supply
+correlation, rendered Brief and the reviewed Agent, Project, model and Policy that would supply
 authority. The historical Event trace includes nonmatches, Firings and ignored evaluations, using
 the inputs and verdict recorded at the time rather than today's configuration. The Audit Record is
 searchable by time, Session or Run, actor, attempted operation, Policy and verdict; entries expose
@@ -198,14 +198,14 @@ authorized operator may open an interactive Instance shell under Policy, and its
 audited rather than bypassing the control plane.
 
 **Skills and MCP become managed capabilities here.** An Organization catalog versions Skills selected
-by Workspaces and Agents. kestrel stages them in each Agent Runtime's filesystem convention; the
+by Projects and Agents. kestrel stages them in each Agent Runtime's filesystem convention; the
 runtime decides whether to load one or run it as a command. A repository copy wins by name unless
 Policy denies it; the effective source is visible, staging never overwrites repository files, and
 failure to stage a selected Skill fails the Run visibly. Each Run retains the exact managed versions
 delivered; agent-advertised use is recorded as a claim, with no inference when the agent reports
 none. Kestrel's own MCP tools start with
 pending Events ([issue 90](https://github.com/jtmthf/kestrel/issues/90)), and external MCP servers
-can be selected from an Organization catalog by Workspaces and Agents. Stdio is the baseline; HTTP
+can be selected from an Organization catalog by Projects and Agents. Stdio is the baseline; HTTP
 requires runtime capability advertisement, SSE remains a compatibility path, and unsupported
 transport fails visibly. Kestrel mediates external tool calls through Policy and the Audit Record,
 supplying per-server, per-Run credentials without ambient runtime secrets. Event data and unreviewed

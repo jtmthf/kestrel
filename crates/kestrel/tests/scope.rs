@@ -5,7 +5,7 @@ use support::Harness;
 use support::client::{Finished, Invocation, ran_by};
 
 const RESOLVED: &str = "control_plane,control_plane_source,organization,organization_source,\
-                        workspaces,agents,triggers,sessions,integrations,credentials,profiles,next";
+                        projects,agents,triggers,sessions,integrations,credentials,profiles,next";
 const UNRESOLVED: &str = "control_plane,organization,organization_source,organizations,next";
 
 fn names(records: &[Value]) -> Vec<&str> {
@@ -30,17 +30,17 @@ fn refused(finished: &Finished, naming: &[&str]) {
     }
 }
 
-/// Two Organizations, each holding a Workspace a listing can tell apart.
+/// Two Organizations, each holding a Project a listing can tell apart.
 async fn two_organizations() -> Harness {
     let harness = Harness::boot().await;
     let acme = harness.declare_organization("acme").await;
     let globex = harness.declare_organization("globex").await;
     let repository = vec!["https://github.com/jtmthf/kestrel".to_owned()];
     harness
-        .declare_workspace(&acme, "for-acme", &repository, "main")
+        .declare_project(&acme, "for-acme", &repository, "main")
         .await;
     harness
-        .declare_workspace(&globex, "for-globex", &repository, "main")
+        .declare_project(&globex, "for-globex", &repository, "main")
         .await;
 
     harness
@@ -53,7 +53,7 @@ async fn the_flag_names_the_scope_ahead_of_the_environment_and_a_binding() {
     let listed = ran_by(
         &harness,
         &[
-            "workspace",
+            "project",
             "list",
             "--json",
             "name",
@@ -74,7 +74,7 @@ async fn the_environment_names_the_scope_ahead_of_a_binding() {
 
     let listed = ran_by(
         &harness,
-        &["workspace", "list", "--json", "name"],
+        &["project", "list", "--json", "name"],
         bound_to("acme").env("KESTREL_ORGANIZATION", "globex"),
     )
     .await;
@@ -89,7 +89,7 @@ async fn a_committed_binding_names_the_scope_from_the_working_directory() {
 
     let listed = ran_by(
         &harness,
-        &["workspace", "list", "--json", "name"],
+        &["project", "list", "--json", "name"],
         bound_to("acme"),
     )
     .await;
@@ -104,7 +104,7 @@ async fn a_committed_binding_names_the_scope_from_anywhere_in_its_repository() {
 
     let listed = ran_by(
         &harness,
-        &["workspace", "list", "--json", "name"],
+        &["project", "list", "--json", "name"],
         bound_to("acme")
             .file(".git/HEAD", "ref: refs/heads/main\n")
             .within("crates/kestrel"),
@@ -121,7 +121,7 @@ async fn a_binding_above_the_repository_is_no_remembered_scope() {
 
     let listed = ran_by(
         &harness,
-        &["workspace", "list"],
+        &["project", "list"],
         bound_to("acme")
             .file("kestrel/.git/HEAD", "ref: refs/heads/main\n")
             .within("kestrel/crates"),
@@ -137,7 +137,7 @@ async fn the_only_organization_is_the_scope_when_nothing_names_one() {
     let harness = Harness::boot().await;
     let acme = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &acme,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -147,7 +147,7 @@ async fn the_only_organization_is_the_scope_when_nothing_names_one() {
 
     let listed = ran_by(
         &harness,
-        &["workspace", "list", "--json", "name"],
+        &["project", "list", "--json", "name"],
         Invocation::default(),
     )
     .await;
@@ -163,7 +163,7 @@ async fn two_organizations_make_an_unqualified_command_fail_before_writing_anyth
     let declared = ran_by(
         &harness,
         &[
-            "workspace",
+            "project",
             "declare",
             "kestrel",
             "--repository",
@@ -180,10 +180,10 @@ async fn two_organizations_make_an_unqualified_command_fail_before_writing_anyth
     for organization in harness.organizations().await {
         held.extend(
             harness
-                .workspaces(&organization)
+                .projects(&organization)
                 .await
                 .into_iter()
-                .map(|workspace| workspace.name),
+                .map(|project| project.name),
         );
     }
     held.sort();
@@ -196,7 +196,7 @@ async fn every_scoped_listing_refuses_to_guess_between_two_organizations() {
     let harness = two_organizations().await;
 
     for noun in [
-        "workspace",
+        "project",
         "agent",
         "credential",
         "profile",
@@ -215,7 +215,7 @@ async fn every_scoped_listing_refuses_to_guess_between_two_organizations() {
 async fn no_organization_at_all_names_the_command_that_makes_one() {
     let harness = Harness::boot().await;
 
-    let listed = ran_by(&harness, &["workspace", "list"], Invocation::default()).await;
+    let listed = ran_by(&harness, &["project", "list"], Invocation::default()).await;
 
     refused(&listed, &["organization declare"]);
     harness.teardown().await;
@@ -228,13 +228,13 @@ async fn an_empty_name_is_refused_rather_than_falling_through_to_another_scope()
 
     let flagged = ran_by(
         &harness,
-        &["workspace", "list", "--organization", ""],
+        &["project", "list", "--organization", ""],
         bound_to("acme").env("KESTREL_ORGANIZATION", "acme"),
     )
     .await;
     let exported = ran_by(
         &harness,
-        &["workspace", "list"],
+        &["project", "list"],
         bound_to("acme").env("KESTREL_ORGANIZATION", ""),
     )
     .await;
@@ -249,7 +249,7 @@ async fn status_prints_every_resolved_value_its_source_what_exists_and_what_to_r
     let harness = Harness::boot().await;
     let acme = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &acme,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -273,7 +273,7 @@ async fn status_prints_every_resolved_value_its_source_what_exists_and_what_to_r
     assert_eq!(reported[0]["control_plane_source"], "KESTREL_CONTROL_PLANE");
     assert_eq!(reported[0]["organization"], "acme");
     assert_eq!(reported[0]["organization_source"], "--organization");
-    assert_eq!(reported[0]["workspaces"], 1);
+    assert_eq!(reported[0]["projects"], 1);
     assert_eq!(reported[0]["agents"], 1);
     assert_eq!(reported[0]["triggers"], 0);
     assert_eq!(reported[0]["sessions"], 0);
@@ -282,7 +282,7 @@ async fn status_prints_every_resolved_value_its_source_what_exists_and_what_to_r
     assert_eq!(reported[0]["profiles"], 0);
     assert_eq!(
         reported[0]["next"],
-        "kestrel session open --workspace kestrel --agent builder"
+        "kestrel session open --project kestrel --agent builder"
     );
     harness.teardown().await;
 }

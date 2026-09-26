@@ -25,7 +25,7 @@ docker compose up -d
 
 A local, gitignored `compose.override.yaml` selected `kestrel-env-github`. Recreating the
 control-plane container left the `kestrel` volume intact. The existing `acme` organization,
-`kestrel` workspace, `builder` agent, `origin` GitHub integration, two sealed Sessions, and recorded
+`kestrel` project, `builder` agent, `origin` GitHub integration, two sealed Sessions, and recorded
 Events all survived. The default concurrency limit of two was unchanged.
 
 The base image does not put Rust on its default `PATH`. OpenCode provisioned Rust 1.96.0 under
@@ -41,7 +41,7 @@ sealed Sessions. The Trigger was declared on September 10:
 
 ```sh
 kestrel trigger declare ready --organization acme --repository jtmthf/kestrel \
-  --label ready-for-agent --workspace kestrel --agent builder
+  --label ready-for-agent --project kestrel --agent builder
 ```
 
 Six observations over a full GitHub poll interval continued to show the same two Sessions. Trigger

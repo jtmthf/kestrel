@@ -266,7 +266,7 @@ fn dispatched(kestrel: &Booted, session: &str) -> Vec<Value> {
 fn declared(kestrel: &Booted) {
     kestrel.run(&["organization", "declare", "acme"]);
     kestrel.run(&[
-        "workspace",
+        "project",
         "declare",
         support::repository::NAME,
         "--repository",
@@ -291,7 +291,7 @@ fn opened(kestrel: &Booted) -> String {
     kestrel.run(&[
         "session",
         "open",
-        "--workspace",
+        "--project",
         support::repository::NAME,
         "--agent",
         "builder",
@@ -345,7 +345,7 @@ fn a_disabled_trigger_shows_its_reason_and_budget() {
         r#"{"exact": {"type": "com.github.issues.labeled"}}"#,
         "--brief",
         "Work on {{ event.data.issue.title }}",
-        "--workspace",
+        "--project",
         "kestrel",
         "--agent",
         "builder",
@@ -675,7 +675,7 @@ fn a_dispatch_starts_a_triggers_work_on_the_issue_it_names() {
         "{{ instruction }} {{ event.data.issue.number }}",
         "--branch",
         "kestrel/issue-{{ event.data.issue.number }}",
-        "--workspace",
+        "--project",
         "kestrel",
         "--agent",
         "builder",
@@ -768,7 +768,7 @@ triggers:
   ready:
     filter: {exact: {type: com.github.issues.labeled}}
     brief: Work on {{ event.data.issue.title }}
-    workspace: kestrel
+    project: kestrel
     agent: builder
   triage:
     filter:
@@ -776,7 +776,7 @@ triggers:
         - exact: {type: com.github.issues.opened}
         - exact: {data.issue.author_association: MEMBER}
     brief: Triage {{ event.data.issue.title }}
-    workspace: kestrel
+    project: kestrel
     agent: builder
 "#;
 
@@ -840,7 +840,7 @@ fn reapplying_changes_and_removes_only_what_a_file_applied() {
         r#"{"exact": {"type": "com.example.build.failed"}}"#,
         "--brief",
         "Fix the build",
-        "--workspace",
+        "--project",
         "kestrel",
         "--agent",
         "builder",
@@ -852,7 +852,7 @@ triggers:
   ready:
     filter: {exact: {type: com.github.issues.labeled}}
     brief: Work {{ event.data.issue.html_url }}
-    workspace: kestrel
+    project: kestrel
     agent: builder
 "#;
     let (diff, _) = applied(&booted, changed, &[]);
@@ -877,7 +877,7 @@ fn a_one_off_a_file_declares_becomes_the_files() {
         r#"{"exact": {"type": "com.github.issues.labeled"}}"#,
         "--brief",
         "Work on {{ event.data.issue.title }}",
-        "--workspace",
+        "--project",
         "kestrel",
         "--agent",
         "builder",
@@ -914,7 +914,7 @@ fn an_apply_that_cannot_be_made_whole_changes_nothing() {
     let booted = kestrel.boot();
     declared(&booted);
     let naming_a_stranger = format!(
-        "{APPLIED}  stranger:\n    filter: {{exact: {{type: x}}}}\n    brief: x\n    workspace: kestrel\n    agent: nobody\n"
+        "{APPLIED}  stranger:\n    filter: {{exact: {{type: x}}}}\n    brief: x\n    project: kestrel\n    agent: nobody\n"
     );
 
     let refusal = refusal(
@@ -936,15 +936,15 @@ fn a_declaration_file_that_is_not_one_is_refused_saying_where() {
         ("", "triggers"),
         ("triggers:\n  ready:\n    brief: x\n", "filter"),
         (
-            "triggers:\n  ready:\n    filter: {sql: x}\n    brief: x\n    workspace: kestrel\n    agent: builder\n",
+            "triggers:\n  ready:\n    filter: {sql: x}\n    brief: x\n    project: kestrel\n    agent: builder\n",
             "the trigger ready",
         ),
         (
-            "triggers:\n  ready:\n    filter: {exact: {type: x}}\n    brief: x\n    correlation: x\n    workspace: kestrel\n    agent: builder\n",
+            "triggers:\n  ready:\n    filter: {exact: {type: x}}\n    brief: x\n    correlation: x\n    project: kestrel\n    agent: builder\n",
             "misses",
         ),
         (
-            "triggers:\n  ready:\n    filter: {exact: {type: x}}\n    brief: x\n    agnet: builder\n    workspace: kestrel\n",
+            "triggers:\n  ready:\n    filter: {exact: {type: x}}\n    brief: x\n    agnet: builder\n    project: kestrel\n",
             "agnet",
         ),
     ] {
@@ -990,7 +990,7 @@ fn a_trigger_is_tested_as_a_file_declares_it_rather_than_as_it_was_applied() {
         r#"{"exact": {"type": "com.github.issues.opened"}}"#,
         "--brief",
         "as applied",
-        "--workspace",
+        "--project",
         "kestrel",
         "--agent",
         "builder",
@@ -1003,7 +1003,7 @@ fn a_trigger_is_tested_as_a_file_declares_it_rather_than_as_it_was_applied() {
         .as_str()
         .expect("an event record")
         .to_owned();
-    let declaring = "triggers:\n  ready:\n    filter: {exact: {type: com.github.issues.labeled}}\n    brief: '{{ instruction }} {{ event.subject }}'\n    workspace: kestrel\n    agent: builder\n";
+    let declaring = "triggers:\n  ready:\n    filter: {exact: {type: com.github.issues.labeled}}\n    brief: '{{ instruction }} {{ event.subject }}'\n    project: kestrel\n    agent: builder\n";
 
     let tested = booted
         .client_as(
@@ -1069,7 +1069,7 @@ fn a_brief_and_a_filter_are_read_from_a_file_or_standard_input() {
             "-",
             "--brief",
             "@brief.md",
-            "--workspace",
+            "--project",
             "kestrel",
             "--agent",
             "builder",
@@ -1115,7 +1115,7 @@ fn only_one_of_a_filter_and_a_brief_is_read_from_standard_input() {
         "-",
         "--brief",
         "-",
-        "--workspace",
+        "--project",
         "kestrel",
         "--agent",
         "builder",

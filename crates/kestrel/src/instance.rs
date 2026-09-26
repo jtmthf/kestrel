@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_with_no_repositories_holds_nothing() {
+    fn a_project_with_no_repositories_holds_nothing() {
         assert_eq!(unpublished(&[], Some(&[])), None);
     }
 

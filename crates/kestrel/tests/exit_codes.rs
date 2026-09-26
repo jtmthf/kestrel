@@ -147,7 +147,7 @@ fn guessed_session_and_run_verbs_explain_the_domain_verbs_without_running_them()
 async fn no_organization_in_scope_is_unresolved() {
     let harness = Harness::boot().await;
 
-    let finished = ran_by(&harness, &["workspace", "list"], Invocation::default()).await;
+    let finished = ran_by(&harness, &["project", "list"], Invocation::default()).await;
 
     exited(&finished, UNRESOLVED);
     assert!(
@@ -163,7 +163,7 @@ async fn ambiguous_and_empty_organization_scope_offer_runnable_choices() {
     let harness = an_organization().await;
     harness.declare_organization("globex").await;
 
-    let ambiguous = ran_by(&harness, &["workspace", "list"], Invocation::default()).await;
+    let ambiguous = ran_by(&harness, &["project", "list"], Invocation::default()).await;
     exited(&ambiguous, UNRESOLVED);
     assert!(ambiguous.err.contains("kestrel status --organization acme"));
     assert!(
@@ -174,7 +174,7 @@ async fn ambiguous_and_empty_organization_scope_offer_runnable_choices() {
 
     let empty = ran_by(
         &harness,
-        &["workspace", "list"],
+        &["project", "list"],
         Invocation::default().file(".kestrel/organization", ""),
     )
     .await;
@@ -184,25 +184,18 @@ async fn ambiguous_and_empty_organization_scope_offer_runnable_choices() {
 }
 
 #[tokio::test]
-async fn a_missing_workspace_names_the_setup_command_and_keeps_its_category() {
+async fn a_missing_project_names_the_setup_command_and_keeps_its_category() {
     let harness = an_organization().await;
     let finished = ran_by(
         &harness,
-        &[
-            "session",
-            "open",
-            "--workspace",
-            "absent",
-            "--agent",
-            "agent",
-        ],
+        &["session", "open", "--project", "absent", "--agent", "agent"],
         Invocation::default(),
     )
     .await;
 
     exited(&finished, UNRESOLVED);
     assert!(
-        finished.err.contains("kestrel workspace declare absent"),
+        finished.err.contains("kestrel project declare absent"),
         "{}",
         finished.err
     );
@@ -215,14 +208,7 @@ async fn corrective_command_names_the_unencoded_organization() {
     harness.declare_organization("Acme East").await;
     let finished = ran_by(
         &harness,
-        &[
-            "session",
-            "open",
-            "--workspace",
-            "absent",
-            "--agent",
-            "agent",
-        ],
+        &["session", "open", "--project", "absent", "--agent", "agent"],
         Invocation::default(),
     )
     .await;
@@ -240,8 +226,8 @@ async fn corrective_command_names_the_unencoded_organization() {
 async fn a_run_in_the_session_names_the_run_to_stop_and_stays_rejected() {
     let harness = an_organization().await;
     let organization = harness.organizations().await.remove(0);
-    let workspace = harness
-        .declare_workspace(
+    let project = harness
+        .declare_project(
             &organization,
             "work",
             &["https://example.com/repo".to_owned()],
@@ -252,7 +238,7 @@ async fn a_run_in_the_session_names_the_run_to_stop_and_stays_rejected() {
         .declare_agent(&organization, "worker", "opencode", None)
         .await;
     let session = harness
-        .open_session("acme", &workspace.name, &agent.name)
+        .open_session("acme", &project.name, &agent.name)
         .await;
     let run = harness.enqueue_run(session.id).await;
     let finished = ran_by(
@@ -288,7 +274,7 @@ async fn a_record_that_does_not_exist_is_unresolved() {
     for args in [
         &["session", "show", "no-such-session"][..],
         &["trigger", "show", "no-such-trigger"],
-        &["workspace", "list", "--organization", "globex"],
+        &["project", "list", "--organization", "globex"],
     ] {
         let finished = ran_by(&harness, args, Invocation::default()).await;
 
@@ -317,7 +303,7 @@ async fn a_declined_operation_is_rejected() {
     let unacceptable = ran_by(
         &harness,
         &[
-            "workspace",
+            "project",
             "declare",
             "kestrel",
             "--repository",

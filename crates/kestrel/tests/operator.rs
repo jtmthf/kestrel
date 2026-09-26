@@ -18,7 +18,7 @@ use support::{Harness, TOKEN};
 async fn an_open_session(harness: &Harness, said: usize) -> (String, kestrel::domain::Run) {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -103,7 +103,7 @@ async fn client_given(harness: &Harness, args: &[&str], input: Option<&str>) -> 
 }
 
 const DECLARATION: &str = r#"
-workspace:
+project:
   name: kestrel
   repositories:
     - https://github.com/jtmthf/kestrel
@@ -117,7 +117,7 @@ trigger:
     exact:
       type: com.github.issues.labeled
   brief: Work on {{ event.data.issue.title }}
-  workspace: kestrel
+  project: kestrel
   agent: builder
 "#;
 
@@ -142,7 +142,7 @@ fn recorded(finished: &client::Finished) -> Vec<Value> {
 /// What each test reads, named the way a script names it: a field the boundary gains later
 /// reaches none of these assertions.
 const ORGANIZATION: &str = "id,name,max_live_instances";
-const WORKSPACE: &str = "id,name,repositories,branch";
+const PROJECT: &str = "id,name,repositories,branch";
 const AGENT: &str = "id,name,runtime,model";
 const CREDENTIAL: &str = "variable";
 const INTEGRATION: &str = "id,kind,repository,carries,polled_every,webhook_path,last_event_refusal";
@@ -200,8 +200,8 @@ async fn listed_nothing(harness: &Harness, path: &str) -> bool {
     listed(harness, path).await.is_empty()
 }
 
-fn workspaces_of(organization: &str) -> String {
-    operator::WORKSPACES.replace("{organization}", organization)
+fn projects_of(organization: &str) -> String {
+    operator::PROJECTS.replace("{organization}", organization)
 }
 
 fn agents_of(organization: &str) -> String {
@@ -359,15 +359,15 @@ async fn a_client_declares_and_lists_organizations_without_opening_a_database() 
 }
 
 #[tokio::test]
-async fn a_client_declares_and_lists_workspaces_and_agents() {
+async fn a_client_declares_and_lists_projects_and_agents() {
     let harness = Harness::boot().await;
     succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
 
-    let workspace = recorded(
+    let project = recorded(
         &client(
             &harness,
             &[
-                "workspace",
+                "project",
                 "declare",
                 "kestrel",
                 "--organization",
@@ -379,7 +379,7 @@ async fn a_client_declares_and_lists_workspaces_and_agents() {
                 "--branch",
                 "main",
                 "--json",
-                WORKSPACE,
+                PROJECT,
             ],
         )
         .await,
@@ -401,16 +401,16 @@ async fn a_client_declares_and_lists_workspaces_and_agents() {
         )
         .await,
     );
-    let workspaces = recorded(
+    let projects = recorded(
         &client(
             &harness,
             &[
-                "workspace",
+                "project",
                 "list",
                 "--organization",
                 "acme",
                 "--json",
-                WORKSPACE,
+                PROJECT,
             ],
         )
         .await,
@@ -423,30 +423,30 @@ async fn a_client_declares_and_lists_workspaces_and_agents() {
         .await,
     );
 
-    assert_eq!(workspaces, workspace);
+    assert_eq!(projects, project);
     assert_eq!(
-        workspaces[0]["repositories"],
+        projects[0]["repositories"],
         json!([
             "https://github.com/jtmthf/kestrel",
             "https://github.com/jtmthf/skills"
         ])
     );
-    assert_eq!(workspaces[0]["branch"], "main");
+    assert_eq!(projects[0]["branch"], "main");
     assert_eq!(agents, agent);
     assert_eq!(agents[0]["runtime"], "opencode");
     assert_eq!(agents[0]["model"], "claude-opus-5");
 
     let opened = harness.open_session("acme", "kestrel", "builder").await;
     assert_eq!(
-        opened.workspace.id.to_string(),
-        workspace[0]["id"].as_str().expect("an id")
+        opened.project.id.to_string(),
+        project[0]["id"].as_str().expect("an id")
     );
 
     harness.teardown().await;
 }
 
 #[tokio::test]
-async fn a_client_applies_one_workspace_agent_and_trigger_declaration() {
+async fn a_client_applies_one_project_agent_and_trigger_declaration() {
     let harness = Harness::boot().await;
     succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
 
@@ -465,23 +465,20 @@ async fn a_client_applies_one_workspace_agent_and_trigger_declaration() {
         first.err
     );
     let first = succeeded(&first);
-    assert!(
-        first.contains(&"+ workspace kestrel".to_owned()),
-        "{first:?}"
-    );
+    assert!(first.contains(&"+ project kestrel".to_owned()), "{first:?}");
     assert!(first.contains(&"+ agent builder".to_owned()), "{first:?}");
     assert!(first.contains(&"+ trigger ready".to_owned()), "{first:?}");
     assert!(first.contains(&"    branch".to_owned()), "{first:?}");
-    let workspace = recorded(
+    let project = recorded(
         &client(
             &harness,
             &[
-                "workspace",
+                "project",
                 "list",
                 "--organization",
                 "acme",
                 "--json",
-                WORKSPACE,
+                PROJECT,
             ],
         )
         .await,
@@ -517,24 +514,24 @@ async fn a_client_applies_one_workspace_agent_and_trigger_declaration() {
 
     assert_eq!(
         succeeded(&again),
-        ["= workspace kestrel", "= agent builder", "= trigger ready"]
+        ["= project kestrel", "= agent builder", "= trigger ready"]
     );
     assert_eq!(
         recorded(
             &client(
                 &harness,
                 &[
-                    "workspace",
+                    "project",
                     "list",
                     "--organization",
                     "acme",
                     "--json",
-                    WORKSPACE,
+                    PROJECT,
                 ],
             )
             .await,
         ),
-        workspace
+        project
     );
     assert_eq!(
         recorded(
@@ -576,7 +573,7 @@ async fn a_client_applies_one_workspace_agent_and_trigger_declaration() {
 
     let changed = succeeded(&changed);
     assert!(
-        changed.contains(&"~ workspace kestrel".to_owned()),
+        changed.contains(&"~ project kestrel".to_owned()),
         "{changed:?}"
     );
     assert!(changed.contains(&"      - main".to_owned()), "{changed:?}");
@@ -590,7 +587,7 @@ async fn a_declaration_preview_changes_nothing() {
     let harness = Harness::boot().await;
     succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
     let declaration = json!({
-        "workspace": {
+        "project": {
             "name": "kestrel",
             "repositories": ["https://github.com/jtmthf/kestrel"],
             "branch": "main",
@@ -600,7 +597,7 @@ async fn a_declaration_preview_changes_nothing() {
             "name": "ready",
             "filter": { "exact": { "type": "com.github.issues.labeled" } },
             "brief": "Work on {{ event.data.issue.title }}",
-            "workspace": "kestrel",
+            "project": "kestrel",
             "agent": "builder",
         },
     });
@@ -614,12 +611,12 @@ async fn a_declaration_preview_changes_nothing() {
             &client(
                 &harness,
                 &[
-                    "workspace",
+                    "project",
                     "list",
                     "--organization",
                     "acme",
                     "--json",
-                    WORKSPACE,
+                    PROJECT,
                 ],
             )
             .await,
@@ -724,8 +721,8 @@ async fn an_inconsistent_declaration_changes_nothing() {
     let harness = Harness::boot().await;
     succeeded(&client(&harness, &["organization", "declare", "acme"]).await);
     let inconsistent = DECLARATION.replace(
-        "workspace: kestrel\n  agent: builder",
-        "workspace: elsewhere\n  agent: builder",
+        "project: kestrel\n  agent: builder",
+        "project: elsewhere\n  agent: builder",
     );
 
     let refused = client::ran_by(
@@ -737,7 +734,7 @@ async fn an_inconsistent_declaration_changes_nothing() {
 
     assert!(!refused.status.success(), "{}", refused.err);
     assert!(
-        refused.err.contains("not the declared workspace"),
+        refused.err.contains("not the declared project"),
         "{}",
         refused.err
     );
@@ -746,12 +743,12 @@ async fn an_inconsistent_declaration_changes_nothing() {
             &client(
                 &harness,
                 &[
-                    "workspace",
+                    "project",
                     "list",
                     "--organization",
                     "acme",
                     "--json",
-                    WORKSPACE,
+                    PROJECT,
                 ],
             )
             .await,
@@ -797,7 +794,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
         &client(
             &harness,
             &[
-                "workspace",
+                "project",
                 "declare",
                 "kestrel",
                 "--organization",
@@ -826,7 +823,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
                 "open",
                 "--organization",
                 "acme",
-                "--workspace",
+                "--project",
                 "kestrel",
                 "--agent",
                 "builder",
@@ -906,7 +903,7 @@ async fn a_client_operates_sessions_and_runs_without_opening_a_database() {
                 "open",
                 "--organization",
                 "acme",
-                "--workspace",
+                "--project",
                 "kestrel",
                 "--agent",
                 "builder",
@@ -959,7 +956,7 @@ async fn a_client_names_a_session_by_name_identifier_prefix_and_latest() {
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -1008,7 +1005,7 @@ async fn a_session_reference_matching_several_is_refused_naming_them() {
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -1063,7 +1060,7 @@ async fn a_session_reference_never_reaches_across_the_organizations_in_scope() {
     for name in ["acme", "globex"] {
         let organization = harness.declare_organization(name).await;
         harness
-            .declare_workspace(
+            .declare_project(
                 &organization,
                 "kestrel",
                 &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -1136,7 +1133,7 @@ async fn a_client_names_a_run_by_name_identifier_prefix_and_latest() {
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -1174,7 +1171,7 @@ async fn session_and_run_names_remain_unique_when_creation_retries_collisions() 
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -1206,7 +1203,7 @@ async fn a_client_manages_triggers_without_opening_a_database() {
         &client(
             &harness,
             &[
-                "workspace",
+                "project",
                 "declare",
                 "kestrel",
                 "--organization",
@@ -1259,7 +1256,7 @@ async fn a_client_manages_triggers_without_opening_a_database() {
         r#"{"exact":{"type":"example"}}"#,
         "--brief",
         "Work {{ event.type }}",
-        "--workspace",
+        "--project",
         "kestrel",
         "--agent",
         "builder",
@@ -1322,7 +1319,7 @@ async fn a_client_manages_triggers_without_opening_a_database() {
                 r#"{"exact":{"type":"example"}}"#,
                 "--brief",
                 "Triage {{ event.type }}",
-                "--workspace",
+                "--project",
                 "kestrel",
                 "--agent",
                 "builder",
@@ -1392,7 +1389,7 @@ async fn the_operator_documents_trigger_answers_and_refusals() {
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -1407,7 +1404,7 @@ async fn the_operator_documents_trigger_answers_and_refusals() {
         "name": "sweep",
         "every": "1h",
         "brief": "Sweep {{ event.data.trigger }}",
-        "workspace": "kestrel",
+        "project": "kestrel",
         "agent": "builder",
     });
 
@@ -1443,7 +1440,7 @@ async fn the_operator_documents_trigger_answers_and_refusals() {
             "filter": { "exact": { "type": "x" } },
             "every": "1h",
             "brief": "x",
-            "workspace": "kestrel",
+            "project": "kestrel",
             "agent": "builder",
         }),
     )
@@ -1458,7 +1455,7 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -1478,7 +1475,7 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
             "acme",
             "--brief",
             "Triage",
-            "--workspace",
+            "--project",
             "kestrel",
             "--agent",
             "builder",
@@ -1565,7 +1562,7 @@ async fn a_trigger_declared_on_a_cron_prints_its_expression_and_zone() {
         let mut declaration = json!({
             "name": "broken",
             "brief": "x",
-            "workspace": "kestrel",
+            "project": "kestrel",
             "agent": "builder",
         });
         declaration
@@ -1588,7 +1585,7 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -1605,14 +1602,14 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     let (status, _) = declared(
         &harness,
         &sessions,
-        &json!({ "workspace": "nowhere", "agent": "builder" }),
+        &json!({ "project": "nowhere", "agent": "builder" }),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, opened) = declared(
         &harness,
         &sessions,
-        &json!({ "workspace": "kestrel", "agent": "builder" }),
+        &json!({ "project": "kestrel", "agent": "builder" }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -1658,7 +1655,7 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     let (status, _) = declared(
         &harness,
         &sessions,
-        &json!({ "workspace": "kestrel", "agent": "builder", "continues": session }),
+        &json!({ "project": "kestrel", "agent": "builder", "continues": session }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -1666,7 +1663,7 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     let (status, _) = declared(
         &harness,
         &sessions,
-        &json!({ "workspace": "kestrel", "agent": "builder", "continues": session_name }),
+        &json!({ "project": "kestrel", "agent": "builder", "continues": session_name }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -1683,7 +1680,7 @@ async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_n
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -1750,7 +1747,7 @@ async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_n
 #[tokio::test]
 async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
     let harness = Harness::boot().await;
-    let workspace = json!({
+    let project = json!({
         "name": "kestrel",
         "repositories": ["https://github.com/jtmthf/kestrel"],
         "branch": "main",
@@ -1762,7 +1759,7 @@ async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
             operator::ORGANIZATIONS.to_owned(),
             json!({ "name": "acme" }),
         ),
-        (workspaces_of("acme"), workspace),
+        (projects_of("acme"), project),
         (agents_of("acme"), agent),
     ];
 
@@ -1775,7 +1772,7 @@ async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
         assert_eq!(first, second);
     }
     assert_eq!(listed(&harness, operator::ORGANIZATIONS).await.len(), 1);
-    assert_eq!(listed(&harness, &workspaces_of("acme")).await.len(), 1);
+    assert_eq!(listed(&harness, &projects_of("acme")).await.len(), 1);
     assert_eq!(listed(&harness, &agents_of("acme")).await.len(), 1);
 
     harness.teardown().await;
@@ -1784,7 +1781,7 @@ async fn an_unchanged_declaration_repeated_answers_the_record_it_made() {
 fn a_start(organization: &str, agent_runtime: &str, brief: &str) -> Value {
     json!({
         "organization": organization,
-        "workspace": {
+        "project": {
             "name": "kestrel",
             "repositories": ["https://github.com/jtmthf/kestrel"],
             "branch": "main",
@@ -1808,7 +1805,7 @@ async fn a_start_declares_its_setup_and_reaches_a_run_carrying_its_brief() {
     assert_eq!(status, StatusCode::CREATED, "{started}");
     for (kind, name) in [
         ("organization", "acme"),
-        ("workspace", "kestrel"),
+        ("project", "kestrel"),
         ("agent", "builder"),
     ] {
         assert_eq!(started[kind], json!({ "name": name, "created": true }));
@@ -1835,7 +1832,7 @@ async fn a_start_declares_its_setup_and_reaches_a_run_carrying_its_brief() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{again}");
-    assert_eq!(again["workspace"]["created"], false);
+    assert_eq!(again["project"]["created"], false);
     assert_ne!(again["session"]["id"], started["session"]["id"]);
 
     harness.teardown().await;
@@ -1861,7 +1858,7 @@ async fn a_start_that_would_change_a_declaration_leaves_nothing_behind() {
             .is_some_and(|message| message.contains("claude")),
         "{refused}"
     );
-    assert!(listed_nothing(&harness, &workspaces_of("acme")).await);
+    assert!(listed_nothing(&harness, &projects_of("acme")).await);
     assert!(
         listed_nothing(
             &harness,
@@ -1878,7 +1875,7 @@ async fn a_start_that_would_change_a_declaration_leaves_nothing_behind() {
 }
 
 #[tokio::test]
-async fn a_changed_workspace_declaration_converges_on_the_workspace_by_that_name() {
+async fn a_changed_project_declaration_converges_on_the_project_by_that_name() {
     let harness = Harness::boot().await;
     declared(
         &harness,
@@ -1888,7 +1885,7 @@ async fn a_changed_workspace_declaration_converges_on_the_workspace_by_that_name
     .await;
     let (_, first) = declared(
         &harness,
-        &workspaces_of("acme"),
+        &projects_of("acme"),
         &json!({
             "name": "kestrel",
             "repositories": [
@@ -1902,7 +1899,7 @@ async fn a_changed_workspace_declaration_converges_on_the_workspace_by_that_name
 
     let (status, changed) = declared(
         &harness,
-        &workspaces_of("acme"),
+        &projects_of("acme"),
         &json!({
             "name": "kestrel",
             "repositories": ["https://github.com/jtmthf/skills"],
@@ -1918,10 +1915,7 @@ async fn a_changed_workspace_declaration_converges_on_the_workspace_by_that_name
         json!(["https://github.com/jtmthf/skills"])
     );
     assert_eq!(changed["branch"], "next");
-    assert_eq!(
-        listed(&harness, &workspaces_of("acme")).await,
-        vec![changed]
-    );
+    assert_eq!(listed(&harness, &projects_of("acme")).await, vec![changed]);
 
     harness.teardown().await;
 }
@@ -1973,7 +1967,7 @@ async fn a_client_declaring_into_no_such_organization_is_refused() {
     let refused = client(
         &harness,
         &[
-            "workspace",
+            "project",
             "declare",
             "kestrel",
             "--organization",
@@ -2023,13 +2017,13 @@ async fn a_declaration_that_describes_nothing_declarable_is_refused() {
     let (unnamed, _) = declared(&harness, operator::ORGANIZATIONS, &json!({ "name": "" })).await;
     let (nowhere, refusal) = declared(
         &harness,
-        &workspaces_of("acme"),
+        &projects_of("acme"),
         &json!({ "name": "kestrel", "repositories": [], "branch": "main" }),
     )
     .await;
     let (clashing, clash) = declared(
         &harness,
-        &workspaces_of("acme"),
+        &projects_of("acme"),
         &json!({
             "name": "kestrel",
             "repositories": ["https://github.com/acme/api.git", "https://github.com/team/api"],
@@ -2056,7 +2050,7 @@ async fn a_declaration_that_describes_nothing_declarable_is_refused() {
             .contains("checked out into api"),
         "{clash}"
     );
-    assert!(listed(&harness, &workspaces_of("acme")).await.is_empty());
+    assert!(listed(&harness, &projects_of("acme")).await.is_empty());
 
     harness.teardown().await;
 }
@@ -2931,8 +2925,8 @@ fn the_published_operator_document_describes_the_boundary_the_control_plane_serv
         (operator::ORGANIZATIONS, "get"),
         (operator::ORGANIZATIONS, "post"),
         (operator::STARTS, "post"),
-        (operator::WORKSPACES, "get"),
-        (operator::WORKSPACES, "post"),
+        (operator::PROJECTS, "get"),
+        (operator::PROJECTS, "post"),
         (operator::AGENTS, "get"),
         (operator::AGENTS, "post"),
         (operator::AGENT_MODEL, "put"),

@@ -43,8 +43,8 @@ use kestrel::agent;
 use kestrel::compute::{Docker, Driver, LocalExec};
 use kestrel::domain::{
     Agent, CorrelationMiss, Direction, Event, EventRecordId, Exit, Fires, Integration, Occurrence,
-    Organization, Run, RunId, RunState, Schedule, Session, SessionId, SubscriptionProfile,
-    Templates, Trigger, Turn, Workspace,
+    Organization, Project, Run, RunId, RunState, Schedule, Session, SessionId, SubscriptionProfile,
+    Templates, Trigger, Turn,
 };
 use kestrel::instance;
 use kestrel::integration::{self, Connecting, Registration};
@@ -316,30 +316,30 @@ impl Harness {
             .expect("organizations should list")
     }
 
-    pub async fn declare_workspace(
+    pub async fn declare_project(
         &self,
         organization: &Organization,
         name: &str,
         repositories: &[String],
         branch: &str,
-    ) -> Workspace {
+    ) -> Project {
         let mut tx = self.store.begin().await.expect("a transaction");
-        let workspace = tx
-            .workspaces()
+        let project = tx
+            .projects()
             .declare(organization, name, repositories, branch)
             .await
-            .expect("the workspace should declare")
+            .expect("the project should declare")
             .record;
         tx.commit().await.expect("the declaration should commit");
-        workspace
+        project
     }
 
-    pub async fn workspaces(&self, organization: &Organization) -> Vec<Workspace> {
+    pub async fn projects(&self, organization: &Organization) -> Vec<Project> {
         let mut tx = self.store.begin().await.expect("a transaction");
-        tx.workspaces()
+        tx.projects()
             .all(organization)
             .await
-            .expect("workspaces should list")
+            .expect("projects should list")
     }
 
     pub async fn declare_agent(
@@ -495,14 +495,14 @@ impl Harness {
         organization: &str,
         name: &str,
         filter: &str,
-        workspace: &str,
+        project: &str,
         agent: &str,
     ) -> Trigger {
         self.declare_trigger_rendering(
             organization,
             name,
             filter,
-            workspace,
+            project,
             agent,
             &templates(BRIEF, None, None),
         )
@@ -514,7 +514,7 @@ impl Harness {
         organization: &str,
         name: &str,
         filter: &str,
-        workspace: &str,
+        project: &str,
         agent: &str,
         templates: &Templates,
     ) -> Trigger {
@@ -522,7 +522,7 @@ impl Harness {
             organization,
             name,
             filter,
-            workspace,
+            project,
             agent,
             templates,
             templates
@@ -542,7 +542,7 @@ impl Harness {
         organization: &str,
         name: &str,
         filter: &str,
-        workspace: &str,
+        project: &str,
         agent: &str,
         templates: &Templates,
         on_miss: Option<CorrelationMiss>,
@@ -551,7 +551,7 @@ impl Harness {
             organization,
             name,
             filter,
-            workspace,
+            project,
             agent,
             templates,
             on_miss,
@@ -569,7 +569,7 @@ impl Harness {
         organization: &str,
         name: &str,
         filter: &str,
-        workspace: &str,
+        project: &str,
         agent: &str,
         templates: &Templates,
         on_miss: Option<CorrelationMiss>,
@@ -582,7 +582,7 @@ impl Harness {
                 fires: &Fires::On(filter.parse().expect("the filter should parse")),
                 templates,
                 on_miss,
-                workspace,
+                project,
                 agent,
                 allows: &[],
                 profile: None,
@@ -613,7 +613,7 @@ impl Harness {
                 ),
                 templates: &templates(BRIEF, None, correlation),
                 on_miss: correlation.map(|_| CorrelationMiss::Open),
-                workspace: "kestrel",
+                project: "kestrel",
                 agent,
                 allows: &allows
                     .iter()
@@ -724,7 +724,7 @@ impl Harness {
                     .correlation
                     .is_some()
                     .then_some(CorrelationMiss::Open),
-                workspace: "kestrel",
+                project: "kestrel",
                 agent: "builder",
                 allows: &[],
                 profile: None,
@@ -874,14 +874,14 @@ impl Harness {
     pub async fn open_session_with(
         &self,
         organization: &str,
-        workspace: &str,
+        project: &str,
         agent: &str,
         profile: &str,
     ) -> Session {
         session::open(
             &self.store,
             organization,
-            workspace,
+            project,
             agent,
             Some(profile),
             None,
@@ -891,8 +891,8 @@ impl Harness {
         .expect("the session should open")
     }
 
-    pub async fn open_session(&self, organization: &str, workspace: &str, agent: &str) -> Session {
-        self.try_open_session(organization, workspace, agent, None)
+    pub async fn open_session(&self, organization: &str, project: &str, agent: &str) -> Session {
+        self.try_open_session(organization, project, agent, None)
             .await
             .expect("the session should open")
     }
@@ -900,14 +900,14 @@ impl Harness {
     pub async fn open_session_on(
         &self,
         organization: &str,
-        workspace: &str,
+        project: &str,
         agent: &str,
         branch: &str,
     ) -> Session {
         session::open(
             &self.store,
             organization,
-            workspace,
+            project,
             agent,
             None,
             Some(branch),
@@ -920,11 +920,11 @@ impl Harness {
     pub async fn continue_session(
         &self,
         organization: &str,
-        workspace: &str,
+        project: &str,
         agent: &str,
         continues: SessionId,
     ) -> Session {
-        self.try_open_session(organization, workspace, agent, Some(continues))
+        self.try_open_session(organization, project, agent, Some(continues))
             .await
             .expect("the session should open")
     }
@@ -932,7 +932,7 @@ impl Harness {
     pub async fn try_open_session(
         &self,
         organization: &str,
-        workspace: &str,
+        project: &str,
         agent: &str,
         continues: Option<SessionId>,
     ) -> anyhow::Result<Session> {
@@ -940,7 +940,7 @@ impl Harness {
         session::open(
             &self.store,
             organization,
-            workspace,
+            project,
             agent,
             None,
             None,

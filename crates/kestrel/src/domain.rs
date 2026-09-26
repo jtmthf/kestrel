@@ -41,7 +41,7 @@ macro_rules! identifiers {
 
 identifiers!(
     OrganizationId,
-    WorkspaceId,
+    ProjectId,
     AgentId,
     SessionId,
     RunId,
@@ -59,8 +59,8 @@ pub struct Organization {
 }
 
 #[derive(Debug, Clone)]
-pub struct Workspace {
-    pub id: WorkspaceId,
+pub struct Project {
+    pub id: ProjectId,
     pub organization: OrganizationId,
     pub name: String,
     pub repositories: Vec<String>,
@@ -355,7 +355,7 @@ pub struct Trigger {
     pub fires: Fires,
     pub templates: Templates,
     pub on_miss: Option<CorrelationMiss>,
-    pub workspace: Workspace,
+    pub project: Project,
     pub agent: Agent,
     pub allows: Vec<Agent>,
     pub profile: Option<SubscriptionProfile>,
@@ -478,7 +478,7 @@ impl Schedule {
     }
 }
 
-/// What a firing renders from the Event: never the Agent or the Workspace (ADR-0013).
+/// What a firing renders from the Event: never the Agent or the Project (ADR-0013).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Templates {
     pub brief: Template,
@@ -486,7 +486,7 @@ pub struct Templates {
     pub correlation: Option<Template>,
 }
 
-/// Fixed when the Session opens, so a Workspace redeclared later moves no Session already on it.
+/// Fixed when the Session opens, so a Project redeclared later moves no Session already on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkout {
     pub repositories: Vec<String>,
@@ -499,7 +499,7 @@ pub struct Session {
     pub id: SessionId,
     pub name: String,
     pub organization: Organization,
-    pub workspace: Workspace,
+    pub project: Project,
     pub agent: Agent,
     pub profile: Option<SubscriptionProfile>,
     pub checkout: Checkout,

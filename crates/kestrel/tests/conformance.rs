@@ -207,7 +207,7 @@ fn provisioned(
 async fn a_session(harness: &Harness, lineage: Lineage, model: &str) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", lineage.command(), Some(model))

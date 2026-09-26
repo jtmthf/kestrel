@@ -5,7 +5,7 @@ CREATE TABLE organization (
     declared_at TEXT NOT NULL
 ) STRICT;
 
-CREATE TABLE workspace (
+CREATE TABLE project (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organization (id),
     name TEXT NOT NULL,
@@ -14,12 +14,12 @@ CREATE TABLE workspace (
     UNIQUE (organization_id, name)
 ) STRICT;
 
-CREATE TABLE workspace_repository (
-    workspace_id TEXT NOT NULL REFERENCES workspace (id),
+CREATE TABLE project_repository (
+    project_id TEXT NOT NULL REFERENCES project (id),
     organization_id TEXT NOT NULL REFERENCES organization (id),
     position INTEGER NOT NULL,
     url TEXT NOT NULL,
-    PRIMARY KEY (workspace_id, position)
+    PRIMARY KEY (project_id, position)
 ) STRICT;
 
 CREATE TABLE agent (
@@ -36,7 +36,7 @@ CREATE TABLE session (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     organization_id TEXT NOT NULL REFERENCES organization (id),
-    workspace_id TEXT NOT NULL REFERENCES workspace (id),
+    project_id TEXT NOT NULL REFERENCES project (id),
     agent_id TEXT NOT NULL REFERENCES agent (id),
     runtime TEXT NOT NULL,
     base TEXT NOT NULL,

@@ -23,6 +23,6 @@ triggers:
     branch: kestrel/issue-{{ event.subject | replace("#", "") }}
     correlation: "{{ event.source }}{{ event.subject }}"
     on_miss: open
-    workspace: kestrel
+    project: kestrel
     agent: builder
     allows: [codex, claude]

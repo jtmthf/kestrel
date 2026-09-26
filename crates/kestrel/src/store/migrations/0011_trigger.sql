@@ -11,7 +11,7 @@ CREATE TABLE trigger (
     branch TEXT,
     correlation TEXT,
     on_miss TEXT CHECK (on_miss IN ('open', 'ignore')),
-    workspace_id TEXT NOT NULL REFERENCES workspace (id),
+    project_id TEXT NOT NULL REFERENCES project (id),
     agent_id TEXT NOT NULL REFERENCES agent (id),
     state TEXT NOT NULL,
     -- An apply removes only what an apply declared, never a one-off declared by flags.
