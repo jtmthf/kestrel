@@ -1069,16 +1069,17 @@ impl Harness {
     }
 
     pub async fn has_pending_messages(&self, id: SessionId) -> bool {
-        let mut tx = self.store.begin().await.expect("a transaction");
-        let session = tx
-            .sessions()
-            .get(id)
-            .await
-            .expect("the session should read");
-        tx.sessions()
-            .has_pending_messages(&session)
-            .await
-            .expect("pending messages should read")
+        let pool = database(self.data_dir()).await;
+        let pending = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM pending_message WHERE session_id = ?)",
+        )
+        .bind(id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("pending messages should read");
+
+        pool.close().await;
+        pending
     }
 
     pub async fn enqueue_run(&self, session: SessionId) -> Run {
@@ -1133,7 +1134,7 @@ impl Harness {
         }
     }
 
-    /// Prompts a Run between turns with what is held for it, the way the work role's sweep does.
+    /// Prompts a waiting Run with what is held for it, the way the work role's sweep does.
     pub async fn prompt_waiting(&self) {
         work::occupy(&self.store, 1, &[SERIALIZED.to_owned()])
             .await
@@ -1220,7 +1221,7 @@ impl Harness {
         if answered.state != RunState::Ended {
             self.try_stop_run(run)
                 .await
-                .expect("a run between turns should stop");
+                .expect("a waiting run should stop");
         }
 
         self.run(run).await
@@ -1242,10 +1243,7 @@ impl Harness {
     /// scheduling. `end_run` always records an exit, so nothing reachable through the store
     /// produces one.
     pub async fn end_run_without_an_exit(&self, run: &Run) {
-        let database = self.data_dir().join("kestrel.db");
-        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
-            .await
-            .expect("the database should open");
+        let pool = database(self.data_dir()).await;
 
         sqlx::query("UPDATE run SET state = 'ended', ended_at = ?, exit = NULL WHERE id = ?")
             .bind(jiff::Timestamp::now().to_string())
@@ -1304,6 +1302,31 @@ impl Harness {
         work::supervisor_gone(&self.store, run)
             .await
             .expect("the supervisor should be gone");
+    }
+
+    /// The claimant records a supervisor gone some time after its container exits, and until
+    /// then the Session still counts the ended Run as holding it.
+    pub async fn supervisor_recorded_gone(&self, run: &Run) {
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+
+        loop {
+            let mut tx = self.store.begin().await.expect("a transaction");
+            let gone = tx
+                .sessions()
+                .supervisor_is_gone(run)
+                .await
+                .expect("the supervisor's state should read");
+            drop(tx);
+            if gone {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the supervisor of run {} was never recorded gone",
+                run.id
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 
     pub async fn instance(&self, session: SessionId) -> Option<String> {
@@ -1414,16 +1437,20 @@ impl Harness {
     }
 }
 
+async fn database(data_dir: &Path) -> sqlx::SqlitePool {
+    let database = data_dir.join("kestrel.db");
+    sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
+        .await
+        .expect("the database should open")
+}
+
 /// An Instance outlives every Run on it and nothing here seals a Session into releasing one,
 /// so a test's Instances go with the test.
 async fn destroy_instances(data_dir: &Path, provisions: Option<&Provisions>) {
     let Some(provisions) = provisions else {
         return;
     };
-    let database = data_dir.join("kestrel.db");
-    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", database.display()))
-        .await
-        .expect("the database should open");
+    let pool = database(data_dir).await;
     let instances: Vec<String> =
         sqlx::query_scalar("SELECT DISTINCT instance FROM run WHERE instance IS NOT NULL")
             .fetch_all(&pool)

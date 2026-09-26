@@ -156,7 +156,7 @@ async fn what_the_agent_writes_to_stderr_reaches_the_operator_log_mid_run_and_no
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
 
-    assert_eq!(harness.run(run.id).await.state, RunState::Active);
+    assert_eq!(harness.run(run.id).await.state, RunState::Working);
     assert!(relayed[0].contains(MUTTERED), "{}", relayed[0]);
     assert!(
         relayed[1].contains("[truncated]") && relayed[1].len() < OVERLONG,
@@ -458,7 +458,7 @@ async fn changing_an_agents_model_leaves_a_run_already_in_flight_on_the_one_it_s
         .await;
     assert_eq!(
         harness.run(run.id).await.state,
-        RunState::Active,
+        RunState::Working,
         "the run was over before its agent's model changed"
     );
 

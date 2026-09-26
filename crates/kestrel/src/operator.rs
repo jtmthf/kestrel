@@ -308,7 +308,6 @@ struct RunRecord {
     name: String,
     session: String,
     state: String,
-    waiting: bool,
     waiting_for: Option<String>,
     exit: Option<domain::Exit>,
     outcome_message: Option<String>,
@@ -433,15 +432,12 @@ impl SessionRecord {
 }
 
 impl RunRecord {
-    async fn read(store: &Store, run: Run) -> Result<Self, Refused> {
-        let waiting = run.exit.is_none() && work::is_waiting(store, &run).await?;
-
-        Ok(Self {
+    fn read(run: Run) -> Self {
+        Self {
             id: run.id.to_string(),
             name: run.name,
             session: run.session.to_string(),
             state: run.state.as_str().to_owned(),
-            waiting,
             waiting_for: run.waiting_for,
             exit: run.exit,
             outcome_message: run.outcome_message,
@@ -456,16 +452,11 @@ impl RunRecord {
             connected_at: run.connected.as_ref().map(|connected| connected.at),
             supervisor_version: run.connected.map(|connected| connected.version),
             usage: run.usage,
-        })
+        }
     }
 
-    async fn all(store: &Store, runs: Vec<Run>) -> Result<Vec<Self>, Refused> {
-        let mut records = Vec::with_capacity(runs.len());
-        for run in runs {
-            records.push(Self::read(store, run).await?);
-        }
-
-        Ok(records)
+    fn all(runs: Vec<Run>) -> Vec<Self> {
+        runs.into_iter().map(Self::read).collect()
     }
 }
 
@@ -543,7 +534,7 @@ async fn start(
             workspace: started.workspace,
             agent: started.agent,
             session: SessionRecord::read(&control_plane.store, started.session).await?,
-            run: RunRecord::read(&control_plane.store, started.run).await?,
+            run: RunRecord::read(started.run),
         }),
     ))
 }
@@ -1603,10 +1594,7 @@ async fn post_to_session(
     )
     .await
     .map_err(session_refusal)?;
-    let run = match run {
-        Some(run) => Some(RunRecord::read(&control_plane.store, run).await?),
-        None => None,
-    };
+    let run = run.map(RunRecord::read);
 
     Ok(Json(run))
 }
@@ -1634,7 +1622,7 @@ async fn runs(
         .await
         .map_err(session_refusal)?;
 
-    Ok(Json(RunRecord::all(&control_plane.store, runs).await?))
+    Ok(Json(RunRecord::all(runs)))
 }
 
 async fn enqueue_run(
@@ -1652,10 +1640,7 @@ async fn enqueue_run(
     .await
     .map_err(session_refusal)?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(RunRecord::read(&control_plane.store, run).await?),
-    ))
+    Ok((StatusCode::CREATED, Json(RunRecord::read(run))))
 }
 
 async fn show_run(
@@ -1664,7 +1649,7 @@ async fn show_run(
 ) -> Result<Json<RunRecord>, Refused> {
     let run = work::resolve_run(&control_plane.store, &organization, &run).await?;
 
-    Ok(Json(RunRecord::read(&control_plane.store, run).await?))
+    Ok(Json(RunRecord::read(run)))
 }
 
 async fn stop_run(
@@ -1680,7 +1665,7 @@ async fn stop_run(
         })?;
     let run = work::run(&control_plane.store, run.id).await?;
 
-    Ok(Json(RunRecord::read(&control_plane.store, run).await?))
+    Ok(Json(RunRecord::read(run)))
 }
 
 async fn resolved(

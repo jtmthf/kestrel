@@ -580,7 +580,8 @@ impl fmt::Display for Usage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunState {
     Queued,
-    Active,
+    Working,
+    Waiting,
     Ended,
     /// Terminal like `Ended`, but with no exit status: a queued Run whose declared tolerance
     /// can no longer be met never ran, so nothing failed.
@@ -588,12 +589,29 @@ pub enum RunState {
 }
 
 impl RunState {
+    pub const LIVE: [RunState; 2] = [RunState::Working, RunState::Waiting];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             RunState::Queued => "queued",
-            RunState::Active => "active",
+            RunState::Working => "working",
+            RunState::Waiting => "waiting",
             RunState::Ended => "ended",
             RunState::Unreachable => "unreachable",
+        }
+    }
+
+    /// `None` once the Run has ended: there is nothing left to stop.
+    pub fn stop_exit(self) -> Option<Exit> {
+        match self {
+            RunState::Ended | RunState::Unreachable => None,
+            RunState::Queued => Some(Exit::Failed {
+                because: "it was stopped before it started".into(),
+            }),
+            RunState::Working => Some(Exit::Failed {
+                because: "it was stopped mid-turn, before its agent answered".into(),
+            }),
+            RunState::Waiting => Some(Exit::Succeeded),
         }
     }
 }
@@ -604,7 +622,8 @@ impl FromStr for RunState {
     fn from_str(state: &str) -> Result<Self> {
         match state {
             "queued" => Ok(RunState::Queued),
-            "active" => Ok(RunState::Active),
+            "working" => Ok(RunState::Working),
+            "waiting" => Ok(RunState::Waiting),
             "ended" => Ok(RunState::Ended),
             "unreachable" => Ok(RunState::Unreachable),
             other => bail!("{other} is not a state a run can be in"),
@@ -696,5 +715,25 @@ impl FromStr for SessionState {
 impl fmt::Display for SessionState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopping_succeeds_only_a_waiting_run() {
+        assert!(matches!(
+            RunState::Queued.stop_exit(),
+            Some(Exit::Failed { .. })
+        ));
+        assert!(matches!(
+            RunState::Working.stop_exit(),
+            Some(Exit::Failed { .. })
+        ));
+        assert_eq!(RunState::Waiting.stop_exit(), Some(Exit::Succeeded));
+        assert_eq!(RunState::Ended.stop_exit(), None);
+        assert_eq!(RunState::Unreachable.stop_exit(), None);
     }
 }

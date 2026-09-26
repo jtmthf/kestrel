@@ -303,6 +303,7 @@ async fn the_second_run_starts_a_fresh_supervisor_on_the_same_instance_after_the
     support::environment::Environment::named(first_supervisor)
         .is_gone()
         .await;
+    harness.supervisor_recorded_gone(&first).await;
 
     let second = harness.post(session.id, "operator", LAST_MEMORY).await;
     harness.answered(second.id, 1).await;

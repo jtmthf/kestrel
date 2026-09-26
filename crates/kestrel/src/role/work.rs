@@ -127,7 +127,7 @@ async fn dispatching(
                 continue;
             }
             Some(Occupied::Resumed(run)) => {
-                info!(run = %run.id, "a run between turns was prompted with what was held for it");
+                info!(run = %run.id, "a waiting run was prompted with what was held for it");
                 continue;
             }
             None => {}

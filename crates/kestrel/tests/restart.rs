@@ -170,7 +170,7 @@ async fn a_lease_is_not_swept_while_the_environment_that_holds_it_out_is_reconne
     .await;
     assert_eq!(
         harness.run(run.id).await.state,
-        RunState::Active,
+        RunState::Working,
         "the sweep that reaped the expired lease took the live one with it"
     );
 
@@ -178,7 +178,7 @@ async fn a_lease_is_not_swept_while_the_environment_that_holds_it_out_is_reconne
         run.lease_expires_at > Some(shortened)
     })
     .await;
-    assert_eq!(held.state, RunState::Active);
+    assert_eq!(held.state, RunState::Working);
 
     supervisor.destroy();
     harness.teardown().await;

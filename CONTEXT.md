@@ -47,15 +47,20 @@ One prompt and response within a run's continuing agent conversation. Its respon
 to the work source when the turn finishes, without ending the run.
 _Avoid_: run, session
 
+**Waiting**:
+A run's phase between turns: its last prompt answered, its agent conversation and instance kept for
+the next. Its other phases are queued, working (mid-turn), ended and unreachable.
+_Avoid_: between turns, paused, idle
+
 **Unfinished Run**:
-The one run a session may have that has not yet let go of it: queued, mid-turn, between turns, or
-ended while its supervisor is still leaving. A session has at most one; a message posted while it
+The one run a session may have that has not yet let go of it: queued, working, waiting, or ended
+while its supervisor is still leaving. A session has at most one; a message posted while it
 exists waits on it rather than starting another.
 _Avoid_: slot, current run, holding run
 
 **Active-Work Slot**:
 One unit of an organization's capacity for runs doing work at once. A run mid-turn, or blocked on an
-approval, occupies one; a queued run, or one between turns, does not.
+approval, occupies one; a queued or waiting run does not.
 _Avoid_: slot (alone), capacity, concurrency
 
 **Unpublished Work**:
@@ -299,8 +304,7 @@ words from drifting.
   asks, and the control plane decides.
 - At most **one** run is unfinished in a session at a time. Concurrency is across sessions,
   **never** within one.
-- A run blocked on an approval still occupies an **active-work** slot. A run waiting between prompt
-  turns does not. Neither waits on work it has enqueued.
+- A run blocked on an approval still occupies an **active-work** slot. A **waiting** run does not. Neither waits on work it has enqueued.
 - A session belongs to at most **one** campaign, and nothing outside a workflow's roster may be
   enqueued. Naming a non-member is rejected when the work is **enqueued**, never when it is
   dispatched.
@@ -308,8 +312,8 @@ words from drifting.
   runs and ends; it never grows.
 - A queued run is dispatched **at most once**. A lease that expires marks its run failed and never
   re-dispatches it.
-- A run may wait between prompt turns with its ACP conversation and instance intact. Waiting holds
-  no active-work slot; the next prompt continues that same run. A turn ending does not end a run.
+- A run may be **waiting** with its ACP conversation and instance intact. Waiting holds no
+  active-work slot; the next prompt continues that same run. A turn ending does not end a run.
 - A turn in which the agent produced no message, narration or detail **fails** its run: a prompt
   that never became work is not an answer.
 - A run's agent conversation is rooted in the checkout of the **first** repository its session

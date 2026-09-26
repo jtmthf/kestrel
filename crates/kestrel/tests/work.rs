@@ -90,8 +90,8 @@ async fn runs_in_distinct_sessions_start_at_the_same_time() {
     })
     .await;
 
-    assert_eq!(harness.run(first.id).await.state, RunState::Active);
-    assert_eq!(second.state, RunState::Active);
+    assert_eq!(harness.run(first.id).await.state, RunState::Working);
+    assert_eq!(second.state, RunState::Working);
 
     harness.teardown().await;
 }
@@ -130,7 +130,7 @@ async fn the_active_run_limit_queues_excess_work_and_releases_it_as_runs_end() {
         run.started_at.is_some()
     })
     .await;
-    assert_eq!(third.state, RunState::Active);
+    assert_eq!(third.state, RunState::Working);
 
     harness.teardown().await;
 }
@@ -731,7 +731,7 @@ async fn a_run_still_in_flight_when_the_control_plane_stops_ends_and_its_supervi
 
     let run = harness.enqueue_run(session.id).await;
     let in_flight = until(&harness, run.id, "reached a supervisor", |run| {
-        run.supervisor.is_some() && run.state == RunState::Active
+        run.supervisor.is_some() && run.state == RunState::Working
     })
     .await;
 
@@ -789,7 +789,7 @@ async fn a_run_being_executed_is_never_claimed_again() {
     let session = a_session(&harness).await;
     let (run, _) = harness.dispatch_run(session.id).await;
 
-    assert_eq!(harness.run(run.id).await.state, RunState::Active);
+    assert_eq!(harness.run(run.id).await.state, RunState::Working);
     assert!(
         harness.claim_run().await.is_none(),
         "a run already being executed was handed out to be dispatched again"
