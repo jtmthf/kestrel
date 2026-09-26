@@ -210,10 +210,16 @@ kestrel writes no agent loop and owns no contract for one.
 _Avoid_: engine, backend, driver
 
 **Participant**:
-A member of a session. A participant is either a human or an agent; the session makes no structural
-distinction between them in the transcript or in turn-taking. Reachability is where they differ: an
-agent is reached through its runtime, a human only through an integration, or not at all.
+A member of a session: the agent that works it, or anyone who has taken a turn in it. The session
+makes no structural distinction between a human and an agent in the transcript or in turn-taking.
+Reachability is where they differ: an agent is reached through its runtime, a human only through an
+integration, or not at all.
 _Avoid_: member, user, collaborator
+
+**Presence**:
+Who appears to be following a session right now. Best-effort: held nowhere durable, lost on restart,
+and never a prerequisite for anything. Being present does not make someone a participant.
+_Avoid_: online, watchers, viewers
 
 ### Governance
 
@@ -321,8 +327,9 @@ words from drifting.
 - A question's expiry is **not** a denial; only an approval's is.
 - Every approval resolution appears in **both** the session's transcript and the organization's
   audit record.
-- A session's transcript is readable only by its **participants**. A session is a read boundary, not
-  only a work boundary.
+- Reading a session never makes someone a **participant**; only taking a turn does. A session is
+  still a read boundary: who may read it is **policy**'s to say.
+- **Presence** never gates a turn, a question or an approval.
 - Nothing reconstructs a session's state from its **transcript**. A transcript is read; state is held
   as current values, **never** derived from history.
 - A session is **open** or **sealed**. Sealing is not deletion: a sealed session is readable and is
