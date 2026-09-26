@@ -1314,6 +1314,31 @@ impl Harness {
             .expect("the supervisor should be gone");
     }
 
+    /// The claimant records a supervisor gone some time after its container exits, and until
+    /// then the Session still counts the ended Run as holding it.
+    pub async fn supervisor_recorded_gone(&self, run: &Run) {
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+
+        loop {
+            let mut tx = self.store.begin().await.expect("a transaction");
+            let gone = tx
+                .sessions()
+                .supervisor_is_gone(run)
+                .await
+                .expect("the supervisor's state should read");
+            drop(tx);
+            if gone {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the supervisor of run {} was never recorded gone",
+                run.id
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     pub async fn instance(&self, session: SessionId) -> Option<String> {
         work::instance(&self.store, session)
             .await
