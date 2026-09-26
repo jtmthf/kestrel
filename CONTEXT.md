@@ -47,6 +47,17 @@ One prompt and response within a run's continuing agent conversation. Its respon
 to the work source when the turn finishes, without ending the run.
 _Avoid_: run, session
 
+**Unfinished Run**:
+The one run a session may have that has not yet let go of it: queued, mid-turn, between turns, or
+ended while its supervisor is still leaving. A session has at most one; a message posted while it
+exists waits on it rather than starting another.
+_Avoid_: slot, current run, holding run
+
+**Active-Work Slot**:
+One unit of an organization's capacity for runs doing work at once. A run mid-turn, or blocked on an
+approval, occupies one; a queued run, or one between turns, does not.
+_Avoid_: slot (alone), capacity, concurrency
+
 **Unpublished Work**:
 Checkout changes or commits that exist only on an instance and cannot be recovered from a remote
 repository. Its presence says nothing about whether a run succeeded or the requested work is good.
