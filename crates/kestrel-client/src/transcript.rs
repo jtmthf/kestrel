@@ -37,13 +37,13 @@ impl From<reqwest::Error> for Cut {
 pub async fn read(
     control_plane: &Url,
     organization: &str,
-    session: &str,
+    workspace: &str,
     from: Option<String>,
     follow: bool,
     presentation: &Presentation,
 ) -> Result<Option<String>> {
     let client = Client::new();
-    let url = transcript(control_plane, organization, session, follow)?;
+    let url = transcript(control_plane, organization, workspace, follow)?;
     let mut cursor = from;
     let mut heard = Instant::now();
 
@@ -123,7 +123,12 @@ fn presented(data: &str, presentation: &Presentation) -> Result<String> {
     crate::output::line(presentation, &view::ENTRIES, &entry)
 }
 
-fn transcript(control_plane: &Url, organization: &str, session: &str, follow: bool) -> Result<Url> {
+fn transcript(
+    control_plane: &Url,
+    organization: &str,
+    workspace: &str,
+    follow: bool,
+) -> Result<Url> {
     let mut url = control_plane.clone();
     url.path_segments_mut()
         .map_err(|()| {
@@ -138,8 +143,8 @@ fn transcript(control_plane: &Url, organization: &str, session: &str, follow: bo
             "operator",
             "organizations",
             organization,
-            "sessions",
-            session,
+            "workspaces",
+            workspace,
             "transcript",
         ]);
     url.query_pairs_mut()

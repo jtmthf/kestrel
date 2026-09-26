@@ -32,7 +32,7 @@ CREATE TABLE agent (
     UNIQUE (organization_id, name)
 ) STRICT;
 
-CREATE TABLE session (
+CREATE TABLE workspace (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     organization_id TEXT NOT NULL REFERENCES organization (id),
@@ -48,19 +48,19 @@ CREATE TABLE session (
     UNIQUE (organization_id, name)
 ) STRICT;
 
-CREATE TABLE session_repository (
-    session_id TEXT NOT NULL REFERENCES session (id),
+CREATE TABLE workspace_repository (
+    workspace_id TEXT NOT NULL REFERENCES workspace (id),
     organization_id TEXT NOT NULL REFERENCES organization (id),
     position INTEGER NOT NULL,
     url TEXT NOT NULL,
-    PRIMARY KEY (session_id, position)
+    PRIMARY KEY (workspace_id, position)
 ) STRICT;
 
 CREATE TABLE transcript_entry (
-    session_id TEXT NOT NULL REFERENCES session (id),
+    workspace_id TEXT NOT NULL REFERENCES workspace (id),
     organization_id TEXT NOT NULL REFERENCES organization (id),
     seq INTEGER NOT NULL,
     body TEXT NOT NULL,
     appended_at TEXT NOT NULL,
-    PRIMARY KEY (session_id, seq)
+    PRIMARY KEY (workspace_id, seq)
 ) STRICT;

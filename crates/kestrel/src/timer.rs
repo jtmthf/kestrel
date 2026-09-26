@@ -15,10 +15,10 @@ use crate::follow_up;
 use crate::integration::delivery;
 use crate::integration::github::Github;
 use crate::integration::{self, Polled};
-use crate::session;
 use crate::store::Store;
 use crate::trigger;
 use crate::work;
+use crate::workspace;
 
 const SWEEP: Duration = Duration::from_millis(500);
 
@@ -43,14 +43,14 @@ pub async fn sweeping(store: &Store, wake: &Wake, shutdown: &CancellationToken) 
     let github = Github::dialling_out()?;
 
     // Beside the lease sweep rather than in it: a poll waits on GitHub, and a lease left
-    // unswept for the length of an HTTP request is a Session wedged for that long.
+    // unswept for the length of an HTTP request is a Workspace wedged for that long.
     tokio::try_join!(
         sweeping_leases(store, shutdown),
         polling(store, &github, shutdown),
         elapsing(store, wake, shutdown),
         firing(store, &github, wake.0.subscribe(), shutdown),
         following_up(store, wake.0.subscribe(), shutdown),
-        sealing_idle_sessions(store, shutdown),
+        sealing_idle_workspaces(store, shutdown),
         delivering(store, &github, shutdown)
     )?;
 
@@ -68,7 +68,7 @@ async fn following_up(
                 for follow_up in received {
                     info!(
                         event = %follow_up.event,
-                        session = %follow_up.session,
+                        workspace = %follow_up.workspace,
                         run = ?follow_up.run,
                         "a follow-up was received"
                     );
@@ -103,12 +103,12 @@ async fn elapsing(store: &Store, wake: &Wake, shutdown: &CancellationToken) -> R
     Ok(())
 }
 
-async fn sealing_idle_sessions(store: &Store, shutdown: &CancellationToken) -> Result<()> {
+async fn sealing_idle_workspaces(store: &Store, shutdown: &CancellationToken) -> Result<()> {
     while !shutdown.is_cancelled() {
-        match session::seal_idle(store).await {
+        match workspace::seal_idle(store).await {
             Ok(sealed) => {
-                for session in sealed {
-                    info!(session = %session.id, "an idle session sealed itself");
+                for workspace in sealed {
+                    info!(workspace = %workspace.id, "an idle workspace sealed itself");
                 }
             }
             Err(error) => warn!(%error, "an idle sweep found nothing it could do"),
@@ -184,14 +184,14 @@ async fn firing(
                     match firing {
                         trigger::Fired::Opened {
                             event,
-                            session,
+                            workspace,
                             run,
-                        } => info!(%event, %session, %run, "a trigger fired"),
+                        } => info!(%event, %workspace, %run, "a trigger fired"),
                         trigger::Fired::Fed {
                             event,
-                            session,
+                            workspace,
                             run,
-                        } => info!(%event, %session, ?run, "a trigger fed a session"),
+                        } => info!(%event, %workspace, ?run, "a trigger fed a workspace"),
                         trigger::Fired::Ignored {
                             event,
                             trigger,
@@ -256,7 +256,7 @@ async fn sweep(store: &Store) -> Result<Vec<(RunId, Exit)>> {
     let mut tx = store.begin().await?;
     let mut expired = Vec::new();
 
-    for run in tx.sessions().expired_leases(Timestamp::now()).await? {
+    for run in tx.workspaces().expired_leases(Timestamp::now()).await? {
         let exit = Exit::Failed {
             because: "the supervisor stopped holding the run's lease out, and it expired"
                 .to_owned(),

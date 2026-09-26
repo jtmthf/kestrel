@@ -7,7 +7,7 @@ use anyhow::Result;
 use jiff::Timestamp;
 use tracing::warn;
 
-use crate::domain::{Delivery, Direction, Event, Exit, Integration, Run, RunId, Session};
+use crate::domain::{Delivery, Direction, Event, Exit, Integration, Run, RunId, Workspace};
 use crate::integration::back_off;
 use crate::integration::github::{Github, MARKER, Refused};
 use crate::store::{Store, Tx};
@@ -21,9 +21,9 @@ fn marker(run: RunId, turn: Option<i64>) -> String {
     }
 }
 
-/// The surface a Session came in through, when it came in through one that carries outbound.
-async fn surface(tx: &mut Tx<'_>, session: &Session) -> Result<Option<(Integration, Event)>> {
-    let Some(started_by) = session.started_by else {
+/// The surface a Workspace came in through, when it came in through one that carries outbound.
+async fn surface(tx: &mut Tx<'_>, workspace: &Workspace) -> Result<Option<(Integration, Event)>> {
+    let Some(started_by) = workspace.started_by else {
         return Ok(None);
     };
 
@@ -35,7 +35,7 @@ async fn surface(tx: &mut Tx<'_>, session: &Session) -> Result<Option<(Integrati
     if !integration.carries(Direction::Outbound) {
         warn!(
             integration = integration.name,
-            "a session came in through an integration that carries nothing outbound, so what it \
+            "a workspace came in through an integration that carries nothing outbound, so what it \
              says reaches nobody"
         );
         return Ok(None);
@@ -49,11 +49,11 @@ async fn surface(tx: &mut Tx<'_>, session: &Session) -> Result<Option<(Integrati
 pub(crate) async fn record_turn(
     tx: &mut Tx<'_>,
     run: &Run,
-    session: &Session,
+    workspace: &Workspace,
     turn: i64,
     said: &[String],
 ) -> Result<()> {
-    let Some((integration, event)) = surface(tx, session).await? else {
+    let Some((integration, event)) = surface(tx, workspace).await? else {
         return Ok(());
     };
 
@@ -66,7 +66,7 @@ pub(crate) async fn record_turn(
 pub(crate) async fn record_outcome(
     tx: &mut Tx<'_>,
     run: &Run,
-    session: &Session,
+    workspace: &Workspace,
     exit: &Exit,
     said: Option<&str>,
 ) -> Result<()> {
@@ -82,11 +82,11 @@ pub(crate) async fn record_outcome(
             return Ok(());
         }
     }
-    let Some((integration, event)) = surface(tx, session).await? else {
+    let Some((integration, event)) = surface(tx, workspace).await? else {
         return Ok(());
     };
 
-    let body = body(session, run, exit, said);
+    let body = body(workspace, run, exit, said);
 
     tx.integrations()
         .record_delivery(run, &integration, &event, None, &body, None)
@@ -165,7 +165,7 @@ async fn deferred(
     Ok(None)
 }
 
-fn body(session: &Session, run: &Run, exit: &Exit, said: Option<&str>) -> String {
+fn body(workspace: &Workspace, run: &Run, exit: &Exit, said: Option<&str>) -> String {
     let mut body = format!("**kestrel** — run {exit}\n");
 
     if let Some(message) = said.map(str::trim).filter(|said| !said.is_empty()) {
@@ -179,8 +179,8 @@ fn body(session: &Session, run: &Run, exit: &Exit, said: Option<&str>) -> String
     }
 
     body.push_str(&format!(
-        "\nSession `{}` · run `{}`\n{}\n",
-        session.id,
+        "\nWorkspace `{}` · run `{}`\n{}\n",
+        workspace.id,
         run.id,
         marker(run.id, None)
     ));
@@ -195,18 +195,18 @@ mod tests {
     use super::*;
     use crate::domain::{
         Agent, AgentId, Checkout, Organization, OrganizationId, Project, ProjectId, RunState,
-        SessionId, SessionState,
+        WorkspaceId, WorkspaceState,
     };
 
-    fn a_session() -> Session {
+    fn a_workspace() -> Workspace {
         let organization = Organization {
             id: OrganizationId::generate(),
             name: "acme".to_owned(),
             max_live_instances: None,
         };
 
-        Session {
-            id: SessionId::generate(),
+        Workspace {
+            id: WorkspaceId::generate(),
             name: "bright-falcon".to_owned(),
             project: Project {
                 id: ProjectId::generate(),
@@ -230,7 +230,7 @@ mod tests {
                 branch: "main".to_owned(),
             },
             correlation: None,
-            state: SessionState::Open,
+            state: WorkspaceState::Open,
             opened_at: Timestamp::now(),
             last_active_at: Timestamp::now(),
             sealed_at: None,
@@ -239,12 +239,12 @@ mod tests {
         }
     }
 
-    fn a_run(session: &Session) -> Run {
+    fn a_run(workspace: &Workspace) -> Run {
         Run {
             id: RunId::generate(),
             name: "quiet-river".to_owned(),
-            organization: session.organization.id,
-            session: session.id,
+            organization: workspace.organization.id,
+            workspace: workspace.id,
             state: RunState::Ended,
             waiting_for: None,
             exit: None,
@@ -264,11 +264,11 @@ mod tests {
 
     #[test]
     fn what_the_agent_said_last_is_quoted_under_the_exit_status() {
-        let session = a_session();
-        let run = a_run(&session);
+        let workspace = a_workspace();
+        let run = a_run(&workspace);
 
         let body = body(
-            &session,
+            &workspace,
             &run,
             &Exit::Succeeded,
             Some("Opened https://github.com/jtmthf/kestrel/pull/92.\n\nIt has a test."),
@@ -278,17 +278,17 @@ mod tests {
         assert!(body.contains(
             "> Opened https://github.com/jtmthf/kestrel/pull/92.\n>\n> It has a test.\n"
         ));
-        assert!(body.contains(&session.id.to_string()));
+        assert!(body.contains(&workspace.id.to_string()));
         assert!(body.ends_with(&format!("{}\n", marker(run.id, None))));
     }
 
     #[test]
     fn a_run_that_failed_says_so_and_says_why() {
-        let session = a_session();
-        let run = a_run(&session);
+        let workspace = a_workspace();
+        let run = a_run(&workspace);
 
         let body = body(
-            &session,
+            &workspace,
             &run,
             &Exit::Failed {
                 because: "the environment could not be provisioned".to_owned(),
@@ -301,10 +301,10 @@ mod tests {
 
     #[test]
     fn an_agent_that_said_nothing_leaves_no_empty_quote() {
-        let session = a_session();
-        let run = a_run(&session);
+        let workspace = a_workspace();
+        let run = a_run(&workspace);
 
-        let body = body(&session, &run, &Exit::Succeeded, Some("   "));
+        let body = body(&workspace, &run, &Exit::Succeeded, Some("   "));
 
         assert!(!body.lines().any(|line| line.starts_with('>')));
     }

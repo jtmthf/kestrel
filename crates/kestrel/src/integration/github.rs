@@ -43,7 +43,7 @@ pub fn at_or_after(event: &Occurrence, origin: &Occurrence) -> bool {
     }
 }
 
-/// A comment that opens with it is a command to kestrel rather than a remark to the Session.
+/// A comment that opens with it is a command to kestrel rather than a remark to the Workspace.
 pub const MENTION: &str = "@kestrel";
 const AGENT: &str = "agent=";
 

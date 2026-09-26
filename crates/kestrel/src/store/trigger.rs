@@ -6,8 +6,8 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 use crate::cron::Cron;
 use crate::domain::{
     Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
-    Organization, Project, Schedule, Session, SessionId, SubscriptionProfile, Templates, Trigger,
-    TriggerId, TriggerState,
+    Organization, Project, Schedule, SubscriptionProfile, Templates, Trigger, TriggerId,
+    TriggerState, Workspace, WorkspaceId,
 };
 use crate::filter::{Attribute, Filter};
 use crate::store::{agent, integration, organization, profile, project};
@@ -248,20 +248,20 @@ impl<'a> Triggers<'a> {
         trigger(self.connection, &row).await
     }
 
-    /// The Trigger whose opening firing made this Session, if any: the authority a follow-up
-    /// into that Session is judged by.
-    pub async fn opening_of(&mut self, session: SessionId) -> Result<Option<Trigger>> {
+    /// The Trigger whose opening firing made this Workspace, if any: the authority a follow-up
+    /// into that Workspace is judged by.
+    pub async fn opening_of(&mut self, workspace: WorkspaceId) -> Result<Option<Trigger>> {
         let row = sqlx::query(
             "SELECT trigger_id
              FROM firing
-             WHERE session_id = ? AND outcome = 'opened'
+             WHERE workspace_id = ? AND outcome = 'opened'
              ORDER BY fired_at, trigger_id
              LIMIT 1",
         )
-        .bind(session.to_string())
+        .bind(workspace.to_string())
         .fetch_optional(&mut *self.connection)
         .await
-        .with_context(|| format!("reading what opened the session {session}"))?;
+        .with_context(|| format!("reading what opened the workspace {workspace}"))?;
 
         let Some(row) = row else {
             return Ok(None);
@@ -578,7 +578,7 @@ impl<'a> Triggers<'a> {
 
     pub async fn firings_of(&mut self, event: EventRecordId) -> Result<Vec<Firing>> {
         sqlx::query(
-            "SELECT trigger.name, firing.outcome, firing.session_id, firing.failure,
+            "SELECT trigger.name, firing.outcome, firing.workspace_id, firing.failure,
                     firing.worked_ahead
              FROM firing
              JOIN trigger ON trigger.id = firing.trigger_id
@@ -594,9 +594,9 @@ impl<'a> Triggers<'a> {
             Ok(Firing {
                 trigger: row.get("name"),
                 outcome: row.get("outcome"),
-                session: row
-                    .get::<Option<String>, _>("session_id")
-                    .map(|session| session.parse())
+                workspace: row
+                    .get::<Option<String>, _>("workspace_id")
+                    .map(|workspace| workspace.parse())
                     .transpose()?,
                 failure: row.get("failure"),
                 worked_ahead: row.get("worked_ahead"),
@@ -609,14 +609,14 @@ impl<'a> Triggers<'a> {
         &mut self,
         trigger: &Trigger,
         event: &Event,
-        session: &Session,
+        workspace: &Workspace,
         worked_ahead: Option<&str>,
     ) -> Result<()> {
         self.record(
             trigger,
             event,
             Recording {
-                session: Some(session),
+                workspace: Some(workspace),
                 outcome: "opened",
                 worked_ahead,
                 ..Recording::default()
@@ -629,13 +629,13 @@ impl<'a> Triggers<'a> {
         &mut self,
         trigger: &Trigger,
         event: &Event,
-        session: &Session,
+        workspace: &Workspace,
     ) -> Result<()> {
         self.record(
             trigger,
             event,
             Recording {
-                session: Some(session),
+                workspace: Some(workspace),
                 outcome: "fed",
                 ..Recording::default()
             },
@@ -722,11 +722,11 @@ impl<'a> Triggers<'a> {
     ) -> Result<()> {
         let recorded = sqlx::query(
             "INSERT INTO firing
-                 (trigger_id, event_record_id, organization_id, session_id, outcome, failure,
+                 (trigger_id, event_record_id, organization_id, workspace_id, outcome, failure,
                   worked_ahead, correlation, considered_at, fired_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (trigger_id, event_record_id) DO UPDATE SET
-                 session_id = excluded.session_id,
+                 workspace_id = excluded.workspace_id,
                  outcome = excluded.outcome,
                  failure = excluded.failure,
                  worked_ahead = excluded.worked_ahead,
@@ -737,7 +737,11 @@ impl<'a> Triggers<'a> {
         .bind(trigger.id.to_string())
         .bind(event.record_id.to_string())
         .bind(trigger.organization.id.to_string())
-        .bind(recording.session.map(|session| session.id.to_string()))
+        .bind(
+            recording
+                .workspace
+                .map(|workspace| workspace.id.to_string()),
+        )
         .bind(recording.outcome)
         .bind(recording.because)
         .bind(recording.worked_ahead)
@@ -775,7 +779,7 @@ impl<'a> Triggers<'a> {
 
 #[derive(Default)]
 struct Recording<'a> {
-    session: Option<&'a Session>,
+    workspace: Option<&'a Workspace>,
     outcome: &'a str,
     because: Option<&'a str>,
     worked_ahead: Option<&'a str>,

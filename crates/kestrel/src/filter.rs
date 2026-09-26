@@ -186,7 +186,7 @@ impl Author<'_> {
 }
 
 impl Filter {
-    /// Whether this filter authorizes `author` to speak in a Session it opened. A filter that
+    /// Whether this filter authorizes `author` to speak in a Workspace it opened. A filter that
     /// admits outsiders lets anyone; one that does not lets only the logins and member
     /// associations it names. Comparisons about the Event's content are ignored, so a remark
     /// from an authorized author is admitted even though the command prefix the filter was

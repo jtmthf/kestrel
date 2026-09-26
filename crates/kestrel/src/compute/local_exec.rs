@@ -51,7 +51,7 @@ impl LocalExec {
         Instance {
             provisioned: Box::new(Directory {
                 supervisor: self.supervisor.clone(),
-                workspace: within(&name),
+                root: within(&name),
                 home: home(&name),
             }),
             name: format!("local-exec/{name}"),
@@ -78,13 +78,13 @@ fn named(instance: &str) -> io::Result<&str> {
 
 struct Directory {
     supervisor: PathBuf,
-    workspace: PathBuf,
+    root: PathBuf,
     home: PathBuf,
 }
 
 impl Directory {
     fn at(&self, path: &str) -> PathBuf {
-        self.workspace.join(path)
+        self.root.join(path)
     }
 }
 
@@ -96,7 +96,7 @@ impl Provisioned for Directory {
 
         let child = Command::new(program)
             .args(arguments)
-            .current_dir(&self.workspace)
+            .current_dir(&self.root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -122,7 +122,7 @@ impl Provisioned for Directory {
         let mut command = Command::new(&self.supervisor);
         fs::create_dir_all(&self.home)?;
         command
-            .current_dir(&self.workspace)
+            .current_dir(&self.root)
             .env("HOME", &self.home)
             .envs(variables.iter().copied())
             .stdin(Stdio::null())
@@ -131,7 +131,7 @@ impl Provisioned for Directory {
 
         #[cfg(unix)]
         {
-            // A fresh session makes this process its own process-group leader, so every
+            // A fresh workspace makes this process its own process-group leader, so every
             // child it forks inherits the same group and `killpg` reaches all of them.
             #[allow(unsafe_code)]
             unsafe {
@@ -161,7 +161,7 @@ impl Provisioned for Directory {
 
     fn destroy(&mut self) -> io::Result<()> {
         removed(&self.home)?;
-        removed(&self.workspace)
+        removed(&self.root)
     }
 }
 
@@ -205,8 +205,8 @@ fn killed(pgid: i32) -> io::Result<()> {
     Ok(())
 }
 
-fn removed(workspace: &Path) -> io::Result<()> {
-    match fs::remove_dir_all(workspace) {
+fn removed(root: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(root) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         removed => removed,
     }
@@ -371,11 +371,11 @@ mod tests {
     }
 
     #[test]
-    fn a_command_execs_in_the_workspace_and_streams_what_it_says() {
+    fn a_command_execs_in_the_root_and_streams_what_it_says() {
         let scripts = TempDir::new().expect("a temporary directory");
         let mut instance = provisioned(&driver(&scripts, "sleep 30"));
         instance
-            .write_file("read-me", b"in the workspace")
+            .write_file("read-me", b"in the root")
             .expect("the file should write");
 
         let finished = instance
@@ -385,7 +385,7 @@ mod tests {
             .expect("cat should finish");
 
         assert!(finished.exited.success(), "cat said {finished:?}");
-        assert_eq!(finished.out, "in the workspace");
+        assert_eq!(finished.out, "in the root");
 
         instance.destroy().expect("destroy should succeed");
     }

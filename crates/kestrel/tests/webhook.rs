@@ -284,7 +284,7 @@ async fn a_github_integration_without_a_signing_secret_accepts_no_delivery() {
 }
 
 #[tokio::test]
-async fn a_delivered_label_opens_a_session_and_the_repository_is_not_polled() {
+async fn a_delivered_label_opens_a_workspace_and_the_repository_is_not_polled() {
     let kestrel = Kestrel::boot().await;
     let stub = GithubStub::start();
     let organization = kestrel.declare_organization("acme").await;
@@ -319,10 +319,10 @@ async fn a_delivered_label_opens_a_session_and_the_repository_is_not_polled() {
     assert_eq!(answered.status(), StatusCode::ACCEPTED);
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while kestrel.sessions("acme").await.is_empty() {
+    while kestrel.workspaces("acme").await.is_empty() {
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the delivered label never opened a session"
+            "the delivered label never opened a workspace"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

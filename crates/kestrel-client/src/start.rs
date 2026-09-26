@@ -529,7 +529,7 @@ impl Plan {
             }));
         }
         applying.push(format!(
-            "open a Session in {project} carrying the Brief, and enqueue a Run of {agent} to \
+            "open a Workspace in {project} carrying the Brief, and enqueue a Run of {agent} to \
              work on it"
         ));
 
@@ -939,7 +939,7 @@ mod tests {
                 "declare the Agent opencode, an actor driven by the Harness opencode \
                  with its default model",
                 "hold ANTHROPIC_API_KEY as a Provider Credential of acme",
-                "open a Session in widgets carrying the Brief, and enqueue a Run of opencode \
+                "open a Workspace in widgets carrying the Brief, and enqueue a Run of opencode \
                  to work on it",
             ]
         );
@@ -968,7 +968,7 @@ mod tests {
         assert_eq!(
             plan.applying(&existing),
             [
-                "open a Session in widgets carrying the Brief, and enqueue a Run of builder to \
+                "open a Workspace in widgets carrying the Brief, and enqueue a Run of builder to \
               work on it"
             ]
         );

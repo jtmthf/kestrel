@@ -10,17 +10,17 @@ pub mod apply;
 
 use crate::domain::{
     Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
-    Integration, Occurrence, Organization, RunId, Schedule, SessionId, Templates, Trigger,
-    TriggerId, TriggerState,
+    Integration, Occurrence, Organization, RunId, Schedule, Templates, Trigger, TriggerId,
+    TriggerState, WorkspaceId,
 };
 use crate::fanout::{self, Change};
 use crate::integration::github::{self, EventData, Github};
 use crate::log::Entry;
 use crate::readiness::{Decision, Readiness, Request};
-use crate::session;
 use crate::store::integration::Recorded;
-use crate::store::session::Opening;
+use crate::store::workspace::Opening;
 use crate::store::{Store, Tx};
+use crate::workspace;
 
 /// A sweep takes a bounded bite rather than every Event a Trigger declared over a busy repository
 /// matches at once.
@@ -89,12 +89,12 @@ pub struct Declaration<'a> {
 pub enum Fired {
     Opened {
         event: EventRecordId,
-        session: SessionId,
+        workspace: WorkspaceId,
         run: RunId,
     },
     Fed {
         event: EventRecordId,
-        session: SessionId,
+        workspace: WorkspaceId,
         run: Option<RunId>,
     },
     Ignored {
@@ -286,7 +286,8 @@ pub(crate) async fn allowed(
     Ok(allows)
 }
 
-/// Whatever chooses the Agent, it is one the Trigger allows, so no Event reaches an Agent a human did not name here.
+/// Whatever chooses the Agent, it is one the Trigger allows, so no Event reaches an Agent a human
+/// did not name here.
 pub fn chosen<'t>(trigger: &'t Trigger, event: &Event, asked: Option<&str>) -> Result<&'t Agent> {
     let allowed = || std::iter::once(&trigger.agent).chain(&trigger.allows);
     if let Some(name) = asked {
@@ -715,7 +716,7 @@ async fn dispatched(
     ))
 }
 
-/// An opening firing atomically commits its Session, first entry, Run and record, so a retry
+/// An opening firing atomically commits its Workspace, first entry, Run and record, so a retry
 /// never opens its work twice.
 async fn firing(
     mut tx: Tx<'_>,
@@ -768,16 +769,16 @@ async fn firing(
     };
     let continues = if let Some(correlation) = &rendered.correlation {
         if let Some(holding) = tx
-            .sessions()
+            .workspaces()
             .holding_correlation(&trigger.organization, correlation)
             .await?
         {
             return fed(tx, trigger, event, &rendered, holding).await;
         }
 
-        // A key a sealed session held is kestrel's own work, so `ignore` does not drop it.
+        // A key a sealed workspace held is kestrel's own work, so `ignore` does not drop it.
         let sealed = tx
-            .sessions()
+            .workspaces()
             .sealed_holding_correlation(&trigger.organization, correlation)
             .await?;
         if sealed.is_none() && trigger.on_miss == Some(CorrelationMiss::Ignore) {
@@ -809,8 +810,8 @@ async fn firing(
             return held(tx, trigger, event, because, correlation, consideration).await;
         }
     };
-    let session = tx
-        .sessions()
+    let workspace = tx
+        .workspaces()
         .open(Opening {
             organization: &trigger.organization,
             project: &trigger.project,
@@ -828,7 +829,7 @@ async fn firing(
 
     tx.log()
         .append(
-            &session,
+            &workspace,
             Entry::Brief {
                 trigger: Some(trigger.name.clone()),
                 brief: rendered.brief,
@@ -837,16 +838,16 @@ async fn firing(
         .await?;
     tx.log()
         .append(
-            &session,
+            &workspace,
             Entry::ParticipantJoined {
                 participant: agent.name.clone(),
             },
         )
         .await?;
 
-    let run = tx.sessions().enqueue_run(&session, None).await?;
+    let run = tx.workspaces().enqueue_run(&workspace, None).await?;
     tx.triggers()
-        .record_opened_firing(trigger, event, &session, worked_ahead.as_deref())
+        .record_opened_firing(trigger, event, &workspace, worked_ahead.as_deref())
         .await?;
     if let Some(correlation) = &rendered.correlation {
         tx.triggers()
@@ -854,11 +855,11 @@ async fn firing(
             .await?;
     }
     tx.commit().await?;
-    fanout::publish(Change::SessionOpened(&session));
+    fanout::publish(Change::WorkspaceOpened(&workspace));
 
     Ok(Fired::Opened {
         event: event.record_id,
-        session: session.id,
+        workspace: workspace.id,
         run: run.id,
     })
 }
@@ -868,18 +869,18 @@ async fn fed(
     trigger: &Trigger,
     event: &Event,
     rendered: &Rendered,
-    holding: SessionId,
+    holding: WorkspaceId,
 ) -> Result<Fired> {
-    let session = tx.sessions().get(holding).await?;
-    let run = session::post_in(&mut tx, &session, &trigger.name, &rendered.brief).await?;
+    let workspace = tx.workspaces().get(holding).await?;
+    let run = workspace::post_in(&mut tx, &workspace, &trigger.name, &rendered.brief).await?;
     tx.triggers()
-        .record_fed_firing(trigger, event, &session)
+        .record_fed_firing(trigger, event, &workspace)
         .await?;
     tx.commit().await?;
 
     Ok(Fired::Fed {
         event: event.record_id,
-        session: session.id,
+        workspace: workspace.id,
         run: run.map(|run| run.id),
     })
 }

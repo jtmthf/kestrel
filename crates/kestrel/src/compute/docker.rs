@@ -6,8 +6,9 @@ use std::process::{Child, Command, Stdio};
 use super::{Exited, Instance, Provisioned, Streaming, Supervising, Supervisor};
 use crate::domain::RunId;
 
-/// Where the image puts a Workspace, and so what every path an operation takes is relative to.
-const WORKSPACE: &str = "/workspace";
+/// Where the image puts an Instance's checkouts, and so what every path an operation takes is
+/// relative to.
+const ROOT: &str = "/workspace";
 
 #[derive(Debug, Clone)]
 pub struct Docker {
@@ -91,7 +92,7 @@ struct Container {
 
 impl Provisioned for Container {
     fn exec(&mut self, command: &[&str]) -> io::Result<Streaming> {
-        let mut arguments = vec!["exec", "--workdir", WORKSPACE, &self.container];
+        let mut arguments = vec!["exec", "--workdir", ROOT, &self.container];
         arguments.extend_from_slice(command);
 
         let child = Command::new("docker")
@@ -105,7 +106,7 @@ impl Provisioned for Container {
     }
 
     fn read_file(&mut self, path: &str) -> io::Result<Vec<u8>> {
-        docker(&["exec", "--workdir", WORKSPACE, &self.container, "cat", path])
+        docker(&["exec", "--workdir", ROOT, &self.container, "cat", path])
     }
 
     fn write_file(&mut self, path: &str, contents: &[u8]) -> io::Result<()> {
@@ -114,7 +115,7 @@ impl Provisioned for Container {
                 "exec",
                 "--interactive",
                 "--workdir",
-                WORKSPACE,
+                ROOT,
                 &self.container,
                 "sh",
                 "-c",
@@ -147,7 +148,7 @@ impl Provisioned for Container {
     /// listing on this machine and in nothing the container's configuration keeps.
     fn supervise(&mut self, variables: &[(&str, &str)]) -> io::Result<Supervisor> {
         let mut command = Command::new("docker");
-        command.args(["exec", "--workdir", WORKSPACE]);
+        command.args(["exec", "--workdir", ROOT]);
         for (key, value) in variables {
             command.args(["--env", key]).env(key, value);
         }

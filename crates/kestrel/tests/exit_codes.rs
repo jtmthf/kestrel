@@ -102,16 +102,16 @@ fn an_invalid_invocation_is_usage() {
 }
 
 #[test]
-fn guessed_session_and_run_verbs_explain_the_domain_verbs_without_running_them() {
+fn guessed_workspace_and_run_verbs_explain_the_domain_verbs_without_running_them() {
     for (args, suggested, verbs) in [
         (
-            &["session", "create"][..],
-            "session open",
+            &["workspace", "create"][..],
+            "workspace open",
             "open, list, show, post, seal, transcript",
         ),
         (
-            &["session", "close"],
-            "session seal",
+            &["workspace", "close"],
+            "workspace seal",
             "open, list, show, post, seal, transcript",
         ),
         (
@@ -125,13 +125,13 @@ fn guessed_session_and_run_verbs_explain_the_domain_verbs_without_running_them()
             "enqueue, list, show, stop",
         ),
         (
-            &["session", "opne"],
-            "session open",
+            &["workspace", "opne"],
+            "workspace open",
             "open, list, show, post, seal, transcript",
         ),
         (
-            &["session", "sael"],
-            "session seal",
+            &["workspace", "sael"],
+            "workspace seal",
             "open, list, show, post, seal, transcript",
         ),
     ] {
@@ -188,7 +188,14 @@ async fn a_missing_project_names_the_setup_command_and_keeps_its_category() {
     let kestrel = an_organization().await;
     let finished = ran_by(
         &kestrel,
-        &["session", "open", "--project", "absent", "--agent", "agent"],
+        &[
+            "workspace",
+            "open",
+            "--project",
+            "absent",
+            "--agent",
+            "agent",
+        ],
         Invocation::default(),
     )
     .await;
@@ -208,7 +215,14 @@ async fn corrective_command_names_the_unencoded_organization() {
     kestrel.declare_organization("Acme East").await;
     let finished = ran_by(
         &kestrel,
-        &["session", "open", "--project", "absent", "--agent", "agent"],
+        &[
+            "workspace",
+            "open",
+            "--project",
+            "absent",
+            "--agent",
+            "agent",
+        ],
         Invocation::default(),
     )
     .await;
@@ -223,7 +237,7 @@ async fn corrective_command_names_the_unencoded_organization() {
 }
 
 #[tokio::test]
-async fn a_run_in_the_session_names_the_run_to_stop_and_stays_rejected() {
+async fn a_run_in_the_workspace_names_the_run_to_stop_and_stays_rejected() {
     let kestrel = an_organization().await;
     let organization = kestrel.organizations().await.remove(0);
     let project = kestrel
@@ -237,13 +251,13 @@ async fn a_run_in_the_session_names_the_run_to_stop_and_stays_rejected() {
     let agent = kestrel
         .declare_agent(&organization, "worker", "opencode", None)
         .await;
-    let session = kestrel
-        .open_session("acme", &project.name, &agent.name)
+    let workspace = kestrel
+        .open_workspace("acme", &project.name, &agent.name)
         .await;
-    let run = kestrel.enqueue_run(session.id).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let finished = ran_by(
         &kestrel,
-        &["run", "enqueue", "--session", &session.id.to_string()],
+        &["run", "enqueue", "--workspace", &workspace.id.to_string()],
         Invocation::default(),
     )
     .await;
@@ -272,7 +286,7 @@ async fn a_record_that_does_not_exist_is_unresolved() {
     let kestrel = an_organization().await;
 
     for args in [
-        &["session", "show", "no-such-session"][..],
+        &["workspace", "show", "no-such-workspace"][..],
         &["trigger", "show", "no-such-trigger"],
         &["project", "list", "--organization", "globex"],
     ] {

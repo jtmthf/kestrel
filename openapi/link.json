@@ -30,7 +30,7 @@
       "get": {
         "operationId": "credentials",
         "summary": "Take what the Run's Harness is spawned with.",
-        "description": "Answered as the Environment spawns its Harness, and asked at no other moment: the control plane decrypts them here. Every Provider Credential the Run's Organization holds, and the variables and files of the Subscription Profile its Session names, which no other Session's Run is handed. Variables reach that process's environment and nothing else; files are written beneath the agent's home for the length of the Run. The credential a Run authenticates with is invalidated when the Run ends, so an Environment that outlives its Run is refused.",
+        "description": "Answered as the Environment spawns its Harness, and asked at no other moment: the control plane decrypts them here. Every Provider Credential the Run's Organization holds, and the variables and files of the Subscription Profile its Workspace names, which no other Workspace's Run is handed. Variables reach that process's environment and nothing else; files are written beneath the agent's home for the length of the Run. The credential a Run authenticates with is invalidated when the Run ends, so an Environment that outlives its Run is refused.",
         "parameters": [
           {
             "$ref": "#/components/parameters/run"
@@ -64,7 +64,7 @@
       "patch": {
         "operationId": "refreshCredentials",
         "summary": "Hand back the files the Harness rewrote.",
-        "description": "A harness refreshes its login where it keeps it, and a refresh may revoke the login it replaced, so the Environment hands back every file it was given that changed before it reports the Run finished. Only files the Session's Subscription Profile already holds are taken; any other path is ignored.",
+        "description": "A harness refreshes its login where it keeps it, and a refresh may revoke the login it replaced, so the Environment hands back every file it was given that changed before it reports the Run finished. Only files the Workspace's Subscription Profile already holds are taken; any other path is ignored.",
         "parameters": [
           {
             "$ref": "#/components/parameters/run"
@@ -108,7 +108,7 @@
     "/link/runs/{run}/entries": {
       "get": {
         "operationId": "entries",
-        "summary": "Read one window of the Transcript of the Session this Run belongs to.",
+        "summary": "Read one window of the Transcript of the Workspace this Run belongs to.",
         "description": "At most one window of entries, in order, and the cursor the next read resumes from. A cursor names a position rather than a read held open, so it still walks after the control plane restarts; one that names no position in this Transcript is refused rather than silently restarting the walk.",
         "parameters": [
           {
@@ -289,7 +289,7 @@
     },
     "schemas": {
       "Credentials": {
-        "description": "What a Harness is spawned with to reach a model: the Provider Credentials of the Run's Organization and the Subscription Profile its Session names.",
+        "description": "What a Harness is spawned with to reach a model: the Provider Credentials of the Run's Organization and the Subscription Profile its Workspace names.",
         "type": "object",
         "properties": {
           "variables": {
@@ -865,7 +865,7 @@
         ]
       },
       "Entry": {
-        "description": "What changed the Session's shared state. Never what happened inside a Run.",
+        "description": "What changed the Workspace's shared state. Never what happened inside a Run.",
         "oneOf": [
           {
             "$ref": "#/components/schemas/ParticipantJoined"
@@ -903,7 +903,7 @@
         }
       },
       "ParticipantJoined": {
-        "description": "A Participant joined the Session.",
+        "description": "A Participant joined the Workspace.",
         "type": "object",
         "properties": {
           "kind": {
@@ -919,7 +919,7 @@
         ]
       },
       "Brief": {
-        "description": "The instruction a Session started with, rendered by the Trigger that fired.",
+        "description": "The instruction a Workspace started with, rendered by the Trigger that fired.",
         "type": "object",
         "properties": {
           "kind": {
@@ -939,7 +939,7 @@
         ]
       },
       "RunStarted": {
-        "description": "A Run started on behalf of the Session.",
+        "description": "A Run started on behalf of the Workspace.",
         "type": "object",
         "properties": {
           "kind": {
@@ -1033,7 +1033,7 @@
         ]
       },
       "InstanceReleased": {
-        "description": "A person released the Session's Instance, destroying it and whatever it held that was never pushed.",
+        "description": "A person released the Workspace's Instance, destroying it and whatever it held that was never pushed.",
         "type": "object",
         "properties": {
           "kind": {

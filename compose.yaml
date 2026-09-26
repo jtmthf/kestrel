@@ -57,7 +57,7 @@ services:
       start_period: 30s
 
   # Built here and started by nothing: an Instance is a container the control plane
-  # provisions for one Session, never a service beside it.
+  # provisions for one Workspace, never a service beside it.
   kestrel-env:
     image: ${KESTREL_ENV_IMAGE:-kestrel-env}
     build:

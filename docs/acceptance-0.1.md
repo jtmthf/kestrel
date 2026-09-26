@@ -78,12 +78,12 @@ trigger — the order above — leaves that history alone.
 
 ```sh
 kestrel event list --organization acme
-kestrel session list --organization acme
-kestrel run list --session <session>
+kestrel workspace list --organization acme
+kestrel run list --workspace <workspace>
 docker logs -f kestrel-<run>
 ```
 
-Within a poll interval a session opens, a run is enqueued and dispatched into a real container, and
+Within a poll interval a workspace opens, a run is enqueued and dispatched into a real container, and
 — once the agent finishes — a pull request lands and the originating issue gets the outcome comment,
 all without anyone acting on the label a second time.
 
@@ -94,7 +94,7 @@ With a run active:
 ```sh
 docker kill -s SIGKILL kestrel-kestrel-1
 docker start kestrel-kestrel-1   # or wait for the compose restart policy
-kestrel session transcript <session>
+kestrel workspace transcript <workspace>
 ```
 
 Restarted inside the 2-minute lease (`LEASE` in `crates/kestrel/src/work.rs`), the run reconnects on
@@ -102,7 +102,7 @@ its own and finishes, and the transcript is unbroken across the restart — no m
 entries. Restarted later than that, the lease expires first and the run ends `failed: the environment
 stopped holding the run's lease out, and it expired`, which is the lease doing what it is for rather
 than a defect: an environment that outlives its control plane's absence is not left holding the
-session's one active-run slot forever.
+workspace's one active-run slot forever.
 
 ## What this run found
 
@@ -122,11 +122,11 @@ session's one active-run slot forever.
    `kestrel trigger declare` warns about, and it is worth knowing before the first `declare` on a
    repository that already labels issues.
 3. **A `repo`-scoped `GH_TOKEN` grants merge, not only opening a pull request.** During this
-   procedure's second `kill -9` rehearsal, the agent woke into a session whose transcript already
+   procedure's second `kill -9` rehearsal, the agent woke into a workspace whose transcript already
    showed its own earlier, still-open pull request, decided the remaining work was to land it, and
    merged it — nothing kestrel asked it to do. Kestrel supplies the credential and stays out of what
    the run does with it (`ROADMAP.md`: "what happens inside a run is the run's business, not the
-   session's"), so an operator who wants a human merge gate cannot get one from the credential: a
+   workspace's"), so an operator who wants a human merge gate cannot get one from the credential: a
    required review gates only when the reviewer is a GitHub identity other than the one the token
    acts as, because GitHub refuses a pull request's author as its reviewer, and this repository's
    own CI gates its merges instead
@@ -148,7 +148,7 @@ session's one active-run slot forever.
 
 `ROADMAP.md`'s `0.1` section names five things as invisible on the day they ship and costly to add
 later: the `Organization` column on every durable record, the transcript's entry granularity and its
-current-values-not-replayed state, the `sealed` state on a session, the run-held lease, and the
+current-values-not-replayed state, the `sealed` state on a workspace, the run-held lease, and the
 bounded-window-plus-paging transcript read. All five are in place and exercised above (the lease by
-the `kill -9` test directly, the paged transcript read by `kestrel session transcript`, sealing by
+the `kill -9` test directly, the paged transcript read by `kestrel workspace transcript`, sealing by
 `0.1`'s own USAGE.md walkthrough). Nothing on that list was skipped.

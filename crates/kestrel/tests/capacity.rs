@@ -1,7 +1,7 @@
 mod support;
 
 use jiff::{SignedDuration, Timestamp};
-use kestrel::domain::{RunState, Session};
+use kestrel::domain::{RunState, Workspace};
 use kestrel::instance::{Git, Observed};
 use support::Kestrel;
 use support::repository;
@@ -19,7 +19,7 @@ fn clean_checkout() -> Vec<Observed> {
     }]
 }
 
-async fn sessions(kestrel: &Kestrel, maximum: usize) -> (Session, Session, Session) {
+async fn workspaces(kestrel: &Kestrel, maximum: usize) -> (Workspace, Workspace, Workspace) {
     let organization = kestrel.declare_limited_organization("acme", maximum).await;
     kestrel
         .declare_project(
@@ -46,15 +46,15 @@ async fn sessions(kestrel: &Kestrel, maximum: usize) -> (Session, Session, Sessi
         .await;
 
     (
-        kestrel.open_session("acme", "kestrel", "builder").await,
-        kestrel.open_session("acme", "kestrel", "builder").await,
-        kestrel.open_session("acme", "kestrel", "builder").await,
+        kestrel.open_workspace("acme", "kestrel", "builder").await,
+        kestrel.open_workspace("acme", "kestrel", "builder").await,
+        kestrel.open_workspace("acme", "kestrel", "builder").await,
     )
 }
 
-async fn complete_clean_runs(kestrel: &Kestrel, sessions: &[(&Session, &str)]) {
-    for (session, instance) in sessions {
-        let queued = kestrel.enqueue_run(session.id).await;
+async fn complete_clean_runs(kestrel: &Kestrel, workspaces: &[(&Workspace, &str)]) {
+    for (workspace, instance) in workspaces {
+        let queued = kestrel.enqueue_run(workspace.id).await;
         let run = kestrel
             .occupy_run()
             .await
@@ -70,7 +70,7 @@ async fn complete_clean_runs(kestrel: &Kestrel, sessions: &[(&Session, &str)]) {
 #[tokio::test]
 async fn an_active_instance_counts_toward_the_organization_limit() {
     let kestrel = Kestrel::boot().await;
-    let (active, waiting, _) = sessions(&kestrel, 1).await;
+    let (active, waiting, _) = workspaces(&kestrel, 1).await;
     let first = kestrel.enqueue_run(active.id).await;
     let claimed = kestrel.occupy_run().await.expect("the run should claim");
     assert_eq!(claimed.run.id, first.id);
@@ -89,7 +89,7 @@ async fn an_active_instance_counts_toward_the_organization_limit() {
 #[tokio::test]
 async fn reclaiming_for_new_work_does_not_delay_a_follow_up_that_already_has_an_instance() {
     let kestrel = Kestrel::boot().await;
-    let (oldest, existing, arriving) = sessions(&kestrel, 2).await;
+    let (oldest, existing, arriving) = workspaces(&kestrel, 2).await;
 
     complete_clean_runs(&kestrel, &[(&oldest, "oldest"), (&existing, "existing")]).await;
     kestrel
@@ -112,9 +112,9 @@ async fn reclaiming_for_new_work_does_not_delay_a_follow_up_that_already_has_an_
 }
 
 #[tokio::test]
-async fn a_held_instance_blocks_new_work_but_not_its_sessions_follow_up() {
+async fn a_held_instance_blocks_new_work_but_not_its_workspaces_follow_up() {
     let kestrel = Kestrel::boot().await;
-    let (existing, new, _) = sessions(&kestrel, 1).await;
+    let (existing, new, _) = workspaces(&kestrel, 1).await;
 
     let first = kestrel.enqueue_run(existing.id).await;
     let claimed = kestrel.occupy_run().await.expect("the run should claim");
@@ -156,7 +156,7 @@ async fn a_held_instance_blocks_new_work_but_not_its_sessions_follow_up() {
 #[tokio::test]
 async fn the_longest_idle_recoverable_instance_is_archived_to_admit_new_work() {
     let kestrel = Kestrel::boot().await;
-    let (oldest, newer, arriving) = sessions(&kestrel, 2).await;
+    let (oldest, newer, arriving) = workspaces(&kestrel, 2).await;
 
     complete_clean_runs(&kestrel, &[(&oldest, "oldest"), (&newer, "newer")]).await;
     kestrel

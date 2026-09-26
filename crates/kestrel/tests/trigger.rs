@@ -5,7 +5,7 @@ use std::time::Duration;
 use jiff::SignedDuration;
 use kestrel::cron::Cron;
 use kestrel::domain::{
-    CorrelationMiss, Direction, Event, RunState, Schedule, Session, TriggerState,
+    CorrelationMiss, Direction, Event, RunState, Schedule, TriggerState, Workspace,
 };
 use kestrel::log::{Entry, Message};
 use kestrel::trigger::Rendered;
@@ -71,18 +71,18 @@ async fn ready_for_agent(kestrel: &Kestrel) {
         .await;
 }
 
-async fn opened(kestrel: &Kestrel, count: usize) -> Vec<Session> {
+async fn opened(kestrel: &Kestrel, count: usize) -> Vec<Workspace> {
     let deadline = tokio::time::Instant::now() + PATIENCE;
 
     loop {
-        let sessions = kestrel.sessions("acme").await;
-        if sessions.len() >= count {
-            return sessions;
+        let workspaces = kestrel.workspaces("acme").await;
+        if workspaces.len() >= count {
+            return workspaces;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "{count} sessions were never opened, only {}",
-            sessions.len()
+            "{count} workspaces were never opened, only {}",
+            workspaces.len()
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -111,13 +111,13 @@ async fn nothing_opens(kestrel: &Kestrel) {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     assert!(
-        kestrel.sessions("acme").await.is_empty(),
-        "a session was opened for an event nothing should have fired on"
+        kestrel.workspaces("acme").await.is_empty(),
+        "a workspace was opened for an event nothing should have fired on"
     );
 }
 
 #[tokio::test]
-async fn labelling_an_issue_opens_a_session_and_enqueues_a_run() {
+async fn labelling_an_issue_opens_a_workspace_and_enqueues_a_run() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
@@ -125,12 +125,12 @@ async fn labelling_an_issue_opens_a_session_and_enqueues_a_run() {
     ready_for_agent(&kestrel).await;
     watching(&kestrel, &stub).await;
 
-    let session = opened(&kestrel, 1).await.remove(0);
+    let workspace = opened(&kestrel, 1).await.remove(0);
 
-    assert_eq!(session.project.name, "kestrel");
-    assert_eq!(session.agent.name, "builder");
+    assert_eq!(workspace.project.name, "kestrel");
+    assert_eq!(workspace.agent.name, "builder");
 
-    let runs = kestrel.runs(session.id).await;
+    let runs = kestrel.runs(workspace.id).await;
     assert_eq!(runs.len(), 1, "a firing enqueues one run");
     assert_eq!(runs[0].state, RunState::Queued);
 
@@ -156,18 +156,18 @@ async fn ready_rendering(
         .await;
 }
 
-async fn first_entry(kestrel: &Kestrel, session: &Session) -> Entry {
+async fn first_entry(kestrel: &Kestrel, workspace: &Workspace) -> Entry {
     kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .into_iter()
         .next()
-        .expect("a triggered session has a transcript")
+        .expect("a triggered workspace has a transcript")
         .entry
 }
 
 #[tokio::test]
-async fn the_rendered_brief_is_the_sessions_first_transcript_entry() {
+async fn the_rendered_brief_is_the_workspaces_first_transcript_entry() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
@@ -182,8 +182,8 @@ async fn the_rendered_brief_is_the_sessions_first_transcript_entry() {
     .await;
     watching(&kestrel, &stub).await;
 
-    let session = opened(&kestrel, 1).await.remove(0);
-    let transcript = kestrel.transcript(session.id).await;
+    let workspace = opened(&kestrel, 1).await.remove(0);
+    let transcript = kestrel.transcript(workspace.id).await;
 
     assert_eq!(
         transcript
@@ -210,7 +210,7 @@ const SKILLED: &str = "/implement https://github.com/jtmthf/kestrel/issues/43\n\
 
 /// Opened by a firing whose brief leads with a harness's skill invocation, in a project a
 /// supervisor can check out without reaching GitHub.
-async fn briefed(kestrel: &Kestrel, stub: &GithubStub) -> Session {
+async fn briefed(kestrel: &Kestrel, stub: &GithubStub) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(&organization, "kestrel", &[], "main")
@@ -236,7 +236,7 @@ async fn briefed(kestrel: &Kestrel, stub: &GithubStub) -> Session {
 }
 
 /// What the agent was prompted with, which the echoing agent says back.
-async fn prompted(kestrel: &Kestrel, session: &Session) -> String {
+async fn prompted(kestrel: &Kestrel, workspace: &Workspace) -> String {
     let claimed = kestrel
         .claim_run()
         .await
@@ -254,7 +254,7 @@ async fn prompted(kestrel: &Kestrel, session: &Session) -> String {
     assert!(supervisor.finishes().await.success());
 
     kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .into_iter()
         .find_map(|recorded| match recorded.entry {
@@ -268,20 +268,20 @@ async fn prompted(kestrel: &Kestrel, session: &Session) -> String {
 }
 
 #[tokio::test]
-async fn the_agent_is_first_prompted_with_exactly_the_brief_its_session_preserved() {
+async fn the_agent_is_first_prompted_with_exactly_the_brief_its_workspace_preserved() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
-    let session = briefed(&kestrel, &stub).await;
+    let workspace = briefed(&kestrel, &stub).await;
 
     assert_eq!(
-        first_entry(&kestrel, &session).await,
+        first_entry(&kestrel, &workspace).await,
         Entry::Brief {
             trigger: Some("ready".to_owned()),
             brief: SKILLED.to_owned(),
         }
     );
-    assert_eq!(prompted(&kestrel, &session).await, SKILLED);
+    assert_eq!(prompted(&kestrel, &workspace).await, SKILLED);
 
     kestrel.teardown().await;
 }
@@ -291,12 +291,12 @@ async fn a_brief_something_was_said_after_reaches_the_agent_as_earlier_context()
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
-    let session = briefed(&kestrel, &stub).await;
+    let workspace = briefed(&kestrel, &stub).await;
     kestrel
-        .post_while_busy(session.id, "operator", "and add a test")
+        .post_while_busy(workspace.id, "operator", "and add a test")
         .await;
 
-    let prompt = prompted(&kestrel, &session).await;
+    let prompt = prompted(&kestrel, &workspace).await;
 
     assert!(prompt.starts_with("Earlier context"), "{prompt}");
     assert!(
@@ -309,7 +309,7 @@ async fn a_brief_something_was_said_after_reaches_the_agent_as_earlier_context()
 }
 
 #[tokio::test]
-async fn a_session_opens_on_the_branch_and_correlation_its_trigger_renders() {
+async fn a_workspace_opens_on_the_branch_and_correlation_its_trigger_renders() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
@@ -324,8 +324,8 @@ async fn a_session_opens_on_the_branch_and_correlation_its_trigger_renders() {
     .await;
     watching(&kestrel, &stub).await;
 
-    let session = opened(&kestrel, 1).await.remove(0);
-    let shown = kestrel.show_session(session.id).await;
+    let workspace = opened(&kestrel, 1).await.remove(0);
+    let shown = kestrel.show_workspace(workspace.id).await;
 
     assert_eq!(shown.checkout.branch, "kestrel/issue-43");
     assert_eq!(
@@ -337,7 +337,7 @@ async fn a_session_opens_on_the_branch_and_correlation_its_trigger_renders() {
 }
 
 #[tokio::test]
-async fn a_session_whose_trigger_renders_no_branch_opens_on_its_own_cut_from_the_projects() {
+async fn a_workspace_whose_trigger_renders_no_branch_opens_on_its_own_cut_from_the_projects() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
@@ -345,17 +345,17 @@ async fn a_session_whose_trigger_renders_no_branch_opens_on_its_own_cut_from_the
     ready_for_agent(&kestrel).await;
     watching(&kestrel, &stub).await;
 
-    let session = opened(&kestrel, 1).await.remove(0);
-    let shown = kestrel.show_session(session.id).await;
+    let workspace = opened(&kestrel, 1).await.remove(0);
+    let shown = kestrel.show_workspace(workspace.id).await;
 
-    assert_eq!(shown.checkout.branch, format!("kestrel/{}", session.id));
+    assert_eq!(shown.checkout.branch, format!("kestrel/{}", workspace.id));
     assert_eq!(shown.checkout.base, "main");
     assert_eq!(shown.correlation, None);
 
     kestrel.teardown().await;
 }
 
-/// A failed firing is recorded rather than retried, so it neither opens a Session on a later
+/// A failed firing is recorded rather than retried, so it neither opens a Workspace on a later
 /// sweep nor holds up another Trigger matching the same Event.
 #[tokio::test]
 async fn a_brief_that_cannot_render_fails_the_firing_and_starts_nothing() {
@@ -377,14 +377,14 @@ async fn a_brief_that_cannot_render_fails_the_firing_and_starts_nothing() {
     opened(&kestrel, 1).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let sessions = kestrel.sessions("acme").await;
+    let workspaces = kestrel.workspaces("acme").await;
     assert_eq!(
-        sessions.len(),
+        workspaces.len(),
         1,
         "only the trigger that renders opens work"
     );
-    let Entry::Brief { trigger, .. } = first_entry(&kestrel, &sessions[0]).await else {
-        panic!("a triggered session opens on its brief");
+    let Entry::Brief { trigger, .. } = first_entry(&kestrel, &workspaces[0]).await else {
+        panic!("a triggered workspace opens on its brief");
     };
     assert_eq!(trigger.as_deref(), Some("ready"));
 
@@ -392,7 +392,7 @@ async fn a_brief_that_cannot_render_fails_the_firing_and_starts_nothing() {
 }
 
 #[tokio::test]
-async fn a_correlation_hit_feeds_the_open_session_without_changing_its_agent() {
+async fn a_correlation_hit_feeds_the_open_workspace_without_changing_its_agent() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
@@ -417,17 +417,17 @@ async fn a_correlation_hit_feeds_the_open_session_without_changing_its_agent() {
     opened(&kestrel, 1).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let sessions = kestrel.sessions("acme").await;
+    let workspaces = kestrel.workspaces("acme").await;
     assert_eq!(
-        sessions.len(),
+        workspaces.len(),
         1,
-        "one correlation opened {} sessions",
-        sessions.len()
+        "one correlation opened {} workspaces",
+        workspaces.len()
     );
-    assert_eq!(sessions[0].agent.name, "builder");
+    assert_eq!(workspaces[0].agent.name, "builder");
     assert!(
         kestrel
-            .transcript(sessions[0].id)
+            .transcript(workspaces[0].id)
             .await
             .iter()
             .any(|recorded| {
@@ -498,7 +498,7 @@ async fn a_correlated_trigger_must_declare_what_it_does_on_a_miss() {
 }
 
 #[tokio::test]
-async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
+async fn a_correlation_miss_opens_a_continuation_of_the_sealed_workspace() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
@@ -520,7 +520,7 @@ async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
         .expect("the firing enqueued a run")
         .run;
     kestrel.complete_run(&active).await;
-    kestrel.seal_session(sealed.id).await;
+    kestrel.seal_workspace(sealed.id).await;
 
     // Scripted for the events endpoint alone: the comment the completed run posts would
     // otherwise take this response off the shared queue.
@@ -529,21 +529,21 @@ async fn a_correlation_miss_opens_a_continuation_of_the_sealed_session() {
         EVENTS,
         github_stub::page(&[github_stub::labelled(8, 43, READY)]),
     );
-    let sessions = opened(&kestrel, 2).await;
-    let continuation = sessions
+    let workspaces = opened(&kestrel, 2).await;
+    let continuation = workspaces
         .into_iter()
-        .find(|session| session.id != sealed.id)
-        .expect("a new session should open after the seal");
+        .find(|workspace| workspace.id != sealed.id)
+        .expect("a new workspace should open after the seal");
 
     assert_eq!(continuation.continues, Some(sealed.id));
     assert_eq!(continuation.checkout.branch, sealed.checkout.branch);
-    assert_eq!(continuation.state, kestrel::domain::SessionState::Open);
+    assert_eq!(continuation.state, kestrel::domain::WorkspaceState::Open);
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn an_ignoring_trigger_still_continues_a_sealed_session_it_correlates_to() {
+async fn an_ignoring_trigger_still_continues_a_sealed_workspace_it_correlates_to() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
@@ -584,7 +584,7 @@ async fn an_ignoring_trigger_still_continues_a_sealed_session_it_correlates_to()
         .expect("the firing enqueued a run")
         .run;
     kestrel.complete_run(&active).await;
-    kestrel.seal_session(sealed.id).await;
+    kestrel.seal_workspace(sealed.id).await;
 
     stub.script_answer(
         "GET",
@@ -594,8 +594,8 @@ async fn an_ignoring_trigger_still_continues_a_sealed_session_it_correlates_to()
     let continuation = opened(&kestrel, 2)
         .await
         .into_iter()
-        .find(|session| session.id != sealed.id)
-        .expect("the ignoring trigger should continue the sealed session");
+        .find(|workspace| workspace.id != sealed.id)
+        .expect("the ignoring trigger should continue the sealed workspace");
 
     assert_eq!(continuation.continues, Some(sealed.id));
     assert_eq!(continuation.correlation, sealed.correlation);
@@ -619,7 +619,7 @@ async fn correlated_events_arriving_during_a_run_drain_into_one_entry_and_one_ru
     .await;
     watching(&kestrel, &stub).await;
 
-    let session = opened(&kestrel, 1).await.remove(0);
+    let workspace = opened(&kestrel, 1).await.remove(0);
     let active = kestrel
         .claim_run()
         .await
@@ -649,14 +649,14 @@ async fn correlated_events_arriving_during_a_run_drain_into_one_entry_and_one_ru
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
     kestrel.complete_run(&active).await;
 
-    let runs = kestrel.runs(session.id).await;
+    let runs = kestrel.runs(workspace.id).await;
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[1].state, RunState::Queued);
     let messages = kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .into_iter()
         .filter_map(|recorded| match recorded.entry {
@@ -682,7 +682,7 @@ async fn correlated_events_arriving_during_a_run_drain_into_one_entry_and_one_ru
 }
 
 #[tokio::test]
-async fn the_session_records_the_event_that_started_it() {
+async fn the_workspace_records_the_event_that_started_it() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
@@ -690,10 +690,10 @@ async fn the_session_records_the_event_that_started_it() {
     ready_for_agent(&kestrel).await;
     watching(&kestrel, &stub).await;
 
-    let session = opened(&kestrel, 1).await.remove(0);
+    let workspace = opened(&kestrel, 1).await.remove(0);
     let events = kestrel.events("acme").await;
 
-    assert_eq!(session.started_by, Some(events[0].record_id));
+    assert_eq!(workspace.started_by, Some(events[0].record_id));
 
     kestrel.teardown().await;
 }
@@ -701,7 +701,7 @@ async fn the_session_records_the_event_that_started_it() {
 /// The same label going on the same issue twice is one Event however many polls see it, and
 /// one firing however many sweeps pass over it.
 #[tokio::test]
-async fn relabelling_the_same_issue_twice_opens_exactly_one_session() {
+async fn relabelling_the_same_issue_twice_opens_exactly_one_workspace() {
     let stub = GithubStub::start();
     let relabelled = github_stub::page(&[github_stub::labelled(7, 43, READY)]);
     stub.script(relabelled.clone());
@@ -714,12 +714,12 @@ async fn relabelling_the_same_issue_twice_opens_exactly_one_session() {
     opened(&kestrel, 1).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let sessions = kestrel.sessions("acme").await;
+    let workspaces = kestrel.workspaces("acme").await;
     assert_eq!(
-        sessions.len(),
+        workspaces.len(),
         1,
-        "one event opened {} sessions",
-        sessions.len()
+        "one event opened {} workspaces",
+        workspaces.len()
     );
 
     kestrel.teardown().await;
@@ -743,21 +743,21 @@ async fn an_event_matching_several_triggers_fires_every_one_of_them() {
         .await;
     watching(&kestrel, &stub).await;
 
-    let sessions = opened(&kestrel, 2).await;
+    let workspaces = opened(&kestrel, 2).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let mut fired = Vec::new();
-    for session in kestrel.sessions("acme").await {
+    for workspace in kestrel.workspaces("acme").await {
         if let Entry::Brief {
             trigger: Some(trigger),
             ..
-        } = first_entry(&kestrel, &session).await
+        } = first_entry(&kestrel, &workspace).await
         {
             fired.push(trigger);
         }
     }
     fired.sort();
-    assert_eq!(sessions.len(), 2);
+    assert_eq!(workspaces.len(), 2);
     assert_eq!(fired, ["anything-labelled", "ready"]);
 
     kestrel.teardown().await;
@@ -836,7 +836,7 @@ async fn a_trigger_that_exceeds_its_firing_budget_disables_without_stopping_anot
     opened(&kestrel, 10).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    assert_eq!(kestrel.sessions("acme").await.len(), 10);
+    assert_eq!(kestrel.workspaces("acme").await.len(), 10);
     let disabled = kestrel.show_trigger("acme", "ready").await;
     assert!(matches!(disabled.state, TriggerState::Disabled(_)));
     assert!(
@@ -971,7 +971,7 @@ triggers:
     )
 }
 
-/// The first apply in a repository kestrel has watched for a month must not open a session for
+/// The first apply in a repository kestrel has watched for a month must not open a workspace for
 /// every issue that month labelled.
 #[tokio::test]
 async fn applying_a_declaration_file_never_fires_for_events_already_recorded() {
@@ -1034,12 +1034,12 @@ async fn an_applied_trigger_fires_for_events_recorded_after_it() {
         .await;
     watching(&kestrel, &stub).await;
 
-    let session = opened(&kestrel, 1).await.remove(0);
-    assert_eq!(session.agent.name, "builder");
+    let workspace = opened(&kestrel, 1).await.remove(0);
+    assert_eq!(workspace.agent.name, "builder");
 
     kestrel.apply_triggers("acme", "triggers: {}").await;
     assert!(kestrel.triggers("acme").await.is_empty());
-    assert_eq!(kestrel.sessions("acme").await.len(), 1);
+    assert_eq!(kestrel.workspaces("acme").await.len(), 1);
 
     kestrel.teardown().await;
 }
@@ -1178,7 +1178,7 @@ async fn a_trigger_is_tested_only_against_its_own_organizations_events() {
     kestrel.teardown().await;
 }
 
-/// What a firing would hand its Session is visible before anything runs.
+/// What a firing would hand its Workspace is visible before anything runs.
 #[tokio::test]
 async fn trigger_test_renders_the_brief_and_resolves_the_branch() {
     let stub = GithubStub::start();
@@ -1248,7 +1248,7 @@ async fn trigger_test_answers_for_a_declaration_not_yet_applied() {
 }
 
 #[tokio::test]
-async fn a_trigger_that_renders_no_branch_leaves_the_session_its_own() {
+async fn a_trigger_that_renders_no_branch_leaves_the_workspace_its_own() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(7, 43, READY)]));
     let kestrel = Kestrel::boot().await;
@@ -1330,7 +1330,7 @@ async fn hourly(kestrel: &Kestrel, brief: &str) -> kestrel::domain::Trigger {
 }
 
 #[tokio::test]
-async fn a_schedule_elapsing_opens_a_session_the_way_a_matched_event_does() {
+async fn a_schedule_elapsing_opens_a_workspace_the_way_a_matched_event_does() {
     let kestrel = Kestrel::boot().await;
     an_organization(&kestrel, "acme").await;
     let trigger = hourly(&kestrel, "Sweep the backlog for {{ event.data.trigger }}").await;
@@ -1338,7 +1338,7 @@ async fn a_schedule_elapsing_opens_a_session_the_way_a_matched_event_does() {
     let minted = kestrel
         .elapse(trigger.declared_at + SignedDuration::from_hours(1))
         .await;
-    let session = opened(&kestrel, 1).await.remove(0);
+    let workspace = opened(&kestrel, 1).await.remove(0);
 
     assert_eq!(minted.len(), 1, "one schedule elapsed once");
     let event = kestrel.events("acme").await.remove(0);
@@ -1352,16 +1352,16 @@ async fn a_schedule_elapsing_opens_a_session_the_way_a_matched_event_does() {
         event.occurrence.time,
         trigger.declared_at + SignedDuration::from_hours(1)
     );
-    assert_eq!(session.started_by, Some(event.record_id));
-    assert_eq!(session.agent.name, "builder");
+    assert_eq!(workspace.started_by, Some(event.record_id));
+    assert_eq!(workspace.agent.name, "builder");
     assert_eq!(
-        first_entry(&kestrel, &session).await,
+        first_entry(&kestrel, &workspace).await,
         Entry::Brief {
             trigger: Some("sweep".to_owned()),
             brief: "Sweep the backlog for sweep".to_owned(),
         }
     );
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
 
     kestrel.teardown().await;
 }
@@ -1448,7 +1448,7 @@ async fn a_scheduled_trigger_is_tested_against_its_next_elapsing() {
         kestrel.events("acme").await.is_empty(),
         "a test records nothing"
     );
-    assert!(kestrel.sessions("acme").await.is_empty());
+    assert!(kestrel.workspaces("acme").await.is_empty());
 
     kestrel.teardown().await;
 }
@@ -1514,7 +1514,7 @@ async fn a_webhook_naming_a_schedule_does_not_elapse_it() {
     kestrel
         .elapse(trigger.declared_at + SignedDuration::from_hours(1))
         .await;
-    let session = opened(&kestrel, 1).await.remove(0);
+    let workspace = opened(&kestrel, 1).await.remove(0);
 
     assert!(
         !kestrel
@@ -1522,8 +1522,8 @@ async fn a_webhook_naming_a_schedule_does_not_elapse_it() {
             .await
             .matches
     );
-    assert_ne!(session.started_by, Some(forged.record_id));
-    assert_eq!(kestrel.sessions("acme").await.len(), 1);
+    assert_ne!(workspace.started_by, Some(forged.record_id));
+    assert_eq!(kestrel.workspaces("acme").await.len(), 1);
 
     kestrel.teardown().await;
 }
@@ -1545,7 +1545,7 @@ async fn triage(kestrel: &Kestrel, brief: &str) -> kestrel::domain::Trigger {
 }
 
 #[tokio::test]
-async fn a_cron_schedule_elapsing_opens_a_session_the_way_an_interval_does() {
+async fn a_cron_schedule_elapsing_opens_a_workspace_the_way_an_interval_does() {
     let kestrel = Kestrel::boot().await;
     an_organization(&kestrel, "acme").await;
     let trigger = triage(&kestrel, "Triage for {{ event.data.trigger }}").await;
@@ -1560,7 +1560,7 @@ async fn a_cron_schedule_elapsing_opens_a_session_the_way_an_interval_does() {
             .is_empty()
     );
     let minted = kestrel.elapse(due).await;
-    let session = opened(&kestrel, 1).await.remove(0);
+    let workspace = opened(&kestrel, 1).await.remove(0);
 
     assert_eq!(minted.len(), 1);
     let event = kestrel.events("acme").await.remove(0);
@@ -1574,9 +1574,9 @@ async fn a_cron_schedule_elapsing_opens_a_session_the_way_an_interval_does() {
     assert_eq!(event.occurrence.time, due);
     assert_eq!(event.occurrence.data["cron"], "0 9 * * 1-5");
     assert_eq!(event.occurrence.data["zone"], "America/New_York");
-    assert_eq!(session.started_by, Some(event.record_id));
+    assert_eq!(workspace.started_by, Some(event.record_id));
     assert_eq!(
-        first_entry(&kestrel, &session).await,
+        first_entry(&kestrel, &workspace).await,
         Entry::Brief {
             trigger: Some("triage".to_owned()),
             brief: "Triage for triage".to_owned(),

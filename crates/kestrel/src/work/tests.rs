@@ -3,7 +3,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::domain::RunState;
 use crate::log::Window;
-use crate::session;
+use crate::workspace;
 
 struct Fixture {
     store: Store,
@@ -31,10 +31,10 @@ impl Fixture {
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let session = session::open(&store, "acme", "kestrel", "builder", None, None, None)
+        let workspace = workspace::open(&store, "acme", "kestrel", "builder", None, None, None)
             .await
             .unwrap();
-        enqueue(&store, session.id, None).await.unwrap();
+        enqueue(&store, workspace.id, None).await.unwrap();
         let run = claim(&store, &[]).await.unwrap().unwrap().run;
 
         Self {
@@ -57,7 +57,7 @@ impl Fixture {
     }
 
     async fn entries(&self) -> Vec<Entry> {
-        session::transcript(&self.store, self.run.session, None, Window::DEFAULT)
+        workspace::transcript(&self.store, self.run.workspace, None, Window::DEFAULT)
             .await
             .unwrap()
             .entries
@@ -100,7 +100,7 @@ async fn a_waiting_codex_run_yields_its_profile_and_resumes_when_free() {
         .unwrap();
     tx.commit().await.unwrap();
 
-    let first = session::open(
+    let first = workspace::open(
         &store,
         "acme",
         "kestrel",
@@ -111,7 +111,7 @@ async fn a_waiting_codex_run_yields_its_profile_and_resumes_when_free() {
     )
     .await
     .unwrap();
-    let second = session::open(
+    let second = workspace::open(
         &store,
         "acme",
         "kestrel",
@@ -151,7 +151,7 @@ async fn a_waiting_codex_run_yields_its_profile_and_resumes_when_free() {
     };
     assert_eq!(second_run.id, second_queued.id);
 
-    session::post(&store, first.id, "operator", "continue")
+    workspace::post(&store, first.id, "operator", "continue")
         .await
         .unwrap();
     assert!(
@@ -167,7 +167,7 @@ async fn a_waiting_codex_run_yields_its_profile_and_resumes_when_free() {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    let alex = session::open(
+    let alex = workspace::open(
         &store,
         "acme",
         "kestrel",
@@ -195,7 +195,7 @@ async fn a_waiting_codex_run_yields_its_profile_and_resumes_when_free() {
     )
     .await
     .unwrap();
-    session::post(&store, alex.id, "operator", "continue")
+    workspace::post(&store, alex.id, "operator", "continue")
         .await
         .unwrap();
     match occupy(&store, 2, &["codex".to_owned()]).await.unwrap() {
@@ -213,7 +213,7 @@ async fn a_waiting_codex_run_yields_its_profile_and_resumes_when_free() {
             .begin()
             .await
             .unwrap()
-            .sessions()
+            .workspaces()
             .turns(first_run.id)
             .await
             .unwrap()
@@ -377,7 +377,7 @@ async fn connection_and_heartbeat_reports_ignore_numbers_and_do_not_consume_them
     let fixture = Fixture::new().await;
     for seq in [None, Some(99)] {
         let mut tx = fixture.store.begin().await.unwrap();
-        tx.sessions()
+        tx.workspaces()
             .hold_lease(
                 &fixture.run,
                 Timestamp::now() - SignedDuration::from_secs(1),
@@ -429,7 +429,7 @@ async fn what_a_harness_writes_to_stderr_never_enters_the_transcript_or_takes_a_
 async fn a_failed_append_rolls_back_the_run_change_and_report_acceptance() {
     let fixture = Fixture::new().await;
     complete(&fixture.store, &fixture.run).await.unwrap();
-    session::seal(&fixture.store, fixture.run.session)
+    workspace::seal(&fixture.store, fixture.run.workspace)
         .await
         .unwrap();
     let before = fixture.entries().await;

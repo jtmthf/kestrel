@@ -6,7 +6,7 @@ mod support;
 use std::time::Duration;
 
 use jiff::SignedDuration;
-use kestrel::domain::{Direction, Exit, Run, RunState, Session, SessionId};
+use kestrel::domain::{Direction, Exit, Run, RunState, Workspace, WorkspaceId};
 use kestrel::link::credential::Secret;
 use kestrel::work::{Report, Reported};
 use support::HARNESS;
@@ -63,23 +63,23 @@ async fn nothing_more_is_said(stub: &GithubStub, after: usize) {
     );
 }
 
-async fn sessions(kestrel: &Kestrel, count: usize) -> Vec<Session> {
+async fn workspaces(kestrel: &Kestrel, count: usize) -> Vec<Workspace> {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        let sessions = kestrel.sessions("acme").await;
-        if sessions.len() == count {
-            return sessions;
+        let workspaces = kestrel.workspaces("acme").await;
+        if workspaces.len() == count {
+            return workspaces;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "{count} sessions never opened"
+            "{count} workspaces never opened"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
-/// A Session an Event started through an Integration that carries what it says back out.
-async fn a_session_from_the_issue(kestrel: &Kestrel, stub: &GithubStub) -> Session {
+/// A Workspace an Event started through an Integration that carries what it says back out.
+async fn a_workspace_from_the_issue(kestrel: &Kestrel, stub: &GithubStub) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(&organization, "kestrel", &[], "main")
@@ -112,14 +112,14 @@ async fn a_session_from_the_issue(kestrel: &Kestrel, stub: &GithubStub) -> Sessi
         "ready-for-agent",
     )]));
 
-    sessions(kestrel, 1).await.remove(0)
+    workspaces(kestrel, 1).await.remove(0)
 }
 
 /// A Run claimed the way a work role claims it, with its first Turn prompted.
-async fn a_working_run(kestrel: &Kestrel, session: SessionId) -> (Run, Secret) {
+async fn a_working_run(kestrel: &Kestrel, workspace: WorkspaceId) -> (Run, Secret) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        if kestrel.runs(session).await.len() == 1
+        if kestrel.runs(workspace).await.len() == 1
             && let Some(claimed) = kestrel.claim_run().await
         {
             kestrel.start(&claimed.run).await;
@@ -127,7 +127,7 @@ async fn a_working_run(kestrel: &Kestrel, session: SessionId) -> (Run, Secret) {
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the session never had a run to claim"
+            "the workspace never had a run to claim"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -156,8 +156,8 @@ async fn a_turns_response_reaches_the_issue_before_the_run_ends() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
     let kestrel = Kestrel::boot().await;
-    let session = a_session_from_the_issue(&kestrel, &stub).await;
-    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let workspace = a_workspace_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, workspace.id).await;
     let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
@@ -196,8 +196,8 @@ async fn a_final_message_repeating_a_combined_turn_response_is_not_posted_again(
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
     let kestrel = Kestrel::boot().await;
-    let session = a_session_from_the_issue(&kestrel, &stub).await;
-    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let workspace = a_workspace_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, workspace.id).await;
     let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
@@ -246,8 +246,8 @@ async fn new_final_information_after_a_turn_is_saved_and_reported_once() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
     let kestrel = Kestrel::boot().await;
-    let session = a_session_from_the_issue(&kestrel, &stub).await;
-    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let workspace = a_workspace_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, workspace.id).await;
     let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
@@ -308,8 +308,8 @@ async fn each_turn_of_one_run_says_its_own_response_once() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
     let kestrel = Kestrel::boot().await;
-    let session = a_session_from_the_issue(&kestrel, &stub).await;
-    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let workspace = a_workspace_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, workspace.id).await;
     let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
@@ -330,7 +330,7 @@ async fn each_turn_of_one_run_says_its_own_response_once() {
     // The next Turn waits on the Run holding no slot, so the work role prompts it with what
     // arrived in between.
     kestrel
-        .post_while_busy(session.id, "operator", "the second thing to do")
+        .post_while_busy(workspace.id, "operator", "the second thing to do")
         .await
         .expect("a waiting run takes the next prompt");
     kestrel.prompt_waiting().await;
@@ -388,8 +388,8 @@ async fn a_run_that_answered_no_turn_still_says_how_it_ended() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
     let kestrel = Kestrel::boot().await;
-    let session = a_session_from_the_issue(&kestrel, &stub).await;
-    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let workspace = a_workspace_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, workspace.id).await;
     let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
@@ -422,8 +422,8 @@ async fn a_failed_run_posts_its_turns_response_and_then_the_failure() {
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, github_stub::created(1, "posted"));
     let kestrel = Kestrel::boot().await;
-    let session = a_session_from_the_issue(&kestrel, &stub).await;
-    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let workspace = a_workspace_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, workspace.id).await;
     let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;
@@ -469,8 +469,8 @@ async fn a_turn_response_that_landed_while_the_control_plane_died_is_not_posted_
     let stub = GithubStub::start();
     stub.script_answer("POST", COMMENTS, ScriptedResponse::answering(502));
     let kestrel = Kestrel::boot().await;
-    let session = a_session_from_the_issue(&kestrel, &stub).await;
-    let (run, credential) = a_working_run(&kestrel, session.id).await;
+    let workspace = a_workspace_from_the_issue(&kestrel, &stub).await;
+    let (run, credential) = a_working_run(&kestrel, workspace.id).await;
     let link = Link::to(&kestrel.link());
 
     report(&link, &run, &credential, 1, Report::Started).await;

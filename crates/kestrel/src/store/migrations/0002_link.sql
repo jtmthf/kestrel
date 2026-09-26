@@ -2,7 +2,7 @@ CREATE TABLE run (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     organization_id TEXT NOT NULL REFERENCES organization (id),
-    session_id TEXT NOT NULL REFERENCES session (id),
+    workspace_id TEXT NOT NULL REFERENCES workspace (id),
     started_at TEXT NOT NULL,
     ended_at TEXT,
     connected_at TEXT,

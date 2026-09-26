@@ -1,11 +1,11 @@
 //! A Run is one continuing ACP conversation: each follow-up is another turn of it, and only an
-//! explicit stop, the Session sealing, or a failure ends it (ADR-0024).
+//! explicit stop, the Workspace sealing, or a failure ends it (ADR-0024).
 
 mod support;
 
 use std::time::Duration;
 
-use kestrel::domain::{Exit, RunId, RunState, Session, SessionId};
+use kestrel::domain::{Exit, RunId, RunState, Workspace, WorkspaceId};
 use kestrel::log::{Entry, Message};
 use kestrel_scripted_agent::conversed;
 use support::scripted_agent::{self, Script};
@@ -13,7 +13,7 @@ use support::{HARNESS, Kestrel, repository, supervisor};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
-async fn conversing(script: Script) -> (Kestrel, Session) {
+async fn conversing(script: Script) -> (Kestrel, Workspace) {
     let kestrel =
         Kestrel::dispatching_to(supervisor::binary(), &scripted_agent::playing(script)).await;
     let organization = kestrel.declare_organization("acme").await;
@@ -35,14 +35,14 @@ async fn conversing(script: Script) -> (Kestrel, Session) {
             support::A_PROVIDER_KEY,
         )
         .await;
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
 
-    (kestrel, session)
+    (kestrel, workspace)
 }
 
-async fn said(kestrel: &Kestrel, session: SessionId) -> Vec<String> {
+async fn said(kestrel: &Kestrel, workspace: WorkspaceId) -> Vec<String> {
     kestrel
-        .transcript(session)
+        .transcript(workspace)
         .await
         .into_iter()
         .filter_map(|recorded| match recorded.entry {
@@ -71,23 +71,23 @@ async fn prompted(kestrel: &Kestrel, run: kestrel::domain::RunId) {
 /// Transcript.
 #[tokio::test]
 async fn a_follow_up_is_the_next_turn_of_the_same_agent_conversation() {
-    let (kestrel, session) = conversing(Script::Converses).await;
+    let (kestrel, workspace) = conversing(Script::Converses).await;
     let run = kestrel
-        .post(session.id, "operator", "the first thing to do")
+        .post(workspace.id, "operator", "the first thing to do")
         .await;
     kestrel.answered(run.id, 1).await;
 
     let continued = kestrel
-        .post_while_busy(session.id, "operator", "the second thing to do")
+        .post_while_busy(workspace.id, "operator", "the second thing to do")
         .await
         .expect("a waiting run takes the message as its next prompt");
     assert_eq!(continued.id, run.id);
     let answered = kestrel.answered(run.id, 2).await;
 
     assert_eq!(answered.state, RunState::Waiting);
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
     assert_eq!(kestrel.turns(run.id).await.len(), 2);
-    let said = said(&kestrel, session.id).await;
+    let said = said(&kestrel, workspace.id).await;
     let [first, second] = said.as_slice() else {
         panic!("the agent answered other than twice: {said:?}");
     };
@@ -105,10 +105,10 @@ async fn a_follow_up_is_the_next_turn_of_the_same_agent_conversation() {
 /// both only words in an answer.
 #[tokio::test]
 async fn an_answer_saying_the_work_is_done_leaves_the_run_open() {
-    let (kestrel, session) = conversing(Script::Echoes).await;
+    let (kestrel, workspace) = conversing(Script::Echoes).await;
     let run = kestrel
         .post(
-            session.id,
+            workspace.id,
             "operator",
             "Done. Opened https://github.com/jtmthf/kestrel/pull/1",
         )
@@ -116,26 +116,26 @@ async fn an_answer_saying_the_work_is_done_leaves_the_run_open() {
     kestrel.answered(run.id, 1).await;
 
     kestrel
-        .post_while_busy(session.id, "operator", "one more thing")
+        .post_while_busy(workspace.id, "operator", "one more thing")
         .await
         .expect("the run is still open to take it");
     let answered = kestrel.answered(run.id, 2).await;
 
     assert_eq!(answered.state, RunState::Waiting);
-    assert_eq!(said(&kestrel, session.id).await[1], "one more thing");
+    assert_eq!(said(&kestrel, workspace.id).await[1], "one more thing");
 
     kestrel.stop_run(run.id).await;
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_session_holds_one_unfinished_run_even_while_it_waits() {
-    let (kestrel, session) = conversing(Script::Converses).await;
-    let run = kestrel.post(session.id, "operator", "start").await;
+async fn a_workspace_holds_one_unfinished_run_even_while_it_waits() {
+    let (kestrel, workspace) = conversing(Script::Converses).await;
+    let run = kestrel.post(workspace.id, "operator", "start").await;
     kestrel.answered(run.id, 1).await;
 
     let refused = kestrel
-        .try_enqueue_run(session.id)
+        .try_enqueue_run(workspace.id)
         .await
         .expect_err("a second run beside the one waiting")
         .to_string();
@@ -147,8 +147,8 @@ async fn a_session_holds_one_unfinished_run_even_while_it_waits() {
 
 #[tokio::test]
 async fn stopping_a_run_while_waiting_ends_it_succeeded_and_its_supervisor_with_it() {
-    let (kestrel, session) = conversing(Script::Converses).await;
-    let run = kestrel.post(session.id, "operator", "start").await;
+    let (kestrel, workspace) = conversing(Script::Converses).await;
+    let run = kestrel.post(workspace.id, "operator", "start").await;
     let answered = kestrel.answered(run.id, 1).await;
 
     assert_eq!(kestrel.stop_run(run.id).await, Exit::Succeeded);
@@ -164,8 +164,8 @@ async fn stopping_a_run_while_waiting_ends_it_succeeded_and_its_supervisor_with_
 
 #[tokio::test]
 async fn stopping_a_run_mid_turn_fails_it() {
-    let (kestrel, session) = conversing(Script::Dawdles).await;
-    let run = kestrel.post(session.id, "operator", "start").await;
+    let (kestrel, workspace) = conversing(Script::Dawdles).await;
+    let run = kestrel.post(workspace.id, "operator", "start").await;
     prompted(&kestrel, run.id).await;
 
     let Exit::Failed { because } = kestrel.stop_run(run.id).await else {
@@ -177,25 +177,25 @@ async fn stopping_a_run_mid_turn_fails_it() {
 }
 
 #[tokio::test]
-async fn sealing_a_session_ends_the_run_waiting_between_its_turns() {
-    let (kestrel, session) = conversing(Script::Converses).await;
-    let run = kestrel.post(session.id, "operator", "start").await;
+async fn sealing_a_workspace_ends_the_run_waiting_between_its_turns() {
+    let (kestrel, workspace) = conversing(Script::Converses).await;
+    let run = kestrel.post(workspace.id, "operator", "start").await;
     kestrel.answered(run.id, 1).await;
 
-    kestrel.seal_session(session.id).await;
+    kestrel.seal_workspace(workspace.id).await;
 
     assert_eq!(kestrel.run(run.id).await.exit, Some(Exit::Succeeded));
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_session_does_not_seal_under_a_turn_in_flight() {
-    let (kestrel, session) = conversing(Script::Dawdles).await;
-    let run = kestrel.post(session.id, "operator", "start").await;
+async fn a_workspace_does_not_seal_under_a_turn_in_flight() {
+    let (kestrel, workspace) = conversing(Script::Dawdles).await;
+    let run = kestrel.post(workspace.id, "operator", "start").await;
     prompted(&kestrel, run.id).await;
 
     let refused = kestrel
-        .try_seal_session(session.id)
+        .try_seal_workspace(workspace.id)
         .await
         .expect_err("a turn is in flight")
         .to_string();
@@ -207,8 +207,8 @@ async fn a_session_does_not_seal_under_a_turn_in_flight() {
 
 #[tokio::test]
 async fn a_turn_the_agent_fails_ends_the_run() {
-    let (kestrel, session) = conversing(Script::Refuses).await;
-    let run = kestrel.post(session.id, "operator", "start").await;
+    let (kestrel, workspace) = conversing(Script::Refuses).await;
+    let run = kestrel.post(workspace.id, "operator", "start").await;
 
     let ended = kestrel.answered(run.id, 1).await;
 
@@ -225,14 +225,14 @@ async fn a_turn_the_agent_fails_ends_the_run() {
 /// the Run too, and the next instruction starts a new Run.
 #[tokio::test]
 async fn a_later_turn_that_produced_nothing_fails_the_run() {
-    let (kestrel, session) = conversing(Script::Lapses).await;
+    let (kestrel, workspace) = conversing(Script::Lapses).await;
     let run = kestrel
-        .post(session.id, "operator", "the first thing to do")
+        .post(workspace.id, "operator", "the first thing to do")
         .await;
     kestrel.answered(run.id, 1).await;
 
     let continued = kestrel
-        .post_while_busy(session.id, "operator", "the second thing to do")
+        .post_while_busy(workspace.id, "operator", "the second thing to do")
         .await
         .expect("a waiting run takes the message as its next prompt");
     assert_eq!(continued.id, run.id);
@@ -261,12 +261,12 @@ async fn a_later_turn_that_produced_nothing_fails_the_run() {
 
     // A failed Run is done: the next instruction starts a new one rather than continuing it.
     kestrel
-        .post_while_busy(session.id, "operator", "one more try")
+        .post_while_busy(workspace.id, "operator", "one more try")
         .await;
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let next = loop {
         if let Some(next) = kestrel
-            .runs(session.id)
+            .runs(workspace.id)
             .await
             .into_iter()
             .find(|candidate| candidate.id != run.id)
@@ -288,36 +288,42 @@ async fn a_later_turn_that_produced_nothing_fails_the_run() {
 /// order it arrived.
 #[tokio::test]
 async fn messages_arriving_mid_turn_are_the_next_turn_of_the_same_run() {
-    let (kestrel, session) = conversing(Script::Lingers).await;
-    let run = kestrel.post(session.id, "operator", "start").await;
+    let (kestrel, workspace) = conversing(Script::Lingers).await;
+    let run = kestrel.post(workspace.id, "operator", "start").await;
     prompted(&kestrel, run.id).await;
 
     for message in ["one more change", "and update the docs"] {
         assert!(
             kestrel
-                .post_while_busy(session.id, "operator", message)
+                .post_while_busy(workspace.id, "operator", message)
                 .await
                 .is_none()
         );
     }
     kestrel.answered(run.id, 2).await;
 
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
-    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
-        recorded.entry
-            == Entry::Messages {
-                messages: vec![
-                    Message {
-                        participant: "operator".to_owned(),
-                        message: "one more change".to_owned(),
-                    },
-                    Message {
-                        participant: "operator".to_owned(),
-                        message: "and update the docs".to_owned(),
-                    },
-                ],
-            }
-    }));
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
+    assert!(
+        kestrel
+            .transcript(workspace.id)
+            .await
+            .iter()
+            .any(|recorded| {
+                recorded.entry
+                    == Entry::Messages {
+                        messages: vec![
+                            Message {
+                                participant: "operator".to_owned(),
+                                message: "one more change".to_owned(),
+                            },
+                            Message {
+                                participant: "operator".to_owned(),
+                                message: "and update the docs".to_owned(),
+                            },
+                        ],
+                    }
+            })
+    );
 
     kestrel.stop_run(run.id).await;
     kestrel.teardown().await;
@@ -371,10 +377,10 @@ async fn not_prompted_again(kestrel: &Kestrel, run: RunId, turns: usize) {
 }
 
 #[tokio::test]
-async fn a_waiting_run_leaves_its_active_work_slot_to_another_session() {
+async fn a_waiting_run_leaves_its_active_work_slot_to_another_workspace() {
     let kestrel = sharing_one_slot().await;
-    let waiting = kestrel.open_session("acme", "kestrel", "builder").await;
-    let working = kestrel.open_session("acme", "kestrel", "dawdler").await;
+    let waiting = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let working = kestrel.open_workspace("acme", "kestrel", "dawdler").await;
 
     let first = kestrel
         .post(waiting.id, "operator", "the first thing to do")
@@ -409,13 +415,13 @@ async fn a_waiting_run_leaves_its_active_work_slot_to_another_session() {
 }
 
 /// A freed slot goes to whichever asked for it first, so a chatty conversation cannot starve a
-/// Session that was queued before it spoke.
+/// Workspace that was queued before it spoke.
 #[tokio::test]
 async fn a_run_queued_before_a_follow_up_arrived_takes_the_freed_slot_first() {
     let kestrel = sharing_one_slot().await;
-    let waiting = kestrel.open_session("acme", "kestrel", "builder").await;
-    let holding = kestrel.open_session("acme", "kestrel", "dawdler").await;
-    let queued = kestrel.open_session("acme", "kestrel", "dawdler").await;
+    let waiting = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let holding = kestrel.open_workspace("acme", "kestrel", "dawdler").await;
+    let queued = kestrel.open_workspace("acme", "kestrel", "dawdler").await;
 
     let resumed = kestrel.post(waiting.id, "operator", "start").await;
     kestrel.answered(resumed.id, 1).await;
@@ -440,9 +446,9 @@ async fn a_run_queued_before_a_follow_up_arrived_takes_the_freed_slot_first() {
 #[tokio::test]
 async fn a_follow_up_held_before_a_run_was_queued_takes_the_freed_slot_first() {
     let kestrel = sharing_one_slot().await;
-    let waiting = kestrel.open_session("acme", "kestrel", "builder").await;
-    let holding = kestrel.open_session("acme", "kestrel", "dawdler").await;
-    let queued = kestrel.open_session("acme", "kestrel", "dawdler").await;
+    let waiting = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let holding = kestrel.open_workspace("acme", "kestrel", "dawdler").await;
+    let queued = kestrel.open_workspace("acme", "kestrel", "dawdler").await;
 
     let resumed = kestrel.post(waiting.id, "operator", "start").await;
     kestrel.answered(resumed.id, 1).await;

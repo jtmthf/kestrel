@@ -2,35 +2,35 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::declined::Declined;
-use crate::domain::{Session, SessionId};
+use crate::domain::{Workspace, WorkspaceId};
 use crate::log::Entry;
-use crate::session;
-use crate::store::session::Kept;
+use crate::store::workspace::Kept;
 use crate::store::{Store, Tx};
+use crate::workspace;
 
 pub enum Admission {
     Available,
     Waiting(String),
 }
 
-pub async fn admit(tx: &mut Tx<'_>, session: &Session) -> Result<Admission> {
-    if tx.sessions().instance(session.id).await?.is_some() {
+pub async fn admit(tx: &mut Tx<'_>, workspace: &Workspace) -> Result<Admission> {
+    if tx.workspaces().instance(workspace.id).await?.is_some() {
         return Ok(Admission::Available);
     }
-    let Some(limit) = session.organization.max_live_instances else {
+    let Some(limit) = workspace.organization.max_live_instances else {
         return Ok(Admission::Available);
     };
     if tx
-        .sessions()
-        .live_instance_count(&session.organization)
+        .workspaces()
+        .live_instance_count(&workspace.organization)
         .await?
         < limit.get()
     {
         return Ok(Admission::Available);
     }
     if let Some(instance) = tx
-        .sessions()
-        .instance_being_archived(&session.organization)
+        .workspaces()
+        .instance_being_archived(&workspace.organization)
         .await?
     {
         return Ok(Admission::Waiting(format!(
@@ -38,12 +38,16 @@ pub async fn admit(tx: &mut Tx<'_>, session: &Session) -> Result<Admission> {
         )));
     }
 
-    for kept in tx.sessions().kept_instances(&session.organization).await? {
-        let candidate = tx.sessions().get(kept.session).await?;
-        if session::unfinished_run(tx, &candidate).await?.idle()
+    for kept in tx
+        .workspaces()
+        .kept_instances(&workspace.organization)
+        .await?
+    {
+        let candidate = tx.workspaces().get(kept.workspace).await?;
+        if workspace::unfinished_run(tx, &candidate).await?.idle()
             && unpublished(&candidate.checkout.repositories, kept.observed.as_deref()).is_none()
         {
-            tx.sessions()
+            tx.workspaces()
                 .archive_instance(&candidate, &kept.instance)
                 .await?;
             return Ok(Admission::Waiting(format!(
@@ -55,7 +59,7 @@ pub async fn admit(tx: &mut Tx<'_>, session: &Session) -> Result<Admission> {
 
     Ok(Admission::Waiting(format!(
         "the organization {} has reached its limit of {} live Instance{}; none idle is known recoverable",
-        session.organization.name,
+        workspace.organization.name,
         limit,
         if limit.get() == 1 { "" } else { "s" }
     )))
@@ -146,7 +150,7 @@ fn held_in(observed: &Observed) -> Option<String> {
 
 #[derive(Debug, Clone)]
 pub struct Held {
-    pub session: SessionId,
+    pub workspace: WorkspaceId,
     pub instance: String,
     pub because: String,
 }
@@ -156,7 +160,7 @@ pub async fn held(store: &Store, organization: &str) -> Result<Vec<Held>> {
     let organization = tx.organizations().named(organization).await?;
     let mut held = Vec::new();
 
-    for kept in tx.sessions().kept_instances(&organization).await? {
+    for kept in tx.workspaces().kept_instances(&organization).await? {
         if let Some(judged) = judged(&mut tx, kept).await? {
             held.push(judged);
         }
@@ -165,9 +169,9 @@ pub async fn held(store: &Store, organization: &str) -> Result<Vec<Held>> {
     Ok(held)
 }
 
-pub async fn held_by(store: &Store, session: SessionId) -> Result<Option<Held>> {
+pub async fn held_by(store: &Store, workspace: WorkspaceId) -> Result<Option<Held>> {
     let mut tx = store.begin().await?;
-    let Some(kept) = tx.sessions().kept_instance(session).await? else {
+    let Some(kept) = tx.workspaces().kept_instance(workspace).await? else {
         return Ok(None);
     };
 
@@ -176,8 +180,8 @@ pub async fn held_by(store: &Store, session: SessionId) -> Result<Option<Held>> 
 
 /// An Instance a run is using or about to use is not held: what it holds is not yet known.
 async fn judged(tx: &mut Tx<'_>, kept: Kept) -> Result<Option<Held>> {
-    let session = tx.sessions().get(kept.session).await?;
-    if session::unfinished_run(tx, &session)
+    let workspace = tx.workspaces().get(kept.workspace).await?;
+    if workspace::unfinished_run(tx, &workspace)
         .await?
         .in_flight()
         .is_some()
@@ -186,24 +190,26 @@ async fn judged(tx: &mut Tx<'_>, kept: Kept) -> Result<Option<Held>> {
     }
 
     Ok(
-        unpublished(&session.checkout.repositories, kept.observed.as_deref()).map(|because| Held {
-            session: kept.session,
-            instance: kept.instance,
-            because,
+        unpublished(&workspace.checkout.repositories, kept.observed.as_deref()).map(|because| {
+            Held {
+                workspace: kept.workspace,
+                instance: kept.instance,
+                because,
+            }
         }),
     )
 }
 
 /// The one way work that may exist nowhere else is ever discarded, so only a person calls it.
-pub async fn release(store: &Store, id: SessionId, participant: &str) -> Result<String> {
+pub async fn release(store: &Store, id: WorkspaceId, participant: &str) -> Result<String> {
     let mut tx = store.begin().await?;
-    let session = tx.sessions().get(id).await?;
-    session.accepts("release")?;
+    let workspace = tx.workspaces().get(id).await?;
+    workspace.accepts("release")?;
 
-    let Some(kept) = tx.sessions().kept_instance(id).await? else {
-        bail!("the session {id} has no instance to release");
+    let Some(kept) = tx.workspaces().kept_instance(id).await? else {
+        bail!("the workspace {id} has no instance to release");
     };
-    if let Some(holding) = session::unfinished_run(&mut tx, &session)
+    if let Some(holding) = workspace::unfinished_run(&mut tx, &workspace)
         .await?
         .in_flight()
     {
@@ -215,47 +221,55 @@ pub async fn release(store: &Store, id: SessionId, participant: &str) -> Result<
 
     tx.log()
         .append(
-            &session,
+            &workspace,
             Entry::InstanceReleased {
                 participant: participant.to_owned(),
                 instance: kept.instance.clone(),
-                unpublished: unpublished(&session.checkout.repositories, kept.observed.as_deref()),
+                unpublished: unpublished(
+                    &workspace.checkout.repositories,
+                    kept.observed.as_deref(),
+                ),
             },
         )
         .await?;
-    tx.sessions()
-        .archive_instance(&session, &kept.instance)
+    tx.workspaces()
+        .archive_instance(&workspace, &kept.instance)
         .await?;
     tx.commit().await?;
 
     Ok(kept.instance)
 }
 
-pub(crate) async fn archive_on_seal(tx: &mut Tx<'_>, session: &Session) -> Result<()> {
-    let Some(kept) = tx.sessions().kept_instance(session.id).await? else {
+pub(crate) async fn archive_on_seal(tx: &mut Tx<'_>, workspace: &Workspace) -> Result<()> {
+    let Some(kept) = tx.workspaces().kept_instance(workspace.id).await? else {
         return Ok(());
     };
 
-    if let Some(because) = unpublished(&session.checkout.repositories, kept.observed.as_deref()) {
+    if let Some(because) = unpublished(&workspace.checkout.repositories, kept.observed.as_deref()) {
         bail!(Declined::Taken(format!(
-            "the session {}'s instance {} may hold the only copy of its work ({because}); publish \
+            "the workspace {}'s instance {} may hold the only copy of its work ({because}); publish \
              it from a follow-up run, or release the instance to discard it",
-            session.id, kept.instance
+            workspace.id, kept.instance
         )));
     }
 
-    tx.sessions()
-        .archive_instance(session, &kept.instance)
+    tx.workspaces()
+        .archive_instance(workspace, &kept.instance)
         .await
 }
 
 pub async fn to_archive(store: &Store) -> Result<Vec<String>> {
-    store.begin().await?.sessions().instances_to_archive().await
+    store
+        .begin()
+        .await?
+        .workspaces()
+        .instances_to_archive()
+        .await
 }
 
 pub async fn archived(store: &Store, instance: &str) -> Result<()> {
     let mut tx = store.begin().await?;
-    tx.sessions().instance_archived(instance).await?;
+    tx.workspaces().instance_archived(instance).await?;
 
     tx.commit().await
 }

@@ -1,12 +1,12 @@
 //! A Run whose agent process is lost goes on only where the harness can load the same
-//! conversation back; otherwise it fails where it can be seen, and its Session and checkout wait
+//! conversation back; otherwise it fails where it can be seen, and its Workspace and checkout wait
 //! for the next Run (ADR-0024).
 
 mod support;
 
 use std::time::Duration;
 
-use kestrel::domain::{Exit, RunState, Session, SessionId, SessionState};
+use kestrel::domain::{Exit, RunState, Workspace, WorkspaceId, WorkspaceState};
 use kestrel::log::Entry;
 use kestrel_scripted_agent::conversed;
 use support::environment::Environment;
@@ -15,7 +15,7 @@ use support::{Kestrel, repository, supervisor};
 
 const PATIENCE: Duration = Duration::from_secs(30);
 
-async fn a_session(kestrel: &Kestrel) -> Session {
+async fn a_workspace(kestrel: &Kestrel) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(
@@ -36,12 +36,12 @@ async fn a_session(kestrel: &Kestrel) -> Session {
         )
         .await;
 
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
-async fn said(kestrel: &Kestrel, session: SessionId) -> Vec<String> {
+async fn said(kestrel: &Kestrel, workspace: WorkspaceId) -> Vec<String> {
     kestrel
-        .transcript(session)
+        .transcript(workspace)
         .await
         .into_iter()
         .filter_map(|recorded| match recorded.entry {
@@ -63,21 +63,21 @@ async fn an_agent_that_can_load_its_session_is_brought_back_into_the_same_conver
         &scripted_agent::playing(Script::Revives),
     )
     .await;
-    let session = a_session(&kestrel).await;
+    let workspace = a_workspace(&kestrel).await;
     let run = kestrel
-        .post(session.id, "operator", "the first thing to do")
+        .post(workspace.id, "operator", "the first thing to do")
         .await;
     kestrel.answered(run.id, 1).await;
 
     kestrel
-        .post_while_busy(session.id, "operator", "the second thing to do")
+        .post_while_busy(workspace.id, "operator", "the second thing to do")
         .await
         .expect("a waiting run takes the message as its next prompt");
     let answered = kestrel.answered(run.id, 2).await;
 
     assert_eq!(answered.state, RunState::Waiting, "{:?}", answered.exit);
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
-    let said = said(&kestrel, session.id).await;
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
+    let said = said(&kestrel, workspace.id).await;
     let [first, second] = said.as_slice() else {
         panic!("the agent answered other than twice, or its replay was said again: {said:?}");
     };
@@ -111,8 +111,8 @@ async fn an_agent_lost_while_waiting_fails_the_run_and_the_next_run_takes_up_its
         &format!("\"{}\"", harness.path().display()),
     )
     .await;
-    let session = a_session(&kestrel).await;
-    let lost = kestrel.post(session.id, "operator", "start").await;
+    let workspace = a_workspace(&kestrel).await;
+    let lost = kestrel.post(workspace.id, "operator", "start").await;
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let lost = loop {
@@ -137,19 +137,19 @@ async fn an_agent_lost_while_waiting_fails_the_run_and_the_next_run_takes_up_its
     );
     assert!(kestrel.turns(lost.id).await[0].answered_at.is_some());
     assert_eq!(
-        kestrel.show_session(session.id).await.state,
-        SessionState::Open
+        kestrel.show_workspace(workspace.id).await.state,
+        WorkspaceState::Open
     );
     let instance = lost.instance.clone().expect("an instance");
-    assert_eq!(kestrel.instance(session.id).await, Some(instance.clone()));
+    assert_eq!(kestrel.instance(workspace.id).await, Some(instance.clone()));
 
     kestrel
-        .post_while_busy(session.id, "operator", "pick it back up")
+        .post_while_busy(workspace.id, "operator", "pick it back up")
         .await;
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let next = loop {
         if let Some(next) = kestrel
-            .runs(session.id)
+            .runs(workspace.id)
             .await
             .into_iter()
             .find(|candidate| candidate.id != lost.id)
@@ -166,7 +166,7 @@ async fn an_agent_lost_while_waiting_fails_the_run_and_the_next_run_takes_up_its
 
     assert_eq!(kestrel.run(next.id).await.instance, Some(instance.clone()));
     let notes = std::fs::read_to_string(
-        Environment::workspace_of(&instance)
+        Environment::root_of(&instance)
             .join(repository::NAME)
             .join("notes"),
     )

@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-use kestrel::domain::{Exit, Run, RunId, RunState, Session};
+use kestrel::domain::{Exit, Run, RunId, RunState, Workspace};
 use kestrel::link::credential::Secret;
 use support::Kestrel;
 use support::image::{self, Environment};
@@ -206,12 +206,12 @@ fn an_environment(kestrel: &Kestrel, run: RunId, credential: &Secret) -> Environ
 }
 
 async fn a_run(kestrel: &Kestrel) -> (Run, Secret) {
-    let session = a_session(kestrel).await;
+    let workspace = a_workspace(kestrel).await;
 
-    kestrel.dispatch_run(session.id).await
+    kestrel.dispatch_run(workspace.id).await
 }
 
-async fn a_session(kestrel: &Kestrel) -> Session {
+async fn a_workspace(kestrel: &Kestrel) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(
@@ -225,7 +225,7 @@ async fn a_session(kestrel: &Kestrel) -> Session {
         .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 async fn until(kestrel: &Kestrel, run: RunId, what: &str, ready: impl Fn(&Run) -> bool) -> Run {

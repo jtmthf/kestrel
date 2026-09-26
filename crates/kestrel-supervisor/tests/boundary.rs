@@ -6,7 +6,8 @@ mod support;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DOMAIN: [&str; 9] = [
+const DOMAIN: [&str; 10] = [
+    "workspace",
     "project",
     "organization",
     "transcript",

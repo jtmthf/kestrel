@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::declaration::{self, sharing_a_directory};
 use crate::declined::Declined;
-use crate::domain::{Run, Session};
+use crate::domain::{Run, Workspace};
 use crate::fanout::{self, Change};
 use crate::log::Entry;
 use crate::provider;
-use crate::store::session::Opening;
+use crate::store::workspace::Opening;
 use crate::store::{Declared, Store};
 
 #[derive(Deserialize)]
@@ -32,7 +32,7 @@ pub struct Started {
     pub organization: Settled,
     pub project: Settled,
     pub agent: Settled,
-    pub session: Session,
+    pub workspace: Workspace,
     pub run: Run,
 }
 
@@ -122,8 +122,8 @@ pub async fn start(store: &Store, plan: &Plan) -> Result<Started> {
         )
         .await?;
 
-    let session = tx
-        .sessions()
+    let workspace = tx
+        .workspaces()
         .open(Opening {
             organization: &organization.record,
             project: &project.record,
@@ -137,7 +137,7 @@ pub async fn start(store: &Store, plan: &Plan) -> Result<Started> {
         .await?;
     tx.log()
         .append(
-            &session,
+            &workspace,
             Entry::Brief {
                 trigger: None,
                 brief: plan.brief.clone(),
@@ -146,15 +146,15 @@ pub async fn start(store: &Store, plan: &Plan) -> Result<Started> {
         .await?;
     tx.log()
         .append(
-            &session,
+            &workspace,
             Entry::ParticipantJoined {
                 participant: agent.record.name.clone(),
             },
         )
         .await?;
-    let run = tx.sessions().enqueue_run(&session, None).await?;
+    let run = tx.workspaces().enqueue_run(&workspace, None).await?;
     tx.commit().await?;
-    fanout::publish(Change::SessionOpened(&session));
+    fanout::publish(Change::WorkspaceOpened(&workspace));
 
     Ok(Started {
         organization: Settled {
@@ -169,7 +169,7 @@ pub async fn start(store: &Store, plan: &Plan) -> Result<Started> {
             name: agent.record.name,
             created: agent.created,
         },
-        session,
+        workspace,
         run,
     })
 }

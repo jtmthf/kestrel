@@ -5,7 +5,7 @@ mod support;
 
 use std::time::Duration;
 
-use kestrel::domain::{Cost, Exit, Run, RunId, RunState, Session, Usage};
+use kestrel::domain::{Cost, Exit, Run, RunId, RunState, Usage, Workspace};
 use kestrel_scripted_agent::{DEFAULT_MODEL, MUTTERED, OTHER_MODEL, OVERLONG};
 use support::Kestrel;
 use support::operator_log;
@@ -18,11 +18,11 @@ const PATIENCE: Duration = Duration::from_secs(30);
 /// against the name an Agent declared here names.
 use support::HARNESS;
 
-async fn a_session(kestrel: &Kestrel) -> Session {
-    a_session_naming(kestrel, Some(OTHER_MODEL)).await
+async fn a_workspace(kestrel: &Kestrel) -> Workspace {
+    a_workspace_naming(kestrel, Some(OTHER_MODEL)).await
 }
 
-async fn a_session_naming(kestrel: &Kestrel, model: Option<&str>) -> Session {
+async fn a_workspace_naming(kestrel: &Kestrel, model: Option<&str>) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(
@@ -44,7 +44,7 @@ async fn a_session_naming(kestrel: &Kestrel, model: Option<&str>) -> Session {
         )
         .await;
 
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 /// A Run the work role has started a supervisor for, and is therefore past reading its Agent's
@@ -64,23 +64,23 @@ async fn in_flight(kestrel: &Kestrel, run: RunId) {
     }
 }
 
-async fn worked(script: Script) -> (Kestrel, Session, Run) {
+async fn worked(script: Script) -> (Kestrel, Workspace, Run) {
     worked_naming(script, Some(OTHER_MODEL)).await
 }
 
-async fn worked_naming(script: Script, model: Option<&str>) -> (Kestrel, Session, Run) {
+async fn worked_naming(script: Script, model: Option<&str>) -> (Kestrel, Workspace, Run) {
     let kestrel =
         Kestrel::dispatching_to(supervisor::binary(), &scripted_agent::playing(script)).await;
-    let session = a_session_naming(&kestrel, model).await;
-    let run = kestrel.enqueue_run(session.id).await;
+    let workspace = a_workspace_naming(&kestrel, model).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     let ended = kestrel.after_one_turn(run.id).await;
 
-    (kestrel, session, ended)
+    (kestrel, workspace, ended)
 }
 
-async fn transcript(kestrel: &Kestrel, session: &Session) -> Vec<String> {
+async fn transcript(kestrel: &Kestrel, workspace: &Workspace) -> Vec<String> {
     kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .iter()
         .map(|entry| entry.entry.to_string())
@@ -89,11 +89,11 @@ async fn transcript(kestrel: &Kestrel, session: &Session) -> Vec<String> {
 
 #[tokio::test]
 async fn what_the_agent_says_reaches_the_transcript_coalesced_by_the_message_it_belongs_to() {
-    let (kestrel, session, run) = worked(Script::Speaks).await;
+    let (kestrel, workspace, run) = worked(Script::Speaks).await;
 
     assert_eq!(run.exit, Some(Exit::Succeeded));
     assert_eq!(
-        transcript(&kestrel, &session)
+        transcript(&kestrel, &workspace)
             .await
             .into_iter()
             .filter(|entry| entry.starts_with("said"))
@@ -109,9 +109,9 @@ async fn what_the_agent_says_reaches_the_transcript_coalesced_by_the_message_it_
 
 #[tokio::test]
 async fn an_agents_plan_its_tool_calls_and_its_reasoning_reach_no_transcript() {
-    let (kestrel, session, _) = worked(Script::Speaks).await;
+    let (kestrel, workspace, _) = worked(Script::Speaks).await;
 
-    let transcript = transcript(&kestrel, &session).await.join("\n");
+    let transcript = transcript(&kestrel, &workspace).await.join("\n");
     for inside_the_run in [
         "read the issue",
         "the issue looks small",
@@ -135,8 +135,8 @@ async fn what_the_agent_writes_to_stderr_reaches_the_operator_log_mid_run_and_no
         &scripted_agent::playing(Script::Mutters),
     )
     .await;
-    let session = a_session(&kestrel).await;
-    let run = kestrel.enqueue_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
 
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let relayed = loop {
@@ -163,7 +163,7 @@ async fn what_the_agent_writes_to_stderr_reaches_the_operator_log_mid_run_and_no
         "the overlong line was relayed {} bytes long",
         relayed[1].len()
     );
-    let transcript = transcript(&kestrel, &session).await.join("\n");
+    let transcript = transcript(&kestrel, &workspace).await.join("\n");
     assert!(!transcript.contains(MUTTERED), "{transcript}");
 
     kestrel.teardown().await;
@@ -171,7 +171,7 @@ async fn what_the_agent_writes_to_stderr_reaches_the_operator_log_mid_run_and_no
 
 #[tokio::test]
 async fn what_the_agent_used_is_recorded_on_the_run_and_reaches_no_transcript() {
-    let (kestrel, session, run) = worked(Script::Speaks).await;
+    let (kestrel, workspace, run) = worked(Script::Speaks).await;
 
     assert_eq!(
         run.usage,
@@ -184,7 +184,7 @@ async fn what_the_agent_used_is_recorded_on_the_run_and_reaches_no_transcript() 
             }),
         })
     );
-    let transcript = transcript(&kestrel, &session).await.join("\n");
+    let transcript = transcript(&kestrel, &workspace).await.join("\n");
     assert!(
         !transcript.contains("1200") && !transcript.contains("0.42"),
         "the transcript carries what the agent used:\n{transcript}"
@@ -198,8 +198,8 @@ async fn what_the_agent_used_is_recorded_on_the_run_and_reaches_no_transcript() 
 #[tokio::test]
 async fn a_permission_request_is_answered_and_the_round_trip_is_observable() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (run, credential) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (run, credential) = kestrel.dispatch_run(workspace.id).await;
 
     let mut supervisor = Supervisor::provision(&kestrel.link(), run.id, &credential);
     supervisor.wait_until_it_says("reported connected").await;
@@ -284,7 +284,7 @@ async fn a_turn_that_only_used_a_tool_or_asked_permission_is_answered() {
 
 #[tokio::test]
 async fn an_agent_that_does_not_answer_acp_v1_fails_the_run_rather_than_being_prompted_anyway() {
-    let (kestrel, session, run) = worked(Script::Predates).await;
+    let (kestrel, workspace, run) = worked(Script::Predates).await;
 
     let Some(Exit::Failed { because }) = &run.exit else {
         panic!(
@@ -294,7 +294,7 @@ async fn an_agent_that_does_not_answer_acp_v1_fails_the_run_rather_than_being_pr
     };
     assert!(because.contains("v1"), "unhelpful exit status: {because}");
     assert!(
-        !transcript(&kestrel, &session)
+        !transcript(&kestrel, &workspace)
             .await
             .iter()
             .any(|entry| entry.starts_with("said")),
@@ -349,8 +349,8 @@ async fn an_agent_that_will_not_work_until_it_is_logged_in_fails_the_run_rather_
 #[tokio::test]
 async fn the_supervisor_sets_the_model_it_was_given() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (run, credential) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (run, credential) = kestrel.dispatch_run(workspace.id).await;
 
     let mut supervisor = Supervisor::provision_selecting(
         &kestrel.link(),
@@ -405,29 +405,29 @@ async fn a_run_that_names_no_model_skips_selection_when_its_harness_offers_none(
 }
 
 #[tokio::test]
-async fn two_runs_in_one_session_can_drive_different_models() {
+async fn two_runs_in_one_workspace_can_drive_different_models() {
     let kestrel = Kestrel::dispatching_to(
         supervisor::binary(),
         &scripted_agent::playing(Script::Speaks),
     )
     .await;
-    let session = a_session_naming(&kestrel, Some(OTHER_MODEL)).await;
+    let workspace = a_workspace_naming(&kestrel, Some(OTHER_MODEL)).await;
 
     let built = kestrel
-        .enqueue_run_naming(session.id, Some(OTHER_MODEL))
+        .enqueue_run_naming(workspace.id, Some(OTHER_MODEL))
         .await;
     let built = kestrel.after_one_turn(built.id).await;
     let deadline = tokio::time::Instant::now() + PATIENCE;
     let reviewed = loop {
         match kestrel
-            .try_enqueue_run_naming(session.id, Some(DEFAULT_MODEL))
+            .try_enqueue_run_naming(workspace.id, Some(DEFAULT_MODEL))
             .await
         {
             Ok(run) => break run,
             Err(_) if tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            Err(error) => panic!("the session never took its next run: {error}"),
+            Err(error) => panic!("the workspace never took its next run: {error}"),
         }
     };
     let reviewed = kestrel.after_one_turn(reviewed.id).await;
@@ -449,12 +449,12 @@ async fn changing_an_agents_model_leaves_a_run_already_in_flight_on_the_one_it_s
         &scripted_agent::playing(Script::Lingers),
     )
     .await;
-    let session = a_session_naming(&kestrel, Some(OTHER_MODEL)).await;
-    let run = kestrel.enqueue_run(session.id).await;
+    let workspace = a_workspace_naming(&kestrel, Some(OTHER_MODEL)).await;
+    let run = kestrel.enqueue_run(workspace.id).await;
     in_flight(&kestrel, run.id).await;
 
     kestrel
-        .set_agent_model(&session.organization, "builder", Some(DEFAULT_MODEL))
+        .set_agent_model(&workspace.organization, "builder", Some(DEFAULT_MODEL))
         .await;
     assert_eq!(
         kestrel.run(run.id).await.state,
@@ -480,9 +480,9 @@ async fn an_agent_that_lets_no_client_choose_a_model_fails_a_run_that_named_one(
         &scripted_agent::playing(Script::Decides),
     )
     .await;
-    let session = a_session_naming(&kestrel, None).await;
+    let workspace = a_workspace_naming(&kestrel, None).await;
     let run = kestrel
-        .enqueue_run_naming(session.id, Some(OTHER_MODEL))
+        .enqueue_run_naming(workspace.id, Some(OTHER_MODEL))
         .await;
     let run = kestrel.after_one_turn(run.id).await;
 

@@ -12,7 +12,7 @@ mod support;
 use std::time::Duration;
 
 use kestrel::compute::{Docker, Driver, Instance, Supervisor};
-use kestrel::domain::{Exit, Run, RunId, Session};
+use kestrel::domain::{Exit, Run, RunId, Workspace};
 use kestrel::link::credential::Secret;
 use serde_json::json;
 use support::Kestrel;
@@ -34,7 +34,7 @@ const MODEL_SNAPSHOT: &str = "/workspace/models.json";
 
 /// A Run, the Instance executing it, and what the supervisor on it says. Provisioned through
 /// the `Compute` port rather than through the work role, because the model the Harness is
-/// pointed at is this test's and has to reach the Workspace before the turn starts.
+/// pointed at is this test's and has to reach the Instance before the turn starts.
 struct Driven {
     run: Run,
     instance: Instance,
@@ -44,13 +44,13 @@ struct Driven {
 
 impl Driven {
     async fn in_an_environment(kestrel: &Kestrel, model: &Model) -> Self {
-        let session = a_session(kestrel).await;
-        let (run, credential) = kestrel.dispatch_run(session.id).await;
+        let workspace = a_workspace(kestrel).await;
+        let (run, credential) = kestrel.dispatch_run(workspace.id).await;
         let (instance, supervisor, diagnostics) = provisioned(
             kestrel,
             run.id,
             &credential,
-            session.agent.model.as_deref().unwrap_or_default(),
+            workspace.agent.model.as_deref().unwrap_or_default(),
         );
 
         let mut driven = Self {
@@ -153,7 +153,7 @@ fn configured_with(model: &Model) -> String {
     .to_string()
 }
 
-async fn a_session(kestrel: &Kestrel) -> Session {
+async fn a_workspace(kestrel: &Kestrel) -> Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(&organization, "kestrel", &[], "main")
@@ -162,7 +162,7 @@ async fn a_session(kestrel: &Kestrel) -> Session {
         .declare_agent(&organization, "builder", "opencode", Some(MODEL))
         .await;
 
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 /// Answering a turn never ends a Run, so one that answered is stopped, the way a person would.
@@ -184,9 +184,9 @@ async fn working_at_a_turn(model: &Model, times: usize) {
     }
 }
 
-async fn transcript(kestrel: &Kestrel, session: &Session) -> Vec<String> {
+async fn transcript(kestrel: &Kestrel, workspace: &Workspace) -> Vec<String> {
     kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .iter()
         .map(|entry| entry.entry.to_string())
@@ -229,12 +229,12 @@ async fn what_the_agent_says_reaches_the_transcript_and_what_it_does_inside_the_
     let kestrel = Kestrel::boot_reachable_from_an_environment().await;
     let model = Model::serving();
     let mut driven = Driven::in_an_environment(&kestrel, &model).await;
-    let session = kestrel.show_session(driven.run.session).await;
+    let workspace = kestrel.show_workspace(driven.run.workspace).await;
 
     ended(&kestrel, driven.run.id).await;
     driven.diagnostics.drain();
 
-    let transcript = transcript(&kestrel, &session).await;
+    let transcript = transcript(&kestrel, &workspace).await;
     assert_eq!(
         transcript
             .iter()
@@ -269,7 +269,7 @@ async fn a_permission_request_is_answered_and_the_harness_proceeds() {
     let kestrel = Kestrel::boot_reachable_from_an_environment().await;
     let model = Model::serving();
     let mut driven = Driven::in_an_environment(&kestrel, &model).await;
-    let session = kestrel.show_session(driven.run.session).await;
+    let workspace = kestrel.show_workspace(driven.run.workspace).await;
 
     driven
         .diagnostics
@@ -279,7 +279,7 @@ async fn a_permission_request_is_answered_and_the_harness_proceeds() {
 
     assert_eq!(ended.exit, Some(Exit::Succeeded));
     assert!(
-        transcript(&kestrel, &session)
+        transcript(&kestrel, &workspace)
             .await
             .iter()
             .any(|entry| entry.ends_with("a second message")),

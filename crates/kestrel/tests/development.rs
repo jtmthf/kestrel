@@ -3,7 +3,7 @@
 //!
 //! Every test here builds and runs the image, which a `cargo test` has no business doing on
 //! its own, so they are ignored by default. CI runs all but `kestrel_passes_its_own_checks`,
-//! which compiles the workspace three times over and runs on a schedule instead.
+//! which compiles the Cargo workspace three times over and runs on a schedule instead.
 
 mod support;
 
@@ -94,7 +94,7 @@ fn the_image_carries_no_credentials() {
 }
 
 #[test]
-#[ignore = "builds kestrel-dev and compiles the workspace in it"]
+#[ignore = "builds kestrel-dev and compiles the Cargo workspace in it"]
 fn kestrel_passes_its_own_checks_in_the_image() {
     let checkout = format!("{}:/workspace/kestrel:ro", docker::repository().display());
     let ran = docker::ran(&[

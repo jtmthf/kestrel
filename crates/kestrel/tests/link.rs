@@ -43,11 +43,11 @@ async fn declared(kestrel: &Kestrel) {
         .await;
 }
 
-/// A second Session, because at 0.1 nothing yet stops two Runs being live in one.
+/// A second Workspace, because at 0.1 nothing yet stops two Runs being live in one.
 async fn another_run(kestrel: &Kestrel) -> (Run, Secret) {
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
 
-    kestrel.dispatch_run(session.id).await
+    kestrel.dispatch_run(workspace.id).await
 }
 
 #[tokio::test]
@@ -433,7 +433,7 @@ async fn paged(link: &Link, run: &Run, credential: &Secret, window: usize) -> Ve
 }
 
 #[tokio::test]
-async fn an_environment_reads_the_transcript_of_the_session_its_run_belongs_to_in_windows() {
+async fn an_environment_reads_the_transcript_of_the_workspace_its_run_belongs_to_in_windows() {
     let kestrel = Kestrel::boot().await;
     let (run, credential) = a_run(&kestrel).await;
     for message in 1..=4 {
@@ -466,7 +466,7 @@ async fn the_link_refuses_a_cursor_that_names_no_position_in_the_transcript() {
     let (run, credential) = a_run(&kestrel).await;
     let link = Link::to(&kestrel.link());
 
-    for cursor in ["halfway-through", &format!("{}:99", run.session)] {
+    for cursor in ["halfway-through", &format!("{}:99", run.workspace)] {
         assert_eq!(
             link.entries(run.id, Some(&credential), Some(cursor), None)
                 .await

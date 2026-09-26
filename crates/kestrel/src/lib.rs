@@ -20,7 +20,6 @@ pub mod provider;
 pub mod readiness;
 pub mod reference;
 pub mod role;
-pub mod session;
 pub mod shutdown;
 pub mod start;
 pub mod store;
@@ -29,6 +28,7 @@ pub mod template;
 pub mod timer;
 pub mod trigger;
 pub mod work;
+pub mod workspace;
 
 use tokio_util::sync::CancellationToken;
 

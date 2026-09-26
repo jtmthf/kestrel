@@ -23,7 +23,7 @@ const EVENTS: &str = "/issues/events?";
 const COMMENTS: &str = "/issues/comments?";
 const PATIENCE: Duration = Duration::from_secs(30);
 
-async fn a_session(kestrel: &Kestrel) -> kestrel::domain::Session {
+async fn a_workspace(kestrel: &Kestrel) -> kestrel::domain::Workspace {
     let organization = kestrel.declare_organization("acme").await;
     kestrel
         .declare_project(&organization, "kestrel", &[], "main")
@@ -31,7 +31,7 @@ async fn a_session(kestrel: &Kestrel) -> kestrel::domain::Session {
     kestrel
         .declare_agent(&organization, "builder", "opencode", None)
         .await;
-    kestrel.open_session("acme", "kestrel", "builder").await
+    kestrel.open_workspace("acme", "kestrel", "builder").await
 }
 
 /// The Trigger comes before the poll: an Event recorded before the Trigger was declared fires
@@ -65,22 +65,22 @@ async fn watching(kestrel: &Kestrel, stub: &GithubStub) {
         .await;
 }
 
-async fn sessions(kestrel: &Kestrel, count: usize) -> Vec<kestrel::domain::Session> {
+async fn workspaces(kestrel: &Kestrel, count: usize) -> Vec<kestrel::domain::Workspace> {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        let sessions = kestrel.sessions("acme").await;
-        if sessions.len() == count {
-            return sessions;
+        let workspaces = kestrel.workspaces("acme").await;
+        if workspaces.len() == count {
+            return workspaces;
         }
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
-async fn runs(kestrel: &Kestrel, session: kestrel::domain::SessionId, count: usize) {
+async fn runs(kestrel: &Kestrel, workspace: kestrel::domain::WorkspaceId, count: usize) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        if kestrel.runs(session).await.len() == count {
+        if kestrel.runs(workspace).await.len() == count {
             return;
         }
         assert!(tokio::time::Instant::now() < deadline);
@@ -88,10 +88,14 @@ async fn runs(kestrel: &Kestrel, session: kestrel::domain::SessionId, count: usi
     }
 }
 
-async fn message_arrived(kestrel: &Kestrel, session: kestrel::domain::SessionId, message: &str) {
+async fn message_arrived(
+    kestrel: &Kestrel,
+    workspace: kestrel::domain::WorkspaceId,
+    message: &str,
+) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        if kestrel.transcript(session).await.iter().any(|recorded| {
+        if kestrel.transcript(workspace).await.iter().any(|recorded| {
             matches!(&recorded.entry, Entry::Said { message: said, .. } if said == message)
         }) {
             return;
@@ -117,10 +121,10 @@ async fn requested(stub: &GithubStub, path: &str, after: usize) {
     }
 }
 
-async fn pending_arrived(kestrel: &Kestrel, session: kestrel::domain::SessionId) {
+async fn pending_arrived(kestrel: &Kestrel, workspace: kestrel::domain::WorkspaceId) {
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
-        if kestrel.has_pending_messages(session).await {
+        if kestrel.has_pending_messages(workspace).await {
             return;
         }
         assert!(tokio::time::Instant::now() < deadline);
@@ -129,23 +133,29 @@ async fn pending_arrived(kestrel: &Kestrel, session: kestrel::domain::SessionId)
 }
 
 #[tokio::test]
-async fn posting_a_message_into_an_idle_session_enqueues_its_next_run() {
+async fn posting_a_message_into_an_idle_workspace_enqueues_its_next_run() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
+    let workspace = a_workspace(&kestrel).await;
 
     let run = kestrel
-        .post(session.id, "operator", "please add the missing test")
+        .post(workspace.id, "operator", "please add the missing test")
         .await;
 
-    assert_eq!(run.session, session.id);
+    assert_eq!(run.workspace, workspace.id);
     assert_eq!(run.state, RunState::Queued);
-    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
-        matches!(
-            &recorded.entry,
-            Entry::Said { participant, message }
-                if participant == "operator" && message == "please add the missing test"
-        )
-    }));
+    assert!(
+        kestrel
+            .transcript(workspace.id)
+            .await
+            .iter()
+            .any(|recorded| {
+                matches!(
+                    &recorded.entry,
+                    Entry::Said { participant, message }
+                        if participant == "operator" && message == "please add the missing test"
+                )
+            })
+    );
 
     kestrel.teardown().await;
 }
@@ -153,35 +163,39 @@ async fn posting_a_message_into_an_idle_session_enqueues_its_next_run() {
 #[tokio::test]
 async fn a_message_arriving_during_a_run_waits_for_that_run_to_end() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (active, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (active, _) = kestrel.dispatch_run(workspace.id).await;
 
     assert!(
         kestrel
-            .post_while_busy(session.id, "operator", "one more change")
+            .post_while_busy(workspace.id, "operator", "one more change")
             .await
             .is_none()
     );
     assert!(
         kestrel
-            .post_while_busy(session.id, "operator", "and update the docs")
+            .post_while_busy(workspace.id, "operator", "and update the docs")
             .await
             .is_none()
     );
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
     assert!(
-        !kestrel.transcript(session.id).await.iter().any(|recorded| {
-            matches!(&recorded.entry, Entry::Said { .. } | Entry::Messages { .. })
-        })
+        !kestrel
+            .transcript(workspace.id)
+            .await
+            .iter()
+            .any(|recorded| {
+                matches!(&recorded.entry, Entry::Said { .. } | Entry::Messages { .. })
+            })
     );
 
     kestrel.complete_run(&active).await;
 
-    let runs = kestrel.runs(session.id).await;
+    let runs = kestrel.runs(workspace.id).await;
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[1].state, RunState::Queued);
     let messages = kestrel
-        .transcript(session.id)
+        .transcript(workspace.id)
         .await
         .into_iter()
         .filter_map(|recorded| match recorded.entry {
@@ -207,34 +221,34 @@ async fn a_message_arriving_during_a_run_waits_for_that_run_to_end() {
 }
 
 #[tokio::test]
-async fn cleanup_left_by_a_stopped_worker_is_found_before_the_session_continues() {
+async fn cleanup_left_by_a_stopped_worker_is_found_before_the_workspace_continues() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (active, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (active, _) = kestrel.dispatch_run(workspace.id).await;
     kestrel.supervised(&active, "local-exec/2147483647").await;
     assert!(
         kestrel
-            .post_while_busy(session.id, "operator", "continue after cleanup")
+            .post_while_busy(workspace.id, "operator", "continue after cleanup")
             .await
             .is_none()
     );
 
     kestrel.complete_run(&active).await;
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
     let reapable = kestrel.supervisors_to_stop().await;
     assert_eq!(reapable.len(), 1);
     assert_eq!(reapable[0].0.id, active.id);
 
     kestrel.supervisor_gone(&active).await;
-    assert_eq!(kestrel.runs(session.id).await.len(), 2);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 2);
     kestrel.teardown().await;
 }
 
 #[tokio::test]
 async fn a_cold_run_is_seeded_with_every_page_of_earlier_context() {
     let kestrel = Kestrel::boot().await;
-    let session = a_session(&kestrel).await;
-    let (first, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = a_workspace(&kestrel).await;
+    let (first, _) = kestrel.dispatch_run(workspace.id).await;
 
     for index in 0..105 {
         let message = match index {
@@ -246,7 +260,7 @@ async fn a_cold_run_is_seeded_with_every_page_of_earlier_context() {
     }
     kestrel.complete_run(&first).await;
     let second = kestrel
-        .post(session.id, "operator", "please continue")
+        .post(workspace.id, "operator", "please continue")
         .await;
     let claimed = kestrel
         .claim_run()
@@ -265,12 +279,18 @@ async fn a_cold_run_is_seeded_with_every_page_of_earlier_context() {
     supervisor.wait_until_it_says("reported answered").await;
     kestrel.stop_run(second.id).await;
 
-    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
-        matches!(
-            &recorded.entry,
-            Entry::Said { message, .. } if message == "I remember the whole earlier context"
-        )
-    }));
+    assert!(
+        kestrel
+            .transcript(workspace.id)
+            .await
+            .iter()
+            .any(|recorded| {
+                matches!(
+                    &recorded.entry,
+                    Entry::Said { message, .. } if message == "I remember the whole earlier context"
+                )
+            })
+    );
 
     assert!(supervisor.finishes().await.success());
     kestrel.teardown().await;
@@ -293,9 +313,9 @@ async fn the_second_run_starts_a_fresh_supervisor_on_the_same_instance_after_the
     kestrel
         .hold_provider_credential(&organization, PROVIDER_KEY, A_PROVIDER_KEY)
         .await;
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
 
-    let first = kestrel.post(session.id, "operator", FIRST_MEMORY).await;
+    let first = kestrel.post(workspace.id, "operator", FIRST_MEMORY).await;
     kestrel.answered(first.id, 1).await;
     kestrel.stop_run(first.id).await;
     let first = kestrel.run(first.id).await;
@@ -305,7 +325,7 @@ async fn the_second_run_starts_a_fresh_supervisor_on_the_same_instance_after_the
         .await;
     kestrel.supervisor_recorded_gone(&first).await;
 
-    let second = kestrel.post(session.id, "operator", LAST_MEMORY).await;
+    let second = kestrel.post(workspace.id, "operator", LAST_MEMORY).await;
     kestrel.answered(second.id, 1).await;
     let second = kestrel.run(second.id).await;
     let second_supervisor = second.supervisor.as_deref().expect("a supervisor");
@@ -321,7 +341,7 @@ async fn the_second_run_starts_a_fresh_supervisor_on_the_same_instance_after_the
 }
 
 #[tokio::test]
-async fn a_github_comment_enqueues_a_second_run_in_the_originating_session() {
+async fn a_github_comment_enqueues_a_second_run_in_the_originating_workspace() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(
         7,
@@ -330,7 +350,7 @@ async fn a_github_comment_enqueues_a_second_run_in_the_originating_session() {
     )]));
     let kestrel = Kestrel::boot().await;
     watching(&kestrel, &stub).await;
-    let session = sessions(&kestrel, 1).await.remove(0);
+    let workspace = workspaces(&kestrel, 1).await.remove(0);
     let first = kestrel
         .claim_run()
         .await
@@ -353,30 +373,36 @@ async fn a_github_comment_enqueues_a_second_run_in_the_originating_session() {
         )]),
     );
     requested(&stub, COMMENTS, comments_before).await;
-    pending_arrived(&kestrel, session.id).await;
+    pending_arrived(&kestrel, workspace.id).await;
     assert_eq!(
-        kestrel.runs(session.id).await.len(),
+        kestrel.runs(workspace.id).await.len(),
         1,
         "the comment started a concurrent run"
     );
-    assert!(!kestrel.transcript(session.id).await.iter().any(|recorded| {
+    assert!(!kestrel.transcript(workspace.id).await.iter().any(|recorded| {
         matches!(&recorded.entry, Entry::Said { message, .. } if message == "please add the missing test")
     }));
 
     kestrel.complete_run(&first).await;
-    runs(&kestrel, session.id, 2).await;
+    runs(&kestrel, workspace.id, 2).await;
 
-    assert_eq!(kestrel.sessions("acme").await.len(), 1);
-    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
-        matches!(
-            &recorded.entry,
-            Entry::Messages { messages }
-                if messages == &[Message {
-                    participant: "jack".to_owned(),
-                    message: "please add the missing test".to_owned(),
-                }]
-        )
-    }));
+    assert_eq!(kestrel.workspaces("acme").await.len(), 1);
+    assert!(
+        kestrel
+            .transcript(workspace.id)
+            .await
+            .iter()
+            .any(|recorded| {
+                matches!(
+                    &recorded.entry,
+                    Entry::Messages { messages }
+                        if messages == &[Message {
+                            participant: "jack".to_owned(),
+                            message: "please add the missing test".to_owned(),
+                        }]
+                )
+            })
+    );
 
     kestrel.teardown().await;
 }
@@ -391,7 +417,7 @@ async fn comments_arriving_during_a_turn_wait_in_order_with_their_authors() {
     )]));
     let kestrel = Kestrel::boot().await;
     watching(&kestrel, &stub).await;
-    let session = sessions(&kestrel, 1).await.remove(0);
+    let workspace = workspaces(&kestrel, 1).await.remove(0);
     let first = kestrel
         .claim_run()
         .await
@@ -412,35 +438,41 @@ async fn comments_arriving_during_a_turn_wait_in_order_with_their_authors() {
         ]),
     );
     requested(&stub, COMMENTS, comments_before).await;
-    pending_arrived(&kestrel, session.id).await;
+    pending_arrived(&kestrel, workspace.id).await;
     // Both comments are one poll's, and each is received in its own transaction; let the sweep
     // finish holding the second before the run ends.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     kestrel.complete_run(&first).await;
-    runs(&kestrel, session.id, 2).await;
+    runs(&kestrel, workspace.id, 2).await;
 
-    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
-        recorded.entry
-            == Entry::Messages {
-                messages: vec![
-                    Message {
-                        participant: "jack".to_owned(),
-                        message: "one more change".to_owned(),
-                    },
-                    Message {
-                        participant: "jill".to_owned(),
-                        message: "and update the docs".to_owned(),
-                    },
-                ],
-            }
-    }));
+    assert!(
+        kestrel
+            .transcript(workspace.id)
+            .await
+            .iter()
+            .any(|recorded| {
+                recorded.entry
+                    == Entry::Messages {
+                        messages: vec![
+                            Message {
+                                participant: "jack".to_owned(),
+                                message: "one more change".to_owned(),
+                            },
+                            Message {
+                                participant: "jill".to_owned(),
+                                message: "and update the docs".to_owned(),
+                            },
+                        ],
+                    }
+            })
+    );
 
     kestrel.teardown().await;
 }
 
 #[tokio::test]
-async fn a_comment_polled_with_its_origin_waits_for_the_session_to_open() {
+async fn a_comment_polled_with_its_origin_waits_for_the_workspace_to_open() {
     let stub = GithubStub::start();
     let occurred_at = serde_json::json!("2026-09-01T12:00:07Z");
     let mut label = github_stub::labelled(7, ISSUE, "ready-for-agent");
@@ -452,10 +484,10 @@ async fn a_comment_polled_with_its_origin_waits_for_the_session_to_open() {
 
     let kestrel = Kestrel::boot().await;
     watching(&kestrel, &stub).await;
-    let session = sessions(&kestrel, 1).await.remove(0);
-    message_arrived(&kestrel, session.id, "picked up together").await;
+    let workspace = workspaces(&kestrel, 1).await.remove(0);
+    message_arrived(&kestrel, workspace.id, "picked up together").await;
 
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
     kestrel.teardown().await;
 }
 
@@ -545,7 +577,7 @@ async fn watching_correlated(kestrel: &Kestrel, stub: &GithubStub, correlation: 
 }
 
 #[tokio::test]
-async fn a_comment_on_a_sealed_session_feeds_the_open_one_holding_its_correlation() {
+async fn a_comment_on_a_sealed_workspace_feeds_the_open_one_holding_its_correlation() {
     let stub = GithubStub::start();
     stub.script(github_stub::page(&[github_stub::labelled(
         7,
@@ -554,25 +586,25 @@ async fn a_comment_on_a_sealed_session_feeds_the_open_one_holding_its_correlatio
     )]));
     let kestrel = Kestrel::boot().await;
     watching_correlated(&kestrel, &stub, "the release").await;
-    let sealed = sessions(&kestrel, 1).await.remove(0);
+    let sealed = workspaces(&kestrel, 1).await.remove(0);
     let first = kestrel
         .claim_run()
         .await
         .expect("the first run should claim")
         .run;
     kestrel.complete_run(&first).await;
-    kestrel.seal_session(sealed.id).await;
+    kestrel.seal_workspace(sealed.id).await;
 
     stub.script_answer(
         "GET",
         EVENTS,
         github_stub::page(&[github_stub::labelled(8, ISSUE + 1, "ready-for-agent")]),
     );
-    let holding = sessions(&kestrel, 2)
+    let holding = workspaces(&kestrel, 2)
         .await
         .into_iter()
-        .find(|session| session.id != sealed.id)
-        .expect("the second label should continue the sealed session");
+        .find(|workspace| workspace.id != sealed.id)
+        .expect("the second label should continue the sealed workspace");
     stub.script_answer(
         "GET",
         COMMENTS,
@@ -585,12 +617,12 @@ async fn a_comment_on_a_sealed_session_feeds_the_open_one_holding_its_correlatio
     );
 
     message_arrived(&kestrel, holding.id, "about the release").await;
-    assert_eq!(kestrel.sessions("acme").await.len(), 2);
+    assert_eq!(kestrel.workspaces("acme").await.len(), 2);
 
     kestrel.teardown().await;
 }
 
-/// A Trigger that names the one login it obeys, so a Session it opened has an author it
+/// A Trigger that names the one login it obeys, so a Workspace it opened has an author it
 /// authorizes and everyone else is a stranger to it.
 async fn watching_a_named_actor(kestrel: &Kestrel, stub: &GithubStub) {
     let organization = kestrel.declare_organization("acme").await;
@@ -628,7 +660,7 @@ async fn watching_a_named_actor(kestrel: &Kestrel, stub: &GithubStub) {
         .await;
 }
 
-/// The maintainer's command, which is the comment that opens the session.
+/// The maintainer's command, which is the comment that opens the workspace.
 fn the_command(stub: &GithubStub) {
     stub.script_answer(
         "GET",
@@ -674,12 +706,12 @@ async fn the_remark_was_recorded(kestrel: &Kestrel, remark: &str) {
 }
 
 #[tokio::test]
-async fn a_remark_from_a_stranger_does_not_feed_an_open_session() {
+async fn a_remark_from_a_stranger_does_not_feed_an_open_workspace() {
     let stub = GithubStub::start();
     the_command(&stub);
     let kestrel = Kestrel::boot().await;
     watching_a_named_actor(&kestrel, &stub).await;
-    let session = sessions(&kestrel, 1).await.remove(0);
+    let workspace = workspaces(&kestrel, 1).await.remove(0);
     let run = kestrel
         .claim_run()
         .await
@@ -690,14 +722,14 @@ async fn a_remark_from_a_stranger_does_not_feed_an_open_session() {
     the_remark_was_recorded(&kestrel, "please also change the parser").await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(
-        !kestrel.has_pending_messages(session.id).await,
+        !kestrel.has_pending_messages(workspace.id).await,
         "a stranger's remark was held as input to the run"
     );
 
     kestrel.complete_run(&run).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
-        kestrel.runs(session.id).await.len(),
+        kestrel.runs(workspace.id).await.len(),
         1,
         "a stranger's remark started a run"
     );
@@ -706,12 +738,12 @@ async fn a_remark_from_a_stranger_does_not_feed_an_open_session() {
 }
 
 #[tokio::test]
-async fn a_remark_from_the_trigger_actor_feeds_an_open_session() {
+async fn a_remark_from_the_trigger_actor_feeds_an_open_workspace() {
     let stub = GithubStub::start();
     the_command(&stub);
     let kestrel = Kestrel::boot().await;
     watching_a_named_actor(&kestrel, &stub).await;
-    let session = sessions(&kestrel, 1).await.remove(0);
+    let workspace = workspaces(&kestrel, 1).await.remove(0);
     let run = kestrel
         .claim_run()
         .await
@@ -719,19 +751,25 @@ async fn a_remark_from_the_trigger_actor_feeds_an_open_session() {
         .run;
     a_remark_from(&stub, MAINTAINER, "please also change the parser");
 
-    pending_arrived(&kestrel, session.id).await;
+    pending_arrived(&kestrel, workspace.id).await;
     kestrel.complete_run(&run).await;
-    runs(&kestrel, session.id, 2).await;
+    runs(&kestrel, workspace.id, 2).await;
 
-    assert!(kestrel.transcript(session.id).await.iter().any(|recorded| {
-        recorded.entry
-            == Entry::Messages {
-                messages: vec![Message {
-                    participant: MAINTAINER.to_owned(),
-                    message: "please also change the parser".to_owned(),
-                }],
-            }
-    }));
+    assert!(
+        kestrel
+            .transcript(workspace.id)
+            .await
+            .iter()
+            .any(|recorded| {
+                recorded.entry
+                    == Entry::Messages {
+                        messages: vec![Message {
+                            participant: MAINTAINER.to_owned(),
+                            message: "please also change the parser".to_owned(),
+                        }],
+                    }
+            })
+    );
 
     kestrel.teardown().await;
 }
@@ -748,7 +786,7 @@ async fn a_comment_kestrel_left_is_never_heard_as_input() {
     );
     let kestrel = Kestrel::boot().await;
     watching_a_named_actor(&kestrel, &stub).await;
-    let session = sessions(&kestrel, 1).await.remove(0);
+    let workspace = workspaces(&kestrel, 1).await.remove(0);
     kestrel
         .claim_run()
         .await
@@ -767,10 +805,10 @@ async fn a_comment_kestrel_left_is_never_heard_as_input() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     assert!(
-        !kestrel.has_pending_messages(session.id).await,
+        !kestrel.has_pending_messages(workspace.id).await,
         "kestrel heard its own comment as input"
     );
-    assert_eq!(kestrel.runs(session.id).await.len(), 1);
+    assert_eq!(kestrel.runs(workspace.id).await.len(), 1);
 
     kestrel.teardown().await;
 }

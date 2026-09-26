@@ -5,21 +5,21 @@ use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::domain::{Exit, Run, RunId, SessionId, Turn, Usage};
+use crate::domain::{Exit, Run, RunId, Turn, Usage, WorkspaceId};
 use crate::instance::Observed;
 use crate::integration::delivery;
 use crate::link;
 use crate::link::credential::Secret;
 use crate::log::{Entry, Message};
-use crate::session;
-use crate::store::session::{PendingMessage, Taken};
+use crate::store::workspace::{PendingMessage, Taken};
 use crate::store::{Store, Tx};
+use crate::workspace;
 
 const CREDENTIAL_LIFETIME: SignedDuration = SignedDuration::from_hours(12);
 
 /// A supervisor cannot say it is alive while the control plane is not listening, so this
 /// outlasts a restart under a live one by enough that an upgrade does not reap the Runs it
-/// was carrying; a dead supervisor holds a Session's active-Run slot until it is up.
+/// was carrying; a dead supervisor holds a Workspace's active-Run slot until it is up.
 const LEASE: SignedDuration = SignedDuration::from_mins(2);
 
 /// The Secret is returned once, to be handed to the Run's supervisor as it starts; `Store` keeps
@@ -106,22 +106,22 @@ impl From<anyhow::Error> for ReportRefused {
     }
 }
 
-pub async fn enqueue(store: &Store, session: SessionId, model: Option<&str>) -> Result<Run> {
+pub async fn enqueue(store: &Store, workspace: WorkspaceId, model: Option<&str>) -> Result<Run> {
     let mut tx = store.begin().await?;
-    let session = tx.sessions().get(session).await?;
-    session.accepts("run")?;
+    let workspace = tx.workspaces().get(workspace).await?;
+    workspace.accepts("run")?;
 
-    if let Some(holding) = session::unfinished_run(&mut tx, &session)
+    if let Some(holding) = workspace::unfinished_run(&mut tx, &workspace)
         .await?
         .refuses_enqueue()
     {
         bail!(
-            "the session {} already has the run {holding} in it, and a session has one at a time",
-            session.id
+            "the workspace {} already has the run {holding} in it, and a workspace has one at a time",
+            workspace.id
         );
     }
 
-    let run = tx.sessions().enqueue_run(&session, model).await?;
+    let run = tx.workspaces().enqueue_run(&workspace, model).await?;
     tx.commit().await?;
 
     Ok(run)
@@ -150,11 +150,11 @@ pub async fn occupy(
     serialized: &[String],
 ) -> Result<Option<Occupied>> {
     let mut tx = store.begin().await?;
-    if tx.sessions().occupying_slots().await? >= slots {
+    if tx.workspaces().occupying_slots().await? >= slots {
         return Ok(None);
     }
 
-    let held = tx.sessions().oldest_held_input(serialized).await?;
+    let held = tx.workspaces().oldest_held_input(serialized).await?;
     let occupied =
         match claiming(&mut tx, serialized, held.as_ref().map(|(_, since)| *since)).await? {
             Some(claimed) => Occupied::Claimed(claimed),
@@ -164,7 +164,7 @@ pub async fn occupy(
                     return Ok(None);
                 };
                 prompt_pending(&mut tx, &run).await?;
-                Occupied::Resumed(tx.sessions().run(run.id).await?)
+                Occupied::Resumed(tx.workspaces().run(run.id).await?)
             }
         };
     tx.commit().await?;
@@ -178,22 +178,22 @@ async fn claiming(
     enqueued_before: Option<Timestamp>,
 ) -> Result<Option<Claimed>> {
     let claimable = tx
-        .sessions()
+        .workspaces()
         .claimable_runs(serialized, enqueued_before)
         .await?;
     for queued in claimable {
-        let session = tx.sessions().get(queued.session).await?;
-        match crate::instance::admit(tx, &session).await? {
+        let workspace = tx.workspaces().get(queued.workspace).await?;
+        match crate::instance::admit(tx, &workspace).await? {
             crate::instance::Admission::Available => {
                 let Some(run) = tx
-                    .sessions()
+                    .workspaces()
                     .claim_run(&queued, Timestamp::now() + LEASE)
                     .await?
                 else {
                     continue;
                 };
                 let credential = Secret::mint();
-                tx.sessions()
+                tx.workspaces()
                     .issue_credential(
                         &run,
                         &credential.digest(),
@@ -203,7 +203,7 @@ async fn claiming(
                 return Ok(Some(Claimed { run, credential }));
             }
             crate::instance::Admission::Waiting(because) => {
-                tx.sessions().wait_for_instance(&queued, &because).await?;
+                tx.workspaces().wait_for_instance(&queued, &because).await?;
             }
         }
     }
@@ -212,24 +212,25 @@ async fn claiming(
 }
 
 pub async fn run(store: &Store, id: RunId) -> Result<Run> {
-    store.begin().await?.sessions().run(id).await
+    store.begin().await?.workspaces().run(id).await
 }
 
 pub async fn resolve_run(store: &Store, organization: &str, reference: &str) -> Result<Run> {
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
 
-    tx.sessions().resolved_run(&organization, reference).await
+    tx.workspaces().resolved_run(&organization, reference).await
 }
 
-pub async fn runs(store: &Store, session: SessionId) -> Result<Vec<Run>> {
+pub async fn runs(store: &Store, workspace: WorkspaceId) -> Result<Vec<Run>> {
     let mut tx = store.begin().await?;
-    let session = tx.sessions().get(session).await?;
+    let workspace = tx.workspaces().get(workspace).await?;
 
-    tx.sessions().runs(&session).await
+    tx.workspaces().runs(&workspace).await
 }
 
-/// Report acceptance and its effects share one transaction so a failed append remains replayable (ADR-0004).
+/// Report acceptance and its effects share one transaction so a failed append remains replayable
+/// (ADR-0004).
 pub async fn report(
     store: &Store,
     run: &Run,
@@ -239,7 +240,7 @@ pub async fn report(
 
     if report.numbered() {
         let seq = seq.ok_or(ReportRefused::MissingSequence)?;
-        match tx.sessions().take_report(run, seq).await? {
+        match tx.workspaces().take_report(run, seq).await? {
             Taken::Next => {}
             Taken::Again => {
                 debug!(run = %run.id, seq, "a supervisor reported something again");
@@ -251,11 +252,11 @@ pub async fn report(
 
     match report {
         Report::Connected { version } => {
-            tx.sessions().record_connected(run, &version).await?;
+            tx.workspaces().record_connected(run, &version).await?;
             info!(run = %run.id, version, "a supervisor reported itself connected");
         }
         Report::Heartbeat => {
-            tx.sessions()
+            tx.workspaces()
                 .hold_lease(run, Timestamp::now() + LEASE)
                 .await?;
             debug!(run = %run.id, "a supervisor reported itself alive");
@@ -266,25 +267,25 @@ pub async fn report(
             }
         }
         Report::Started => {
-            if tx.sessions().record_started(run).await? {
-                let session = tx.sessions().get(run.session).await?;
+            if tx.workspaces().record_started(run).await? {
+                let workspace = tx.workspaces().get(run.workspace).await?;
                 tx.log()
-                    .append(&session, Entry::RunStarted { run: run.id })
+                    .append(&workspace, Entry::RunStarted { run: run.id })
                     .await?;
             }
             info!(run = %run.id, "a supervisor reported its run started");
         }
         Report::Model { model } => {
-            tx.sessions().record_worked_model(run, &model).await?;
+            tx.workspaces().record_worked_model(run, &model).await?;
             info!(run = %run.id, model, "a supervisor reported the model its agent is on");
         }
         Report::Said { message } => {
-            let session = tx.sessions().get(run.session).await?;
+            let workspace = tx.workspaces().get(run.workspace).await?;
             tx.log()
                 .append(
-                    &session,
+                    &workspace,
                     Entry::Said {
-                        participant: session.agent.name.clone(),
+                        participant: workspace.agent.name.clone(),
                         message,
                     },
                 )
@@ -293,27 +294,27 @@ pub async fn report(
         }
         Report::Used { usage } => {
             info!(run = %run.id, %usage, "a supervisor reported what its agent used");
-            tx.sessions().record_usage(run, &usage).await?;
+            tx.workspaces().record_usage(run, &usage).await?;
         }
         Report::Answered => {
-            if let Some((turn, from_seq)) = tx.sessions().answer_turn(run).await? {
-                let session = tx.sessions().get(run.session).await?;
+            if let Some((turn, from_seq)) = tx.workspaces().answer_turn(run).await? {
+                let workspace = tx.workspaces().get(run.workspace).await?;
                 let said = tx
                     .log()
-                    .said_since(&session, from_seq, &session.agent.name)
+                    .said_since(&workspace, from_seq, &workspace.agent.name)
                     .await?;
                 if !said.is_empty() {
-                    delivery::record_turn(&mut tx, run, &session, turn, &said).await?;
+                    delivery::record_turn(&mut tx, run, &workspace, turn, &said).await?;
                 }
-                tx.sessions()
-                    .record_active(run.session, Timestamp::now())
+                tx.workspaces()
+                    .record_active(run.workspace, Timestamp::now())
                     .await?;
             }
             info!(run = %run.id, "a supervisor reported its agent answered a turn");
         }
         Report::Checkout { repositories } => {
-            tx.sessions()
-                .record_observed(run.session, &repositories)
+            tx.workspaces()
+                .record_observed(run.workspace, &repositories)
                 .await?;
             info!(run = %run.id, "a supervisor reported what its checkout holds");
         }
@@ -327,16 +328,16 @@ pub async fn report(
     Ok(())
 }
 
-pub async fn instance(store: &Store, session: SessionId) -> Result<Option<String>> {
-    store.begin().await?.sessions().instance(session).await
+pub async fn instance(store: &Store, workspace: WorkspaceId) -> Result<Option<String>> {
+    store.begin().await?.workspaces().instance(workspace).await
 }
 
 pub async fn executes_on(store: &Store, run: &Run, instance: &str) -> Result<()> {
     let mut tx = store.begin().await?;
-    tx.sessions()
-        .record_instance(run.session, Some(instance))
+    tx.workspaces()
+        .record_instance(run.workspace, Some(instance))
         .await?;
-    tx.sessions().record_run_instance(run, instance).await?;
+    tx.workspaces().record_run_instance(run, instance).await?;
 
     tx.commit().await
 }
@@ -345,7 +346,7 @@ pub async fn executes_on(store: &Store, run: &Run, instance: &str) -> Result<()>
 /// can resume, and none is handed a fresh one before this Run says what was lost.
 pub async fn instance_lost(store: &Store, run: &Run, because: &str) -> Result<Exit> {
     let mut tx = store.begin().await?;
-    tx.sessions().record_instance(run.session, None).await?;
+    tx.workspaces().record_instance(run.workspace, None).await?;
     let stands = ending(
         &mut tx,
         run,
@@ -361,33 +362,38 @@ pub async fn instance_lost(store: &Store, run: &Run, because: &str) -> Result<Ex
 
 pub async fn supervised(store: &Store, run: &Run, supervisor: &str) -> Result<()> {
     let mut tx = store.begin().await?;
-    tx.sessions().record_supervisor(run, supervisor).await?;
+    tx.workspaces().record_supervisor(run, supervisor).await?;
 
     tx.commit().await
 }
 
 pub async fn supervisors_to_stop(store: &Store) -> Result<Vec<(Run, String)>> {
-    store.begin().await?.sessions().supervisors_to_stop().await
+    store
+        .begin()
+        .await?
+        .workspaces()
+        .supervisors_to_stop()
+        .await
 }
 
 pub async fn supervisor_gone(store: &Store, run: &Run) -> Result<Option<Run>> {
     let mut tx = store.begin().await?;
-    tx.sessions().record_supervisor_gone(run).await?;
-    let continued = continue_pending(&mut tx, run.session).await?;
+    tx.workspaces().record_supervisor_gone(run).await?;
+    let continued = continue_pending(&mut tx, run.workspace).await?;
     tx.commit().await?;
 
     Ok(continued)
 }
 
 pub async fn turns(store: &Store, run: RunId) -> Result<Vec<Turn>> {
-    store.begin().await?.sessions().turns(run).await
+    store.begin().await?.workspaces().turns(run).await
 }
 
 /// A waiting Run has done everything asked of it, so stopping it there is how it
 /// succeeds; stopping one mid-turn abandons what its agent was still doing.
 pub async fn stop(store: &Store, id: RunId) -> Result<Exit> {
     let mut tx = store.begin().await?;
-    let run = tx.sessions().run(id).await?;
+    let run = tx.workspaces().run(id).await?;
     let Some(exit) = run.state.stop_exit() else {
         bail!("the run {id} has already ended");
     };
@@ -400,7 +406,7 @@ pub async fn stop(store: &Store, id: RunId) -> Result<Exit> {
 /// Told as well as ended, so a supervisor leaves the link rather than dialling back in to be
 /// refused.
 pub(crate) async fn stopping(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exit> {
-    tx.sessions()
+    tx.workspaces()
         .send_instruction(run, link::Instruction::Stop)
         .await?;
 
@@ -434,29 +440,29 @@ async fn end(store: &Store, run: &Run, exit: Exit) -> Result<Exit> {
 /// claimant finding it gone, `timer` finding its lease expired — decides the exit status, and
 /// what comes back is the one that stands.
 pub(crate) async fn ending(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<Exit> {
-    let session = tx.sessions().get(run.session).await?;
-    let said = tx.log().last_said_for_run(&session).await?;
-    let stands = if tx.sessions().end_run(run, &exit, said.as_deref()).await? {
+    let workspace = tx.workspaces().get(run.workspace).await?;
+    let said = tx.log().last_said_for_run(&workspace).await?;
+    let stands = if tx.workspaces().end_run(run, &exit, said.as_deref()).await? {
         tx.log()
             .append(
-                &session,
+                &workspace,
                 Entry::RunEnded {
                     run: run.id,
                     exit: exit.clone(),
                 },
             )
             .await?;
-        tx.sessions().invalidate_credentials(run).await?;
-        delivery::record_outcome(tx, run, &session, &exit, said.as_deref()).await?;
+        tx.workspaces().invalidate_credentials(run).await?;
+        delivery::record_outcome(tx, run, &workspace, &exit, said.as_deref()).await?;
         if let Exit::Failed { .. } = exit {
             cascade_unreachable(tx, run.id).await?;
         }
-        if tx.sessions().supervisor_is_gone(run).await? {
-            continue_pending(tx, run.session).await?;
+        if tx.workspaces().supervisor_is_gone(run).await? {
+            continue_pending(tx, run.workspace).await?;
         }
         exit
     } else {
-        tx.sessions()
+        tx.workspaces()
             .run(run.id)
             .await?
             .exit
@@ -474,8 +480,8 @@ async fn cascade_unreachable(tx: &mut Tx<'_>, blocker: RunId) -> Result<()> {
     let mut newly_unreachable = vec![blocker];
 
     while let Some(blocker) = newly_unreachable.pop() {
-        for dependent in tx.sessions().dependents_of(blocker).await? {
-            if tx.sessions().mark_unreachable(&dependent).await? {
+        for dependent in tx.workspaces().dependents_of(blocker).await? {
+            if tx.workspaces().mark_unreachable(&dependent).await? {
                 newly_unreachable.push(dependent.id);
             }
         }
@@ -484,9 +490,9 @@ async fn cascade_unreachable(tx: &mut Tx<'_>, blocker: RunId) -> Result<()> {
     Ok(())
 }
 
-async fn continue_pending(tx: &mut Tx<'_>, session: SessionId) -> Result<Option<Run>> {
-    let session = tx.sessions().get(session).await?;
-    if session::unfinished_run(tx, &session)
+async fn continue_pending(tx: &mut Tx<'_>, workspace: WorkspaceId) -> Result<Option<Run>> {
+    let workspace = tx.workspaces().get(workspace).await?;
+    if workspace::unfinished_run(tx, &workspace)
         .await?
         .refuses_enqueue()
         .is_some()
@@ -494,26 +500,26 @@ async fn continue_pending(tx: &mut Tx<'_>, session: SessionId) -> Result<Option<
         return Ok(None);
     }
 
-    let pending = tx.sessions().take_pending_messages(&session).await?;
+    let pending = tx.workspaces().take_pending_messages(&workspace).await?;
     if pending.is_empty() {
         return Ok(None);
     }
 
     tx.log()
         .append(
-            &session,
+            &workspace,
             Entry::Messages {
                 messages: messages(pending),
             },
         )
         .await?;
 
-    Ok(Some(tx.sessions().enqueue_run(&session, None).await?))
+    Ok(Some(tx.workspaces().enqueue_run(&workspace, None).await?))
 }
 
 async fn prompt_pending(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
-    let session = tx.sessions().get(run.session).await?;
-    let pending = tx.sessions().take_pending_messages(&session).await?;
+    let workspace = tx.workspaces().get(run.workspace).await?;
+    let pending = tx.workspaces().take_pending_messages(&workspace).await?;
     if pending.is_empty() {
         return Ok(());
     }
@@ -521,7 +527,7 @@ async fn prompt_pending(tx: &mut Tx<'_>, run: &Run) -> Result<()> {
     let messages = messages(pending);
     let prompt = follow_up(&messages);
     tx.log()
-        .append(&session, Entry::Messages { messages })
+        .append(&workspace, Entry::Messages { messages })
         .await?;
 
     link::prompt(tx, run, prompt).await

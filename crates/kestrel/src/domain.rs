@@ -43,7 +43,7 @@ identifiers!(
     OrganizationId,
     ProjectId,
     AgentId,
-    SessionId,
+    WorkspaceId,
     RunId,
     IntegrationId,
     EventRecordId,
@@ -237,7 +237,7 @@ pub struct EventRefusal {
     pub observed_at: Timestamp,
 }
 
-/// Something kestrel says back on the surface that started the Session: a completed Turn's
+/// Something kestrel says back on the surface that started the Workspace: a completed Turn's
 /// response, or the Run's own final Outcome. Posted once however many attempts that takes.
 /// `turn` is the Turn's seq, or `None` for the Run's own outcome.
 #[derive(Debug, Clone)]
@@ -424,7 +424,7 @@ impl Trigger {
 pub struct Firing {
     pub trigger: String,
     pub outcome: String,
-    pub session: Option<SessionId>,
+    pub workspace: Option<WorkspaceId>,
     pub failure: Option<String>,
     pub worked_ahead: Option<String>,
 }
@@ -486,7 +486,7 @@ pub struct Templates {
     pub correlation: Option<Template>,
 }
 
-/// Fixed when the Session opens, so a Project redeclared later moves no Session already on it.
+/// Fixed when the Workspace opens, so a Project redeclared later moves no Workspace already on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkout {
     pub repositories: Vec<String>,
@@ -495,8 +495,8 @@ pub struct Checkout {
 }
 
 #[derive(Debug, Clone)]
-pub struct Session {
-    pub id: SessionId,
+pub struct Workspace {
+    pub id: WorkspaceId,
     pub name: String,
     pub organization: Organization,
     pub project: Project,
@@ -504,18 +504,18 @@ pub struct Session {
     pub profile: Option<SubscriptionProfile>,
     pub checkout: Checkout,
     pub correlation: Option<String>,
-    pub state: SessionState,
+    pub state: WorkspaceState,
     pub opened_at: Timestamp,
     pub last_active_at: Timestamp,
     pub sealed_at: Option<Timestamp>,
-    pub continues: Option<SessionId>,
+    pub continues: Option<WorkspaceId>,
     pub started_by: Option<EventRecordId>,
 }
 
-impl Session {
+impl Workspace {
     pub fn accepts(&self, what: &str) -> Result<()> {
-        if self.state == SessionState::Sealed {
-            bail!("the session {} is sealed, and accepts no {what}", self.id);
+        if self.state == WorkspaceState::Sealed {
+            bail!("the workspace {} is sealed, and accepts no {what}", self.id);
         }
 
         Ok(())
@@ -527,7 +527,7 @@ pub struct Run {
     pub id: RunId,
     pub name: String,
     pub organization: OrganizationId,
-    pub session: SessionId,
+    pub workspace: WorkspaceId,
     pub state: RunState,
     pub waiting_for: Option<String>,
     pub exit: Option<Exit>,
@@ -686,33 +686,33 @@ pub struct Connected {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionState {
+pub enum WorkspaceState {
     Open,
     Sealed,
 }
 
-impl SessionState {
+impl WorkspaceState {
     pub const fn as_str(self) -> &'static str {
         match self {
-            SessionState::Open => "open",
-            SessionState::Sealed => "sealed",
+            WorkspaceState::Open => "open",
+            WorkspaceState::Sealed => "sealed",
         }
     }
 }
 
-impl FromStr for SessionState {
+impl FromStr for WorkspaceState {
     type Err = anyhow::Error;
 
     fn from_str(state: &str) -> Result<Self> {
         match state {
-            "open" => Ok(SessionState::Open),
-            "sealed" => Ok(SessionState::Sealed),
-            other => bail!("{other} is not a state a session can be in"),
+            "open" => Ok(WorkspaceState::Open),
+            "sealed" => Ok(WorkspaceState::Sealed),
+            other => bail!("{other} is not a state a workspace can be in"),
         }
     }
 }
 
-impl fmt::Display for SessionState {
+impl fmt::Display for WorkspaceState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }

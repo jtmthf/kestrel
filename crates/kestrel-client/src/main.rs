@@ -101,9 +101,9 @@ enum Command {
     /// Declare, inspect, test and control Triggers
     #[command(subcommand)]
     Trigger(TriggerCommand),
-    /// Read Sessions
+    /// Read Workspaces
     #[command(subcommand)]
-    Session(SessionCommand),
+    Workspace(WorkspaceCommand),
     /// Show, enqueue, list and stop Runs
     #[command(subcommand)]
     Run(RunCommand),
@@ -126,7 +126,7 @@ struct Apply {
 
 #[derive(Debug, Args)]
 struct Start {
-    /// The Brief the Session starts with; `@FILE` reads it from a file and `-` from standard
+    /// The Brief the Workspace starts with; `@FILE` reads it from a file and `-` from standard
     /// input
     #[arg(long)]
     brief: String,
@@ -172,7 +172,7 @@ impl Command {
             | Command::Profile(_)
             | Command::Integration(_)
             | Command::Trigger(_)
-            | Command::Session(_)
+            | Command::Workspace(_)
             | Command::Run(_)
             | Command::Instance(_)
             | Command::Status => true,
@@ -208,7 +208,7 @@ enum CredentialCommand {
 enum ProfileCommand {
     /// Declare a Subscription Profile: a person's login to a subscribed Harness
     Declare {
-        /// The name a Session or Trigger names it by
+        /// The name a Workspace or Trigger names it by
         name: String,
         /// The person it belongs to, which never changes
         #[arg(long)]
@@ -370,17 +370,17 @@ enum TriggerCommand {
         /// The IANA time zone the cron expression is read in, such as UTC or America/New_York
         #[arg(long, value_name = "ZONE", requires = "cron")]
         zone: Option<String>,
-        /// The Brief a firing hands its Session, rendered over an Event; `@FILE` reads it from
+        /// The Brief a firing hands its Workspace, rendered over an Event; `@FILE` reads it from
         /// a file and `-` from standard input
         #[arg(long)]
         brief: String,
         /// The branch a firing's work happens on, rendered from the Event
         #[arg(long)]
         branch: Option<String>,
-        /// The key that finds an open Session for this work, rendered from the Event
+        /// The key that finds an open Workspace for this work, rendered from the Event
         #[arg(long)]
         correlation: Option<String>,
-        /// What to do when correlation finds no open Session: open or ignore
+        /// What to do when correlation finds no open Workspace: open or ignore
         #[arg(long, value_name = "OPEN|IGNORE")]
         on_miss: Option<String>,
         /// The Project a firing's work happens against
@@ -513,13 +513,13 @@ enum AgentCommand {
 
 #[derive(Debug, Subcommand)]
 enum InstanceCommand {
-    /// List every Instance kept because it may hold the only copy of its Session's work, and why
+    /// List every Instance kept because it may hold the only copy of its Workspace's work, and why
     List,
-    /// Destroy a Session's Instance, discarding whatever it holds that was never pushed
+    /// Destroy a Workspace's Instance, discarding whatever it holds that was never pushed
     Release {
-        /// The Session whose Instance it is, by generated name, identifier, any unambiguous
+        /// The Workspace whose Instance it is, by generated name, identifier, any unambiguous
         /// prefix of its identifier, or `latest`
-        session: String,
+        workspace: String,
         /// The participant releasing it
         #[arg(long, default_value = "operator")]
         as_participant: String,
@@ -527,8 +527,8 @@ enum InstanceCommand {
 }
 
 #[derive(Debug, Subcommand)]
-enum SessionCommand {
-    /// Open a Session against a Project and an Agent
+enum WorkspaceCommand {
+    /// Open a Workspace against a Project and an Agent
     Open {
         /// The Project its work happens against
         #[arg(long)]
@@ -542,42 +542,46 @@ enum SessionCommand {
         /// The branch its work happens on
         #[arg(long)]
         branch: Option<String>,
-        /// The sealed Session this one carries on from, by generated name, identifier, any
+        /// The sealed Workspace this one carries on from, by generated name, identifier, any
         /// unambiguous prefix of its identifier, or `latest`
-        #[arg(long, value_name = "SESSION")]
+        #[arg(long, value_name = "WORKSPACE")]
         continues: Option<String>,
     },
-    /// List every Session in the Organization
+    /// List every Workspace in the Organization
     List,
-    /// Show a Session
+    /// Show a Workspace
     Show {
-        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
-        session: String,
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or
+        /// `latest`
+        workspace: String,
     },
     /// Add a participant's message; starts a Run or queues its next Turn
     Post {
-        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
-        session: String,
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or
+        /// `latest`
+        workspace: String,
         /// The participant saying the message
         #[arg(long, default_value = "operator")]
         as_participant: String,
         /// What the participant says
         message: String,
     },
-    /// Seal a Session: readable ever after, and never reopened
+    /// Seal a Workspace: readable ever after, and never reopened
     Seal {
-        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
-        session: String,
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or
+        /// `latest`
+        workspace: String,
     },
-    /// Read a Session's Transcript, one JSON entry a line, and the cursor a later read
+    /// Read a Workspace's Transcript, one JSON entry a line, and the cursor a later read
     /// resumes from
     Transcript {
-        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
-        session: String,
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or
+        /// `latest`
+        workspace: String,
         /// Resume after the cursor a previous read ended with
         #[arg(long)]
         cursor: Option<String>,
-        /// Keep reading as entries are appended, until the Session is sealed
+        /// Keep reading as entries are appended, until the Workspace is sealed
         #[arg(long)]
         follow: bool,
     },
@@ -585,31 +589,33 @@ enum SessionCommand {
 
 #[derive(Debug, Subcommand)]
 enum RunCommand {
-    /// Enqueue a Run in a Session, for the work role to claim and dispatch
+    /// Enqueue a Run in a Workspace, for the work role to claim and dispatch
     Enqueue {
-        /// The Session it executes on behalf of, by generated name, identifier, any
+        /// The Workspace it executes on behalf of, by generated name, identifier, any
         /// unambiguous prefix of its identifier, or `latest`
         #[arg(long)]
-        session: String,
+        workspace: String,
         /// The model it works with, or none for its Agent's or Harness's default
         #[arg(long)]
         model: Option<String>,
     },
-    /// List every Run in a Session
+    /// List every Run in a Workspace
     List {
-        /// The Session the Runs execute on behalf of, by generated name, identifier, any
+        /// The Workspace the Runs execute on behalf of, by generated name, identifier, any
         /// unambiguous prefix of its identifier, or `latest`
         #[arg(long)]
-        session: String,
+        workspace: String,
     },
     /// Show a Run
     Show {
-        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or
+        /// `latest`
         run: String,
     },
     /// End a Run: it succeeds between turns, and fails mid-turn or before it started
     Stop {
-        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or `latest`
+        /// Its generated name, its identifier, any unambiguous prefix of its identifier, or
+        /// `latest`
         run: String,
     },
 }
@@ -1094,7 +1100,7 @@ async fn run() -> Result<()> {
                 .await?,
             )?;
         }
-        Command::Session(SessionCommand::Open {
+        Command::Workspace(WorkspaceCommand::Open {
             project,
             agent,
             profile,
@@ -1106,7 +1112,7 @@ async fn run() -> Result<()> {
                 &presentation,
                 &view::DECLARED,
                 &api.post(
-                    &["organizations", &organization, "sessions"],
+                    &["organizations", &organization, "workspaces"],
                     &json!({
                         "project": project,
                         "agent": agent,
@@ -1118,26 +1124,26 @@ async fn run() -> Result<()> {
                 .await?,
             )?;
         }
-        Command::Session(SessionCommand::List) => {
+        Command::Workspace(WorkspaceCommand::List) => {
             let organization = scoping.resolve().await?.organization;
             show(
                 &presentation,
-                &view::SESSIONS,
-                &api.get(&["organizations", &organization, "sessions"])
+                &view::WORKSPACES,
+                &api.get(&["organizations", &organization, "workspaces"])
                     .await?,
             )?;
         }
-        Command::Session(SessionCommand::Show { session }) => {
+        Command::Workspace(WorkspaceCommand::Show { workspace }) => {
             let organization = scoping.resolve().await?.organization;
             show(
                 &presentation,
-                &view::SESSION,
-                &api.get(&["organizations", &organization, "sessions", &session])
+                &view::WORKSPACE,
+                &api.get(&["organizations", &organization, "workspaces", &workspace])
                     .await?,
             )?;
         }
-        Command::Session(SessionCommand::Post {
-            session,
+        Command::Workspace(WorkspaceCommand::Post {
+            workspace,
             as_participant,
             message,
         }) => {
@@ -1147,8 +1153,8 @@ async fn run() -> Result<()> {
                     &[
                         "organizations",
                         &organization,
-                        "sessions",
-                        &session,
+                        "workspaces",
+                        &workspace,
                         "messages",
                     ],
                     &json!({ "participant": as_participant, "message": message }),
@@ -1159,20 +1165,26 @@ async fn run() -> Result<()> {
             }
             show(&presentation, &view::DECLARED, &answer)?;
         }
-        Command::Session(SessionCommand::Seal { session }) => {
+        Command::Workspace(WorkspaceCommand::Seal { workspace }) => {
             let organization = scoping.resolve().await?.organization;
             show(
                 &presentation,
                 &view::DECLARED,
                 &api.post(
-                    &["organizations", &organization, "sessions", &session, "seal"],
+                    &[
+                        "organizations",
+                        &organization,
+                        "workspaces",
+                        &workspace,
+                        "seal",
+                    ],
                     &json!({}),
                 )
                 .await?,
             )?;
         }
-        Command::Session(SessionCommand::Transcript {
-            session,
+        Command::Workspace(WorkspaceCommand::Transcript {
+            workspace,
             cursor,
             follow,
         }) => {
@@ -1180,7 +1192,7 @@ async fn run() -> Result<()> {
             let read = transcript::read(
                 &control_plane,
                 &organization,
-                &session,
+                &workspace,
                 cursor,
                 follow,
                 &presentation,
@@ -1191,25 +1203,37 @@ async fn run() -> Result<()> {
                 eprintln!("cursor  {cursor}");
             }
         }
-        Command::Run(RunCommand::Enqueue { session, model }) => {
+        Command::Run(RunCommand::Enqueue { workspace, model }) => {
             let organization = scoping.resolve().await?.organization;
             show(
                 &presentation,
                 &view::DECLARED,
                 &api.post(
-                    &["organizations", &organization, "sessions", &session, "runs"],
+                    &[
+                        "organizations",
+                        &organization,
+                        "workspaces",
+                        &workspace,
+                        "runs",
+                    ],
                     &json!({ "model": model }),
                 )
                 .await?,
             )?;
         }
-        Command::Run(RunCommand::List { session }) => {
+        Command::Run(RunCommand::List { workspace }) => {
             let organization = scoping.resolve().await?.organization;
             show(
                 &presentation,
                 &view::RUNS,
-                &api.get(&["organizations", &organization, "sessions", &session, "runs"])
-                    .await?,
+                &api.get(&[
+                    "organizations",
+                    &organization,
+                    "workspaces",
+                    &workspace,
+                    "runs",
+                ])
+                .await?,
             )?;
         }
         Command::Run(RunCommand::Show { run }) => {
@@ -1243,7 +1267,7 @@ async fn run() -> Result<()> {
             )?;
         }
         Command::Instance(InstanceCommand::Release {
-            session,
+            workspace,
             as_participant,
         }) => {
             let organization = scoping.resolve().await?.organization;
@@ -1254,8 +1278,8 @@ async fn run() -> Result<()> {
                     &[
                         "organizations",
                         &organization,
-                        "sessions",
-                        &session,
+                        "workspaces",
+                        &workspace,
                         "instance",
                         "release",
                     ],
@@ -1375,8 +1399,8 @@ async fn started(
             "organization": started["organization"]["name"],
             "project": started["project"]["name"],
             "agent": started["agent"]["name"],
-            "session": started["session"]["name"],
-            "session_id": started["session"]["id"],
+            "workspace": started["workspace"]["name"],
+            "workspace_id": started["workspace"]["id"],
             "run": started["run"]["name"],
             "run_id": started["run"]["id"],
         }),
@@ -1454,11 +1478,11 @@ fn explain_invalid_subcommand(error: &clap::Error, args: &[String]) -> Option<St
     let noun = args
         .windows(2)
         .rev()
-        .find(|pair| (pair[0] == "session" || pair[0] == "run") && pair[1] == *guessed)?[0]
+        .find(|pair| (pair[0] == "workspace" || pair[0] == "run") && pair[1] == *guessed)?[0]
         .as_str();
     let correct = match (noun, guessed.as_str()) {
-        ("session", "create" | "new" | "start" | "begin") => Some("open"),
-        ("session", "close" | "stop" | "end" | "finish") => Some("seal"),
+        ("workspace", "create" | "new" | "start" | "begin") => Some("open"),
+        ("workspace", "close" | "stop" | "end" | "finish") => Some("seal"),
         ("run", "start" | "create" | "launch" | "execute" | "queue") => Some("enqueue"),
         _ => None,
     }
@@ -1486,8 +1510,8 @@ mod parser_tests {
     use super::*;
 
     #[test]
-    fn an_organization_named_session_does_not_change_the_guessed_noun() {
-        let arguments = ["--organization", "session", "run", "start"];
+    fn an_organization_named_workspace_does_not_change_the_guessed_noun() {
+        let arguments = ["--organization", "workspace", "run", "start"];
         let error = Client::command()
             .try_get_matches_from(["kestrel"].into_iter().chain(arguments))
             .expect_err("start is not a run verb");
@@ -1501,13 +1525,13 @@ mod parser_tests {
     #[test]
     fn a_misspelling_uses_the_parsers_suggested_verb() {
         let error = Client::command()
-            .try_get_matches_from(["kestrel", "session", "sael"])
-            .expect_err("sael is not a session verb");
-        let explanation = explain_invalid_subcommand(&error, &["session".into(), "sael".into()])
-            .expect("session help");
+            .try_get_matches_from(["kestrel", "workspace", "sael"])
+            .expect_err("sael is not a workspace verb");
+        let explanation = explain_invalid_subcommand(&error, &["workspace".into(), "sael".into()])
+            .expect("workspace help");
 
         assert!(
-            explanation.contains("kestrel session seal"),
+            explanation.contains("kestrel workspace seal"),
             "{explanation}"
         );
     }
@@ -1709,11 +1733,11 @@ async fn status(
 
     let organization = scope.organization.as_str();
     let within = async |records| api.get(&["organizations", organization, records]).await;
-    let (projects, agents, triggers, sessions, integrations, credentials, profiles) = tokio::try_join!(
+    let (projects, agents, triggers, workspaces, integrations, credentials, profiles) = tokio::try_join!(
         within("projects"),
         within("agents"),
         within("triggers"),
-        within("sessions"),
+        within("workspaces"),
         within("integrations"),
         within("credentials"),
         within("profiles"),
@@ -1732,7 +1756,7 @@ async fn status(
                 "projects": count(&projects),
                 "agents": count(&agents),
                 "triggers": count(&triggers),
-                "sessions": count(&sessions),
+                "workspaces": count(&workspaces),
                 "integrations": count(&integrations),
                 "credentials": count(&credentials),
                 "profiles": count(&profiles),
@@ -1767,7 +1791,7 @@ fn names(records: &Value) -> Vec<String> {
 fn next_command(projects: &[String], agents: &[String]) -> String {
     match (projects.first(), agents.first()) {
         (Some(project), Some(agent)) => {
-            format!("{BINARY} session open --project {project} --agent {agent}")
+            format!("{BINARY} workspace open --project {project} --agent {agent}")
         }
         (Some(_), None) => format!("{BINARY} agent declare <name>"),
         (None, _) => {

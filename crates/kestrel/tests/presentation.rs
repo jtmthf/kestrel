@@ -99,17 +99,17 @@ async fn a_terminal_gets_the_records_under_the_fields_they_fill() {
 #[tokio::test]
 async fn a_terminal_gets_a_detail_read_down_the_page_and_a_pipe_gets_it_across_one_line() {
     let kestrel = an_organization_holding_two_agents().await;
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let session = session.id.to_string();
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let workspace = workspace.id.to_string();
 
-    let watched = on_a_terminal(&kestrel, &["session", "show", &session], 120).await;
-    let scripted = piped(&kestrel, &["session", "show", &session]).await;
+    let watched = on_a_terminal(&kestrel, &["workspace", "show", &workspace], 120).await;
+    let scripted = piped(&kestrel, &["workspace", "show", &workspace]).await;
 
     assert!(
         watched
             .lines()
             .iter()
-            .any(|line| line.starts_with("id ") && line.ends_with(&session)),
+            .any(|line| line.starts_with("id ") && line.ends_with(&workspace)),
         "a terminal was shown:\n{}",
         watched.said
     );
@@ -123,7 +123,7 @@ async fn a_terminal_gets_a_detail_read_down_the_page_and_a_pipe_gets_it_across_o
     );
     assert_eq!(scripted.out.len(), 1, "{:?}", scripted.out);
     let fields: Vec<&str> = scripted.out[0].split('\t').collect();
-    assert_eq!(fields[0], session);
+    assert_eq!(fields[0], workspace);
     assert!(fields.contains(&"open"), "{fields:?}");
     kestrel.teardown().await;
 }
@@ -198,11 +198,11 @@ async fn json_without_a_field_list_is_refused_rather_than_guessed_at() {
 #[tokio::test]
 async fn standard_output_carries_the_value_and_standard_error_carries_the_rest() {
     let kestrel = an_organization_holding_two_agents().await;
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
 
     let read = piped(
         &kestrel,
-        &["session", "transcript", &session.id.to_string()],
+        &["workspace", "transcript", &workspace.id.to_string()],
     )
     .await;
     let registered = piped(
@@ -298,14 +298,14 @@ async fn a_terminal_on_standard_input_is_told_what_is_being_waited_for() {
 #[tokio::test]
 async fn a_transcript_reaches_a_terminal_whole_however_narrow_it_is() {
     let kestrel = an_organization_holding_two_agents().await;
-    let session = kestrel.open_session("acme", "kestrel", "builder").await;
-    let (run, _) = kestrel.dispatch_run(session.id).await;
+    let workspace = kestrel.open_workspace("acme", "kestrel", "builder").await;
+    let (run, _) = kestrel.dispatch_run(workspace.id).await;
     let said = "a line of what the agent had to say, and then\na second line after it";
     kestrel.said(&run, said).await;
 
     let read = on_a_terminal(
         &kestrel,
-        &["session", "transcript", &session.id.to_string()],
+        &["workspace", "transcript", &workspace.id.to_string()],
         40,
     )
     .await;

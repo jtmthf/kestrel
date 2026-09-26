@@ -72,10 +72,10 @@ whether to apply it; declining changes nothing and exits 0. That is the only que
 `--yes` skips it. When standard input or standard error is not a terminal it never asks. A value
 nothing says and nothing can infer, such as the repository outside a clone,
 fails the command with exit code 2 and names the flag that would say it. Everything it declares,
-the session it opens, and the run it enqueues land together or not at all, and it never changes a
+the workspace it opens, and the run it enqueues land together or not at all, and it never changes a
 declaration that exists: an agent or project by that name declared differently refuses the start,
 naming the flag that would choose another, and leaves nothing behind. Stdout carries what it reached — the organization, project, agent,
-session and run — so `--json session,run` hands a script the names every command below takes.
+workspace and run — so `--json workspace,run` hands a script the names every command below takes.
 
 The sections below reach the same run one declaration at a time.
 
@@ -98,11 +98,11 @@ one, and refuses to guess.
 
 Add `--max-live-instances N` to bound the active, idle, and held Instances the Organization keeps.
 When the bound is full, clean idle Instances are archived oldest-first; work waits visibly when
-every idle Instance may hold unpublished work. A follow-up in an existing Session keeps using its
+every idle Instance may hold unpublished work. A follow-up in an existing Workspace keeps using its
 Instance regardless of the bound.
 
-A **project** is what a session's work happens against — repositories and the base branch each
-session's own branch is cut from. Repeat `--repository` to name more than one.
+A **project** is what a workspace's work happens against — repositories and the base branch each
+workspace's own branch is cut from. Repeat `--repository` to name more than one.
 
 ```sh
 kestrel project declare kestrel \
@@ -142,35 +142,35 @@ missing from it fails and says which.
 kestrel agent declare codex --harness codex
 ```
 
-A session takes its agent's harness and model when it opens and keeps them while it is open:
-redeclaring the agent, or changing its model, changes the sessions opened after that.
+A workspace takes its agent's harness and model when it opens and keeps them while it is open:
+redeclaring the agent, or changing its model, changes the workspaces opened after that.
 
 `kestrel organization list`, `kestrel project list` and `kestrel agent list` show what you have
 declared.
 
-## Open a session
+## Open a workspace
 
-A **session** is the durable thread of work. It survives restarts, owns a transcript, and contains
+A **workspace** is the durable thread of work. It survives restarts, owns a transcript, and contains
 many runs over its life.
 
 ```sh
-kestrel session open --project kestrel --agent builder
+kestrel workspace open --project kestrel --agent builder
 ```
 
-It prints the session's identifier. Everything below takes a session as that identifier, as any
-prefix of it that names only one, as the generated name `session show` prints, or as `latest` for
+It prints the workspace's identifier. Everything below takes a workspace as that identifier, as any
+prefix of it that names only one, as the generated name `workspace show` prints, or as `latest` for
 the one opened most recently.
 
-The session fixes the project's repositories as they are now and declares a branch of its own,
-`kestrel/<session>`, so sessions opened side by side never work on one another's branch. Pass
+The workspace fixes the project's repositories as they are now and declares a branch of its own,
+`kestrel/<workspace>`, so workspaces opened side by side never work on one another's branch. Pass
 `--branch` to work on an existing branch instead. Before the agent starts, the supervisor on the
-session's instance clones each repository and checks that branch out, cutting it from the
+workspace's instance clones each repository and checks that branch out, cutting it from the
 project's when the repository does not have it yet; a checkout that fails ends the run naming the
 repository and the branch. A later run on the same instance finds the checkout exactly as the run
 before it left it, pushed or not. The control plane itself runs no git.
 
 ```sh
-kestrel session show latest
+kestrel workspace show latest
 ```
 
 ```
@@ -203,7 +203,7 @@ control plane that did not answer.
 It already has a transcript, because opening it put the agent in as a participant:
 
 ```sh
-kestrel session transcript latest
+kestrel workspace transcript latest
 ```
 
 ```
@@ -213,27 +213,27 @@ cursor  01a07846-49fa-7dc0-a44b-183a63794ee3:1
 
 ## Enqueue a run
 
-A **run** is one execution of a harness on its session's instance: one conversation with it,
-over as many turns as the session gives it. At most one is ever open in a session.
+A **run** is one execution of a harness on its workspace's instance: one conversation with it,
+over as many turns as the workspace gives it. At most one is ever open in a workspace.
 
 ```sh
-kestrel run enqueue --session latest
+kestrel run enqueue --workspace latest
 ```
 
-Within seconds the control plane claims it, provisions a container for the session, and starts a
+Within seconds the control plane claims it, provisions a container for the workspace, and starts a
 supervisor in it that clones the project's repositories and spawns a harness, dialling back
-over the link. The container is the session's **instance**: every later run in the session starts a
+over the link. The container is the workspace's **instance**: every later run in the workspace starts a
 supervisor of its own in the same one.
 
 The work role keeps up to two runs working at once by default. That conservative default leaves
 room on a laptop for two harnesses mid-turn. Set `KESTREL_MAX_ACTIVE_RUNS` on the control-plane
 container, or pass `--max-active-runs RUNS`, to choose a different positive limit. Only a run getting
 to its first turn or mid-turn counts against it: a run waiting between turns keeps its agent
-conversation and instance but frees its place, so another session can work meanwhile. Queued runs
+conversation and instance but frees its place, so another workspace can work meanwhile. Queued runs
 and follow-ups for waiting runs take a freed place in the order they arrived.
 
 ```sh
-kestrel run list --session latest
+kestrel run list --workspace latest
 ```
 
 ```
@@ -286,7 +286,7 @@ says plainly what the filter does not buy.
 
 A **subscription profile** is one person's access to a subscribed harness: an OpenCode Go or Zen
 key, Codex through a ChatGPT plan, or Claude Code through a Claude plan. kestrel keeps it, so no
-image, checkout or provider account has to. It reaches only the runs of sessions that name it.
+image, checkout or provider account has to. It reaches only the runs of workspaces that name it.
 
 An OpenCode Go or Zen subscription is an OpenCode-issued key, so it is a **variable** the agent
 harness reads from its environment:
@@ -322,18 +322,18 @@ provider rotates has to be supplied again — log in afresh and re-seed. The sub
 does not rotate. Codex writes `auth.json` only when `cli_auth_credentials_store = "file"` is set
 where you log in. Claude Code keeps a macOS login in the Keychain rather than a file, which is why
 its token is held as a variable: run `claude setup-token` and paste what it prints. A Claude plan
-may serve only your own kestrel, on sessions you open for yourself. Holding someone else's Claude
-token, or sharing yours with other people's sessions, is the third-party access Anthropic forbids
+may serve only your own kestrel, on workspaces you open for yourself. Holding someone else's Claude
+token, or sharing yours with other people's workspaces, is the third-party access Anthropic forbids
 ([ADR-0029](docs/adr/0029-a-claude-plan-serves-only-its-owners-own-kestrel.md)); give them an API
 key instead.
 
-Name the profile when you open the session, or give a trigger's declaration `profile: jack`:
+Name the profile when you open the workspace, or give a trigger's declaration `profile: jack`:
 
 ```sh
-kestrel session open --project kestrel --agent codex --profile jack
+kestrel workspace open --project kestrel --agent codex --profile jack
 ```
 
-A session that names a profile needs no provider credential, and a follow-up that continues it keeps
+A workspace that names a profile needs no provider credential, and a follow-up that continues it keeps
 the profile. The operator boundary authenticates nobody, so naming a profile is its owner's
 authorization. Review a trigger that names one as carefully as one that admits strangers.
 
@@ -361,15 +361,15 @@ the login was refused (authentication), the plan does not cover the call (entitl
 login worked before the restart and not after it (persistence). It prints what the harness said,
 with every credential it was given, and every token inside those, replaced by `[redacted]`.
 
-## Your sessions survive a restart
+## Your workspaces survive a restart
 
-A session is durable from the moment it is opened. A run in flight is not. Bring the whole stack
+A workspace is durable from the moment it is opened. A run in flight is not. Bring the whole stack
 down and back up to see both:
 
 ```sh
 docker compose down
 docker compose up -d
-kestrel session transcript latest
+kestrel workspace transcript latest
 ```
 
 ```
@@ -379,21 +379,21 @@ kestrel session transcript latest
 cursor  01a07846-49fa-7dc0-a44b-183a63794ee3:3
 ```
 
-The session and its transcript are intact. The run that was executing ended with an explicit status
-rather than staying active forever, and its supervisor was stopped. The session's instance is still
-there, with the checkout as the run left it, for the session's next run.
+The workspace and its transcript are intact. The run that was executing ended with an explicit status
+rather than staying active forever, and its supervisor was stopped. The workspace's instance is still
+there, with the checkout as the run left it, for the workspace's next run.
 
-The instance lives until the session seals, and longer if it may hold the only copy of some work;
-see [Sealing a session](#sealing-a-session). If an instance is gone when a run needs it, that run fails and says that whatever the
+The instance lives until the workspace seals, and longer if it may hold the only copy of some work;
+see [Sealing a workspace](#sealing-a-workspace). If an instance is gone when a run needs it, that run fails and says that whatever the
 instance held that was never pushed is lost; the next run provisions a fresh instance and checks the
-session's branch out from the remote.
+workspace's branch out from the remote.
 
-`docker compose down --volumes` removes the named volume too, and with it every session, transcript
+`docker compose down --volumes` removes the named volume too, and with it every workspace, transcript
 and declaration on this machine. It is the only command here that destroys anything.
 
 ## Following a transcript
 
-A transcript is streamed rather than paged: `session transcript` prints every entry there is and
+A transcript is streamed rather than paged: `workspace transcript` prints every entry there is and
 stops. The cursor it ends on is written to **stderr**, so it never runs together with the entries on
 stdout:
 
@@ -404,7 +404,7 @@ cursor  01a07846-49fa-7dc0-a44b-183a63794ee3:2
 Pass it back to read only what came after it:
 
 ```sh
-kestrel session transcript latest --cursor 01a07846-49fa-7dc0-a44b-183a63794ee3:2
+kestrel workspace transcript latest --cursor 01a07846-49fa-7dc0-a44b-183a63794ee3:2
 ```
 
 ```
@@ -412,28 +412,28 @@ kestrel session transcript latest --cursor 01a07846-49fa-7dc0-a44b-183a63794ee3:
 cursor  01a07846-49fa-7dc0-a44b-183a63794ee3:3
 ```
 
-Add `--follow` to keep printing entries as they are appended, until the session seals. A follow that
+Add `--follow` to keep printing entries as they are appended, until the workspace seals. A follow that
 loses the control plane reconnects from the last entry it printed, and repeats none.
 
-## Sealing a session
+## Sealing a workspace
 
-Sealing ends a session without deleting it. A sealed session stays readable and is never reopened.
+Sealing ends a workspace without deleting it. A sealed workspace stays readable and is never reopened.
 
 ```sh
-kestrel session seal latest
+kestrel workspace seal latest
 ```
 
-Sealing archives the session's instance: the work role destroys its container. It does so only when
+Sealing archives the workspace's instance: the work role destroys its container. It does so only when
 the last run on it reported a checkout that the remote can restore, with nothing untracked,
 uncommitted or stashed and no commit that no remote branch has. Output that git ignores, such as a
 `target/` directory, does not count. Anything else holds the instance, and the seal is refused. The run
-above was cut off before its supervisor could say what the checkout held, so this session is refused:
+above was cut off before its supervisor could say what the checkout held, so this workspace is refused:
 
 ```
-Error: the control plane refused: the session 01a07846-49fa-7dc0-a44b-183a63794ee3's instance docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006 may hold the only copy of its work (no run reported what its checkout holds); publish it from a follow-up run, or release the instance to discard it
+Error: the control plane refused: the workspace 01a07846-49fa-7dc0-a44b-183a63794ee3's instance docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006 may hold the only copy of its work (no run reported what its checkout holds); publish it from a follow-up run, or release the instance to discard it
 ```
 
-Every held instance is listed with its reason, and `kestrel session show` repeats the reason on its
+Every held instance is listed with its reason, and `kestrel workspace show` repeats the reason on its
 `held` line:
 
 ```sh
@@ -441,46 +441,46 @@ kestrel instance list
 ```
 
 ```
-session                               instance                                             because
+workspace                             instance                                             because
 01a07846-49fa-7dc0-a44b-183a63794ee3  docker/kestrel-01a07846-5d97-7230-9315-bfef2a644006  no run reported what its checkout holds
 ```
 
 A reason read from git names the repository, the branch and what it found, such as
 `https://github.com/openkestrel/kestrel on kestrel/01a07846-… has 2 unpushed commits, 1 untracked file`.
 To keep that work, post a message asking the agent to push it. To discard it, release the instance.
-The release destroys the instance and is recorded in the session's transcript:
+The release destroys the instance and is recorded in the workspace's transcript:
 
 ```sh
 kestrel instance release latest
-kestrel session seal latest
+kestrel workspace seal latest
 ```
 
-A sealed session accepts no further runs:
+A sealed workspace accepts no further runs:
 
 ```
-Error: the control plane refused: the session 01a07846-49fa-7dc0-a44b-183a63794ee3 is sealed, and accepts no run
+Error: the control plane refused: the workspace 01a07846-49fa-7dc0-a44b-183a63794ee3 is sealed, and accepts no run
 ```
 
-Sealing ends a run that is waiting between turns, and it succeeds. A session whose run is still in
+Sealing ends a run that is waiting between turns, and it succeeds. A workspace whose run is still in
 a turn, or still queued, refuses to seal until that turn is answered.
 
-A session seals itself too. `last active` moves when the session opens, when a run is enqueued into
-it, when one of its runs answers a turn, and when one ends; a session that has sat at the same
+A workspace seals itself too. `last active` moves when the workspace opens, when a run is enqueued into
+it, when one of its runs answers a turn, and when one ends; a workspace that has sat at the same
 `last active` for 24 hours with no turn in flight is sealed by kestrel, exactly as the command above
-would have. A session whose instance is held stays open, however long it has been idle, until its
+would have. A workspace whose instance is held stays open, however long it has been idle, until its
 work is pushed or its instance released.
 
-Work that would have continued it starts a new session that records the sealed one:
+Work that would have continued it starts a new workspace that records the sealed one:
 
 ```sh
-kestrel session open --project kestrel --agent builder --continues latest
+kestrel workspace open --project kestrel --agent builder --continues latest
 ```
 
-Both ends of that link are visible. The new session shows what it continues, and the sealed one
+Both ends of that link are visible. The new workspace shows what it continues, and the sealed one
 names it on its `continued by` line:
 
 ```sh
-kestrel session show latest --json id,state,continues
+kestrel workspace show latest --json id,state,continues
 ```
 
 ```
@@ -489,7 +489,7 @@ kestrel session show latest --json id,state,continues
 
 ## Hand kestrel an issue
 
-Every session above you opened by hand. A **trigger** is the standing rule that opens one for you:
+Every workspace above you opened by hand. A **trigger** is the standing rule that opens one for you:
 what it matches, and the agent and project it starts that work with.
 
 kestrel has to be able to see the repository first. An **integration** is a credentialed connection
@@ -588,7 +588,7 @@ either, and neither does anything someone else says. Assigning an issue starts n
 meant to reach GitHub as an App, and GitHub does not let an issue be assigned to one.
 
 kestrel cannot read that file out of the repository for itself: reading it takes a checkout, a
-checkout takes a session, and a session takes a trigger. So you apply it, and kestrel prints the
+checkout takes a workspace, and a workspace takes a trigger. So you apply it, and kestrel prints the
 diff it makes:
 
 ```sh
@@ -633,17 +633,17 @@ into `data` that leads nowhere matches nothing.
 
 The `brief`, the `branch` and the optional `correlation` are
 [minijinja](https://docs.rs/minijinja) templates over `event`, rendered from the event and never
-choosing anything the declaration names. Leave `branch` out and the session declares one of its own.
+choosing anything the declaration names. Leave `branch` out and the workspace declares one of its own.
 Rendering is strict: a field the event does not have is an error, not an empty string, so a brief
 that says `on {{ event.data.pull_request.head.ref }}` over a labelled issue fails rather than
 rendering `on `. Ask first with `{% if event.data.pull_request is defined %}`. A template runs
 inside the control plane, so how much work it does, how deep it recurses and how much it writes
 are all bounded.
 
-A `correlation` requires `on_miss: open` or `on_miss: ignore`. A hit feeds the open Session that
-holds the key; its configured Agent stays fixed. A key only a sealed Session held is still
-kestrel's work, so either setting opens a new Session continuing the most recently sealed one. For a
-key no Session has held, `open` starts a new Session and `ignore` records the firing but starts no
+A `correlation` requires `on_miss: open` or `on_miss: ignore`. A hit feeds the open Workspace that
+holds the key; its configured Agent stays fixed. A key only a sealed Workspace held is still
+kestrel's work, so either setting opens a new Workspace continuing the most recently sealed one. For a
+key no Workspace has held, `open` starts a new Workspace and `ignore` records the firing but starts no
 work.
 
 ### Letting a label choose the agent
@@ -655,13 +655,13 @@ A trigger starts its work with its `agent`, unless a label on the issue names an
     allows: [codex, claude]
 ```
 
-An issue labelled `agent:codex` when the trigger fires opens its session with `codex`. The label
+An issue labelled `agent:codex` when the trigger fires opens its workspace with `codex`. The label
 only chooses among agents the declaration names, so an issue cannot reach an agent you did not
 review. Two `agent:` labels naming different agents, or one naming an agent the trigger does not
 allow, open nothing: the firing fails, and `kestrel event show` prints why under `firings`.
 `kestrel trigger test` prints which agent a firing for an event would choose. A label only matters
-when a firing opens a session. Changing an issue's labels later does not change the agent of the
-session already working on it.
+when a firing opens a workspace. Changing an issue's labels later does not change the agent of the
+workspace already working on it.
 
 ### One-off triggers
 
@@ -725,7 +725,7 @@ docker compose up -d
 `KESTREL_IMAGE` names the image the Docker driver provisions an Instance from. It is not
 `KESTREL_ENV_IMAGE`, which is the tag Compose builds the base image under, so pointing that at
 `kestrel-dev` would only relabel the image Compose rebuilds. The named volume survives the recreate,
-so every declaration and session above is still there.
+so every declaration and workspace above is still there.
 
 `gh` reads its token from its own environment, so a run needs one there. Name the credential for that
 variable and hand it the token `gh` already holds:
@@ -748,11 +748,11 @@ answer either: merging writes to the base branch and needs the contents-write au
 the pull request's branch already needs, so a fine-grained token that can push the branch can merge
 it.
 
-Comment `@kestrel` on an issue in that repository, and within a poll interval there is a session
+Comment `@kestrel` on an issue in that repository, and within a poll interval there is a workspace
 open with a run queued behind it:
 
 ```sh
-kestrel session list
+kestrel workspace list
 ```
 
 ```
@@ -760,9 +760,9 @@ id                                    name                  state  project  agen
 01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04  brisk-heron-kqpzmwdt  open   kestrel  builder  01a07c31-4d0c-7b91-88f1-2f1a9c0b3e77
 ```
 
-The last column is the event that started it. `kestrel session show` prints it beside the branch
-the trigger rendered, which the session works on for its whole life; the supervisor cuts that
-branch from the project's when the repository does not have it yet. The rendered brief is the session's
+The last column is the event that started it. `kestrel workspace show` prints it beside the branch
+the trigger rendered, which the workspace works on for its whole life; the supervisor cuts that
+branch from the project's when the repository does not have it yet. The rendered brief is the workspace's
 first transcript entry:
 
 ```
@@ -793,8 +793,8 @@ place of the trigger's own or one an `agent:` label chooses:
 
 A mention anywhere but the start of a comment commands nothing. Whether a command starts work is the
 trigger's filter to say, so the one above obeys only `jtmthf`. A comment kestrel itself left carries
-its marker and is never heard as anything. On an issue whose session is open, the command feeds that
-session, as a label on it would; on one whose session has sealed, it opens a new session continuing
+its marker and is never heard as anything. On an issue whose workspace is open, the command feeds that
+workspace, as a label on it would; on one whose workspace has sealed, it opens a new workspace continuing
 the sealed one.
 
 ### Dispatching an issue
@@ -808,7 +808,7 @@ kestrel trigger dispatch delegated --integration origin --issue 44 \
 
 ```
 outcome      opened
-session      01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04
+workspace    01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04
 run          01a07c31-6a11-7cc2-9d41-0b5b6a2b7f05
 event        01a07c31-6a0f-7cc2-9d41-0b5b6a2b7f03
 correlation  -
@@ -817,7 +817,7 @@ correlation  -
 kestrel reads the issue through the integration, records a `dev.kestrel.dispatched` event whose
 `data.issue` is the issue as GitHub reports it, and fires only the trigger you named for it: no other
 trigger ever fires for a dispatch. From there it is a firing like any other, so a correlation feeds
-an open session rather than opening a second one, the firing budget still counts it, and the outcome
+an open workspace rather than opening a second one, the firing budget still counts it, and the outcome
 goes back to the issue. `--instruction` is the brief's `instruction`, and `--agent` chooses among
 the agents the trigger allows. `--instruction` also takes `@FILE` and `-`.
 
@@ -840,19 +840,19 @@ brief        /implement https://github.com/openkestrel/kestrel/issues/44
 ```
 
 It reads the issue and builds the event the dispatch would record, then renders the trigger against
-it without recording anything: no event, no firing, no session, and none of the firing budget.
+it without recording anything: no event, no firing, no workspace, and none of the firing budget.
 `matches` is always true, because a dispatch fires whatever the filter says. `-f` tests the trigger
 as a file declares it, as it does with `--event`. A scheduled trigger cannot be dispatched, so it
 cannot be tested against an issue either.
 
 A brief, branch or correlation that cannot render fails the firing: nothing opens, the control
 plane logs why, and no later sweep tries that trigger on that event again. A correlation is held by
-the session it opened, and is unique among the organization's open sessions. Events arriving while
-that Session has an active Run wait together, then become one transcript entry and one next Run.
+the workspace it opened, and is unique among the organization's open workspaces. Events arriving while
+that Workspace has an active Run wait together, then become one transcript entry and one next Run.
 
 A trigger fires at most once per event, so the same command arriving in two overlapping poll
-windows opens one session and not two. A second command is a new event, and so is a second
-dispatch; with a correlation, either feeds the session already open for the issue rather than
+windows opens one workspace and not two. A second command is a new event, and so is a second
+dispatch; with a correlation, either feeds the workspace already open for the issue rather than
 opening another.
 
 A trigger also fires only for events recorded after it was declared, so what kestrel already saw on
@@ -918,7 +918,7 @@ disabled:operator
 `kestrel trigger enable delegated` puts it back.
 
 Each Trigger has a budget of ten firings per hour. The firing that would exceed it is recorded
-without opening a Session, and disables only that Trigger. `kestrel trigger show` names the reason;
+without opening a Workspace, and disables only that Trigger. `kestrel trigger show` names the reason;
 an operator must explicitly enable it again, which starts its budget afresh.
 
 ### A trigger on a schedule
@@ -939,10 +939,10 @@ Each time the schedule elapses, counting from the declaration, kestrel mints an 
 records it like any other, with no integration: `type` is `dev.kestrel.schedule.elapsed`, `source`
 is `urn:kestrel:trigger:<trigger id>`, `id` and `time` are the moment it was due, and `data` holds
 the trigger's name and interval. The trigger then fires for it on the same path a matched event
-takes, so the brief renders from `event`, the session's first entry is that brief, and the
+takes, so the brief renders from `event`, the workspace's first entry is that brief, and the
 firing budget applies. A schedule that would exceed the budget is refused when you declare it, so
 nothing shorter than six minutes is accepted. Elapsings missed while kestrel was down fire once, not
-once each, and a disabled trigger's schedule does not elapse at all. A session opened this way has no
+once each, and a disabled trigger's schedule does not elapse at all. A workspace opened this way has no
 issue to report to, so its outcome goes nowhere.
 
 An interval drifts with whenever it was declared and cannot skip a weekend. Work that belongs at a
@@ -1007,7 +1007,7 @@ still says how it ended; that comment names the run and quotes the last thing th
 ```
 **kestrel** — run failed: the environment could not be provisioned
 
-Session `01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04` · run `01a07c33-2f88-7a05-bb31-58c0d9e4d7f0`
+Workspace `01a07c31-6a10-7cc2-9d41-0b5b6a2b7f04` · run `01a07c33-2f88-7a05-bb31-58c0d9e4d7f0`
 ```
 
 Every comment carries an invisible marker naming the run and, for a turn, the turn, so a control
@@ -1018,22 +1018,22 @@ and never changes how the run ended.
 Register an integration with `--carries inbound` and kestrel watches the repository without ever
 writing to it.
 
-## Continue a session
+## Continue a workspace
 
 A run is one conversation with its agent, and answering a turn does not end it: nothing the agent
-says, and no pull request it opens, does. A new comment on the issue that opened a session posts
-that message to its transcript and sends it to the session's open run as its next turn, in the same
+says, and no pull request it opens, does. A new comment on the issue that opened a workspace posts
+that message to its transcript and sends it to the workspace's open run as its next turn, in the same
 agent conversation, on the same supervisor and instance.
 
 If the agent is still working on a turn when the comment arrives, the message waits durably. Every
 message that arrived during the turn becomes the next one, in the order they arrived, once the agent
-answers. Only a comment from someone the trigger that opened the session authorizes feeds it: a
+answers. Only a comment from someone the trigger that opened the workspace authorizes feeds it: a
 trigger that names its author takes only that author's remarks, while one that admits outsiders
-takes anyone's. A comment on an issue whose session has sealed starts nothing: only a command does,
-opening a new session whose `continues` field names the sealed one, on the sealed session's branch. A
+takes anyone's. A comment on an issue whose workspace has sealed starts nothing: only a command does,
+opening a new workspace whose `continues` field names the sealed one, on the sealed workspace's branch. A
 command is never also posted as a message.
 
-A run ends when you stop it, when its session seals, or when it fails:
+A run ends when you stop it, when its workspace seals, or when it fails:
 
 ```sh
 kestrel run stop 01a07846-5d97-7230-9315-bfef2a644006
@@ -1044,14 +1044,14 @@ succeeded
 ```
 
 A run stopped between turns succeeds; one stopped mid-turn, or before it started, fails. A comment on
-a session with no open run enqueues a new run in it, on the same instance and checkout, with a fresh
+a workspace with no open run enqueues a new run in it, on the same instance and checkout, with a fresh
 supervisor and harness. Before its agent starts, the supervisor pages the whole transcript into
 the harness, so the new conversation sees the brief, earlier runs, and the follow-up message.
 
 An operator can post the same kind of message directly:
 
 ```sh
-kestrel session post latest "please add the missing test"
+kestrel workspace post latest "please add the missing test"
 ```
 
 Pass `--as-participant NAME` to record a name other than `operator` in the transcript.
@@ -1067,7 +1067,7 @@ first.
 **A failed run is not retried.** kestrel retries dispatch and never work: a run that started and
 failed stays failed.
 
-**You cannot join a session while it runs.** Reading its transcript afterwards is the only way to see
+**You cannot join a workspace while it runs.** Reading its transcript afterwards is the only way to see
 what happened.
 
 [`ROADMAP.md`](ROADMAP.md) is the order the rest arrives in, and the issue tracker carries the

@@ -5,7 +5,7 @@ use support::Kestrel;
 use support::client::{Finished, Invocation, ran_by};
 
 const RESOLVED: &str = "control_plane,control_plane_source,organization,organization_source,\
-                        projects,agents,triggers,sessions,integrations,credentials,profiles,next";
+                        projects,agents,triggers,workspaces,integrations,credentials,profiles,next";
 const UNRESOLVED: &str = "control_plane,organization,organization_source,organizations,next";
 
 fn names(records: &[Value]) -> Vec<&str> {
@@ -203,7 +203,7 @@ async fn every_scoped_listing_refuses_to_guess_between_two_organizations() {
         "integration",
         "event",
         "trigger",
-        "session",
+        "workspace",
     ] {
         let listed = ran_by(&kestrel, &[noun, "list"], Invocation::default()).await;
         refused(&listed, &["--organization", "acme", "globex"]);
@@ -276,13 +276,13 @@ async fn status_prints_every_resolved_value_its_source_what_exists_and_what_to_r
     assert_eq!(reported[0]["projects"], 1);
     assert_eq!(reported[0]["agents"], 1);
     assert_eq!(reported[0]["triggers"], 0);
-    assert_eq!(reported[0]["sessions"], 0);
+    assert_eq!(reported[0]["workspaces"], 0);
     assert_eq!(reported[0]["integrations"], 0);
     assert_eq!(reported[0]["credentials"], 0);
     assert_eq!(reported[0]["profiles"], 0);
     assert_eq!(
         reported[0]["next"],
-        "kestrel session open --project kestrel --agent builder"
+        "kestrel workspace open --project kestrel --agent builder"
     );
     kestrel.teardown().await;
 }
@@ -359,15 +359,15 @@ async fn a_command_naming_its_record_needs_no_scope() {
     kestrel.teardown().await;
 }
 
-/// A Session reference is resolved inside the scope the invocation named, so it cannot be
+/// A Workspace reference is resolved inside the scope the invocation named, so it cannot be
 /// reached without one, unlike an Event's record which stands alone.
 #[tokio::test]
-async fn a_session_reference_refuses_to_guess_between_two_organizations() {
+async fn a_workspace_reference_refuses_to_guess_between_two_organizations() {
     let kestrel = two_organizations().await;
 
     let shown = ran_by(
         &kestrel,
-        &["session", "show", "01a0a2d8-baf8-7c02-99fa-7280f174c14a"],
+        &["workspace", "show", "01a0a2d8-baf8-7c02-99fa-7280f174c14a"],
         Invocation::default(),
     )
     .await;
