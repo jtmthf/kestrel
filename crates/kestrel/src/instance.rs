@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::declined::Declined;
 use crate::domain::{Session, SessionId};
 use crate::log::Entry;
 use crate::session;
@@ -229,12 +230,11 @@ pub(crate) async fn archive_on_seal(tx: &mut Tx<'_>, session: &Session) -> Resul
     };
 
     if let Some(because) = unpublished(&session.checkout.repositories, kept.observed.as_deref()) {
-        bail!(
+        bail!(Declined::Taken(format!(
             "the session {}'s instance {} may hold the only copy of its work ({because}); publish \
              it from a follow-up run, or release the instance to discard it",
-            session.id,
-            kept.instance
-        );
+            session.id, kept.instance
+        )));
     }
 
     tx.sessions()
