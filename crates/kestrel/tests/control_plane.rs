@@ -188,7 +188,7 @@ fn a_session(operator: &str) -> String {
     ran(
         operator,
         &[
-            "workspace",
+            "project",
             "declare",
             "kestrel",
             "--repository",
@@ -207,7 +207,7 @@ fn a_session(operator: &str) -> String {
         &[
             "session",
             "open",
-            "--workspace",
+            "--project",
             "kestrel",
             "--agent",
             "builder",

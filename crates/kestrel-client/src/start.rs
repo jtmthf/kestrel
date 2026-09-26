@@ -12,7 +12,7 @@ const DEFAULT_RUNTIME: &str = "opencode";
 pub struct Given {
     pub repositories: Vec<String>,
     pub branch: Option<String>,
-    pub workspace: Option<String>,
+    pub project: Option<String>,
     pub agent: Option<String>,
     pub runtime: Option<String>,
     pub model: Option<String>,
@@ -22,7 +22,7 @@ pub struct Given {
 #[derive(Default)]
 pub struct Existing {
     pub organization_declared: bool,
-    pub workspaces: Vec<Workspace>,
+    pub projects: Vec<Project>,
     pub agents: Vec<Agent>,
     pub credentials: Vec<String>,
 }
@@ -38,14 +38,14 @@ pub struct LocalClone {
 impl Existing {
     pub fn read(
         organization_declared: bool,
-        workspaces: &Value,
+        projects: &Value,
         agents: &Value,
         credentials: &Value,
     ) -> Self {
         Self {
             organization_declared,
-            workspaces: records(workspaces, |record| {
-                Some(Workspace {
+            projects: records(projects, |record| {
+                Some(Project {
                     name: record["name"].as_str()?.to_owned(),
                     repositories: record["repositories"]
                         .as_array()?
@@ -78,7 +78,7 @@ fn records<T>(records: &Value, read: impl Fn(&Value) -> Option<T>) -> Vec<T> {
         .collect()
 }
 
-pub struct Workspace {
+pub struct Project {
     pub name: String,
     pub repositories: Vec<String>,
     pub branch: String,
@@ -124,7 +124,7 @@ pub struct Explained<'a> {
 pub struct Plan {
     pub organization: Inferred<String>,
     pub repositories: Inferred<Vec<String>>,
-    pub workspace: Inferred<String>,
+    pub project: Inferred<String>,
     pub branch: Inferred<String>,
     pub agent: Inferred<String>,
     pub runtime: Inferred<String>,
@@ -224,17 +224,17 @@ pub fn plan(
     existing: &Existing,
 ) -> Result<Plan, Vec<Missing>> {
     let Existing {
-        workspaces, agents, ..
+        projects, agents, ..
     } = existing;
     let mut missing = Vec::new();
 
-    let named_workspace = given
-        .workspace
+    let named_project = given
+        .project
         .as_ref()
-        .and_then(|name| workspaces.iter().find(|declared| &declared.name == name));
+        .and_then(|name| projects.iter().find(|declared| &declared.name == name));
     let repositories = if !given.repositories.is_empty() {
         Some(flagged(given.repositories, "--repository"))
-    } else if let Some(named) = named_workspace {
+    } else if let Some(named) = named_project {
         Some(inferred(
             named.repositories.clone(),
             format!("what {} is declared against", named.name),
@@ -263,23 +263,23 @@ pub fn plan(
     };
 
     let declaring = repositories.as_ref().and_then(|repositories| {
-        workspaces
+        projects
             .iter()
-            .find(|workspace| workspace.repositories == repositories.value)
+            .find(|project| project.repositories == repositories.value)
     });
-    let workspace = match (given.workspace, declaring, &repositories) {
-        (Some(workspace), _, _) => Some(flagged(workspace, "--workspace")),
+    let project = match (given.project, declaring, &repositories) {
+        (Some(project), _, _) => Some(flagged(project, "--project")),
         (None, Some(declaring), Some(repositories)) => Some(inferred(
             declaring.name.clone(),
             format!("already declares {}", repositories.value.join(", ")),
         )),
         (None, None, Some(repositories)) => {
             let name = owner_and_name(&repositories.value[0]).1;
-            if workspaces.iter().any(|declared| declared.name == name) {
+            if projects.iter().any(|declared| declared.name == name) {
                 missing.push(Missing {
-                    flag: "--workspace",
+                    flag: "--project",
                     because: format!(
-                        "the workspace {name} is declared against other repositories, and a \
+                        "the project {name} is declared against other repositories, and a \
                          start changes no declaration"
                     ),
                 });
@@ -288,10 +288,10 @@ pub fn plan(
         }
         (None, _, None) => None,
     };
-    let named = workspace.as_ref().and_then(|workspace| {
-        workspaces
+    let named = project.as_ref().and_then(|project| {
+        projects
             .iter()
-            .find(|declared| declared.name == workspace.value)
+            .find(|declared| declared.name == project.value)
     });
 
     let branch = match (given.branch, named) {
@@ -398,11 +398,11 @@ pub fn plan(
         ),
     };
 
-    match (repositories, workspace, branch) {
-        (Some(repositories), Some(workspace), Some(branch)) if missing.is_empty() => Ok(Plan {
+    match (repositories, project, branch) {
+        (Some(repositories), Some(project), Some(branch)) if missing.is_empty() => Ok(Plan {
             organization,
             repositories,
-            workspace,
+            project,
             branch,
             agent,
             runtime,
@@ -445,10 +445,10 @@ impl Plan {
                 "--organization",
             ),
             row(
-                "workspace",
-                &self.workspace,
-                self.workspace.value.clone(),
-                "--workspace",
+                "project",
+                &self.project,
+                self.project.value.clone(),
+                "--project",
             ),
             row(
                 "repository",
@@ -489,7 +489,7 @@ impl Plan {
 
     pub fn applying(&self, existing: &Existing) -> Vec<String> {
         let organization = &self.organization.value;
-        let workspace = &self.workspace.value;
+        let project = &self.project.value;
         let agent = &self.agent.value;
         let mut applying = Vec::new();
 
@@ -499,12 +499,12 @@ impl Plan {
             ));
         }
         if !existing
-            .workspaces
+            .projects
             .iter()
-            .any(|declared| &declared.name == workspace)
+            .any(|declared| &declared.name == project)
         {
             applying.push(format!(
-                "declare the Workspace {workspace}, where work on {} happens on {}",
+                "declare the Project {project}, where work on {} happens on {}",
                 self.repositories.value.join(", "),
                 self.branch.value
             ));
@@ -532,7 +532,7 @@ impl Plan {
             }));
         }
         applying.push(format!(
-            "open a Session in {workspace} carrying the Brief, and enqueue a Run of {agent} to \
+            "open a Session in {project} carrying the Brief, and enqueue a Run of {agent} to \
              work on it"
         ));
 
@@ -543,8 +543,8 @@ impl Plan {
     pub fn body(&self, brief: &str, secrets: &[(String, String)]) -> Value {
         json!({
             "organization": self.organization.value,
-            "workspace": {
-                "name": self.workspace.value,
+            "project": {
+                "name": self.project.value,
                 "repositories": self.repositories.value,
                 "branch": self.branch.value,
             },
@@ -704,11 +704,7 @@ mod tests {
             explained,
             [
                 ("organization", "acme".to_owned(), "the owner of origin"),
-                (
-                    "workspace",
-                    "widgets".to_owned(),
-                    "named for its repository"
-                ),
+                ("project", "widgets".to_owned(), "named for its repository"),
                 (
                     "repository",
                     "https://github.com/acme/widgets.git".to_owned(),
@@ -746,7 +742,7 @@ mod tests {
             Given {
                 repositories: vec!["https://github.com/globex/gadgets".to_owned()],
                 branch: Some("develop".to_owned()),
-                workspace: Some("gadgets-work".to_owned()),
+                project: Some("gadgets-work".to_owned()),
                 agent: Some("builder".to_owned()),
                 runtime: Some("claude".to_owned()),
                 model: Some("opus".to_owned()),
@@ -762,16 +758,16 @@ mod tests {
         }
         let body = plan.body("go", &[]);
         assert_eq!(body["agent"]["model"], "opus");
-        assert_eq!(body["workspace"]["branch"], "develop");
+        assert_eq!(body["project"]["branch"], "develop");
     }
 
     #[test]
-    fn a_workspace_already_declaring_the_repository_is_the_one_used() {
+    fn a_project_already_declaring_the_repository_is_the_one_used() {
         let plan = planned(
             Given::default(),
             &a_clone("https://github.com/acme/widgets.git"),
             &Existing {
-                workspaces: vec![Workspace {
+                projects: vec![Project {
                     name: "widgets-main".to_owned(),
                     repositories: vec!["https://github.com/acme/widgets.git".to_owned()],
                     branch: "trunk".to_owned(),
@@ -780,7 +776,7 @@ mod tests {
             },
         );
 
-        assert_eq!(plan.workspace.value, "widgets-main");
+        assert_eq!(plan.project.value, "widgets-main");
         assert_eq!(plan.branch.value, "trunk");
     }
 
@@ -868,8 +864,8 @@ mod tests {
         );
     }
 
-    fn widgets_declared_against(repository: &str) -> Workspace {
-        Workspace {
+    fn widgets_declared_against(repository: &str) -> Project {
+        Project {
             name: "widgets".to_owned(),
             repositories: vec![repository.to_owned()],
             branch: "main".to_owned(),
@@ -877,15 +873,15 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_named_by_flag_brings_its_own_repositories() {
+    fn a_project_named_by_flag_brings_its_own_repositories() {
         let plan = planned(
             Given {
-                workspace: Some("widgets".to_owned()),
+                project: Some("widgets".to_owned()),
                 ..Given::default()
             },
             &a_clone("https://github.com/acme/widgets.git"),
             &Existing {
-                workspaces: vec![widgets_declared_against("https://github.com/acme/other")],
+                projects: vec![widgets_declared_against("https://github.com/acme/other")],
                 ..Existing::default()
             },
         );
@@ -894,20 +890,20 @@ mod tests {
     }
 
     #[test]
-    fn an_inferred_workspace_name_declared_otherwise_names_the_flag_to_pass() {
+    fn an_inferred_project_name_declared_otherwise_names_the_flag_to_pass() {
         let missing = plan(
             acme(),
             Given::default(),
             &a_clone("https://github.com/acme/widgets.git"),
             &Existing {
-                workspaces: vec![widgets_declared_against("https://github.com/acme/other")],
+                projects: vec![widgets_declared_against("https://github.com/acme/other")],
                 ..Existing::default()
             },
         )
         .err()
         .expect("the plan is refused");
 
-        assert_eq!(missing[0].flag, "--workspace");
+        assert_eq!(missing[0].flag, "--project");
     }
 
     #[test]
@@ -949,7 +945,7 @@ mod tests {
             plan.applying(&Existing::default()),
             [
                 "declare the Organization acme, the boundary everything below belongs to",
-                "declare the Workspace widgets, where work on \
+                "declare the Project widgets, where work on \
                  https://github.com/acme/widgets.git happens on main",
                 "declare the Agent opencode, an actor driven by the Agent Runtime opencode \
                  with its default model",
@@ -964,7 +960,7 @@ mod tests {
     fn applying_a_plan_redeclares_nothing_that_exists() {
         let existing = Existing {
             organization_declared: true,
-            workspaces: vec![widgets_declared_against(
+            projects: vec![widgets_declared_against(
                 "https://github.com/acme/widgets.git",
             )],
             agents: vec![Agent {

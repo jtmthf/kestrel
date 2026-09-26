@@ -1,5 +1,5 @@
-//! A repository a Workspace can name that is on this machine rather than on a forge, so a Run
-//! that checks its Workspace out reaches nothing over the network.
+//! A repository a Project can name that is on this machine rather than on a forge, so a Run
+//! that checks out its Project's repositories reaches nothing over the network.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -10,7 +10,7 @@ use tempfile::TempDir;
 pub const NAME: &str = "kestrel";
 pub const BRANCH: &str = "main";
 pub const EXISTING_BRANCH: &str = "kestrel/existing";
-/// A second repository, for a Workspace that declares more than one.
+/// A second repository, for a Project that declares more than one.
 pub const OTHER: &str = "companion";
 
 pub fn url() -> &'static str {
@@ -55,7 +55,7 @@ fn initialized() -> (TempDir, String) {
     let directory = TempDir::new().expect("a temporary directory");
     let repository = directory.path().join(NAME);
     std::fs::create_dir(&repository).expect("the repository should be made");
-    std::fs::write(repository.join("README.md"), "a workspace's repository\n")
+    std::fs::write(repository.join("README.md"), "a project's repository\n")
         .expect("the repository should have something in it");
 
     let committed = |message| {

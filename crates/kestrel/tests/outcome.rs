@@ -31,7 +31,7 @@ fn eagerly() -> SignedDuration {
 async fn watching(harness: &Harness, stub: &GithubStub, carries: &[Direction]) {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],

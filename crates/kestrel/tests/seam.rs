@@ -10,7 +10,7 @@ use support::Harness;
 async fn declare_fixture(harness: &Harness) {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -32,7 +32,7 @@ async fn the_harness_boots_a_complete_control_plane_against_a_fresh_database_and
 }
 
 #[tokio::test]
-async fn a_session_opens_against_a_workspace_and_an_agent() {
+async fn a_session_opens_against_a_project_and_an_agent() {
     let harness = Harness::boot().await;
     declare_fixture(&harness).await;
 
@@ -41,7 +41,7 @@ async fn a_session_opens_against_a_workspace_and_an_agent() {
 
     assert_eq!(shown.id, session.id);
     assert_eq!(shown.organization.name, "acme");
-    assert_eq!(shown.workspace.name, "kestrel");
+    assert_eq!(shown.project.name, "kestrel");
     assert_eq!(shown.agent.name, "builder");
     assert_eq!(shown.state, SessionState::Open);
 
@@ -74,21 +74,21 @@ async fn every_durable_record_carries_its_organization() {
     let session = harness.open_session("acme", "kestrel", "builder").await;
     let shown = harness.show_session(session.id).await;
 
-    assert_eq!(shown.workspace.organization, shown.organization.id);
+    assert_eq!(shown.project.organization, shown.organization.id);
     assert_eq!(shown.agent.organization, shown.organization.id);
 
     harness.teardown().await;
 }
 
 #[tokio::test]
-async fn a_workspace_redeclared_after_a_session_opens_moves_none_of_its_checkout() {
+async fn a_project_redeclared_after_a_session_opens_moves_none_of_its_checkout() {
     let harness = Harness::boot().await;
     declare_fixture(&harness).await;
     let session = harness.open_session("acme", "kestrel", "builder").await;
     let organization = harness.declare_organization("acme").await;
 
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/elsewhere".to_owned()],
@@ -108,12 +108,12 @@ async fn a_workspace_redeclared_after_a_session_opens_moves_none_of_its_checkout
 }
 
 #[tokio::test]
-async fn declaring_a_workspace_and_an_agent_lists_them_back() {
+async fn declaring_a_project_and_an_agent_lists_them_back() {
     let harness = Harness::boot().await;
     let organization = harness.declare_organization("acme").await;
 
-    let workspace = harness
-        .declare_workspace(
+    let project = harness
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],
@@ -124,12 +124,12 @@ async fn declaring_a_workspace_and_an_agent_lists_them_back() {
         .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))
         .await;
 
-    let workspaces = harness.workspaces(&organization).await;
+    let projects = harness.projects(&organization).await;
     let agents = harness.agents(&organization).await;
 
-    assert_eq!(workspaces.len(), 1);
-    assert_eq!(workspaces[0].id, workspace.id);
-    assert_eq!(workspaces[0].branch, "main");
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].id, project.id);
+    assert_eq!(projects[0].branch, "main");
     assert_eq!(agents.len(), 1);
     assert_eq!(agents[0].id, agent.id);
     assert_eq!(agents[0].runtime, "opencode");

@@ -18,7 +18,7 @@ const WELL_INSIDE_THE_WINDOW: SignedDuration = SignedDuration::from_hours(23);
 async fn a_session(harness: &Harness) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],

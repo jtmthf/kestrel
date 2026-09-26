@@ -2,10 +2,10 @@ pub fn command(message: &str, organization: Option<&str>) -> Option<String> {
     if let Some(name) = message.strip_prefix("no organization named ") {
         return Some(format!("kestrel organization declare {}", quoted(name)));
     }
-    let command = if let Some(rest) = message.strip_prefix("no workspace named ") {
+    let command = if let Some(rest) = message.strip_prefix("no project named ") {
         let (name, _) = rest.split_once(" in the organization ")?;
         Some(format!(
-            "kestrel workspace declare {} --repository \"$(git remote get-url origin)\" --branch \"$(git branch --show-current)\"",
+            "kestrel project declare {} --repository \"$(git remote get-url origin)\" --branch \"$(git branch --show-current)\"",
             quoted(name)
         ))
     } else if let Some(rest) = message.strip_prefix("no agent named ") {

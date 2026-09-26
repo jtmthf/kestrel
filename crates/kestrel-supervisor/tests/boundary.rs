@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const DOMAIN: [&str; 9] = [
-    "workspace",
+    "project",
     "organization",
     "transcript",
     "campaign",

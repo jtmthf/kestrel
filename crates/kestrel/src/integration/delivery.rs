@@ -194,8 +194,8 @@ mod tests {
 
     use super::*;
     use crate::domain::{
-        Agent, AgentId, Checkout, Organization, OrganizationId, RunState, SessionId, SessionState,
-        Workspace, WorkspaceId,
+        Agent, AgentId, Checkout, Organization, OrganizationId, Project, ProjectId, RunState,
+        SessionId, SessionState,
     };
 
     fn a_session() -> Session {
@@ -208,8 +208,8 @@ mod tests {
         Session {
             id: SessionId::generate(),
             name: "bright-falcon".to_owned(),
-            workspace: Workspace {
-                id: WorkspaceId::generate(),
+            project: Project {
+                id: ProjectId::generate(),
                 organization: organization.id,
                 name: "kestrel".to_owned(),
                 repositories: Vec::new(),

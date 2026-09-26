@@ -82,7 +82,7 @@ async fn sessions(harness: &Harness, count: usize) -> Vec<Session> {
 async fn a_session_from_the_issue(harness: &Harness, stub: &GithubStub) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", RUNTIME, None)

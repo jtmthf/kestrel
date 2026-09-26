@@ -23,7 +23,7 @@ const LONG_ENOUGH_TO_BE_SURE: Duration = Duration::from_secs(1);
 async fn a_session(harness: &Harness) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", "opencode", Some("claude-opus-5"))

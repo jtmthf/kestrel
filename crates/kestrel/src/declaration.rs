@@ -10,14 +10,14 @@ use crate::trigger::{allowed, check_miss};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Document {
-    pub workspace: Workspace,
+    pub project: Project,
     pub agent: Agent,
     pub trigger: TriggerDeclaration,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Workspace {
+pub struct Project {
     pub name: String,
     pub repositories: Vec<String>,
     pub branch: String,
@@ -40,7 +40,7 @@ pub struct TriggerDeclaration {
     pub branch: Option<String>,
     pub correlation: Option<String>,
     pub on_miss: Option<String>,
-    pub workspace: String,
+    pub project: String,
     pub agent: String,
     #[serde(default)]
     pub allows: Vec<String>,
@@ -71,7 +71,7 @@ pub struct Difference {
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    Workspace,
+    Project,
     Agent,
     Trigger,
 }
@@ -116,14 +116,14 @@ pub async fn apply(
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
 
-    let workspaces = tx.workspaces().all(&organization).await?;
+    let projects = tx.projects().all(&organization).await?;
     let agents = tx.agents().all(&organization).await?;
     let triggers = tx.triggers().all(&organization).await?;
-    let workspace_change = workspace_change(
-        workspaces
+    let project_change = project_change(
+        projects
             .iter()
-            .find(|workspace| workspace.name == document.workspace.name),
-        &document.workspace,
+            .find(|project| project.name == document.project.name),
+        &document.project,
     );
     let agent_change = agent_change(
         agents
@@ -141,10 +141,10 @@ pub async fn apply(
     );
     let declarations = vec![
         Declaration {
-            kind: Kind::Workspace,
-            name: document.workspace.name.clone(),
-            action: workspace_change.action,
-            differences: workspace_change.differences,
+            kind: Kind::Project,
+            name: document.project.name.clone(),
+            action: project_change.action,
+            differences: project_change.differences,
         },
         Declaration {
             kind: Kind::Agent,
@@ -160,13 +160,13 @@ pub async fn apply(
         },
     ];
 
-    let workspace = tx
-        .workspaces()
+    let project = tx
+        .projects()
         .declare(
             &organization,
-            &document.workspace.name,
-            &document.workspace.repositories,
-            &document.workspace.branch,
+            &document.project.name,
+            &document.project.repositories,
+            &document.project.branch,
         )
         .await?
         .record;
@@ -195,7 +195,7 @@ pub async fn apply(
                     &fires,
                     &parsed.templates,
                     parsed.on_miss,
-                    &workspace,
+                    &project,
                     &agent,
                     &allows,
                     profile.as_ref(),
@@ -214,7 +214,7 @@ pub async fn apply(
                     &fires,
                     &parsed.templates,
                     parsed.on_miss,
-                    &workspace,
+                    &project,
                     &agent,
                     &allows,
                     profile.as_ref(),
@@ -242,7 +242,7 @@ pub async fn apply(
 
 fn check_document(document: &Document) -> Result<()> {
     for name in [
-        &document.workspace.name,
+        &document.project.name,
         &document.agent.name,
         &document.trigger.name,
     ] {
@@ -250,23 +250,23 @@ fn check_document(document: &Document) -> Result<()> {
             bail!("a declaration names each record");
         }
     }
-    if document.workspace.repositories.is_empty() {
-        bail!("a workspace names at least one repository");
+    if document.project.repositories.is_empty() {
+        bail!("a project names at least one repository");
     }
-    if let Some(clash) = sharing_a_directory(&document.workspace.repositories) {
+    if let Some(clash) = sharing_a_directory(&document.project.repositories) {
         bail!("{clash}");
     }
-    if document.workspace.branch.is_empty() {
-        bail!("a workspace names the branch its work happens on");
+    if document.project.branch.is_empty() {
+        bail!("a project names the branch its work happens on");
     }
     if document.agent.runtime.is_empty() {
         bail!("an agent names the agent runtime that drives it");
     }
-    if document.trigger.workspace != document.workspace.name {
+    if document.trigger.project != document.project.name {
         bail!(
-            "the trigger names workspace {}, not the declared workspace {}",
-            document.trigger.workspace,
-            document.workspace.name
+            "the trigger names project {}, not the declared project {}",
+            document.trigger.project,
+            document.project.name
         );
     }
     if document.trigger.agent != document.agent.name {
@@ -328,19 +328,16 @@ fn parse_trigger(declaration: &TriggerDeclaration) -> Result<ParsedTrigger> {
     })
 }
 
-fn workspace_change(
-    workspace: Option<&crate::domain::Workspace>,
-    declaration: &Workspace,
-) -> Compared {
+fn project_change(project: Option<&crate::domain::Project>, declaration: &Project) -> Compared {
     let becomes = vec![
         ("repositories", Some(declaration.repositories.join("\n"))),
         ("branch", Some(declaration.branch.clone())),
     ];
     compared(
-        workspace.map(|workspace| {
+        project.map(|project| {
             vec![
-                ("repositories", Some(workspace.repositories.join("\n"))),
-                ("branch", Some(workspace.branch.clone())),
+                ("repositories", Some(project.repositories.join("\n"))),
+                ("branch", Some(project.branch.clone())),
             ]
         }),
         becomes,
@@ -378,7 +375,7 @@ fn trigger_change(
         trigger.map(described_trigger),
         vec![
             ("matches", Some(parsed.filter.to_string())),
-            ("workspace", Some(declaration.workspace.clone())),
+            ("project", Some(declaration.project.clone())),
             ("agent", Some(declaration.agent.clone())),
             ("allows", (!allows.is_empty()).then(|| allows.join(", "))),
             ("profile", declaration.profile.clone()),
@@ -410,7 +407,7 @@ fn described_trigger(trigger: &Trigger) -> Vec<(&'static str, Option<String>)> {
     allows.dedup();
     vec![
         ("matches", Some(trigger.filter().to_string())),
-        ("workspace", Some(trigger.workspace.name.clone())),
+        ("project", Some(trigger.project.name.clone())),
         ("agent", Some(trigger.agent.name.clone())),
         ("allows", (!allows.is_empty()).then(|| allows.join(", "))),
         (

@@ -26,7 +26,7 @@ const PATIENCE: Duration = Duration::from_secs(30);
 async fn a_session(harness: &Harness) -> kestrel::domain::Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", "opencode", None)
@@ -39,7 +39,7 @@ async fn a_session(harness: &Harness) -> kestrel::domain::Session {
 async fn watching(harness: &Harness, stub: &GithubStub) {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", "opencode", None)
@@ -285,7 +285,7 @@ async fn the_second_run_starts_a_fresh_supervisor_on_the_same_instance_after_the
     .await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", "opencode", None)
@@ -517,7 +517,7 @@ async fn a_comment_backlog_larger_than_ten_pages_loses_nothing() {
 async fn watching_correlated(harness: &Harness, stub: &GithubStub, correlation: &str) {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", "opencode", None)
@@ -595,7 +595,7 @@ async fn a_comment_on_a_sealed_session_feeds_the_open_one_holding_its_correlatio
 async fn watching_a_named_actor(harness: &Harness, stub: &GithubStub) {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(&organization, "kestrel", &[], "main")
+        .declare_project(&organization, "kestrel", &[], "main")
         .await;
     harness
         .declare_agent(&organization, "builder", "opencode", None)

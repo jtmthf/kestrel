@@ -22,7 +22,7 @@ const PATIENCE: Duration = Duration::from_secs(300);
 const PROMPT: &str = "Reply with the word harrier spelled backwards, in lowercase, and nothing else. Do not use any tools.";
 const ANSWER: &str = "reirrah";
 const ORGANIZATION: &str = "smoke";
-const WORKSPACE: &str = "smoke";
+const PROJECT: &str = "smoke";
 const AGENT: &str = "smoke";
 const PROFILE: &str = "smoke";
 
@@ -152,7 +152,7 @@ async fn smoke(subject: Subject) {
 async fn declared(harness: &Harness, subject: &Subject) {
     let organization = harness.declare_organization(ORGANIZATION).await;
     harness
-        .declare_workspace(&organization, WORKSPACE, &[], "main")
+        .declare_project(&organization, PROJECT, &[], "main")
         .await;
     harness
         .declare_agent(
@@ -182,7 +182,7 @@ async fn declared(harness: &Harness, subject: &Subject) {
 
 async fn attempt(harness: &Harness, subject: &Subject, round: Round) -> Result<Run, Failure> {
     let session = harness
-        .open_session_with(ORGANIZATION, WORKSPACE, AGENT, PROFILE)
+        .open_session_with(ORGANIZATION, PROJECT, AGENT, PROFILE)
         .await;
     let run = harness.post(session.id, "operator", PROMPT).await;
     let (run, answered) = settled(harness, run).await;

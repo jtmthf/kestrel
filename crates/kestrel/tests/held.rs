@@ -22,7 +22,7 @@ const COMMIT: &str = "git -C kestrel -c user.name=kestrel -c user.email=kestrel@
 async fn a_session(harness: &Harness) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             repository::NAME,
             &[repository::url().to_owned()],

@@ -22,7 +22,7 @@ fn clean_checkout() -> Vec<Observed> {
 async fn sessions(harness: &Harness, maximum: usize) -> (Session, Session, Session) {
     let organization = harness.declare_limited_organization("acme", maximum).await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             repository::NAME,
             &[repository::url().to_owned()],

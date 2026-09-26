@@ -75,14 +75,14 @@ enum Command {
     /// Go from whatever the control plane holds to a Run carrying a Brief, declaring what is
     /// missing from what this clone says, and explaining every value before applying it
     Start(Start),
-    /// Preview and apply one Workspace, Agent and Trigger declaration document
+    /// Preview and apply one Project, Agent and Trigger declaration document
     Apply(Apply),
     /// Declare and list Organizations
     #[command(subcommand)]
     Organization(OrganizationCommand),
-    /// Declare and list Workspaces
+    /// Declare and list Projects
     #[command(subcommand)]
-    Workspace(WorkspaceCommand),
+    Project(ProjectCommand),
     /// Declare and list Agents
     #[command(subcommand)]
     Agent(AgentCommand),
@@ -133,14 +133,14 @@ struct Start {
     /// A repository the work happens against; repeat for many. Without it, the clone's origin
     #[arg(long = "repository", value_name = "URL")]
     repositories: Vec<String>,
-    /// The branch the work happens on. Without it, a Workspace's own, then origin's default,
+    /// The branch the work happens on. Without it, a Project's own, then origin's default,
     /// then the branch checked out
     #[arg(long)]
     branch: Option<String>,
-    /// The Workspace, declared if missing. Without it, the one declaring the repositories, then
+    /// The Project, declared if missing. Without it, the one declaring the repositories, then
     /// the repository's name
     #[arg(long)]
-    workspace: Option<String>,
+    project: Option<String>,
     /// The Agent, declared if missing. Without it, the only one, then its runtime's name
     #[arg(long)]
     agent: Option<String>,
@@ -166,7 +166,7 @@ impl Command {
         match self {
             Command::Start(_)
             | Command::Apply(_)
-            | Command::Workspace(_)
+            | Command::Project(_)
             | Command::Agent(_)
             | Command::Credential(_)
             | Command::Profile(_)
@@ -383,9 +383,9 @@ enum TriggerCommand {
         /// What to do when correlation finds no open Session: open or ignore
         #[arg(long, value_name = "OPEN|IGNORE")]
         on_miss: Option<String>,
-        /// The Workspace a firing's work happens against
+        /// The Project a firing's work happens against
         #[arg(long)]
-        workspace: String,
+        project: String,
         /// The Agent a firing starts work with
         #[arg(long)]
         agent: String,
@@ -468,8 +468,8 @@ enum OrganizationCommand {
 }
 
 #[derive(Debug, Subcommand)]
-enum WorkspaceCommand {
-    /// Declare a Workspace, or make the one by this name what this declaration describes
+enum ProjectCommand {
+    /// Declare a Project, or make the one by this name what this declaration describes
     Declare {
         /// The name it is referred to by
         name: String,
@@ -480,7 +480,7 @@ enum WorkspaceCommand {
         #[arg(long)]
         branch: String,
     },
-    /// List every Workspace in the Organization, one JSON record a line
+    /// List every Project in the Organization, one JSON record a line
     List,
 }
 
@@ -528,11 +528,11 @@ enum InstanceCommand {
 
 #[derive(Debug, Subcommand)]
 enum SessionCommand {
-    /// Open a Session against a Workspace and an Agent
+    /// Open a Session against a Project and an Agent
     Open {
-        /// The Workspace its work happens against
+        /// The Project its work happens against
         #[arg(long)]
-        workspace: String,
+        project: String,
         /// The Agent that participates in it
         #[arg(long)]
         agent: String,
@@ -715,7 +715,7 @@ async fn run() -> Result<()> {
                 &api.get(&["organizations"]).await?,
             )?;
         }
-        Command::Workspace(WorkspaceCommand::Declare {
+        Command::Project(ProjectCommand::Declare {
             name,
             repositories,
             branch,
@@ -729,19 +729,16 @@ async fn run() -> Result<()> {
             show(
                 &presentation,
                 &view::DECLARED,
-                &api.post(
-                    &["organizations", &organization, "workspaces"],
-                    &declaration,
-                )
-                .await?,
+                &api.post(&["organizations", &organization, "projects"], &declaration)
+                    .await?,
             )?;
         }
-        Command::Workspace(WorkspaceCommand::List) => {
+        Command::Project(ProjectCommand::List) => {
             let organization = scoping.resolve().await?.organization;
             show(
                 &presentation,
-                &view::WORKSPACES,
-                &api.get(&["organizations", &organization, "workspaces"])
+                &view::PROJECTS,
+                &api.get(&["organizations", &organization, "projects"])
                     .await?,
             )?;
         }
@@ -928,7 +925,7 @@ async fn run() -> Result<()> {
             branch,
             correlation,
             on_miss,
-            workspace,
+            project,
             agent,
             allows,
             profile,
@@ -953,7 +950,7 @@ async fn run() -> Result<()> {
                 "branch": branch,
                 "correlation": correlation,
                 "on_miss": on_miss,
-                "workspace": workspace,
+                "project": project,
                 "agent": agent,
                 "allows": allows,
                 "profile": profile,
@@ -1098,7 +1095,7 @@ async fn run() -> Result<()> {
             )?;
         }
         Command::Session(SessionCommand::Open {
-            workspace,
+            project,
             agent,
             profile,
             branch,
@@ -1111,7 +1108,7 @@ async fn run() -> Result<()> {
                 &api.post(
                     &["organizations", &organization, "sessions"],
                     &json!({
-                        "workspace": workspace,
+                        "project": project,
                         "agent": agent,
                         "profile": profile,
                         "branch": branch,
@@ -1299,20 +1296,16 @@ async fn started(
         start::organization(named, &existing, &clone).map_err(|missing| incomplete(&[missing]))?;
 
     let declared = names(&api.get(&["organizations"]).await?).contains(&organization.value);
-    let (workspaces, agents, credentials) = if declared {
+    let (projects, agents, credentials) = if declared {
         let within = async |records| {
             api.get(&["organizations", &organization.value, records])
                 .await
         };
-        tokio::try_join!(
-            within("workspaces"),
-            within("agents"),
-            within("credentials")
-        )?
+        tokio::try_join!(within("projects"), within("agents"), within("credentials"))?
     } else {
         (json!([]), json!([]), json!([]))
     };
-    let existing = start::Existing::read(declared, &workspaces, &agents, &credentials);
+    let existing = start::Existing::read(declared, &projects, &agents, &credentials);
 
     let secrets = start::secrets(&start.credentials, |variable| std::env::var(variable).ok());
     let plan = start::plan(
@@ -1320,7 +1313,7 @@ async fn started(
         start::Given {
             repositories: start.repositories,
             branch: start.branch,
-            workspace: start.workspace,
+            project: start.project,
             agent: start.agent,
             runtime: start.runtime,
             model: start.model,
@@ -1368,7 +1361,7 @@ async fn started(
     let started = api.post(&["starts"], &plan.body(&brief, &secrets)).await?;
     for (kind, settled) in [
         ("organization", &started["organization"]),
-        ("workspace", &started["workspace"]),
+        ("project", &started["project"]),
         ("agent", &started["agent"]),
     ] {
         if settled["created"] == true {
@@ -1380,7 +1373,7 @@ async fn started(
         &view::STARTED,
         &json!({
             "organization": started["organization"]["name"],
-            "workspace": started["workspace"]["name"],
+            "project": started["project"]["name"],
             "agent": started["agent"]["name"],
             "session": started["session"]["name"],
             "session_id": started["session"]["id"],
@@ -1716,8 +1709,8 @@ async fn status(
 
     let organization = scope.organization.as_str();
     let within = async |records| api.get(&["organizations", organization, records]).await;
-    let (workspaces, agents, triggers, sessions, integrations, credentials, profiles) = tokio::try_join!(
-        within("workspaces"),
+    let (projects, agents, triggers, sessions, integrations, credentials, profiles) = tokio::try_join!(
+        within("projects"),
         within("agents"),
         within("triggers"),
         within("sessions"),
@@ -1725,7 +1718,7 @@ async fn status(
         within("credentials"),
         within("profiles"),
     )?;
-    let workspace_names = names(&workspaces);
+    let project_names = names(&projects);
     let agent_names = names(&agents);
 
     show(
@@ -1736,14 +1729,14 @@ async fn status(
             json!({
                 "organization": organization,
                 "organization_source": scope.source.to_string(),
-                "workspaces": count(&workspaces),
+                "projects": count(&projects),
                 "agents": count(&agents),
                 "triggers": count(&triggers),
                 "sessions": count(&sessions),
                 "integrations": count(&integrations),
                 "credentials": count(&credentials),
                 "profiles": count(&profiles),
-                "next": next_command(&workspace_names, &agent_names),
+                "next": next_command(&project_names, &agent_names),
             }),
         ),
     )?;
@@ -1771,14 +1764,14 @@ fn names(records: &Value) -> Vec<String> {
         .collect()
 }
 
-fn next_command(workspaces: &[String], agents: &[String]) -> String {
-    match (workspaces.first(), agents.first()) {
-        (Some(workspace), Some(agent)) => {
-            format!("{BINARY} session open --workspace {workspace} --agent {agent}")
+fn next_command(projects: &[String], agents: &[String]) -> String {
+    match (projects.first(), agents.first()) {
+        (Some(project), Some(agent)) => {
+            format!("{BINARY} session open --project {project} --agent {agent}")
         }
         (Some(_), None) => format!("{BINARY} agent declare <name>"),
         (None, _) => {
-            format!("{BINARY} workspace declare <name> --repository <url> --branch <branch>")
+            format!("{BINARY} project declare <name> --repository <url> --branch <branch>")
         }
     }
 }

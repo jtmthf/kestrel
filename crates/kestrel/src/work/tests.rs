@@ -22,7 +22,7 @@ impl Fixture {
             .await
             .unwrap()
             .record;
-        tx.workspaces()
+        tx.projects()
             .declare(&organization, "kestrel", &[], "main")
             .await
             .unwrap();
@@ -86,7 +86,7 @@ async fn a_waiting_codex_run_yields_its_profile_and_resumes_when_free() {
         .await
         .unwrap()
         .record;
-    tx.workspaces()
+    tx.projects()
         .declare(&organization, "kestrel", &[], "main")
         .await
         .unwrap();

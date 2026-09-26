@@ -22,8 +22,8 @@ use crate::declaration;
 use crate::declined::Declined;
 use crate::domain::{
     self, Agent, Connection, CorrelationMiss, Direction, EventRecordId, EventRefusal, Fires,
-    Firing, Integration, Occurrence, Organization, Run, Schedule, Session, SessionId, SessionState,
-    SubscriptionProfile, Templates, Trigger, Workspace,
+    Firing, Integration, Occurrence, Organization, Project, Run, Schedule, Session, SessionId,
+    SessionState, SubscriptionProfile, Templates, Trigger,
 };
 use crate::filter::Filter;
 use crate::integration::github::{self, Github};
@@ -39,7 +39,7 @@ use crate::{instance, session, start, work};
 
 pub const ORGANIZATIONS: &str = "/operator/organizations";
 pub const STARTS: &str = "/operator/starts";
-pub const WORKSPACES: &str = "/operator/organizations/{organization}/workspaces";
+pub const PROJECTS: &str = "/operator/organizations/{organization}/projects";
 pub const AGENTS: &str = "/operator/organizations/{organization}/agents";
 pub const AGENT_MODEL: &str = "/operator/organizations/{organization}/agents/{agent}/model";
 pub const DECLARATION: &str = "/operator/organizations/{organization}/declaration";
@@ -125,7 +125,7 @@ pub fn router(store: Store, shutdown: CancellationToken) -> Router {
     Router::new()
         .route(ORGANIZATIONS, get(organizations).post(declare_organization))
         .route(STARTS, post(start))
-        .route(WORKSPACES, get(workspaces).post(declare_workspace))
+        .route(PROJECTS, get(projects).post(declare_project))
         .route(AGENTS, get(agents).post(declare_agent))
         .route(AGENT_MODEL, put(set_agent_model))
         .route(DECLARATION, post(apply_declaration))
@@ -173,7 +173,7 @@ struct OrganizationDeclaration {
 }
 
 #[derive(Deserialize)]
-struct WorkspaceDeclaration {
+struct ProjectDeclaration {
     name: String,
     repositories: Vec<String>,
     branch: String,
@@ -188,7 +188,7 @@ struct AgentDeclaration {
 
 #[derive(Deserialize)]
 struct SessionDeclaration {
-    workspace: String,
+    project: String,
     agent: String,
     profile: Option<String>,
     branch: Option<String>,
@@ -218,7 +218,7 @@ struct TriggerDeclaration {
     branch: Option<String>,
     correlation: Option<String>,
     on_miss: Option<String>,
-    workspace: String,
+    project: String,
     agent: String,
     #[serde(default)]
     allows: Vec<String>,
@@ -266,7 +266,7 @@ struct OrganizationRecord {
 }
 
 #[derive(Serialize)]
-struct WorkspaceRecord {
+struct ProjectRecord {
     id: String,
     name: String,
     repositories: Vec<String>,
@@ -286,7 +286,7 @@ struct SessionRecord {
     id: String,
     name: String,
     organization: String,
-    workspace: String,
+    project: String,
     agent: String,
     profile: Option<String>,
     checkout: domain::Checkout,
@@ -341,7 +341,7 @@ struct TriggerRecord {
     branch: Option<String>,
     correlation: Option<String>,
     on_miss: Option<String>,
-    workspace: String,
+    project: String,
     agent: String,
     allows: Vec<String>,
     profile: Option<String>,
@@ -375,13 +375,13 @@ impl From<Organization> for OrganizationRecord {
     }
 }
 
-impl From<Workspace> for WorkspaceRecord {
-    fn from(workspace: Workspace) -> Self {
+impl From<Project> for ProjectRecord {
+    fn from(project: Project) -> Self {
         Self {
-            id: workspace.id.to_string(),
-            name: workspace.name,
-            repositories: workspace.repositories,
-            branch: workspace.branch,
+            id: project.id.to_string(),
+            name: project.name,
+            repositories: project.repositories,
+            branch: project.branch,
         }
     }
 }
@@ -413,7 +413,7 @@ impl SessionRecord {
             id: session.id.to_string(),
             name: session.name,
             organization: session.organization.name,
-            workspace: session.workspace.name,
+            project: session.project.name,
             agent: session.agent.name,
             profile: session.profile.map(|profile| profile.name),
             checkout: session.checkout,
@@ -501,7 +501,7 @@ impl From<Trigger> for TriggerRecord {
                 .correlation
                 .map(|correlation| correlation.to_string()),
             on_miss: trigger.on_miss.map(|miss| miss.as_str().to_owned()),
-            workspace: trigger.workspace.name,
+            project: trigger.project.name,
             agent: trigger.agent.name,
             allows: trigger.allows.into_iter().map(|agent| agent.name).collect(),
             profile: trigger.profile.map(|profile| profile.name),
@@ -514,7 +514,7 @@ impl From<Trigger> for TriggerRecord {
 #[derive(Serialize)]
 struct StartedRecord {
     organization: start::Settled,
-    workspace: start::Settled,
+    project: start::Settled,
     agent: start::Settled,
     session: SessionRecord,
     run: RunRecord,
@@ -531,7 +531,7 @@ async fn start(
         StatusCode::CREATED,
         Json(StartedRecord {
             organization: started.organization,
-            workspace: started.workspace,
+            project: started.project,
             agent: started.agent,
             session: SessionRecord::read(&control_plane.store, started.session).await?,
             run: RunRecord::read(started.run),
@@ -565,32 +565,32 @@ async fn declare_organization(
     Ok(answered::<_, OrganizationRecord>(declared))
 }
 
-async fn workspaces(
+async fn projects(
     State(control_plane): State<ControlPlane>,
     Path(organization): Path<String>,
-) -> Result<Json<Vec<WorkspaceRecord>>, Refused> {
+) -> Result<Json<Vec<ProjectRecord>>, Refused> {
     let mut tx = control_plane.store.begin().await?;
     let organization = tx.organizations().named(&organization).await?;
-    let workspaces = tx.workspaces().all(&organization).await?;
+    let projects = tx.projects().all(&organization).await?;
 
-    Ok(Json(workspaces.into_iter().map(Into::into).collect()))
+    Ok(Json(projects.into_iter().map(Into::into).collect()))
 }
 
-async fn declare_workspace(
+async fn declare_project(
     State(control_plane): State<ControlPlane>,
     Path(organization): Path<String>,
-    declaration: Result<Json<WorkspaceDeclaration>, JsonRejection>,
+    declaration: Result<Json<ProjectDeclaration>, JsonRejection>,
 ) -> Result<Response, Refused> {
     let Json(declaration) = declaration?;
     named(&declaration.name)?;
     if declaration.repositories.is_empty() {
         return Err(Refused::Unprocessable(
-            "a workspace names at least one repository".to_owned(),
+            "a project names at least one repository".to_owned(),
         ));
     }
     if declaration.branch.is_empty() {
         return Err(Refused::Unprocessable(
-            "a workspace names the branch its work happens on".to_owned(),
+            "a project names the branch its work happens on".to_owned(),
         ));
     }
     if let Some(clash) = sharing_a_directory(&declaration.repositories) {
@@ -600,7 +600,7 @@ async fn declare_workspace(
     let mut tx = control_plane.store.begin().await?;
     let organization = tx.organizations().named(&organization).await?;
     let declared = tx
-        .workspaces()
+        .projects()
         .declare(
             &organization,
             &declaration.name,
@@ -610,7 +610,7 @@ async fn declare_workspace(
         .await?;
     tx.commit().await?;
 
-    Ok(answered::<_, WorkspaceRecord>(declared))
+    Ok(answered::<_, ProjectRecord>(declared))
 }
 
 async fn agents(
@@ -1137,7 +1137,7 @@ async fn declare_trigger(
             fires: &fires,
             templates: &templates,
             on_miss,
-            workspace: &declaration.workspace,
+            project: &declaration.project,
             agent: &declaration.agent,
             allows: &declaration.allows,
             profile: declaration.profile.as_deref(),
@@ -1458,7 +1458,7 @@ fn parse_trigger_declaration(
 fn named_refusal(error: anyhow::Error) -> Refused {
     let message = error.to_string();
     if message.starts_with("no organization ")
-        || message.starts_with("no workspace named ")
+        || message.starts_with("no project named ")
         || message.starts_with("no agent named ")
         || message.starts_with("no trigger named ")
         || message.starts_with("no event ")
@@ -1553,7 +1553,7 @@ async fn open_session(
     let session = session::open(
         &control_plane.store,
         &organization,
-        &declaration.workspace,
+        &declaration.project,
         &declaration.agent,
         declaration.profile.as_deref(),
         declaration.branch.as_deref(),
@@ -1681,7 +1681,7 @@ async fn resolved(
 fn session_refusal(error: anyhow::Error) -> Refused {
     let message = error.to_string();
     if message.starts_with("no session ")
-        || message.starts_with("no workspace named ")
+        || message.starts_with("no project named ")
         || message.starts_with("no agent named ")
     {
         return Refused::NotFound(message);

@@ -25,7 +25,7 @@ async fn a_session(harness: &Harness) -> Session {
 async fn a_session_naming(harness: &Harness, model: Option<&str>) -> Session {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             repository::NAME,
             &[repository::url().to_owned()],

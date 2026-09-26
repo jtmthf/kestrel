@@ -18,7 +18,7 @@ async fn conversing(script: Script) -> (Harness, Session) {
         Harness::dispatching_to(supervisor::binary(), &scripted_agent::playing(script)).await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             repository::NAME,
             &[repository::url().to_owned()],
@@ -335,7 +335,7 @@ async fn sharing_one_slot() -> Harness {
     .await;
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             repository::NAME,
             &[repository::url().to_owned()],

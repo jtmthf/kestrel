@@ -23,7 +23,7 @@ const BOTH: &[Direction] = &[Direction::Inbound, Direction::Outbound];
 async fn an_organization(harness: &Harness) {
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &[repository::url().to_owned()],
@@ -306,7 +306,7 @@ async fn a_declaration_file_names_the_agents_a_label_may_choose() {
     an_organization(&harness).await;
     let file = |allows: &str| {
         format!(
-            "triggers:\n  ready:\n    filter: {}\n    brief: Work\n    workspace: kestrel\n    \
+            "triggers:\n  ready:\n    filter: {}\n    brief: Work\n    project: kestrel\n    \
              agent: builder\n{allows}",
             support::labelled_on(REPOSITORY, READY)
         )

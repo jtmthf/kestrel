@@ -289,7 +289,7 @@ async fn a_delivered_label_opens_a_session_and_the_repository_is_not_polled() {
     let stub = GithubStub::start();
     let organization = harness.declare_organization("acme").await;
     harness
-        .declare_workspace(
+        .declare_project(
             &organization,
             "kestrel",
             &["https://github.com/jtmthf/kestrel".to_owned()],

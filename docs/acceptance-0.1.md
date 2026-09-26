@@ -36,12 +36,12 @@ services:
 docker compose up -d
 ```
 
-## 3. Declare the organization, workspace and agent
+## 3. Declare the organization, project and agent
 
 ```sh
 cargo install --locked --path crates/kestrel-client
 kestrel organization declare acme
-kestrel workspace declare kestrel --organization acme \
+kestrel project declare kestrel --organization acme \
   --repository https://github.com/jtmthf/kestrel --branch main
 kestrel agent declare builder --organization acme
 ```
@@ -65,7 +65,7 @@ one.
 kestrel integration register github origin --organization acme \
   --repository jtmthf/kestrel --token "$(gh auth token)"
 kestrel trigger declare ready --organization acme --repository jtmthf/kestrel \
-  --label ready-for-agent --workspace kestrel --agent builder
+  --label ready-for-agent --project kestrel --agent builder
 ```
 
 [Finding 2](#what-this-run-found) is what this cost on the day: the first poll records a page of

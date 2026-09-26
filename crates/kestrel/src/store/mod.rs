@@ -2,9 +2,9 @@ pub mod agent;
 pub mod integration;
 pub mod organization;
 pub mod profile;
+pub mod project;
 pub mod session;
 pub mod trigger;
-pub mod workspace;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -20,9 +20,9 @@ use crate::store::agent::Agents;
 use crate::store::integration::Integrations;
 use crate::store::organization::Organizations;
 use crate::store::profile::Profiles;
+use crate::store::project::Projects;
 use crate::store::session::Sessions;
 use crate::store::trigger::Triggers;
-use crate::store::workspace::Workspaces;
 
 const DATABASE: &str = "kestrel.db";
 
@@ -89,8 +89,8 @@ impl Tx<'_> {
         Profiles::over(&mut self.transaction, self.keyring)
     }
 
-    pub fn workspaces(&mut self) -> Workspaces<'_> {
-        Workspaces::over(&mut self.transaction)
+    pub fn projects(&mut self) -> Projects<'_> {
+        Projects::over(&mut self.transaction)
     }
 
     pub fn agents(&mut self) -> Agents<'_> {
@@ -138,10 +138,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::domain::{Agent, Organization, Workspace};
+    use crate::domain::{Agent, Organization, Project};
     use crate::log::Entry;
 
-    async fn declared(store: &Store) -> (Organization, Workspace, Agent) {
+    async fn declared(store: &Store) -> (Organization, Project, Agent) {
         let mut tx = store.begin().await.unwrap();
         let organization = tx
             .organizations()
@@ -149,8 +149,8 @@ mod tests {
             .await
             .unwrap()
             .record;
-        let workspace = tx
-            .workspaces()
+        let project = tx
+            .projects()
             .declare(
                 &organization,
                 "kestrel",
@@ -168,7 +168,7 @@ mod tests {
             .record;
         tx.commit().await.unwrap();
 
-        (organization, workspace, agent)
+        (organization, project, agent)
     }
 
     #[test]
@@ -184,14 +184,14 @@ mod tests {
     async fn a_transaction_that_fails_part_way_leaves_neither_the_session_nor_its_entry() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).await.unwrap();
-        let (organization, workspace, agent) = declared(&store).await;
+        let (organization, project, agent) = declared(&store).await;
 
         let mut tx = store.begin().await.unwrap();
         let session = tx
             .sessions()
             .open(session::Opening {
                 organization: &organization,
-                workspace: &workspace,
+                project: &project,
                 agent: &agent,
                 profile: None,
                 branch: None,

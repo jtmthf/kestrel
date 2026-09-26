@@ -18,7 +18,7 @@ impl View {
 }
 
 pub const ORGANIZATIONS: View = View::Rows(&["id", "name", "max_live_instances"]);
-pub const WORKSPACES: View = View::Rows(&["id", "name", "branch", "repositories"]);
+pub const PROJECTS: View = View::Rows(&["id", "name", "branch", "repositories"]);
 pub const AGENTS: View = View::Rows(&["id", "name", "runtime", "model"]);
 pub const AGENT_MODEL: View = View::Value("model");
 pub const CREDENTIAL: View = View::Value("variable");
@@ -56,14 +56,7 @@ pub const EVENT: View = View::Detail(&[
     "event.data",
 ]);
 pub const TRIGGERS: View = View::Rows(&[
-    "id",
-    "name",
-    "state",
-    "workspace",
-    "agent",
-    "every",
-    "cron",
-    "filter",
+    "id", "name", "state", "project", "agent", "every", "cron", "filter",
 ]);
 pub const TRIGGER: View = View::Detail(&[
     "id",
@@ -76,7 +69,7 @@ pub const TRIGGER: View = View::Detail(&[
     "cron",
     "zone",
     "filter",
-    "workspace",
+    "project",
     "agent",
     "allows",
     "profile",
@@ -97,13 +90,13 @@ pub const TRIGGER_TEST: View = View::Detail(&[
 ]);
 pub const TRIGGER_STATE: View = View::Value("state");
 pub const FIRED: View = View::Detail(&["outcome", "session", "run", "event", "correlation"]);
-pub const SESSIONS: View = View::Rows(&["id", "name", "state", "workspace", "agent", "started_by"]);
+pub const SESSIONS: View = View::Rows(&["id", "name", "state", "project", "agent", "started_by"]);
 pub const ENTRIES: View = View::Rows(&["seq", "appended_at", "entry"]);
 pub const SESSION: View = View::Detail(&[
     "id",
     "name",
     "organization",
-    "workspace",
+    "project",
     "agent",
     "profile",
     "checkout.base",
@@ -158,7 +151,7 @@ pub const STATUS: View = View::Detail(&[
     "control_plane_source",
     "organization",
     "organization_source",
-    "workspaces",
+    "projects",
     "agents",
     "triggers",
     "sessions",
@@ -177,7 +170,7 @@ pub const UNRESOLVED: View = View::Detail(&[
 ]);
 pub const EXIT_CODES: View = View::Detail(&["code", "name", "meaning", "branch"]);
 
-pub const STARTED: View = View::Detail(&["organization", "workspace", "agent", "session", "run"]);
+pub const STARTED: View = View::Detail(&["organization", "project", "agent", "session", "run"]);
 
 /// What a creation answers back is the identifier the next command is given.
 pub const DECLARED: View = View::Value("id");

@@ -345,7 +345,7 @@ fn the_commands_usage_documents_are_the_commands_that_work() {
     let opened = shown(&stack, &session);
     assert_eq!(opened["id"], session);
     assert_eq!(opened["organization"], "acme");
-    assert_eq!(opened["workspace"], "kestrel");
+    assert_eq!(opened["project"], "kestrel");
     assert_eq!(opened["agent"], "builder");
     assert_eq!(opened["state"], "open");
     assert!(opened["opened_at"].is_string(), "{opened}");
@@ -372,7 +372,7 @@ fn the_commands_usage_documents_are_the_commands_that_work() {
     );
 }
 
-const SESSION: &str = "id,name,organization,workspace,agent,checkout,state,opened_at";
+const SESSION: &str = "id,name,organization,project,agent,checkout,state,opened_at";
 
 fn shown(stack: &Stack, session: &str) -> Value {
     let shown = stack.ran(&["session", "show", session, "--json", SESSION]);
@@ -388,7 +388,7 @@ fn model(rendered: support::docker::Ran) -> Value {
 fn a_session(stack: &Stack) -> String {
     stack.ran(&["organization", "declare", "acme"]);
     stack.ran(&[
-        "workspace",
+        "project",
         "declare",
         "kestrel",
         "--repository",
@@ -408,7 +408,7 @@ fn a_session(stack: &Stack) -> String {
     stack.ran(&[
         "session",
         "open",
-        "--workspace",
+        "--project",
         "kestrel",
         "--agent",
         "builder",

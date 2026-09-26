@@ -4,14 +4,14 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
 use crate::domain::{
-    Agent, Checkout, Connected, Cost, Event, Exit, Organization, Run, RunId, RunState, Session,
-    SessionId, SessionState, SubscriptionProfile, Turn, Usage, Workspace,
+    Agent, Checkout, Connected, Cost, Event, Exit, Organization, Project, Run, RunId, RunState,
+    Session, SessionId, SessionState, SubscriptionProfile, Turn, Usage,
 };
 use crate::instance::Observed;
 use crate::link::credential::Credential;
 use crate::link::{Instruction, SentInstruction};
 use crate::reference::{self, Candidate, Reference};
-use crate::store::{agent, due, organization, profile, timestamp, workspace};
+use crate::store::{agent, due, organization, profile, project, timestamp};
 
 macro_rules! runs_where {
     ($tail:literal) => {
@@ -69,7 +69,7 @@ pub struct PendingMessage {
 
 pub struct Opening<'a> {
     pub organization: &'a Organization,
-    pub workspace: &'a Workspace,
+    pub project: &'a Project,
     pub agent: &'a Agent,
     pub profile: Option<&'a SubscriptionProfile>,
     /// None declares the Session a branch of its own.
@@ -96,12 +96,12 @@ impl<'a> Sessions<'a> {
                 id,
                 name: generated_name(),
                 organization: opening.organization.clone(),
-                workspace: opening.workspace.clone(),
+                project: opening.project.clone(),
                 agent: opening.agent.clone(),
                 profile: opening.profile.cloned(),
                 checkout: Checkout {
-                    repositories: opening.workspace.repositories.clone(),
-                    base: opening.workspace.branch.clone(),
+                    repositories: opening.project.repositories.clone(),
+                    base: opening.project.branch.clone(),
                     branch: opening
                         .branch
                         .map_or_else(|| format!("kestrel/{id}"), ToOwned::to_owned),
@@ -117,7 +117,7 @@ impl<'a> Sessions<'a> {
 
             let inserted = sqlx::query(
                 "INSERT INTO session
-                     (id, name, organization_id, workspace_id, agent_id, runtime, model,
+                     (id, name, organization_id, project_id, agent_id, runtime, model,
                       subscription_profile_id, base, branch, correlation, state, opened_at,
                       last_active_at, continues, event_record_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -126,7 +126,7 @@ impl<'a> Sessions<'a> {
             .bind(session.id.to_string())
             .bind(&session.name)
             .bind(session.organization.id.to_string())
-            .bind(session.workspace.id.to_string())
+            .bind(session.project.id.to_string())
             .bind(session.agent.id.to_string())
             .bind(&session.agent.runtime)
             .bind(&session.agent.model)
@@ -1362,7 +1362,7 @@ pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Re
 
 async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option<Session>> {
     let Some(row) = sqlx::query(
-        "SELECT name, organization_id, workspace_id, agent_id, runtime, model, subscription_profile_id,
+        "SELECT name, organization_id, project_id, agent_id, runtime, model, subscription_profile_id,
                 base, branch, correlation, state, opened_at, last_active_at, sealed_at,
                 continues, event_record_id
          FROM session
@@ -1377,10 +1377,10 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
 
     let organization =
         organization::with_id(connection, row.get::<String, _>("organization_id").parse()?).await?;
-    let workspace = workspace::with_id(
+    let project = project::with_id(
         connection,
         &organization,
-        row.get::<String, _>("workspace_id").parse()?,
+        row.get::<String, _>("project_id").parse()?,
     )
     .await?;
     // What the Agent was declared as when the session opened, not what it has been redeclared as.
@@ -1411,7 +1411,7 @@ async fn find(connection: &mut SqliteConnection, id: SessionId) -> Result<Option
         id,
         name: row.get("name"),
         organization,
-        workspace,
+        project,
         agent,
         profile,
         checkout: Checkout {

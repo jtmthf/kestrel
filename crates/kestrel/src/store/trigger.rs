@@ -6,16 +6,16 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 use crate::cron::Cron;
 use crate::domain::{
     Agent, CorrelationMiss, DisableReason, Event, EventRecordId, Fires, Firing, FiringBudget,
-    Organization, Schedule, Session, SessionId, SubscriptionProfile, Templates, Trigger, TriggerId,
-    TriggerState, Workspace,
+    Organization, Project, Schedule, Session, SessionId, SubscriptionProfile, Templates, Trigger,
+    TriggerId, TriggerState,
 };
 use crate::filter::{Attribute, Filter};
-use crate::store::{agent, integration, organization, profile, workspace};
+use crate::store::{agent, integration, organization, profile, project};
 
 macro_rules! triggers_where {
     ($tail:literal) => {
         concat!(
-            "SELECT id, organization_id, name, filter, every_ms, cron, zone, due_at, brief, branch, correlation, on_miss, workspace_id,
+            "SELECT id, organization_id, name, filter, every_ms, cron, zone, due_at, brief, branch, correlation, on_miss, project_id,
                     agent_id, subscription_profile_id, state, applied, declared_at
              FROM trigger
              WHERE ",
@@ -44,7 +44,7 @@ impl<'a> Triggers<'a> {
         fires: &Fires,
         templates: &Templates,
         on_miss: Option<CorrelationMiss>,
-        workspace: &Workspace,
+        project: &Project,
         agent: &Agent,
         allows: &[Agent],
         profile: Option<&SubscriptionProfile>,
@@ -57,7 +57,7 @@ impl<'a> Triggers<'a> {
             fires: fires.clone(),
             templates: templates.clone(),
             on_miss,
-            workspace: workspace.clone(),
+            project: project.clone(),
             agent: agent.clone(),
             allows: allows.to_vec(),
             profile: profile.cloned(),
@@ -73,7 +73,7 @@ impl<'a> Triggers<'a> {
         sqlx::query(
             "INSERT INTO trigger
                  (id, organization_id, name, filter, every_ms, cron, zone, due_at, brief, branch,
-                  correlation, on_miss, workspace_id, agent_id, subscription_profile_id, state,
+                  correlation, on_miss, project_id, agent_id, subscription_profile_id, state,
                   applied, enabled_at, declared_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
@@ -89,7 +89,7 @@ impl<'a> Triggers<'a> {
         .bind(templates.branch.as_ref().map(ToString::to_string))
         .bind(templates.correlation.as_ref().map(ToString::to_string))
         .bind(on_miss.map(CorrelationMiss::as_str))
-        .bind(workspace.id.to_string())
+        .bind(project.id.to_string())
         .bind(agent.id.to_string())
         .bind(profile.map(|profile| profile.id.to_string()))
         .bind(trigger.state.as_str())
@@ -116,7 +116,7 @@ impl<'a> Triggers<'a> {
         fires: &Fires,
         templates: &Templates,
         on_miss: Option<CorrelationMiss>,
-        workspace: &Workspace,
+        project: &Project,
         agent: &Agent,
         allows: &[Agent],
         profile: Option<&SubscriptionProfile>,
@@ -128,7 +128,7 @@ impl<'a> Triggers<'a> {
         sqlx::query(
             "UPDATE trigger
                 SET filter = ?, every_ms = ?, cron = ?, zone = ?, due_at = ?, brief = ?,
-                    branch = ?, correlation = ?, on_miss = ?, workspace_id = ?, agent_id = ?,
+                    branch = ?, correlation = ?, on_miss = ?, project_id = ?, agent_id = ?,
                     subscription_profile_id = ?, applied = ?, declared_at = ?
               WHERE id = ?",
         )
@@ -141,7 +141,7 @@ impl<'a> Triggers<'a> {
         .bind(templates.branch.as_ref().map(ToString::to_string))
         .bind(templates.correlation.as_ref().map(ToString::to_string))
         .bind(on_miss.map(CorrelationMiss::as_str))
-        .bind(workspace.id.to_string())
+        .bind(project.id.to_string())
         .bind(agent.id.to_string())
         .bind(profile.map(|profile| profile.id.to_string()))
         .bind(applied)
@@ -156,7 +156,7 @@ impl<'a> Triggers<'a> {
             fires: fires.clone(),
             templates: templates.clone(),
             on_miss,
-            workspace: workspace.clone(),
+            project: project.clone(),
             agent: agent.clone(),
             allows: allows.to_vec(),
             profile: profile.cloned(),
@@ -920,10 +920,10 @@ impl Columns {
 async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<Trigger> {
     let organization =
         organization::with_id(connection, row.get::<String, _>("organization_id").parse()?).await?;
-    let workspace = workspace::with_id(
+    let project = project::with_id(
         connection,
         &organization,
-        row.get::<String, _>("workspace_id").parse()?,
+        row.get::<String, _>("project_id").parse()?,
     )
     .await?;
     let agent = agent::with_id(
@@ -995,7 +995,7 @@ async fn trigger(connection: &mut SqliteConnection, row: &SqliteRow) -> Result<T
             .get::<Option<String>, _>("on_miss")
             .map(|miss| miss.parse())
             .transpose()?,
-        workspace,
+        project,
         agent,
         allows,
         profile,
