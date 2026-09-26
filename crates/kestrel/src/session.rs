@@ -128,20 +128,17 @@ async fn idle(store: &Store) -> Result<Vec<SessionId>> {
 pub(crate) struct UnfinishedRun {
     pub run: Option<Run>,
     held_input: bool,
-    supervisor_leaving: bool,
 }
 
 pub(crate) async fn unfinished_run(tx: &mut Tx<'_>, session: &Session) -> Result<UnfinishedRun> {
     Ok(match tx.sessions().unfinished_run(session).await? {
-        Some((run, held_input, supervisor_leaving)) => UnfinishedRun {
+        Some((run, held_input)) => UnfinishedRun {
             run: Some(run),
             held_input,
-            supervisor_leaving,
         },
         None => UnfinishedRun {
             run: None,
             held_input: false,
-            supervisor_leaving: false,
         },
     })
 }
@@ -156,9 +153,7 @@ pub(crate) enum PostDestination {
 impl UnfinishedRun {
     pub fn blocks_seal(&self) -> Option<RunId> {
         self.run.as_ref().and_then(|run| {
-            (matches!(run.state, RunState::Queued | RunState::Working)
-                || self.held_input
-                || self.supervisor_leaving)
+            (!matches!(run.state, RunState::Ended | RunState::Waiting) || self.held_input)
                 .then_some(run.id)
         })
     }
@@ -345,41 +340,31 @@ mod tests {
     }
 
     #[test]
-    fn unfinished_run_rules_cover_phase_input_and_leaving_supervisor() {
+    fn unfinished_run_rules_cover_every_phase_with_and_without_held_input() {
         use RunState::{Ended, Queued, Unreachable, Waiting, Working};
         let cases = [
-            (Queued, [true; 4], PostDestination::Brief, "failed"),
-            (Working, [true; 4], PostDestination::Held(false), "failed"),
+            (Queued, [true; 2], PostDestination::Brief, "failed"),
+            (Working, [true; 2], PostDestination::Held(false), "failed"),
             (
                 Waiting,
-                [false, true, true, true],
+                [false, true],
                 PostDestination::Held(true),
                 "succeeded",
             ),
-            (
-                Ended,
-                [false, true, true, true],
-                PostDestination::Held(false),
-                "ended",
-            ),
+            (Ended, [false, true], PostDestination::Held(false), "ended"),
             (
                 Unreachable,
-                [false, true, true, true],
+                [true; 2],
                 PostDestination::Held(false),
                 "ended",
             ),
         ];
         for (state, blocks, destination, exit) in cases {
-            for (index, (held_input, supervisor_leaving)) in
-                [(false, false), (false, true), (true, false), (true, true)]
-                    .into_iter()
-                    .enumerate()
-            {
+            for (index, held_input) in [false, true].into_iter().enumerate() {
                 let run = run(state);
                 let unfinished = UnfinishedRun {
                     run: Some(run.clone()),
                     held_input,
-                    supervisor_leaving,
                 };
                 assert_eq!(
                     unfinished.blocks_seal().is_some(),
@@ -413,7 +398,6 @@ mod tests {
         let empty = UnfinishedRun {
             run: None,
             held_input: false,
-            supervisor_leaving: false,
         };
         assert_eq!(empty.post_destination(), PostDestination::Start);
         assert!(empty.idle());

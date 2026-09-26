@@ -418,11 +418,10 @@ impl<'a> Sessions<'a> {
     pub(crate) async fn unfinished_run(
         &mut self,
         session: &Session,
-    ) -> Result<Option<(Run, bool, bool)>> {
+    ) -> Result<Option<(Run, bool)>> {
         let holding = sqlx::query(
             "SELECT r.*,
-                    EXISTS (SELECT 1 FROM pending_message p WHERE p.session_id = r.session_id) AS held_input,
-                    (r.state = 'ended' AND r.supervisor_state = 'present') AS supervisor_leaving
+                    EXISTS (SELECT 1 FROM pending_message p WHERE p.session_id = r.session_id) AS held_input
              FROM run r
              WHERE r.session_id = ?
                AND (r.state NOT IN (?, ?) OR r.supervisor_state = 'present')
@@ -437,13 +436,7 @@ impl<'a> Sessions<'a> {
         .with_context(|| format!("reading what run the session {} has", session.id))?;
 
         holding
-            .map(|row| {
-                Ok((
-                    run(&row)?,
-                    row.get("held_input"),
-                    row.get("supervisor_leaving"),
-                ))
-            })
+            .map(|row| Ok((run(&row)?, row.get("held_input"))))
             .transpose()
     }
 
