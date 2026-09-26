@@ -124,7 +124,8 @@ impl<'a> Agents<'a> {
     }
 
     /// What one Agent Runtime advertised, kept per Organization because an installation of it
-    /// offers what that organization's own configuration reaches.
+    /// offers what that organization's own configuration reaches — and never a gate, since a
+    /// Subscription Profile added since can widen what the runtime offers.
     pub async fn record_models_advertised(
         &mut self,
         organization: OrganizationId,
@@ -148,25 +149,6 @@ impl<'a> Agents<'a> {
         }
 
         Ok(())
-    }
-
-    pub async fn models_advertised(
-        &mut self,
-        organization: OrganizationId,
-        runtime: &str,
-    ) -> Result<Vec<String>> {
-        let rows = sqlx::query(
-            "SELECT model
-             FROM runtime_model
-             WHERE organization_id = ? AND runtime = ?
-             ORDER BY model",
-        )
-        .bind(organization.to_string())
-        .bind(runtime)
-        .fetch_all(&mut *self.connection)
-        .await?;
-
-        Ok(rows.iter().map(|row| row.get("model")).collect())
     }
 }
 

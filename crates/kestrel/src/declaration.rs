@@ -1,7 +1,6 @@
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::agent;
 use crate::domain::{CorrelationMiss, Fires, Templates, Trigger};
 use crate::filter::Filter;
 use crate::store::Store;
@@ -116,7 +115,6 @@ pub async fn apply(
         .filter(|model| !model.is_empty());
     let mut tx = store.begin().await?;
     let organization = tx.organizations().named(organization).await?;
-    agent::advertised(&mut tx, &organization, &document.agent.runtime, model).await?;
 
     let workspaces = tx.workspaces().all(&organization).await?;
     let agents = tx.agents().all(&organization).await?;

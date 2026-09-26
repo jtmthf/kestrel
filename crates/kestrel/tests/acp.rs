@@ -520,32 +520,6 @@ async fn a_model_the_agent_does_not_offer_fails_the_run_rather_than_falling_back
     harness.teardown().await;
 }
 
-/// What a runtime advertises is only ever learned from a Run, so once one has been worked, an
-/// Agent naming a model outside it is refused where saying so costs nothing.
-#[tokio::test]
-async fn a_model_a_known_runtime_does_not_advertise_is_refused_when_the_agent_is_declared() {
-    let (harness, session, run) = worked(Script::Speaks).await;
-    assert_eq!(run.exit, Some(Exit::Succeeded));
-
-    let refused = harness
-        .try_declare_agent(
-            &session.organization,
-            "reviewer",
-            RUNTIME,
-            Some("a-model-no-agent-offers"),
-        )
-        .await
-        .expect_err("a model the runtime was never seen to advertise")
-        .to_string();
-
-    assert!(
-        refused.contains(DEFAULT_MODEL) && refused.contains(OTHER_MODEL),
-        "the refusal does not say what the runtime offers: {refused}"
-    );
-
-    harness.teardown().await;
-}
-
 #[tokio::test]
 async fn an_agent_that_dies_mid_turn_fails_the_run_rather_than_leaving_it_hanging() {
     let (harness, _, run) = worked(Script::Dies).await;

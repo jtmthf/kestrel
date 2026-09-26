@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use crate::agent::{self, NotOffered};
+use crate::agent;
 use crate::cron::Cron;
 use crate::declaration;
 use crate::declined::Declined;
@@ -1861,9 +1861,6 @@ impl From<anyhow::Error> for Refused {
     fn from(error: anyhow::Error) -> Self {
         if let Some(missing) = error.downcast_ref::<NoSuchOrganization>() {
             return Refused::NotFound(missing.to_string());
-        }
-        if let Some(refused) = error.downcast_ref::<NotOffered>() {
-            return Refused::Unprocessable(refused.to_string());
         }
         match error.downcast::<Declined>() {
             Ok(Declined::Unacceptable(why)) => Refused::Unprocessable(why),

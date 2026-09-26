@@ -1,7 +1,6 @@
 use tempfile::TempDir;
 
 use super::*;
-use crate::agent;
 use crate::domain::RunState;
 use crate::log::Window;
 use crate::session;
@@ -291,16 +290,6 @@ async fn reports_record_the_run_and_its_transcript_together() {
                 exit: Exit::Succeeded
             },
         ]
-    );
-    assert!(
-        agent::set_model(&fixture.store, "acme", "builder", Some("scripted-max"))
-            .await
-            .is_ok()
-    );
-    assert!(
-        agent::set_model(&fixture.store, "acme", "builder", Some("not-offered"))
-            .await
-            .is_err()
     );
 }
 

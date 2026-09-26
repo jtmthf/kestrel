@@ -6,9 +6,9 @@ use crate::declined::Declined;
 use crate::domain::{Run, Session};
 use crate::fanout::{self, Change};
 use crate::log::Entry;
+use crate::provider;
 use crate::store::session::Opening;
 use crate::store::{Declared, Store};
-use crate::{agent, provider};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -112,7 +112,6 @@ pub async fn start(store: &Store, plan: &Plan) -> Result<Started> {
         ))
         .into());
     }
-    agent::advertised(&mut tx, &organization.record, &plan.agent.runtime, model).await?;
     let agent = tx
         .agents()
         .declare(
