@@ -1,0 +1,943 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PROTOTYPE · Join a live Session</title>
+<!--
+  PROTOTYPE, throwaway. Three variants of the browser Session view for
+  "Prototype joining a live Session in the browser" (openkestrel/kestrel#302),
+  switchable via ?variant=A|B|C, on fake data with a simulated live Run.
+  Open the file in a browser; nothing persists except the declared name.
+-->
+<style>
+:root {
+  --bg: #fbfbfa; --panel: #ffffff; --ink: #1b1d1f; --muted: #626970; --line: #e3e5e8;
+  --soft: #f2f3f5; --accent: #2f5bd3; --accent-ink: #fff; --ok: #1f7a4a; --warn: #9a5b00;
+  --bad: #b3261e; --narr: #6b4fa0; --shared: #0f5c7a; --focus: #2f5bd3;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131517; --panel: #1b1e21; --ink: #e8eaed; --muted: #9aa1a9; --line: #2c3035;
+    --soft: #23272b; --accent: #7c9cff; --accent-ink: #0b0d10; --ok: #5cc98c; --warn: #e0a64a;
+    --bad: #ff8a80; --narr: #b79cf0; --shared: #6cc3e0; --focus: #7c9cff;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); padding-bottom: 72px; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 4px 10px; }
+button:hover { background: var(--soft); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+button.link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; }
+button[aria-pressed="true"], button[aria-selected="true"] { background: var(--soft); border-color: var(--ink); font-weight: 600; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+code, .mono { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+h1 { font-size: 18px; margin: 0; } h2 { font-size: 15px; margin: 0 0 8px; } h3 { font-size: 13px; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.muted { color: var(--muted); } .small { font-size: 12px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); font-size: 12px; white-space: nowrap; }
+.pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); } .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: inline-block; }
+.dot.live { animation: pulse 1.4s infinite; } @keyframes pulse { 50% { opacity: .3; } }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+
+/* transcript entries */
+.entry { padding: 6px 0; }
+.e-shared { border-left: 3px solid var(--shared); padding-left: 10px; margin: 6px 0; }
+.e-said .who, .e-msgs .who { font-weight: 600; }
+.e-said .body, .e-msgs .body { white-space: pre-wrap; }
+.e-divider { color: var(--muted); font-size: 12.5px; margin: 14px 0 6px; padding-left: 13px; border-left: 3px solid var(--line); }
+.e-narr { color: var(--narr); font-style: italic; padding-left: 13px; font-size: 13px; }
+.e-tool { font-family: var(--mono); font-size: 12px; padding: 2px 0 2px 13px; display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.e-tool .arg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.e-tool .st { width: 1.2em; flex: none; }
+.st-completed { color: var(--ok); } .st-failed { color: var(--bad); } .st-interrupted { color: var(--warn); }
+.ref { font-family: var(--sans); font-size: 11.5px; }
+.activity { font-family: var(--mono); font-size: 12px; padding: 6px 10px; border: 1px dashed var(--line); border-radius: 8px; margin: 8px 0; display: flex; gap: 8px; align-items: center; }
+.spin { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--muted); border-right-color: transparent; border-radius: 50%; animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.gap { margin: 2px 0 2px 13px; }
+.gap > button { font-size: 12px; color: var(--muted); border-style: dashed; }
+.gap-body { border-left: 1px dashed var(--line); margin: 4px 0 4px 2px; padding-left: 4px; }
+
+/* composer */
+.composer { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+.composer textarea { width: 100%; min-height: 56px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--bg); }
+.waiting { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; background: var(--soft); }
+.waiting li { list-style: none; padding: 4px 0; border-top: 1px solid var(--line); }
+.waiting li:first-child { border-top: 0; }
+.waiting ul { margin: 0; padding: 0; }
+.waiting textarea { min-height: 40px; }
+
+/* diff and files */
+.diff { font-family: var(--mono); font-size: 12px; white-space: pre; overflow-x: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 0; max-width: 100%; }
+.diff div { padding: 0 8px; } .d-add { background: color-mix(in srgb, var(--ok) 14%, transparent); } .d-del { background: color-mix(in srgb, var(--bad) 14%, transparent); } .d-hunk { color: var(--muted); }
+.files { display: grid; grid-template-columns: minmax(140px, 200px) 1fr; gap: 8px; }
+.files ul { list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 12px; }
+.files li button { border: 0; background: none; padding: 2px 4px; text-align: left; width: 100%; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* switcher */
+.switcher { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 50; background: #111; color: #fff; border-radius: 999px; padding: 6px 10px; display: flex; gap: 6px; align-items: center; box-shadow: 0 6px 24px rgba(0,0,0,.35); font-size: 12.5px; max-width: calc(100vw - 16px); flex-wrap: wrap; justify-content: center; }
+.switcher button { background: #2a2a2a; color: #fff; border-color: #444; padding: 2px 8px; border-radius: 999px; }
+.switcher .label { font-weight: 600; padding: 0 4px; }
+@media (max-width: 600px) { .switcher .label { display: none; } .switcher { gap: 4px; padding: 4px 6px; } .A-chips .pill, .A-chips button { white-space: normal; text-align: left; } }
+.statepanel { position: fixed; right: 8px; bottom: 64px; width: min(420px, calc(100vw - 16px)); max-height: 60vh; overflow: auto; z-index: 49; background: #111; color: #cfe; font: 11px/1.35 var(--mono); padding: 10px; border-radius: 8px; white-space: pre-wrap; }
+.toast { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 6px 14px; border-radius: 8px; z-index: 60; }
+
+/* ---------- Variant A: transcript column + drawer ---------- */
+.A-top { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); padding: 10px 16px; }
+.A-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.A-chips button { border-radius: 999px; font-size: 12px; padding: 2px 10px; }
+.A-main { max-width: 780px; margin: 0 auto; padding: 8px 16px; }
+.A-composer { position: sticky; bottom: 60px; margin-top: 12px; }
+.A-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--panel); border-left: 1px solid var(--line); z-index: 30; overflow: auto; padding: 14px 16px 80px; box-shadow: -8px 0 30px rgba(0,0,0,.12); }
+
+/* ---------- Variant B: three-pane workbench ---------- */
+.B { display: grid; grid-template-columns: 250px minmax(0,1fr) 380px; height: calc(100vh - 72px); }
+.B > section { overflow: auto; min-width: 0; }
+.B-left { border-right: 1px solid var(--line); padding: 10px; background: var(--panel); }
+.B-center { display: flex; flex-direction: column; }
+.B-center .B-head { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.B-center .B-scroll { flex: 1; overflow: auto; padding: 4px 14px; }
+.B-center .B-foot { padding: 8px 14px; border-top: 1px solid var(--line); }
+.B-right { border-left: 1px solid var(--line); padding: 10px 12px; background: var(--panel); }
+.B-sess { display: block; width: 100%; text-align: left; margin-bottom: 4px; }
+.B-mobile-tabs { display: none; }
+@media (max-width: 900px) {
+  .B { grid-template-columns: minmax(0,1fr); height: auto; }
+  .B > section { display: none; } .B > section.show { display: block; }
+  .B-center.show { display: flex; }
+  .B-center .B-scroll { max-height: none; }
+  .B-mobile-tabs { display: flex; gap: 4px; padding: 8px; position: sticky; top: 0; background: var(--bg); z-index: 5; border-bottom: 1px solid var(--line); }
+}
+
+/* ---------- Variant C: status-first, runs as a timeline ---------- */
+.C { max-width: 900px; margin: 0 auto; padding: 12px 16px; display: grid; gap: 12px; }
+.C-now { display: grid; gap: 8px; }
+.C-now .big { font-size: 20px; font-weight: 600; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.C-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.C-fact { background: var(--soft); border-radius: 8px; padding: 8px 10px; }
+.C-fact .k { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.C-run { border-left: 2px solid var(--line); padding-left: 14px; margin-left: 6px; }
+.C-run > .head { margin-left: -22px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.C-run > .head .node { width: 14px; height: 14px; border-radius: 50%; background: var(--panel); border: 2px solid var(--muted); }
+.C-turn { border: 1px solid var(--line); border-radius: 8px; margin: 8px 0; background: var(--panel); }
+.C-turn > .t-head { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; flex-wrap: wrap; }
+.C-turn > .t-body { padding: 0 10px 8px; }
+.C-lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.C-lane ol { margin: 0; padding-left: 20px; } .C-lane li { margin-bottom: 8px; }
+/* ---------- Variant D: workbench hybrid ---------- */
+.D-row { display: block; width: 100%; text-align: left; margin-bottom: 4px; min-width: 0; }
+.D-row[aria-current="page"] { border-color: var(--ink); background: var(--soft); }
+.D-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.D-seg { margin: 4px 0 4px 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.D-seg.live { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
+.D-seghead, .D-itembtn { display: flex; gap: 8px; align-items: center; width: 100%; border: 0; background: none; text-align: left; padding: 5px 8px; min-width: 0; border-radius: 8px; }
+.D-itembtn:disabled { cursor: default; opacity: 1; }
+.D-chev { width: 1em; flex: none; }
+.D-line { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 0; }
+.D-counts { flex: none; margin-left: auto; }
+@media (max-width: 600px) { .D-seghead { flex-wrap: wrap; } .D-counts { margin-left: 1.6em; } }
+.D-items { border-top: 1px solid var(--line); padding: 2px 0; }
+.D-item .D-itembtn { padding: 3px 8px; }
+.D-detail { margin: 0 8px 6px 28px; padding: 6px 8px; background: var(--soft); border-radius: 6px; display: grid; gap: 2px; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { html, render, useState, useEffect, useRef } from 'https://esm.sh/htm@3.1.1/preact/standalone';
+
+// ---------- fake world ----------
+const AGENT = 'builder';
+const REQUESTED = 'claude-opus-5-5';
+const EFFECTIVE = 'claude-sonnet-5';
+const BRANCH = 'kestrel/128-read-files-in-a-live-instance';
+const T0 = Date.parse('2026-09-26T13:00:00Z');
+const min = m => T0 + m * 60000;
+const NAME_KEY = 'kestrel.prototype.join-session.name';
+const load = () => { try { return localStorage.getItem(NAME_KEY); } catch { return null; } };
+const save = v => { try { v == null ? localStorage.removeItem(NAME_KEY) : localStorage.setItem(NAME_KEY, v); } catch {} };
+
+const TOOLS = [
+  ['read', 'crates/control-plane/src/operator.rs', 0.2], ['grep', '"fn session_transcript" crates/', 0.4],
+  ['bash', 'cargo check -p kestrel-control-plane', 21], ['edit', 'crates/control-plane/src/files.rs', 0.1],
+  ['read', 'docs/adr/0015-the-cli-is-a-client-not-a-role.md', 0.1], ['glob', 'crates/**/instance*.rs', 0.1],
+  ['bash', 'cargo test -p kestrel-control-plane files', 38, 'failed'], ['read', 'crates/compute/src/contract.rs', 0.2],
+  ['bash', 'git status --short', 0.3], ['edit', 'crates/cli/src/session.rs', 0.1], ['read', 'openapi/operator.yaml', 0.2],
+];
+const THOUGHTS = [
+  'The compute contract can read a file but not list a directory; the listing has to come from somewhere else.',
+  'ADR-0015 says the CLI is only a client, so this route belongs on the operator boundary, not a debug endpoint.',
+  'The test fails because the fixture Instance has no checkout yet. Seed one in the harness.',
+  'Large files should come back as a reference with a size, not inline.',
+  'I should not buffer the whole file on the control plane.',
+];
+let seq = 0;
+const E = (t, kind, type, data = {}) => ({ seq: ++seq, t, kind, type, ...data });
+
+function noise(out, from, to, n, run) {
+  for (let i = 0; i < n; i++) {
+    const t = from + (to - from) * (i / n);
+    if (i % 5 === 2) out.push(E(t, 'narration', 'thought', { text: THOUGHTS[i % THOUGHTS.length], run }));
+    else if (i % 11 === 7) out.push(E(t, 'narration', 'plan', { run, steps: [['Route on the operator boundary', 'done'], ['Stream through the link', 'active'], ['CLI `session files`', 'pending']] }));
+    else {
+      const [name, arg, dur, st] = TOOLS[i % TOOLS.length];
+      const big = dur > 5;
+      out.push(E(t, 'detail', 'tool', { run, name, arg, dur, status: st ?? 'completed', exit: st ? 101 : 0, size: big ? `${(20 + (i * 7) % 60).toFixed(1)} KB` : null }));
+    }
+  }
+}
+
+function seed() {
+  seq = 0;
+  const es = [];
+  es.push(E(min(0), 'shared', 'brief', { source: 'Delegation · openkestrel/kestrel#128', text: 'An operator reads files in a live Instance.\n\nAdd a read-only file read to the operator boundary and a `kestrel session files` command. Keep the control plane free of git commands (ADR-0019).' }));
+  es.push(E(min(0), 'shared', 'joined', { who: AGENT, agent: true }));
+  es.push(E(min(0.1), 'shared', 'branch', { branch: BRANCH }));
+  es.push(E(min(0.2), 'shared', 'run-started', { run: 1, requested: REQUESTED, effective: REQUESTED, continuity: 'new' }));
+  noise(es, min(0.3), min(17), 38, 1);
+  es.push(E(min(17.5), 'shared', 'said', { who: AGENT, run: 1, text: 'The read route exists on the operator boundary and returns a file up to 1 MiB. Listing a directory needs something the compute contract does not have yet; I have left a TODO and not invented one.' }));
+  es.push(E(min(24), 'shared', 'joined', { who: 'Sam' }));
+  es.push(E(min(24), 'shared', 'messages', { run: 1, msgs: [{ who: 'Sam', text: 'Stream it rather than capping at 1 MiB. The link already frames large payloads.' }] }));
+  noise(es, min(24.2), min(33), 26, 1);
+  es.push(E(min(33.4), 'shared', 'run-ended', { run: 1, status: 'failed', why: 'ACP continuity lost: the runtime exited mid-turn (exit 137). The Session, its branch and its checkout survive.' }));
+  es.push(E(min(41), 'shared', 'messages', { run: 2, msgs: [{ who: 'Sam', text: 'Pick it up again from the checkout. The first attempt ran out of memory in cargo test.' }] }));
+  es.push(E(min(41.1), 'shared', 'run-started', { run: 2, requested: REQUESTED, effective: EFFECTIVE, continuity: 'fresh-after-loss' }));
+  noise(es, min(41.3), min(58), 44, 2);
+  es.push(E(min(58.6), 'shared', 'said', { who: AGENT, run: 2, text: 'I could not see Run 1\'s conversation, so I re-read the checkout. Streaming is wired through the link; one test still fails on an empty Instance.' }));
+  es.push(E(min(63), 'shared', 'joined', { who: 'Priya' }));
+  es.push(E(min(63), 'shared', 'messages', { run: 2, msgs: [{ who: 'Priya', text: 'Seed a checkout in the harness fixture, then wire the CLI.' }] }));
+  noise(es, min(63.2), min(69.5), 17, 2);
+  return es;
+}
+
+function initial() {
+  const entries = seed();
+  return {
+    clock: min(70), playing: true, speed: 1, timers: [], toast: null, showState: false,
+    me: load(),
+    entries,
+    participants: new Set([AGENT, 'Sam', 'Priya']),
+    runs: [
+      { n: 1, status: 'failed', requested: REQUESTED, effective: REQUESTED, continuity: 'lost', turns: 2, started: min(0.2), ended: min(33.4), note: 'Lost mid-turn 2: the runtime exited (137).' },
+      { n: 2, status: 'active', requested: REQUESTED, effective: EFFECTIVE, continuity: 'fresh-after-loss', turns: 2, started: min(41.1), note: 'Started a new ACP conversation; Run 1\'s context was not carried over. Turns 2 onward continued this one.' },
+    ],
+    turn: { id: 1, n: 2, active: true, startedAt: min(63), interrupting: null },
+    activity: { type: 'thinking', startedAt: min(69.5) },
+    waiting: [],
+    presence: { named: ['Sam', 'Priya'], anon: 2, priyaTabs: 2 },
+    work: {
+      reportedAt: min(69.4),
+      pushed: [{ sha: 'a1f3c09', msg: 'Add a file read route to the operator boundary' }],
+      unpushed: [{ sha: '4be21d7', msg: 'Stream file bodies over the link' }],
+      uncommitted: [{ path: 'crates/control-plane/src/files.rs', add: 48, del: 6 }, { path: 'crates/control-plane/tests/harness.rs', add: 12, del: 2 }],
+      untracked: ['crates/control-plane/tests/files_read.rs'],
+      pr: null,
+    },
+    slots: { limit: 3 },
+  };
+}
+
+// ---------- store ----------
+let S = initial();
+const listeners = new Set();
+const emit = () => { S = { ...S }; listeners.forEach(f => f()); };
+function useStore() {
+  const [, force] = useState(0);
+  useEffect(() => { const f = () => force(x => x + 1); listeners.add(f); return () => listeners.delete(f); }, []);
+  return S;
+}
+const push = (kind, type, data) => { S.entries = [...S.entries, E(S.clock, kind, type, data)]; announce(kind, type, data); };
+const schedule = (sec, fn) => S.timers.push({ at: S.clock + sec * 1000, fn });
+const toast = msg => { S.toast = msg; emit(); setTimeout(() => { if (S.toast === msg) { S.toast = null; emit(); } }, 2600); };
+let announcer = () => {};
+function announce(kind, type, d) {
+  if (kind !== 'shared') return;
+  const text = { said: `${d.who} said: ${d.text}`, messages: `New turn from ${d.msgs?.map(m => m.who).join(', ')}`, pr: `Pull request #${d.n} opened`, interrupted: `${d.who} interrupted the turn`, joined: `${d.who} joined` }[type];
+  if (text) announcer(text);
+}
+
+setInterval(() => {
+  if (!S.playing) return;
+  S.clock += 250 * S.speed;
+  const due = S.timers.filter(x => x.at <= S.clock).sort((a, b) => a.at - b.at);
+  S.timers = S.timers.filter(x => x.at > S.clock);
+  due.forEach(x => x.fn());
+  emit();
+}, 250);
+
+const currentRun = () => S.runs[S.runs.length - 1];
+const alive = id => S.turn.id === id && S.turn.active && !S.turn.interrupting;
+
+// ---------- the simulated turn ----------
+function runSteps(steps, i = 0) {
+  const id = S.turn.id;
+  if (i >= steps.length) return;
+  const st = steps[i];
+  const next = () => alive(id) && runSteps(steps, i + 1);
+  if (st.side) { schedule(st.after ?? 0, st.side); return runSteps(steps, i + 1); }
+  if (st.tool) {
+    S.activity = { type: 'tool', name: st.tool, arg: st.arg, startedAt: S.clock };
+    schedule(st.dur, () => {
+      if (!alive(id)) return;
+      push('detail', 'tool', { run: currentRun().n, name: st.tool, arg: st.arg, dur: st.dur, status: st.status ?? 'completed', exit: st.status === 'failed' ? 101 : 0, size: st.size ?? null });
+      st.fx?.(); S.work.reportedAt = S.clock;
+      S.activity = { type: 'thinking', startedAt: S.clock };
+      next();
+    });
+  } else if (st.thought || st.plan) {
+    S.activity = { type: 'thinking', startedAt: S.clock };
+    schedule(st.dur ?? 3, () => {
+      if (!alive(id)) return;
+      if (st.thought) push('narration', 'thought', { run: currentRun().n, text: st.thought });
+      else push('narration', 'plan', { run: currentRun().n, steps: st.plan });
+      next();
+    });
+  } else if (st.said) {
+    S.activity = { type: 'writing', startedAt: S.clock };
+    schedule(st.dur ?? 3, () => { if (!alive(id)) return; push('shared', 'said', { who: AGENT, run: currentRun().n, text: st.said }); endTurn(); });
+  }
+}
+
+const WORK_SCRIPT = [
+  { thought: 'Seed a checkout in the fixture first, then the empty-Instance test should pass.', dur: 3 },
+  { tool: 'edit', arg: 'crates/control-plane/tests/harness.rs', dur: 1 },
+  { side: () => { S.waiting = [...S.waiting, { id: 'w-priya', who: 'Priya', text: 'Also: refuse a path that escapes the checkout, with a test.', at: S.clock }]; announcer('Priya added a message for the next turn'); }, after: 5 },
+  { plan: [['Seed a checkout in the fixture', 'done'], ['Make the empty-Instance test pass', 'active'], ['CLI `session files read`', 'pending']], dur: 2 },
+  { tool: 'bash', arg: 'cargo build -p kestrel-control-plane', dur: 16, size: '41.3 KB' },
+  { tool: 'bash', arg: 'cargo test -p kestrel-control-plane files', dur: 7, status: 'failed', size: '12.8 KB' },
+  { thought: 'The fixture seeds the checkout after the Instance reports ready; order is wrong.', dur: 3 },
+  { tool: 'edit', arg: 'crates/control-plane/tests/harness.rs', dur: 1 },
+  { tool: 'bash', arg: 'cargo test -p kestrel-control-plane files', dur: 8, size: '9.1 KB' },
+  { tool: 'bash', arg: 'git commit -am "Seed a checkout before reading files"', dur: 1, fx: () => { S.work.unpushed = [...S.work.unpushed, { sha: '9c02e1b', msg: 'Seed a checkout before reading files' }]; S.work.uncommitted = S.work.uncommitted.filter(f => !f.path.includes('harness')); } },
+  { tool: 'bash', arg: `git push -u origin ${BRANCH}`, dur: 3, fx: () => { S.work.pushed = [...S.work.pushed, ...S.work.unpushed]; S.work.unpushed = []; } },
+  { side: () => { S.work.pr = { n: 412, title: 'Let an operator read files in a live Instance', state: 'open', draft: true, learnedAt: S.clock }; push('shared', 'pr', { n: 412, title: S.work.pr.title, branch: BRANCH }); }, after: 4 },
+  { tool: 'gh', arg: 'pr create --draft --fill', dur: 2 },
+  { tool: 'edit', arg: 'crates/cli/src/session.rs', dur: 1, fx: () => { S.work.uncommitted = [...S.work.uncommitted, { path: 'crates/cli/src/session.rs', add: 31, del: 0 }]; } },
+  { said: 'The empty-Instance test passes now: the fixture seeds a checkout before the Instance reports ready. I pushed and opened draft pull request #412. `kestrel session files read` is half-written and uncommitted.', dur: 4 },
+];
+const REPLY_SCRIPT = [
+  { thought: 'Answer the waiting messages in order, then carry on with the CLI.', dur: 3 },
+  { tool: 'grep', arg: '"canonicalize" crates/supervisor', dur: 1 },
+  { tool: 'edit', arg: 'crates/supervisor/src/files.rs', dur: 1, fx: () => { S.work.uncommitted = [...S.work.uncommitted, { path: 'crates/supervisor/src/files.rs', add: 22, del: 3 }]; } },
+  { tool: 'bash', arg: 'cargo test -p kestrel-supervisor path_escape', dur: 9, size: '6.4 KB' },
+  { said: 'Done: a path that escapes the checkout is refused with `path_outside_checkout`, and there is a test for it. That change is uncommitted.', dur: 3 },
+];
+
+function startTurn(script) {
+  const run = currentRun();
+  if (run.status !== 'active') { run.status = 'active'; }
+  run.turns += 1;
+  S.turn = { id: S.turn.id + 1, n: run.turns, active: true, startedAt: S.clock, interrupting: null };
+  S.activity = { type: 'thinking', startedAt: S.clock };
+  runSteps(script);
+}
+function drain() {
+  const taken = S.waiting; S.waiting = [];
+  for (const who of new Set(taken.map(m => m.who))) if (!S.participants.has(who)) { S.participants.add(who); push('shared', 'joined', { who }); }
+  push('shared', 'messages', { run: currentRun().n, msgs: taken.map(({ who, text }) => ({ who, text })) });
+  startTurn(REPLY_SCRIPT);
+}
+function endTurn() {
+  S.turn = { ...S.turn, active: false, interrupting: null };
+  S.activity = null;
+  if (S.waiting.length) drain(); else currentRun().status = 'waiting';
+}
+function interrupt(who) {
+  if (!S.turn.active) return toast('Refused: there is no active turn to interrupt.');
+  if (S.turn.interrupting) return;
+  S.turn = { ...S.turn, interrupting: who };
+  emit();
+  schedule(1.5, () => {
+    if (S.activity?.type === 'tool') push('detail', 'tool', { run: currentRun().n, name: S.activity.name, arg: S.activity.arg, dur: (S.clock - S.activity.startedAt) / 1000, status: 'interrupted', size: null });
+    push('shared', 'interrupted', { who, turn: S.turn.n, run: currentRun().n });
+    endTurn();
+  });
+}
+function post(text) {
+  const who = S.me;
+  if (!who || !text.trim()) return;
+  S.waiting = [...S.waiting, { id: 'w' + Math.random().toString(36).slice(2, 7), who, text: text.trim(), at: S.clock }];
+  if (!S.turn.active) drain();
+  emit();
+}
+function editWaiting(id, text) {
+  if (!S.waiting.some(m => m.id === id)) return toast('Already sent to the agent.');
+  S.waiting = S.waiting.map(m => m.id === id ? { ...m, text } : m); emit();
+}
+function withdraw(id) {
+  if (!S.waiting.some(m => m.id === id)) return toast('Already sent to the agent.');
+  S.waiting = S.waiting.filter(m => m.id !== id); emit();
+}
+function setName(name) {
+  if (name.toLowerCase() === AGENT) return 'That is an Agent\'s name in this Organization.';
+  S.me = name; save(name); emit(); return null;
+}
+function forgetName() { S.me = null; save(null); emit(); }
+
+startTurn(WORK_SCRIPT);
+S.turn.n = 3; S.runs[1].turns = 3;
+schedule(40, () => { S.presence = { ...S.presence, anon: 1 }; });
+
+// ---------- formatting ----------
+const hms = t => new Date(t).toISOString().slice(11, 19);
+const dur = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
+const ago = t => `${dur(S.clock - t)} ago`;
+const unpublished = w => ({ commits: w.unpushed.length, changed: w.uncommitted.length, untracked: w.untracked.length });
+const hasUnpublished = w => { const u = unpublished(w); return u.commits + u.changed + u.untracked > 0; };
+const unpublishedText = w => { const u = unpublished(w); return [u.commits && `${u.commits} unpushed commit${u.commits > 1 ? 's' : ''}`, u.changed && `${u.changed} uncommitted file${u.changed > 1 ? 's' : ''}`, u.untracked && `${u.untracked} untracked`].filter(Boolean).join(' · ') || 'none'; };
+const continuityText = r => ({ new: 'new ACP conversation', 'fresh-after-loss': 'new ACP conversation: Run 1\'s context was lost, not resumed', continued: 'ACP conversation continued', lost: 'ACP conversation lost' })[r.continuity];
+
+function runStatus() {
+  const r = currentRun();
+  if (S.turn.interrupting) return { label: `Interrupting turn ${S.turn.n}…`, tone: 'warn' };
+  if (S.turn.active) return { label: `Run ${r.n} · turn ${S.turn.n} working`, tone: 'ok', live: true };
+  return { label: `Run ${r.n} · waiting for a turn`, tone: '' };
+}
+
+// ---------- shared pieces ----------
+function Entry({ e }) {
+  switch (e.type) {
+    case 'brief': return html`<div class="entry e-shared"><div class="small muted">Brief · ${e.source} · ${hms(e.t)}</div><div style="white-space:pre-wrap">${e.text}</div></div>`;
+    case 'joined': return html`<div class="small muted e-divider">${e.who}${e.agent ? ' (agent)' : ''} joined · ${hms(e.t)}</div>`;
+    case 'branch': return html`<div class="small e-shared">Working on <code>${e.branch}</code> <span class="muted">· declared by kestrel</span></div>`;
+    case 'run-started': return html`<div class="e-divider"><strong>Run ${e.run} started</strong> · ${hms(e.t)} · requested <code>${e.requested}</code>${e.effective !== e.requested ? html`, <span class="pill warn">working on <code>${e.effective}</code></span>` : ''} · ${continuityText(e)}</div>`;
+    case 'run-ended': return html`<div class="e-divider" style="color:var(--bad)"><strong>Run ${e.run} ${e.status}</strong> · ${hms(e.t)} · ${e.why}</div>`;
+    case 'said': return html`<div class="entry e-shared e-said"><div><span class="who">${e.who}</span> <span class="small muted">agent · ${hms(e.t)}</span></div><div class="body">${e.text}</div></div>`;
+    case 'messages': return html`<div class="entry e-shared e-msgs">${e.msgs.map(m => html`<div><span class="who">${m.who}</span> <span class="small muted">${hms(e.t)}</span><div class="body">${m.text}</div></div>`)}</div>`;
+    case 'pr': return html`<div class="entry e-shared">Pull request <strong>#${e.n}</strong> opened: ${e.title} <span class="small muted">· learned from GitHub on <code>${e.branch}</code> · ${hms(e.t)}</span></div>`;
+    case 'interrupted': return html`<div class="e-divider" style="color:var(--warn)"><strong>${e.who} interrupted turn ${e.turn}</strong> · ${hms(e.t)} · the Run continues</div>`;
+    case 'thought': return html`<div class="entry e-narr">${e.text}</div>`;
+    case 'plan': return html`<div class="entry e-narr">Plan: ${e.steps.map(([s, st]) => html`<span style="margin-right:10px">${st === 'done' ? '☑' : st === 'active' ? '◐' : '☐'} ${s}</span>`)}</div>`;
+    case 'tool': return html`<div class="e-tool"><span class=${'st st-' + e.status} aria-label=${e.status}>${e.status === 'completed' ? '✓' : e.status === 'failed' ? '✗' : '⏹'}</span><span>${e.name}</span><span class="arg" title=${e.arg}>${e.arg}</span><span class="muted">${e.dur < 1 ? '<1s' : dur(e.dur * 1000)}</span>${e.size ? html`<button class="link ref" onClick=${() => toast(`Would fetch the ${e.size} output by reference`)}>${e.size} output</button>` : ''}${e.status === 'interrupted' ? html`<span class="ref muted">closed by kestrel</span>` : ''}</div>`;
+  }
+  return null;
+}
+
+function Activity() {
+  const s = useStore();
+  if (!s.activity) return html`<div class="activity muted"><span class="dot" style="background:var(--muted)"></span> Run ${currentRun().n} is waiting for a turn. Posting starts one.</div>`;
+  const a = s.activity, el = dur(s.clock - a.startedAt);
+  const what = a.type === 'tool' ? html`running <strong>${a.name}</strong> <span class="arg">${a.arg}</span>` : a.type === 'writing' ? 'writing a reply' : 'thinking';
+  return html`<div class="activity" aria-live="off"><span class="spin" aria-hidden="true"></span><span>${what}</span><span class="muted">${el}</span>${s.turn.interrupting ? html`<span class="pill warn">interrupt sent by ${s.turn.interrupting}</span>` : ''}<span class="muted small" style="margin-left:auto">live, not yet an entry</span></div>`;
+}
+
+function Presence({ compact }) {
+  const s = useStore();
+  const named = [...new Set([...s.presence.named, ...(s.me ? [s.me] : [])])];
+  const anon = s.presence.anon + (s.me ? 0 : 1);
+  if (compact) return html`<span class="pill" title="Following now (best-effort)"><span class="dot"></span>${named.join(', ')}${anon ? ` + ${anon} other${anon > 1 ? 's' : ''}` : ''}</span>`;
+  return html`<div><h3>Following now</h3><ul style="margin:0;padding-left:18px">${named.map(n => html`<li>${n}${n === s.me ? ' (you)' : ''}${n === 'Priya' ? html` <span class="muted small">2 tabs, shown once</span>` : ''}</li>`)}${anon ? html`<li class="muted">${anon} without a name${!s.me ? ' (including you)' : ''}</li>` : ''}</ul><p class="small muted">Best-effort and lost on restart. Following does not make anyone a participant.</p></div>`;
+}
+
+function NameGate({ label = 'Take a turn' }) {
+  const [v, setV] = useState(''); const [err, setErr] = useState(null);
+  return html`<form class="row" onSubmit=${ev => { ev.preventDefault(); if (v.trim()) setErr(setName(v.trim())); }}>
+    <span class="small muted">You are following without a name. To ${label.toLowerCase()}, give one:</span>
+    <label class="sr" for="name">Your name</label>
+    <input id="name" value=${v} onInput=${ev => setV(ev.target.value)} placeholder="Your name" style="padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg)" />
+    <button class="primary">Use this name</button>
+    ${err ? html`<span role="alert" style="color:var(--bad)" class="small">${err}</span>` : ''}
+  </form>`;
+}
+
+function WaitingItem({ m }) {
+  const s = useStore();
+  const [editing, setEditing] = useState(false); const [v, setV] = useState(m.text);
+  const mine = m.who === s.me;
+  return html`<li>
+    <div class="small"><strong>${m.who}</strong> <span class="muted">· posted ${ago(m.at)} · goes to the agent when the turn ends</span></div>
+    ${editing ? html`<textarea aria-label="Edit waiting message" value=${v} onInput=${e => setV(e.target.value)}></textarea>
+      <div class="row"><button class="primary" onClick=${() => { editWaiting(m.id, v); setEditing(false); }}>Save</button><button onClick=${() => setEditing(false)}>Cancel</button></div>`
+      : html`<div style="white-space:pre-wrap">${m.text}</div>${mine ? html`<div class="row small"><button class="link" onClick=${() => { setV(m.text); setEditing(true); }}>Edit</button><button class="link" onClick=${() => withdraw(m.id)}>Withdraw</button></div>` : ''}`}
+  </li>`;
+}
+
+function Waiting() {
+  const s = useStore();
+  if (!s.waiting.length) return null;
+  return html`<section class="waiting" aria-label="Messages waiting for the next turn"><div class="small"><strong>${s.waiting.length} waiting</strong> <span class="muted">for turn ${s.turn.n} to end, then sent together as one turn</span></div><ul>${s.waiting.map(m => html`<${WaitingItem} key=${m.id} m=${m} />`)}</ul></section>`;
+}
+
+function Composer({ bare }) {
+  const s = useStore();
+  const [text, setText] = useState('');
+  const active = s.turn.active;
+  const send = () => { post(text); setText(''); };
+  return html`<div class=${bare ? '' : 'composer'}>
+    <${Waiting} />
+    ${!s.me ? html`<${NameGate} />` : html`
+      <label class="sr" for="composer">Message</label>
+      <textarea id="composer" value=${text} onInput=${e => setText(e.target.value)} placeholder=${active ? `Turn ${s.turn.n} is working. Your message waits for it to end.` : 'Message the agent'}
+        onKeyDown=${e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); }}></textarea>
+      <div class="row" style="justify-content:space-between">
+        <span class="small muted">as <strong>${s.me}</strong> <button class="link small" onClick=${forgetName}>change</button></span>
+        <span class="row">
+          ${active ? html`
+            <button onClick=${() => interrupt(s.me)} disabled=${!!s.turn.interrupting}>Interrupt turn</button>
+            <button onClick=${() => { post(text); setText(''); interrupt(s.me); }} disabled=${!text.trim() || !!s.turn.interrupting}>Send now (interrupt)</button>
+            <button class="primary" onClick=${send} disabled=${!text.trim()}>Add to next turn</button>`
+          : html`<button class="primary" onClick=${send} disabled=${!text.trim()}>Send</button>`}
+        </span>
+      </div>`}
+  </div>`;
+}
+
+function ModelFacts({ run }) {
+  const r = run ?? currentRun();
+  return html`<div class="small">
+    <div>Requested <code>${r.requested}</code>${r.effective !== r.requested ? html` · <span class="pill warn">working on <code>${r.effective}</code></span>` : html` · <span class="muted">working on the same</span>`}</div>
+    <div class="muted">${continuityText(r)}</div>
+  </div>`;
+}
+
+function Runs() {
+  const s = useStore();
+  return html`<div>${[...s.runs].reverse().map(r => html`<div class="card" style="margin-bottom:8px">
+    <div class="row"><strong>Run ${r.n}</strong><span class=${'pill ' + (r.status === 'failed' ? 'bad' : r.status === 'active' ? 'ok' : '')}>${r.status}</span><span class="small muted">${r.turns} turns · started ${hms(r.started)}${r.ended ? ` · ended ${hms(r.ended)}` : ''}</span></div>
+    <${ModelFacts} run=${r} />
+    <div class="small" style="margin-top:4px">${r.note}</div>
+  </div>`)}</div>`;
+}
+
+function Work({ withDiffButton, onDiff }) {
+  const s = useStore(); const w = s.work;
+  return html`<div>
+    <div class="small muted">Reported by the supervisor ${ago(w.reportedAt)}${s.turn.active ? ' · changes while the turn works' : ' · stable until the next turn'}</div>
+    <h3>Branch</h3>
+    <div><code>${BRANCH}</code> <span class="small muted">declared by kestrel</span></div>
+    <h3>Pull request</h3>
+    ${w.pr ? html`<div><strong>#${w.pr.n}</strong> ${w.pr.title} <span class="pill">${w.pr.draft ? 'draft' : w.pr.state}</span> <span class="small muted">learned from GitHub ${ago(w.pr.learnedAt)}</span></div>` : html`<div class="muted small">None learned for this branch yet.</div>`}
+    <h3>On the remote</h3>
+    <ul class="mono" style="margin:0;padding-left:18px">${w.pushed.map(c => html`<li>${c.sha} ${c.msg}</li>`)}</ul>
+    <h3>Unpublished Work <span class=${'pill ' + (hasUnpublished(w) ? 'warn' : 'ok')} style="text-transform:none;letter-spacing:0">${hasUnpublished(w) ? 'exists only on this Instance' : 'none'}</span></h3>
+    <div class="small"><strong>Committed, not pushed</strong></div>
+    ${w.unpushed.length ? html`<ul class="mono" style="margin:0 0 6px;padding-left:18px">${w.unpushed.map(c => html`<li>${c.sha} ${c.msg}</li>`)}</ul>` : html`<div class="small muted">none</div>`}
+    <div class="small"><strong>Uncommitted</strong></div>
+    ${w.uncommitted.length ? html`<ul class="mono" style="margin:0 0 6px;padding-left:18px">${w.uncommitted.map(f => html`<li>M ${f.path} <span style="color:var(--ok)">+${f.add}</span> <span style="color:var(--bad)">−${f.del}</span></li>`)}</ul>` : html`<div class="small muted">none</div>`}
+    <div class="small"><strong>Untracked</strong></div>
+    ${w.untracked.length ? html`<ul class="mono" style="margin:0 0 6px;padding-left:18px">${w.untracked.map(p => html`<li>?? ${p}</li>`)}</ul>` : html`<div class="small muted">none</div>`}
+    ${withDiffButton ? html`<button onClick=${onDiff} style="margin-top:6px">Open diff</button>` : ''}
+  </div>`;
+}
+
+const DIFF = `diff --git a/crates/control-plane/src/files.rs b/crates/control-plane/src/files.rs
+@@ -12,9 +12,14 @@ use crate::link::Frame;
+ pub async fn read(instance: &Instance, path: &CheckoutPath) -> Result<FileBody> {
+-    let bytes = instance.read_file(path).await?;
+-    if bytes.len() > MAX_READ {
+-        return Err(Error::TooLarge);
+-    }
+-    Ok(FileBody::Inline(bytes))
++    let stream = instance.stream_file(path).await?;
++    match stream.len_hint() {
++        Some(n) if n > INLINE_LIMIT => Ok(FileBody::Reference {
++            size: n,
++            frames: stream.into_frames(),
++        }),
++        _ => Ok(FileBody::Inline(stream.collect().await?)),
++    }
+ }`;
+function Diff() {
+  return html`<div><div class="row small" style="margin-bottom:6px"><strong>Uncommitted and unpushed, against <code>origin/${BRANCH.split('/').slice(-1)}</code></strong></div>
+    <div class="diff" role="region" aria-label="Diff" tabindex="0">${DIFF.split('\n').map(l => html`<div class=${l.startsWith('+') ? 'd-add' : l.startsWith('-') ? 'd-del' : l.startsWith('@@') || l.startsWith('diff') ? 'd-hunk' : ''}>${l}</div>`)}</div></div>`;
+}
+
+const FILES = { 'crates/control-plane/src/files.rs': DIFF.split('\n').filter(l => !l.startsWith('-') && !l.startsWith('@@') && !l.startsWith('diff')).map(l => l.slice(1)).join('\n'), 'crates/control-plane/tests/files_read.rs': '#[tokio::test]\nasync fn reads_a_file_from_a_live_instance() {\n    let h = Harness::with_checkout().await;\n    let body = h.operator().read_file("README.md").await.unwrap();\n    assert!(body.starts_with("# kestrel"));\n}', 'README.md': '# kestrel\n\nAn open-source cloud software factory.' };
+function Files() {
+  const s = useStore();
+  const [sel, setSel] = useState('crates/control-plane/src/files.rs');
+  return html`<div class="files"><ul aria-label="Files">${Object.keys(FILES).map(p => html`<li><button aria-pressed=${p === sel} onClick=${() => setSel(p)}>${p.split('/').pop()}</button></li>`)}</ul>
+    <div style="min-width:0"><div class="small muted">${sel} · read-only · read from the Instance ${ago(s.work.reportedAt)}</div><div class="diff" tabindex="0" role="region" aria-label=${'Contents of ' + sel}>${FILES[sel]}</div></div></div>`;
+}
+
+// queue
+const QUEUE = [
+  { s: 'Record tool calls as detail entries', item: '#126', agent: 'builder', queued: min(56), reason: 'concurrency' },
+  { s: 'Learn the pull request a declared branch opened', item: '#127', agent: 'builder', queued: min(58), reason: 'dependency', on: 'Record tool calls as detail entries (queued)' },
+  { s: 'Show the queue in the browser', item: '#318', agent: 'builder', queued: min(61), reason: 'instances', detail: 'docker backend at 4 of 4 Instances' },
+  { s: 'Answer a Question from the Client', item: '#322', agent: 'reviewer', queued: min(66), reason: 'concurrency' },
+];
+function queueFacts() {
+  const occupying = [
+    { s: 'Read files in a live Instance', why: `turn ${S.turn.n} working`, here: true, on: S.turn.active },
+    { s: 'Report lost ACP continuity honestly', why: 'turn working', on: true },
+    { s: 'Refuse an Agent\'s name for a turn', why: 'blocked on an Approval (still holds its slot)', on: true },
+  ].filter(o => o.on);
+  const between = [{ s: 'Decide Presence', why: 'waiting between turns' }, ...(S.turn.active ? [] : [{ s: 'Read files in a live Instance', why: 'waiting between turns', here: true }])];
+  const free = S.slots.limit - occupying.length;
+  const rows = QUEUE.map((q, i) => ({ ...q, pos: i + 1, text: q.reason === 'concurrency' ? (free > 0 && i === 0 ? 'Next to dispatch: a slot is free' : `Concurrency limit: ${occupying.length} of ${S.slots.limit} active`) : q.reason === 'dependency' ? `Waiting on ${q.on}` : `Instance cap: ${q.detail}` }));
+  return { occupying, between, free, rows };
+}
+function QueueTable() {
+  useStore(); const q = queueFacts();
+  return html`<div>
+    <div class="row" style="margin-bottom:8px"><span class="pill">Active work: ${q.occupying.length} of ${S.slots.limit}</span><span class="pill">docker Instances: 4 of 4</span><span class="small muted">No estimated start times: kestrel does not know them.</span></div>
+    <table><thead><tr><th>#</th><th>Session</th><th>Agent</th><th>Queued</th><th>Why it waits</th></tr></thead>
+    <tbody>${q.rows.map(r => html`<tr><td>${r.pos}</td><td>${r.s} <span class="muted small">${r.item}</span></td><td>${r.agent}</td><td class="small">${ago(r.queued)}</td><td>${r.text}</td></tr>`)}</tbody></table>
+    <h3>Occupying active work</h3>
+    <ul>${q.occupying.map(o => html`<li>${o.s}${o.here ? ' (this Session)' : ''} <span class="muted small">· ${o.why}</span></li>`)}</ul>
+    <h3>Waiting between turns, not occupying a slot</h3>
+    <ul>${q.between.map(o => html`<li>${o.s}${o.here ? ' (this Session)' : ''}</li>`)}</ul>
+  </div>`;
+}
+
+// transcript helpers
+function groupGaps(entries) {
+  const out = []; let gap = [];
+  for (const e of entries) {
+    if (e.kind === 'shared') { if (gap.length) out.push({ gap }); gap = []; out.push({ e }); }
+    else gap.push(e);
+  }
+  if (gap.length) out.push({ gap });
+  return out;
+}
+const gapSummary = g => {
+  const tools = g.filter(e => e.type === 'tool'), failed = tools.filter(e => e.status === 'failed').length;
+  const narr = g.filter(e => e.kind === 'narration').length;
+  return [tools.length && `${tools.length} tool call${tools.length > 1 ? 's' : ''}`, failed && `${failed} failed`, narr && `${narr} thought${narr > 1 ? 's' : ''} and plans`].filter(Boolean).join(' · ');
+};
+function Gap({ g, open: openAll }) {
+  const [open, setOpen] = useState(false);
+  const shown = open || openAll;
+  return html`<div class="gap"><button aria-expanded=${shown} onClick=${() => setOpen(!open)}>${shown ? '▾' : '▸'} ${gapSummary(g)}</button>${shown ? html`<div class="gap-body">${g.map(e => html`<${Entry} key=${e.seq} e=${e} />`)}</div>` : ''}</div>`;
+}
+function useFollow(ref, dep) {
+  const [unseen, setUnseen] = useState(0); const last = useRef(dep);
+  const atBottom = () => { const el = ref?.current; if (el) return el.scrollHeight - el.scrollTop - el.clientHeight < 140; return window.innerHeight + window.scrollY >= document.body.scrollHeight - 200; };
+  const toBottom = () => { const el = ref?.current; el ? el.scrollTo({ top: el.scrollHeight }) : window.scrollTo({ top: document.body.scrollHeight }); setUnseen(0); };
+  useEffect(() => { toBottom(); }, []);
+  useEffect(() => { if (dep === last.current) return; const added = dep - last.current; last.current = dep; if (atBottom()) requestAnimationFrame(toBottom); else setUnseen(u => u + added); }, [dep]);
+  return [unseen, toBottom];
+}
+function NewBelow({ n, go }) { return n ? html`<button class="primary" style="position:sticky;bottom:120px;margin:8px auto;display:block" onClick=${go}>↓ ${n} new</button>` : null; }
+
+// ---------- Variant A: transcript column, work in a drawer ----------
+function VariantA() {
+  const s = useStore();
+  const [page, setPage] = useState('session');
+  const [drawer, setDrawer] = useState(null);
+  const [all, setAll] = useState(false);
+  const [unseen, go] = useFollow(null, s.entries.length);
+  const st = runStatus(), r = currentRun(), w = s.work;
+  return html`<div>
+    <header class="A-top">
+      <div class="row" style="justify-content:space-between">
+        <div class="row"><h1>Read files in a live Instance</h1><span class="muted small">#128 · builder · kestrel</span></div>
+        <nav class="tabs" aria-label="Pages"><button aria-pressed=${page === 'session'} onClick=${() => setPage('session')}>Session</button><button aria-pressed=${page === 'queue'} onClick=${() => setPage('queue')}>Queue</button></nav>
+      </div>
+      ${page === 'session' ? html`<div class="A-chips">
+        <span class=${'pill ' + st.tone}>${st.live ? html`<span class="dot live"></span>` : ''}${st.label}</span>
+        <${Presence} compact />
+        <button onClick=${() => setDrawer('work')}>⎇ ${BRANCH.split('/')[1]}</button>
+        <button onClick=${() => setDrawer('work')}>${w.pr ? `PR #${w.pr.n} ${w.pr.draft ? 'draft' : ''}` : 'no PR yet'}</button>
+        <button onClick=${() => setDrawer('work')} class=${hasUnpublished(w) ? 'pill warn' : ''}>Unpublished: ${unpublishedText(w)}</button>
+        <button onClick=${() => setDrawer('diff')}>Diff</button>
+        <button onClick=${() => setDrawer('files')}>Files</button>
+        <button onClick=${() => setDrawer('runs')} class=${r.effective !== r.requested ? 'pill warn' : ''}>${r.effective !== r.requested ? `Model: ${r.effective} (asked ${r.requested})` : `Model: ${r.effective}`}</button>
+        <button onClick=${() => setDrawer('runs')} class="pill bad">Run 1 lost its ACP conversation</button>
+      </div>` : ''}
+    </header>
+    ${page === 'queue' ? html`<main class="A-main"><h2>Queue</h2><${QueueTable} /></main>` : html`
+    <main class="A-main">
+      <div class="row small" style="justify-content:space-between"><span class="muted">Shared state. Tool calls and thoughts are folded between entries.</span><button class="link" onClick=${() => setAll(!all)}>${all ? 'Fold narration and detail' : 'Unfold all'}</button></div>
+      <div role="log" aria-label="Transcript">
+        ${groupGaps(s.entries).map((x, i) => x.e ? html`<${Entry} key=${x.e.seq} e=${x.e} />` : html`<${Gap} key=${'g' + x.gap[0].seq} g=${x.gap} open=${all} />`)}
+      </div>
+      <${Activity} />
+      <${NewBelow} n=${unseen} go=${go} />
+      <div class="A-composer"><${Composer} /></div>
+    </main>`}
+    ${drawer ? html`<aside class="A-drawer" aria-label="Session details">
+      <div class="row" style="justify-content:space-between;margin-bottom:10px"><div class="tabs" role="tablist">${['work', 'diff', 'files', 'runs', 'people'].map(t => html`<button role="tab" aria-selected=${drawer === t} onClick=${() => setDrawer(t)}>${t[0].toUpperCase() + t.slice(1)}</button>`)}</div><button onClick=${() => setDrawer(null)} aria-label="Close">✕</button></div>
+      ${drawer === 'work' ? html`<${Work} withDiffButton onDiff=${() => setDrawer('diff')} />` : drawer === 'diff' ? html`<${Diff} />` : drawer === 'files' ? html`<${Files} />` : drawer === 'runs' ? html`<${Runs} />` : html`<${Presence} />`}
+    </aside>` : ''}
+  </div>`;
+}
+
+// ---------- Variant B: three-pane workbench ----------
+function VariantB() {
+  const s = useStore();
+  const [kinds, setKinds] = useState({ narration: false, detail: false });
+  const [tab, setTab] = useState('work');
+  const [pane, setPane] = useState('center');
+  const ref = useRef();
+  const shown = s.entries.filter(e => e.kind === 'shared' || kinds[e.kind]);
+  const [unseen, go] = useFollow(ref, shown.length);
+  const st = runStatus(), q = queueFacts();
+  const toggle = k => setKinds({ ...kinds, [k]: !kinds[k] });
+  const hidden = s.entries.length - shown.length;
+  return html`<div>
+    <nav class="B-mobile-tabs" aria-label="Panes">${[['left', 'Sessions & queue'], ['center', 'Transcript'], ['right', 'Inspector']].map(([k, l]) => html`<button aria-pressed=${pane === k} onClick=${() => setPane(k)}>${l}</button>`)}</nav>
+    <div class="B">
+      <section class=${'B-left ' + (pane === 'left' ? 'show' : '')} aria-label="Sessions and queue">
+        <h2>Running</h2>
+        <button class="B-sess" aria-pressed="true"><div><strong>Read files in a live Instance</strong></div><div class="small muted">${st.label}</div></button>
+        ${q.occupying.filter(o => !o.here).map(o => html`<button class="B-sess"><div>${o.s}</div><div class="small muted">${o.why}</div></button>`)}
+        <h2 style="margin-top:14px">Queue <span class="small muted">${q.occupying.length}/${s.slots.limit} active</span></h2>
+        <ol style="padding-left:18px;margin:0">${q.rows.map(r => html`<li style="margin-bottom:6px"><div>${r.s}</div><div class="small muted">${r.text}</div></li>`)}</ol>
+        <p class="small muted">FIFO. No start estimates.</p>
+      </section>
+      <section class=${'B-center ' + (pane === 'center' ? 'show' : '')} aria-label="Transcript">
+        <div class="B-head">
+          <div class="row" style="justify-content:space-between"><h1>Read files in a live Instance</h1><${Presence} compact /></div>
+          <div class="row small" style="margin-top:6px">
+            <span class=${'pill ' + st.tone}>${st.live ? html`<span class="dot live"></span>` : ''}${st.label}</span>
+            <span class="muted">Show:</span>
+            <button aria-pressed="true" disabled>Shared state</button>
+            <button aria-pressed=${kinds.narration} onClick=${() => toggle('narration')}>Narration</button>
+            <button aria-pressed=${kinds.detail} onClick=${() => toggle('detail')}>Detail</button>
+            ${hidden ? html`<span class="muted">${hidden} hidden</span>` : ''}
+          </div>
+        </div>
+        <div class="B-scroll" ref=${ref} role="log" aria-label="Transcript entries">
+          ${shown.map(e => html`<${Entry} key=${e.seq} e=${e} />`)}
+          <${Activity} />
+          <${NewBelow} n=${unseen} go=${go} />
+        </div>
+        <div class="B-foot"><${Composer} bare /></div>
+      </section>
+      <section class=${'B-right ' + (pane === 'right' ? 'show' : '')} aria-label="Inspector">
+        <div class="tabs" role="tablist" style="margin-bottom:10px">${['work', 'diff', 'files', 'runs', 'people'].map(t => html`<button role="tab" aria-selected=${tab === t} onClick=${() => setTab(t)}>${t[0].toUpperCase() + t.slice(1)}</button>`)}</div>
+        ${tab === 'work' ? html`<${Work} />` : tab === 'diff' ? html`<${Diff} />` : tab === 'files' ? html`<${Files} />` : tab === 'runs' ? html`<${Runs} />` : html`<${Presence} />`}
+      </section>
+    </div>
+  </div>`;
+}
+
+// ---------- Variant C: status first, Runs and turns as a timeline ----------
+function groupRuns(entries) {
+  const runs = []; let pre = []; let run = null; let turn = null;
+  for (const e of entries) {
+    if (e.type === 'run-started') { run = { head: e, end: null, turns: [], pre: [...pre] }; pre = []; runs.push(run); turn = { items: [], n: 1 }; run.turns.push(turn); continue; }
+    if (!run) { pre.push(e); continue; }
+    if (e.type === 'run-ended') { run.end = e; if (turn && !turn.items.length) run.turns.pop(); run = null; turn = null; continue; }
+    if ((e.type === 'messages' || e.type === 'interrupted') && turn.items.some(x => x.kind !== 'shared' || x.type === 'said')) {
+      if (e.type === 'interrupted') { turn.items.push(e); turn.interrupted = e; turn = { items: [], n: turn.n + 1 }; run.turns.push(turn); continue; }
+      turn = { items: [], n: turn.n + 1 }; run.turns.push(turn);
+    }
+    turn.items.push(e);
+  }
+  return { pre: pre, runs };
+}
+function Turn({ t, live }) {
+  const [open, setOpen] = useState(false);
+  const shared = t.items.filter(e => e.kind === 'shared');
+  const inner = t.items.filter(e => e.kind !== 'shared');
+  const span = t.items.length ? t.items[t.items.length - 1].t - t.items[0].t : 0;
+  return html`<div class="C-turn">
+    <div class="t-head"><strong>Turn ${t.n}${live ? ' · working' : ''}${t.interrupted ? ' · interrupted' : ''}</strong>
+      <button onClick=${() => setOpen(!open)} aria-expanded=${open}>${open ? 'Hide' : 'Show'} ${gapSummary(inner) || 'no tool calls'} · ${dur(span)}</button></div>
+    <div class="t-body">${(open ? t.items : shared).map(e => html`<${Entry} key=${e.seq} e=${e} />`)}${live ? html`<${Activity} />` : ''}</div>
+  </div>`;
+}
+function VariantC() {
+  const s = useStore();
+  const [page, setPage] = useState('session');
+  const [showDiff, setShowDiff] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
+  const st = runStatus(), r = currentRun(), w = s.work;
+  const { pre, runs } = groupRuns(s.entries);
+  const q = queueFacts();
+  return html`<div class="C">
+    <nav class="row" aria-label="Pages" style="justify-content:space-between"><div class="row"><h1>Read files in a live Instance</h1><span class="muted small">#128</span></div><div class="tabs"><button aria-pressed=${page === 'session'} onClick=${() => setPage('session')}>Session</button><button aria-pressed=${page === 'queue'} onClick=${() => setPage('queue')}>Queue</button></div></nav>
+    ${page === 'queue' ? html`<div class="C-lanes">
+      <section class="card C-lane"><h2>Occupying active work · ${q.occupying.length} of ${s.slots.limit}</h2><ol>${q.occupying.map(o => html`<li>${o.s}<div class="small muted">${o.why}</div></li>`)}</ol></section>
+      <section class="card C-lane"><h2>Waiting, in FIFO order</h2><ol>${q.rows.map(x => html`<li><strong>${x.s}</strong> <span class="small muted">${x.item} · ${x.agent} · queued ${ago(x.queued)}</span><div class="small">${x.text}</div></li>`)}</ol><p class="small muted">No estimated start times.</p></section>
+      <section class="card C-lane"><h2>Between turns</h2><p class="small muted">Open Runs that hold no slot until someone posts.</p><ol>${q.between.map(o => html`<li>${o.s}</li>`)}</ol></section>
+    </div>` : html`
+    <section class="card C-now" aria-label="Now">
+      <div class="big">${st.live ? html`<span class="dot live"></span>` : ''}${s.activity ? (s.activity.type === 'tool' ? html`Running <code>${s.activity.arg}</code> <span class="muted">${dur(s.clock - s.activity.startedAt)}</span>` : s.activity.type === 'writing' ? 'Writing a reply' : 'Thinking') : 'Waiting for a turn'}</div>
+      <div class="row small"><span class=${'pill ' + st.tone}>${st.label}</span><${Presence} compact />${s.turn.active && s.me ? html`<button onClick=${() => interrupt(s.me)} disabled=${!!s.turn.interrupting}>Interrupt turn ${s.turn.n}</button>` : ''}</div>
+      <div class="C-facts">
+        <div class="C-fact"><div class="k">Model</div>${r.effective !== r.requested ? html`<div><code>${r.effective}</code></div><div class="small" style="color:var(--warn)">asked for <code>${r.requested}</code></div>` : html`<code>${r.effective}</code>`}</div>
+        <div class="C-fact"><div class="k">ACP conversation</div><div>Run ${r.n}: new, ${r.turns} turns continued</div><div class="small" style="color:var(--bad)">Run 1's was lost, not resumed</div></div>
+        <div class="C-fact"><div class="k">Branch</div><code style="word-break:break-all">${BRANCH}</code></div>
+        <div class="C-fact"><div class="k">Pull request</div>${w.pr ? html`<strong>#${w.pr.n}</strong> ${w.pr.draft ? 'draft' : w.pr.state}` : html`<span class="muted">none learned yet</span>`}</div>
+        <div class="C-fact" style=${hasUnpublished(w) ? 'outline:1px solid var(--warn)' : ''}><div class="k">Unpublished Work</div>${unpublishedText(w)}<div class="small muted">as of ${ago(w.reportedAt)}</div></div>
+      </div>
+      <div class="row"><button aria-expanded=${showDiff} onClick=${() => setShowDiff(!showDiff)}>${showDiff ? 'Hide' : 'Show'} changes</button><button aria-expanded=${showFiles} onClick=${() => setShowFiles(!showFiles)}>${showFiles ? 'Hide' : 'Browse'} files</button></div>
+      ${showDiff ? html`<${Work} /><${Diff} />` : ''}
+      ${showFiles ? html`<${Files} />` : ''}
+    </section>
+    <section aria-label="Transcript" role="log">
+      ${pre.map(e => html`<${Entry} key=${e.seq} e=${e} />`)}
+      ${runs.map((run, ri) => html`<div class="C-run">
+        <div class="head"><span class="node" style=${run.end ? 'border-color:var(--bad)' : 'border-color:var(--ok)'}></span><strong>Run ${run.head.run}</strong><span class="small muted">${hms(run.head.t)} · ${continuityText(run.head)}${run.head.effective !== run.head.requested ? ` · working on ${run.head.effective}, asked ${run.head.requested}` : ''}</span></div>
+        ${run.pre.map(e => html`<${Entry} key=${e.seq} e=${e} />`)}
+        ${run.turns.map((t, ti) => html`<${Turn} key=${ri + '-' + ti} t=${t} live=${!run.end && ti === run.turns.length - 1 && s.turn.active} />`)}
+        ${!run.end && !s.turn.active ? html`<${Activity} />` : ''}
+        ${run.end ? html`<${Entry} e=${run.end} />` : ''}
+      </div>`)}
+    </section>
+    <section style="position:sticky;bottom:60px"><${Composer} /></section>`}
+  </div>`;
+}
+
+// ---------- Variant D: workbench hybrid ----------
+const SESSIONS = [
+  { s: 'Report lost ACP continuity honestly', item: '#181', state: 'working', why: 'turn 2 working', tool: 'cargo test -p kestrel-supervisor', branch: '181-lost-continuity', add: 88, del: 14 },
+  { s: 'Refuse an Agent\'s name for a turn', item: '#305', state: 'attention', why: 'blocked on an Approval', branch: '305-refuse-agent-name', add: 12, del: 3 },
+  { s: 'Decide Presence', item: '#300', state: 'between', why: 'waiting for a turn', branch: '300-presence', add: 0, del: 0 },
+];
+function SessionRow({ r, current }) {
+  const icon = { working: html`<span class="spin" aria-hidden="true"></span>`, attention: html`<span style="color:var(--warn)" aria-hidden="true">●</span>`, between: html`<span class="muted" aria-hidden="true">○</span>`, queued: html`<span class="muted" aria-hidden="true">◌</span>` }[r.state];
+  return html`<button class="D-row" aria-current=${current ? 'page' : null}>
+    <div class="row" style="flex-wrap:nowrap;gap:6px">${icon}<strong class="D-ellipsis">${r.s}</strong></div>
+    <div class="small muted D-ellipsis">${r.why}${r.tool ? html` · <code>${r.tool}</code>` : ''}</div>
+    ${r.branch ? html`<div class="small muted D-ellipsis"><code>${r.branch}</code>${r.add || r.del ? html` <span style="color:var(--ok)">+${r.add}</span> <span style="color:var(--bad)">−${r.del}</span>` : ''}${r.pr ? ` · PR #${r.pr}` : ''}</div>` : ''}
+  </button>`;
+}
+function Sidebar() {
+  const s = useStore(); const q = queueFacts(); const w = s.work;
+  const here = { s: 'Read files in a live Instance', item: '#128', state: s.turn.active ? 'working' : 'between', why: runStatus().label.replace(/^Run \d+ · /, ''), tool: s.activity?.type === 'tool' ? s.activity.arg : null, branch: BRANCH.split('/')[1], add: w.uncommitted.reduce((a, f) => a + f.add, 0), del: w.uncommitted.reduce((a, f) => a + f.del, 0), pr: w.pr?.n };
+  const queued = q.rows.map(r => ({ s: r.s, item: r.item, state: 'queued', why: `queued #${r.pos} · ${r.text}` }));
+  const rows = [here, ...SESSIONS];
+  const order = { attention: 0, working: 1, between: 2, queued: 3 };
+  rows.sort((a, b) => order[a.state] - order[b.state]);
+  return html`<div>
+    <div class="row" style="justify-content:space-between;margin-bottom:8px"><h2 style="margin:0">Sessions</h2><span class="pill" title="Active work slots">${q.occupying.length} of ${s.slots.limit} active</span></div>
+    ${[...rows, ...queued].map(r => html`<${SessionRow} r=${r} current=${r === here} />`)}
+  </div>`;
+}
+
+const toolIcon = st => st === 'running' ? html`<span class="spin" aria-hidden="true"></span>` : html`<span class=${'st st-' + st} aria-hidden="true">${st === 'completed' ? '✓' : st === 'failed' ? '✗' : '⏹'}</span>`;
+const toolStatusText = (e, now) => e.status === 'running' ? `running ${dur(now - e.startedAt)}` : e.status === 'failed' ? `failed · exit ${e.exit} · ${dur(e.dur * 1000)}` : e.status === 'interrupted' ? `interrupted after ${dur(e.dur * 1000)}` : e.dur < 1 ? '<1s' : dur(e.dur * 1000);
+function ItemLine({ e, now }) {
+  if (e.type === 'tool') return html`<span class="D-line">${toolIcon(e.status)}<span class="mono"><strong>${e.name}</strong></span><span class="mono D-ellipsis" style="flex:1" title=${e.arg}>${e.arg}</span><span class=${'small ' + (e.status === 'failed' ? 'st-failed' : e.status === 'interrupted' ? 'st-interrupted' : e.status === 'running' ? '' : 'muted')}>${toolStatusText(e, now)}</span></span>`;
+  if (e.type === 'thinking') return html`<span class="D-line"><span class="spin" aria-hidden="true"></span><span class="e-narr" style="padding:0">${e.label}</span><span class="small muted" style="margin-left:auto">${dur(now - e.startedAt)}</span></span>`;
+  const text = e.type === 'plan' ? 'Plan: ' + e.steps.map(([x, st]) => (st === 'done' ? '☑ ' : st === 'active' ? '◐ ' : '☐ ') + x).join('  ') : e.text;
+  return html`<span class="D-line"><span class="muted" aria-hidden="true">💭</span><span class="e-narr D-ellipsis" style="padding:0;flex:1">${text}</span></span>`;
+}
+function Item({ e, full, now }) {
+  const [open, setOpen] = useState(full);
+  useEffect(() => setOpen(full), [full]);
+  const live = e.status === 'running' || e.type === 'thinking';
+  return html`<div class="D-item">
+    <button class="D-itembtn" aria-expanded=${open} disabled=${live} onClick=${() => setOpen(!open)}><span class="muted D-chev" aria-hidden="true">${live ? '' : open ? '▾' : '▸'}</span><${ItemLine} e=${e} now=${now} /></button>
+    ${open && !live ? (e.type === 'tool' ? html`<div class="D-detail small">
+        <div><span class="muted">input</span> <code>${e.name} ${e.arg}</code></div>
+        <div><span class="muted">status</span> <span class=${'st-' + e.status}>${e.status}</span>${e.status === 'failed' ? ` (exit ${e.exit})` : ''}${e.status === 'interrupted' ? ' · closed by kestrel after an Interruption' : ''} · ${hms(e.t)}</div>
+        <div><span class="muted">output</span> ${e.size ? html`<button class="link" onClick=${() => toast(`Would fetch the ${e.size} output by reference`)}>${e.size}, fetched on demand</button>` : html`<span class="mono">${e.status === 'failed' ? 'test files_read::reads_a_file_from_a_live_instance ... FAILED' : 'ok'}</span>`}</div>
+      </div>` : html`<div class="D-detail e-narr">${e.type === 'plan' ? html`<ul style="margin:0">${e.steps.map(([x, st]) => html`<li>${st}: ${x}</li>`)}</ul>` : e.text}</div>`) : ''}
+  </div>`;
+}
+function Segment({ items, live, mode }) {
+  const s = useStore();
+  const [open, setOpen] = useState(mode !== 'summary');
+  useEffect(() => setOpen(mode !== 'summary'), [mode]);
+  const all = live ? [...items, live] : items;
+  if (!all.length) return null;
+  const head = all[all.length - 1];
+  const tools = items.filter(e => e.type === 'tool'), failed = tools.filter(e => e.status === 'failed').length, narr = items.filter(e => e.kind === 'narration').length;
+  const counts = html`<span class="small muted D-counts">${tools.length} tool${tools.length === 1 ? '' : 's'}${failed ? html` · <span class="st-failed">${failed} failed</span>` : ''}${narr ? ` · ${narr} thought${narr === 1 ? '' : 's'}` : ''}</span>`;
+  return html`<div class=${'D-seg' + (live ? ' live' : '')}>
+    <button class="D-seghead" aria-expanded=${open} onClick=${() => setOpen(!open)}>
+      <span class="muted D-chev" aria-hidden="true">${open ? '▾' : '▸'}</span>
+      ${open ? html`<span class="small">${live ? 'Working' : 'Activity'}</span>` : html`<${ItemLine} e=${head} now=${s.clock} />`}
+      ${counts}
+    </button>
+    ${open ? html`<div class="D-items">${all.map(e => html`<${Item} key=${e.seq ?? 'live'} e=${e} full=${mode === 'full'} now=${s.clock} />`)}</div>` : ''}
+  </div>`;
+}
+function liveItem(s) {
+  const a = s.activity; if (!a) return null;
+  if (a.type === 'tool') return { type: 'tool', kind: 'detail', name: a.name, arg: a.arg, status: 'running', startedAt: a.startedAt };
+  return { type: 'thinking', kind: 'narration', label: s.turn.interrupting ? `interrupt sent by ${s.turn.interrupting}, waiting for the runtime` : a.type === 'writing' ? 'writing a reply' : 'thinking', startedAt: a.startedAt };
+}
+function VariantD() {
+  const s = useStore();
+  const [mode, setMode] = useState('summary');
+  const [tab, setTab] = useState('work');
+  const [pane, setPane] = useState('center');
+  const ref = useRef();
+  const [unseen, go] = useFollow(ref, s.entries.length);
+  const st = runStatus(), r = currentRun(), w = s.work;
+  const parts = groupGaps(s.entries);
+  const live = liveItem(s);
+  const lastIsSeg = parts.length && parts[parts.length - 1].gap;
+  return html`<div>
+    <nav class="B-mobile-tabs" aria-label="Panes">${[['left', 'Sessions'], ['center', 'Transcript'], ['right', 'Work']].map(([k, l]) => html`<button aria-pressed=${pane === k} onClick=${() => setPane(k)}>${l}</button>`)}</nav>
+    <div class="B">
+      <section class=${'B-left ' + (pane === 'left' ? 'show' : '')} aria-label="Sessions"><${Sidebar} /></section>
+      <section class=${'B-center ' + (pane === 'center' ? 'show' : '')} aria-label="Transcript">
+        <div class="B-head">
+          <div class="row" style="justify-content:space-between"><div class="row"><h1>Read files in a live Instance</h1><span class="muted small">#128 · builder</span></div><${Presence} compact /></div>
+          <div class="row small" style="margin-top:6px;justify-content:space-between">
+            <span class="row">
+              <span class=${'pill ' + st.tone}>${st.live ? html`<span class="dot live"></span>` : ''}${st.label}</span>
+              ${r.effective !== r.requested ? html`<span class="pill warn">working on <code>${r.effective}</code>, asked <code>${r.requested}</code></span>` : ''}
+            </span>
+            <span class="row" role="group" aria-label="Tool calls and thoughts"><span class="muted">Activity</span>${[['summary', 'One line'], ['steps', 'Steps'], ['full', 'Full']].map(([k, l]) => html`<button aria-pressed=${mode === k} onClick=${() => setMode(k)}>${l}</button>`)}</span>
+          </div>
+        </div>
+        <div class="B-scroll" ref=${ref} role="log" aria-label="Transcript entries">
+          ${parts.map((x, i) => x.e ? html`<${Entry} key=${x.e.seq} e=${x.e} />` : html`<${Segment} key=${'g' + x.gap[0].seq} items=${x.gap} mode=${mode} live=${i === parts.length - 1 ? live : null} />`)}
+          ${!lastIsSeg && live ? html`<${Segment} key="live" items=${[]} mode=${mode} live=${live} />` : ''}
+          ${!live ? html`<div class="activity muted"><span class="dot" style="background:var(--muted)"></span> Run ${r.n} is waiting for a turn. Posting starts one.</div>` : ''}
+          <${NewBelow} n=${unseen} go=${go} />
+        </div>
+        <div class="B-foot"><${Composer} bare /></div>
+      </section>
+      <section class=${'B-right ' + (pane === 'right' ? 'show' : '')} aria-label="Work">
+        <div class="tabs" role="tablist" style="margin-bottom:10px">${['work', 'diff', 'files', 'runs', 'people'].map(t => html`<button role="tab" aria-selected=${tab === t} onClick=${() => setTab(t)}>${t[0].toUpperCase() + t.slice(1)}${t === 'work' && hasUnpublished(w) ? html` <span style="color:var(--warn)" aria-label="has Unpublished Work">●</span>` : ''}${t === 'runs' && s.runs.some(x => x.status === 'failed') ? html` <span style="color:var(--bad)" aria-label="a Run failed">●</span>` : ''}</button>`)}</div>
+        ${tab === 'work' ? html`<${Work} />` : tab === 'diff' ? html`<${Diff} />` : tab === 'files' ? html`<${Files} />` : tab === 'runs' ? html`<${Runs} />` : html`<${Presence} />`}
+      </section>
+    </div>
+  </div>`;
+}
+
+// ---------- switcher ----------
+const VARIANTS = [['A', 'Transcript column + drawer', VariantA], ['B', 'Three-pane workbench', VariantB], ['C', 'Status first, Runs as a timeline', VariantC], ['D', 'Workbench hybrid', VariantD]];
+function Switcher({ v, setV }) {
+  const s = useStore();
+  const i = VARIANTS.findIndex(x => x[0] === v);
+  const go = d => setV(VARIANTS[(i + d + VARIANTS.length) % VARIANTS.length][0]);
+  useEffect(() => {
+    const k = e => { if (e.target.closest?.('input,textarea,[contenteditable]')) return; if (e.key === 'ArrowLeft') go(-1); if (e.key === 'ArrowRight') go(1); };
+    window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k);
+  }, [v]);
+  return html`<div class="switcher" aria-label="Prototype controls">
+    <button onClick=${() => go(-1)} aria-label="Previous variant">←</button>
+    <span class="label">${v} · ${VARIANTS[i][1]}</span>
+    <button onClick=${() => go(1)} aria-label="Next variant">→</button>
+    <span style="opacity:.5">|</span>
+    <button onClick=${() => { S.playing = !S.playing; emit(); }}>${s.playing ? '❚❚ pause' : '▶ play'}</button>
+    <button onClick=${() => { S.speed = S.speed === 1 ? 4 : 1; emit(); }}>${s.speed}×</button>
+    <button onClick=${() => { S.showState = !S.showState; emit(); }}>state</button>
+    <button onClick=${() => { const k = S.me; S = initial(); S.me = k; startTurn(WORK_SCRIPT); S.turn.n = 3; S.runs[1].turns = 3; schedule(40, () => { S.presence = { ...S.presence, anon: 1 }; }); emit(); }}>restart</button>
+  </div>`;
+}
+function StatePanel() {
+  const s = useStore();
+  if (!s.showState) return null;
+  const view = { clock: hms(s.clock), turn: s.turn, run: currentRun(), activity: s.activity, waiting: s.waiting, me: s.me, presence: s.presence, participants: [...s.participants], work: s.work, entries: { total: s.entries.length, shared: s.entries.filter(e => e.kind === 'shared').length, last: s.entries.slice(-3) }, pendingTimers: s.timers.length };
+  return html`<pre class="statepanel">${JSON.stringify(view, null, 1)}</pre>`;
+}
+
+function App() {
+  const s = useStore();
+  const [v, setV0] = useState(() => new URLSearchParams(location.search).get('variant') ?? 'D');
+  const [said, setSaid] = useState('');
+  announcer = setSaid;
+  const setV = x => { const u = new URL(location); u.searchParams.set('variant', x); history.replaceState(null, '', u); setV0(x); window.scrollTo(0, 0); };
+  const V = (VARIANTS.find(x => x[0] === v) ?? VARIANTS[0])[2];
+  return html`<${V} key=${v} />
+    <div class="sr" aria-live="polite">${said}</div>
+    ${s.toast ? html`<div class="toast" role="status">${s.toast}</div>` : ''}
+    <${StatePanel} />
+    <${Switcher} v=${v} setV=${setV} />`;
+}
+render(html`<${App} />`, document.getElementById('app'));
+</script>
+</body>
