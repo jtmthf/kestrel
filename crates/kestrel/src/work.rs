@@ -392,10 +392,9 @@ pub async fn turns(store: &Store, run: RunId) -> Result<Vec<Turn>> {
 pub async fn stop(store: &Store, id: RunId) -> Result<Exit> {
     let mut tx = store.begin().await?;
     let run = tx.sessions().run(id).await?;
-    let session = tx.sessions().get(run.session).await?;
-    let exit = session::unfinished_run(&mut tx, &session)
-        .await?
-        .stop_exit(&run)?;
+    let Some(exit) = run.state.stop_exit() else {
+        bail!("the run {id} has already ended");
+    };
     let stands = stopping(&mut tx, &run, exit).await?;
     tx.commit().await?;
 

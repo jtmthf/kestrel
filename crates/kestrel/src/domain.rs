@@ -589,6 +589,8 @@ pub enum RunState {
 }
 
 impl RunState {
+    pub const LIVE: [RunState; 2] = [RunState::Working, RunState::Waiting];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             RunState::Queued => "queued",
@@ -596,6 +598,20 @@ impl RunState {
             RunState::Waiting => "waiting",
             RunState::Ended => "ended",
             RunState::Unreachable => "unreachable",
+        }
+    }
+
+    /// `None` once the Run has ended: there is nothing left to stop.
+    pub fn stop_exit(self) -> Option<Exit> {
+        match self {
+            RunState::Ended | RunState::Unreachable => None,
+            RunState::Queued => Some(Exit::Failed {
+                because: "it was stopped before it started".into(),
+            }),
+            RunState::Working => Some(Exit::Failed {
+                because: "it was stopped mid-turn, before its agent answered".into(),
+            }),
+            RunState::Waiting => Some(Exit::Succeeded),
         }
     }
 }

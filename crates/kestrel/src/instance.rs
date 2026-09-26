@@ -176,7 +176,11 @@ pub async fn held_by(store: &Store, session: SessionId) -> Result<Option<Held>> 
 /// An Instance a run is using or about to use is not held: what it holds is not yet known.
 async fn judged(tx: &mut Tx<'_>, kept: Kept) -> Result<Option<Held>> {
     let session = tx.sessions().get(kept.session).await?;
-    if !session::unfinished_run(tx, &session).await?.idle() {
+    if session::unfinished_run(tx, &session)
+        .await?
+        .in_flight()
+        .is_some()
+    {
         return Ok(None);
     }
 
@@ -200,7 +204,7 @@ pub async fn release(store: &Store, id: SessionId, participant: &str) -> Result<
     };
     if let Some(holding) = session::unfinished_run(&mut tx, &session)
         .await?
-        .blocks_seal()
+        .in_flight()
     {
         bail!(
             "the run {holding} is still in flight on the instance {}",

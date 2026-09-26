@@ -415,10 +415,9 @@ impl<'a> Sessions<'a> {
             .collect()
     }
 
-    pub(crate) async fn unfinished_run(
-        &mut self,
-        session: &Session,
-    ) -> Result<Option<(Run, bool)>> {
+    /// Held from the moment work is enqueued rather than dispatched: two Runs queued in one
+    /// Session would otherwise both be handed out.
+    pub(crate) async fn unfinished_run(&mut self, session: &Session) -> Result<Option<Unfinished>> {
         let holding = sqlx::query(
             "SELECT r.*,
                     EXISTS (SELECT 1 FROM pending_message p WHERE p.session_id = r.session_id) AS held_input
@@ -436,7 +435,12 @@ impl<'a> Sessions<'a> {
         .with_context(|| format!("reading what run the session {} has", session.id))?;
 
         holding
-            .map(|row| Ok((run(&row)?, row.get("held_input"))))
+            .map(|row| {
+                Ok(Unfinished {
+                    run: run(&row)?,
+                    held_input: row.get("held_input"),
+                })
+            })
             .transpose()
     }
 
@@ -874,14 +878,13 @@ impl<'a> Sessions<'a> {
                   FROM run
                   JOIN session ON session.id = run.session_id
                   WHERE run.organization_id = ?
-                    AND run.state IN (?, ?)
+                    AND run.state IN (SELECT value FROM json_each(?))
                     AND session.instance IS NULL)",
         )
         .bind(organization.id.to_string())
         .bind(organization.id.to_string())
         .bind(organization.id.to_string())
-        .bind(RunState::Working.as_str())
-        .bind(RunState::Waiting.as_str())
+        .bind(live()?)
         .fetch_one(&mut *self.connection)
         .await
         .context("counting an organization's live instances")?;
@@ -984,22 +987,26 @@ impl<'a> Sessions<'a> {
     }
 
     pub async fn hold_lease(&mut self, run: &Run, until: Timestamp) -> Result<()> {
-        sqlx::query("UPDATE run SET lease_expires_at = ? WHERE id = ? AND state IN (?, ?)")
-            .bind(due(until))
-            .bind(run.id.to_string())
-            .bind(RunState::Working.as_str())
-            .bind(RunState::Waiting.as_str())
-            .execute(&mut *self.connection)
-            .await
-            .with_context(|| format!("holding the lease of run {} until {until}", run.id))?;
+        sqlx::query(
+            "UPDATE run SET lease_expires_at = ?
+             WHERE id = ? AND state IN (SELECT value FROM json_each(?))",
+        )
+        .bind(due(until))
+        .bind(run.id.to_string())
+        .bind(live()?)
+        .execute(&mut *self.connection)
+        .await
+        .with_context(|| format!("holding the lease of run {} until {until}", run.id))?;
 
         Ok(())
     }
 
     pub async fn expired_leases(&mut self, at: Timestamp) -> Result<Vec<Run>> {
         sqlx::query(runs_where!(
-            "state IN ('working', 'waiting') AND lease_expires_at <= ? ORDER BY lease_expires_at"
+            "state IN (SELECT value FROM json_each(?)) AND lease_expires_at <= ?
+             ORDER BY lease_expires_at"
         ))
+        .bind(live()?)
         .bind(due(at))
         .fetch_all(&mut *self.connection)
         .await
@@ -1194,18 +1201,28 @@ impl<'a> Sessions<'a> {
         .collect()
     }
 
-    /// The Turn is anchored to the last Transcript entry before its prompt, so what the Agent
-    /// says during it is what follows that, never anything said before.
-    pub async fn prompt_turn(&mut self, run: &Run, expected: RunState) -> Result<Option<i64>> {
+    pub async fn first_turn(&mut self, run: &Run) -> Result<i64> {
+        self.turn(run).await
+    }
+
+    /// `None` when the Run was not waiting, so a replayed prompt starts no second turn.
+    pub async fn prompt_turn(&mut self, run: &Run) -> Result<Option<i64>> {
         let moved = sqlx::query("UPDATE run SET state = ? WHERE id = ? AND state = ?")
             .bind(RunState::Working.as_str())
             .bind(run.id.to_string())
-            .bind(expected.as_str())
+            .bind(RunState::Waiting.as_str())
             .execute(&mut *self.connection)
             .await?;
         if moved.rows_affected() == 0 {
             return Ok(None);
         }
+
+        self.turn(run).await.map(Some)
+    }
+
+    /// The Turn is anchored to the last Transcript entry before its prompt, so what the Agent
+    /// says during it is what follows that, never anything said before.
+    async fn turn(&mut self, run: &Run) -> Result<i64> {
         let prompted = sqlx::query(
             "INSERT INTO turn (run_id, organization_id, seq, prompted_at, from_seq)
              VALUES (
@@ -1227,7 +1244,7 @@ impl<'a> Sessions<'a> {
         .await
         .with_context(|| format!("prompting a turn of the run {}", run.id))?;
 
-        Ok(Some(prompted.get("seq")))
+        Ok(prompted.get("seq"))
     }
 
     /// The seq of the Turn waiting on an answer and the Transcript position its prompt followed,
@@ -1323,6 +1340,18 @@ impl<'a> Sessions<'a> {
             since,
         )))
     }
+}
+
+pub(crate) struct Unfinished {
+    pub run: Run,
+    pub held_input: bool,
+}
+
+/// A waiting Run still heartbeats and still holds its Instance.
+fn live() -> Result<String> {
+    Ok(serde_json::to_string(
+        &RunState::LIVE.map(RunState::as_str),
+    )?)
 }
 
 pub(crate) async fn read(connection: &mut SqliteConnection, id: SessionId) -> Result<Session> {
