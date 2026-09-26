@@ -71,10 +71,11 @@ pub async fn seal(store: &Store, id: SessionId) -> Result<Session> {
     if session.state == SessionState::Sealed {
         bail!("the session {id} is already sealed, and a sealed session is never reopened");
     }
-    if let Some(holding) = in_flight(&mut tx, &session).await? {
+    let unfinished = unfinished_run(&mut tx, &session).await?;
+    if let Some(holding) = unfinished.blocks_seal() {
         bail!("the run {holding} is still in flight in the session {id}");
     }
-    if let Some(waiting) = waiting(&mut tx, &session).await? {
+    if let Some(waiting) = unfinished.waiting() {
         work::stopping(&mut tx, &waiting, Exit::Succeeded).await?;
     }
     instance::archive_on_seal(&mut tx, &session).await?;
@@ -116,7 +117,7 @@ async fn idle(store: &Store) -> Result<Vec<SessionId>> {
             }
             None => false,
         };
-        if !holds_unpublished_work && in_flight(&mut tx, &session).await?.is_none() {
+        if !holds_unpublished_work && unfinished_run(&mut tx, &session).await?.idle() {
             idle.push(session.id);
         }
     }
@@ -124,26 +125,87 @@ async fn idle(store: &Store) -> Result<Vec<SessionId>> {
     Ok(idle)
 }
 
-/// What keeps a Session from sealing: a Run queued or mid-turn, or one that has ended while
-/// messages are still waiting on it. A Run between turns is not: sealing ends it (ADR-0024).
-pub(crate) async fn in_flight(tx: &mut Tx<'_>, session: &Session) -> Result<Option<RunId>> {
-    let Some(holding) = tx.sessions().run_holding_the_slot(session).await? else {
-        return Ok(None);
-    };
-    let run = tx.sessions().run(holding).await?;
-    let still_going = (run.state != RunState::Ended && !tx.sessions().is_waiting(&run).await?)
-        || tx.sessions().has_pending_messages(session).await?;
-
-    Ok(still_going.then_some(holding))
+pub(crate) struct UnfinishedRun {
+    pub run: Option<Run>,
+    held_input: bool,
+    supervisor_leaving: bool,
 }
 
-async fn waiting(tx: &mut Tx<'_>, session: &Session) -> Result<Option<Run>> {
-    let Some(holding) = tx.sessions().run_holding_the_slot(session).await? else {
-        return Ok(None);
-    };
-    let run = tx.sessions().run(holding).await?;
+pub(crate) async fn unfinished_run(tx: &mut Tx<'_>, session: &Session) -> Result<UnfinishedRun> {
+    Ok(match tx.sessions().unfinished_run(session).await? {
+        Some((run, held_input, supervisor_leaving)) => UnfinishedRun {
+            run: Some(run),
+            held_input,
+            supervisor_leaving,
+        },
+        None => UnfinishedRun {
+            run: None,
+            held_input: false,
+            supervisor_leaving: false,
+        },
+    })
+}
 
-    Ok(tx.sessions().is_waiting(&run).await?.then_some(run))
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PostDestination {
+    Start,
+    Brief,
+    Held(bool),
+}
+
+impl UnfinishedRun {
+    pub fn blocks_seal(&self) -> Option<RunId> {
+        self.run.as_ref().and_then(|run| {
+            (matches!(run.state, RunState::Queued | RunState::Working)
+                || self.held_input
+                || self.supervisor_leaving)
+                .then_some(run.id)
+        })
+    }
+
+    pub fn waiting(&self) -> Option<Run> {
+        self.run
+            .as_ref()
+            .filter(|run| run.state == RunState::Waiting)
+            .cloned()
+    }
+
+    pub fn post_destination(&self) -> PostDestination {
+        match self.run.as_ref().map(|run| run.state) {
+            None => PostDestination::Start,
+            Some(RunState::Queued) => PostDestination::Brief,
+            Some(RunState::Waiting) => PostDestination::Held(true),
+            Some(_) => PostDestination::Held(false),
+        }
+    }
+
+    pub fn refuses_enqueue(&self) -> Option<RunId> {
+        self.run.as_ref().map(|run| run.id)
+    }
+
+    pub fn idle(&self) -> bool {
+        self.blocks_seal().is_none()
+    }
+
+    pub fn stop_exit(&self, run: &Run) -> Result<Exit> {
+        let state = self
+            .run
+            .as_ref()
+            .filter(|unfinished| unfinished.id == run.id)
+            .map_or(run.state, |unfinished| unfinished.state);
+        Ok(match state {
+            RunState::Ended | RunState::Unreachable => {
+                bail!("the run {} has already ended", run.id)
+            }
+            RunState::Queued => Exit::Failed {
+                because: "it was stopped before it started".into(),
+            },
+            RunState::Working => Exit::Failed {
+                because: "it was stopped mid-turn, before its agent answered".into(),
+            },
+            RunState::Waiting => Exit::Succeeded,
+        })
+    }
 }
 
 pub async fn show(store: &Store, id: SessionId) -> Result<Session> {
@@ -183,25 +245,22 @@ pub(crate) async fn post_in(
 ) -> Result<Option<Run>> {
     session.accepts("message")?;
 
-    let holding = match tx.sessions().run_holding_the_slot(session).await? {
-        Some(holding) => Some(tx.sessions().run(holding).await?),
-        None => None,
-    };
-    match holding {
-        None => {
+    let unfinished = unfinished_run(tx, session).await?;
+    match unfinished.post_destination() {
+        PostDestination::Start => {
             said(tx, session, participant, message).await?;
             Ok(Some(tx.sessions().enqueue_run(session, None).await?))
         }
-        Some(run) if run.state == RunState::Queued => {
+        PostDestination::Brief => {
             said(tx, session, participant, message).await?;
             Ok(None)
         }
         // Held even for a Run between turns: its next turn waits for an active-work slot.
-        Some(run) => {
+        PostDestination::Held(waiting) => {
             tx.sessions()
                 .add_pending_message(session, participant, message)
                 .await?;
-            Ok(tx.sessions().is_waiting(&run).await?.then_some(run))
+            Ok(waiting.then(|| unfinished.run.unwrap()))
         }
     }
 }
@@ -255,4 +314,109 @@ async fn continued(
     }
 
     Ok(sealed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::OrganizationId;
+
+    fn run(state: RunState) -> Run {
+        Run {
+            id: RunId::generate(),
+            name: "run".into(),
+            organization: OrganizationId::generate(),
+            session: SessionId::generate(),
+            state,
+            waiting_for: None,
+            exit: None,
+            outcome_message: None,
+            instance: None,
+            supervisor: None,
+            model: None,
+            worked_model: None,
+            enqueued_at: Timestamp::now(),
+            started_at: None,
+            ended_at: None,
+            lease_expires_at: None,
+            connected: None,
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn unfinished_run_rules_cover_phase_input_and_leaving_supervisor() {
+        use RunState::{Ended, Queued, Unreachable, Waiting, Working};
+        let cases = [
+            (Queued, [true; 4], PostDestination::Brief, "failed"),
+            (Working, [true; 4], PostDestination::Held(false), "failed"),
+            (
+                Waiting,
+                [false, true, true, true],
+                PostDestination::Held(true),
+                "succeeded",
+            ),
+            (
+                Ended,
+                [false, true, true, true],
+                PostDestination::Held(false),
+                "ended",
+            ),
+            (
+                Unreachable,
+                [false, true, true, true],
+                PostDestination::Held(false),
+                "ended",
+            ),
+        ];
+        for (state, blocks, destination, exit) in cases {
+            for (index, (held_input, supervisor_leaving)) in
+                [(false, false), (false, true), (true, false), (true, true)]
+                    .into_iter()
+                    .enumerate()
+            {
+                let run = run(state);
+                let unfinished = UnfinishedRun {
+                    run: Some(run.clone()),
+                    held_input,
+                    supervisor_leaving,
+                };
+                assert_eq!(
+                    unfinished.blocks_seal().is_some(),
+                    blocks[index],
+                    "{state} {index}"
+                );
+                assert_eq!(
+                    unfinished.post_destination(),
+                    destination,
+                    "{state} {index}"
+                );
+                assert_eq!(
+                    unfinished.refuses_enqueue(),
+                    Some(run.id),
+                    "{state} {index}"
+                );
+                assert_eq!(unfinished.idle(), !blocks[index], "{state} {index}");
+                assert_eq!(
+                    unfinished.waiting().is_some(),
+                    state == Waiting,
+                    "{state} {index}"
+                );
+                let actual = match unfinished.stop_exit(&run) {
+                    Ok(Exit::Succeeded) => "succeeded",
+                    Ok(Exit::Failed { .. }) => "failed",
+                    Err(_) => "ended",
+                };
+                assert_eq!(actual, exit, "{state} {index}");
+            }
+        }
+        let empty = UnfinishedRun {
+            run: None,
+            held_input: false,
+            supervisor_leaving: false,
+        };
+        assert_eq!(empty.post_destination(), PostDestination::Start);
+        assert!(empty.idle());
+        assert_eq!(empty.refuses_enqueue(), None);
+    }
 }

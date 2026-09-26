@@ -5,12 +5,13 @@ use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::domain::{Exit, Run, RunId, RunState, SessionId, Turn, Usage};
+use crate::domain::{Exit, Run, RunId, SessionId, Turn, Usage};
 use crate::instance::Observed;
 use crate::integration::delivery;
 use crate::link;
 use crate::link::credential::Secret;
 use crate::log::{Entry, Message};
+use crate::session;
 use crate::store::session::{PendingMessage, Taken};
 use crate::store::{Store, Tx};
 
@@ -110,7 +111,10 @@ pub async fn enqueue(store: &Store, session: SessionId, model: Option<&str>) -> 
     let session = tx.sessions().get(session).await?;
     session.accepts("run")?;
 
-    if let Some(holding) = tx.sessions().run_holding_the_slot(&session).await? {
+    if let Some(holding) = session::unfinished_run(&mut tx, &session)
+        .await?
+        .refuses_enqueue()
+    {
         bail!(
             "the session {} already has the run {holding} in it, and a session has one at a time",
             session.id
@@ -160,7 +164,7 @@ pub async fn occupy(
                     return Ok(None);
                 };
                 prompt_pending(&mut tx, &run).await?;
-                Occupied::Resumed(run)
+                Occupied::Resumed(tx.sessions().run(run.id).await?)
             }
         };
     tx.commit().await?;
@@ -379,10 +383,6 @@ pub async fn supervisor_gone(store: &Store, run: &Run) -> Result<Option<Run>> {
     Ok(continued)
 }
 
-pub async fn is_waiting(store: &Store, run: &Run) -> Result<bool> {
-    store.begin().await?.sessions().is_waiting(run).await
-}
-
 pub async fn turns(store: &Store, run: RunId) -> Result<Vec<Turn>> {
     store.begin().await?.sessions().turns(run).await
 }
@@ -392,12 +392,10 @@ pub async fn turns(store: &Store, run: RunId) -> Result<Vec<Turn>> {
 pub async fn stop(store: &Store, id: RunId) -> Result<Exit> {
     let mut tx = store.begin().await?;
     let run = tx.sessions().run(id).await?;
-    let exit = match run.state {
-        RunState::Ended | RunState::Unreachable => bail!("the run {id} has already ended"),
-        RunState::Queued => failed("it was stopped before it started"),
-        RunState::Active if tx.sessions().is_waiting(&run).await? => Exit::Succeeded,
-        RunState::Active => failed("it was stopped mid-turn, before its agent answered"),
-    };
+    let session = tx.sessions().get(run.session).await?;
+    let exit = session::unfinished_run(&mut tx, &session)
+        .await?
+        .stop_exit(&run)?;
     let stands = stopping(&mut tx, &run, exit).await?;
     tx.commit().await?;
 
@@ -412,12 +410,6 @@ pub(crate) async fn stopping(tx: &mut Tx<'_>, run: &Run, exit: Exit) -> Result<E
         .await?;
 
     ending(tx, run, exit).await
-}
-
-fn failed(because: &str) -> Exit {
-    Exit::Failed {
-        because: because.to_owned(),
-    }
 }
 
 pub async fn complete(store: &Store, run: &Run) -> Result<Exit> {
@@ -499,10 +491,9 @@ async fn cascade_unreachable(tx: &mut Tx<'_>, blocker: RunId) -> Result<()> {
 
 async fn continue_pending(tx: &mut Tx<'_>, session: SessionId) -> Result<Option<Run>> {
     let session = tx.sessions().get(session).await?;
-    if tx
-        .sessions()
-        .run_holding_the_slot(&session)
+    if session::unfinished_run(tx, &session)
         .await?
+        .refuses_enqueue()
         .is_some()
     {
         return Ok(None);

@@ -580,7 +580,8 @@ impl fmt::Display for Usage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunState {
     Queued,
-    Active,
+    Working,
+    Waiting,
     Ended,
     /// Terminal like `Ended`, but with no exit status: a queued Run whose declared tolerance
     /// can no longer be met never ran, so nothing failed.
@@ -591,7 +592,8 @@ impl RunState {
     pub const fn as_str(self) -> &'static str {
         match self {
             RunState::Queued => "queued",
-            RunState::Active => "active",
+            RunState::Working => "working",
+            RunState::Waiting => "waiting",
             RunState::Ended => "ended",
             RunState::Unreachable => "unreachable",
         }
@@ -604,7 +606,8 @@ impl FromStr for RunState {
     fn from_str(state: &str) -> Result<Self> {
         match state {
             "queued" => Ok(RunState::Queued),
-            "active" => Ok(RunState::Active),
+            "working" => Ok(RunState::Working),
+            "waiting" => Ok(RunState::Waiting),
             "ended" => Ok(RunState::Ended),
             "unreachable" => Ok(RunState::Unreachable),
             other => bail!("{other} is not a state a run can be in"),

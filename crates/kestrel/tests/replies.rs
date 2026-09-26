@@ -180,7 +180,7 @@ async fn a_turns_response_reaches_the_issue_before_the_run_ends() {
         "the reply does not carry this turn's marker: {}",
         bodies[0]
     );
-    assert_eq!(harness.run(run.id).await.state, RunState::Active);
+    assert_eq!(harness.run(run.id).await.state, RunState::Waiting);
 
     harness.stop_run(run.id).await;
     let ended = harness.run(run.id).await;

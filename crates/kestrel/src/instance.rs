@@ -39,7 +39,7 @@ pub async fn admit(tx: &mut Tx<'_>, session: &Session) -> Result<Admission> {
 
     for kept in tx.sessions().kept_instances(&session.organization).await? {
         let candidate = tx.sessions().get(kept.session).await?;
-        if session::in_flight(tx, &candidate).await?.is_none()
+        if session::unfinished_run(tx, &candidate).await?.idle()
             && unpublished(&candidate.checkout.repositories, kept.observed.as_deref()).is_none()
         {
             tx.sessions()
@@ -176,7 +176,7 @@ pub async fn held_by(store: &Store, session: SessionId) -> Result<Option<Held>> 
 /// An Instance a run is using or about to use is not held: what it holds is not yet known.
 async fn judged(tx: &mut Tx<'_>, kept: Kept) -> Result<Option<Held>> {
     let session = tx.sessions().get(kept.session).await?;
-    if session::in_flight(tx, &session).await?.is_some() {
+    if !session::unfinished_run(tx, &session).await?.idle() {
         return Ok(None);
     }
 
@@ -198,7 +198,10 @@ pub async fn release(store: &Store, id: SessionId, participant: &str) -> Result<
     let Some(kept) = tx.sessions().kept_instance(id).await? else {
         bail!("the session {id} has no instance to release");
     };
-    if let Some(holding) = session::in_flight(&mut tx, &session).await? {
+    if let Some(holding) = session::unfinished_run(&mut tx, &session)
+        .await?
+        .blocks_seal()
+    {
         bail!(
             "the run {holding} is still in flight on the instance {}",
             kept.instance

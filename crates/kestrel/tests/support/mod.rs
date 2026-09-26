@@ -6,6 +6,7 @@
 // Every integration-test binary compiles all of this; a helper one of them does not reach for
 // is not dead, it belongs to a sibling.
 #![allow(dead_code)]
+use sqlx::Connection;
 
 pub mod built;
 pub mod client;
@@ -1079,16 +1080,18 @@ impl Harness {
     }
 
     pub async fn has_pending_messages(&self, id: SessionId) -> bool {
-        let mut tx = self.store.begin().await.expect("a transaction");
-        let session = tx
-            .sessions()
-            .get(id)
+        let database = self.data_dir().join("kestrel.db");
+        let options = sqlx::sqlite::SqliteConnectOptions::new().filename(database);
+        let mut connection = sqlx::SqliteConnection::connect_with(&options)
             .await
-            .expect("the session should read");
-        tx.sessions()
-            .has_pending_messages(&session)
-            .await
-            .expect("pending messages should read")
+            .expect("the database should open");
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM pending_message WHERE session_id = ?)",
+        )
+        .bind(id.to_string())
+        .fetch_one(&mut connection)
+        .await
+        .expect("pending messages should read")
     }
 
     pub async fn enqueue_run(&self, session: SessionId) -> Run {

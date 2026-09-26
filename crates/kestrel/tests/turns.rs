@@ -84,7 +84,7 @@ async fn a_follow_up_is_the_next_turn_of_the_same_agent_conversation() {
     assert_eq!(continued.id, run.id);
     let answered = harness.answered(run.id, 2).await;
 
-    assert_eq!(answered.state, RunState::Active);
+    assert_eq!(answered.state, RunState::Waiting);
     assert_eq!(harness.runs(session.id).await.len(), 1);
     assert_eq!(harness.turns(run.id).await.len(), 2);
     let said = said(&harness, session.id).await;
@@ -121,7 +121,7 @@ async fn an_answer_saying_the_work_is_done_leaves_the_run_open() {
         .expect("the run is still open to take it");
     let answered = harness.answered(run.id, 2).await;
 
-    assert_eq!(answered.state, RunState::Active);
+    assert_eq!(answered.state, RunState::Waiting);
     assert_eq!(said(&harness, session.id).await[1], "one more thing");
 
     harness.stop_run(run.id).await;
@@ -129,7 +129,7 @@ async fn an_answer_saying_the_work_is_done_leaves_the_run_open() {
 }
 
 #[tokio::test]
-async fn a_session_holds_one_open_run_even_while_it_waits_between_turns() {
+async fn a_session_holds_one_open_run_even_while_it_waits_while_waiting() {
     let (harness, session) = conversing(Script::Converses).await;
     let run = harness.post(session.id, "operator", "start").await;
     harness.answered(run.id, 1).await;
@@ -146,7 +146,7 @@ async fn a_session_holds_one_open_run_even_while_it_waits_between_turns() {
 }
 
 #[tokio::test]
-async fn stopping_a_run_between_turns_ends_it_succeeded_and_its_supervisor_with_it() {
+async fn stopping_a_run_while_waiting_ends_it_succeeded_and_its_supervisor_with_it() {
     let (harness, session) = conversing(Script::Converses).await;
     let run = harness.post(session.id, "operator", "start").await;
     let answered = harness.answered(run.id, 1).await;
@@ -371,7 +371,7 @@ async fn not_prompted_again(harness: &Harness, run: RunId, turns: usize) {
 }
 
 #[tokio::test]
-async fn a_run_waiting_between_turns_leaves_its_slot_to_another_session() {
+async fn a_run_waiting_while_waiting_leaves_its_slot_to_another_session() {
     let harness = sharing_one_slot().await;
     let waiting = harness.open_session("acme", "kestrel", "builder").await;
     let working = harness.open_session("acme", "kestrel", "dawdler").await;
@@ -394,7 +394,7 @@ async fn a_run_waiting_between_turns_leaves_its_slot_to_another_session() {
     harness.stop_run(second.id).await;
     let answered = harness.answered(first.id, 2).await;
 
-    assert_eq!(answered.state, RunState::Active);
+    assert_eq!(answered.state, RunState::Waiting);
     assert_eq!(harness.runs(waiting.id).await.len(), 1);
     let said = said(&harness, waiting.id).await;
     assert!(

@@ -53,7 +53,7 @@ async fn a_run_that_is_slow_or_blocked_still_occupies_the_slot_and_nothing_else_
     let session = a_session(&harness).await;
     let (blocked, _) = harness.dispatch_run(session.id).await;
 
-    assert_eq!(harness.run(blocked.id).await.state, RunState::Active);
+    assert_eq!(harness.run(blocked.id).await.state, RunState::Working);
     assert!(
         harness.try_enqueue_run(session.id).await.is_err(),
         "a session with a run in flight took a second one"

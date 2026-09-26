@@ -75,7 +75,7 @@ async fn an_agent_that_can_load_its_session_is_brought_back_into_the_same_conver
         .expect("a run between turns takes the message as its next prompt");
     let answered = harness.answered(run.id, 2).await;
 
-    assert_eq!(answered.state, RunState::Active, "{:?}", answered.exit);
+    assert_eq!(answered.state, RunState::Waiting, "{:?}", answered.exit);
     assert_eq!(harness.runs(session.id).await.len(), 1);
     let said = said(&harness, session.id).await;
     let [first, second] = said.as_slice() else {
@@ -104,7 +104,7 @@ fn vanishing() -> Environment {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn an_agent_lost_between_turns_fails_the_run_and_the_next_run_takes_up_its_checkout() {
+async fn an_agent_lost_while_waiting_fails_the_run_and_the_next_run_takes_up_its_checkout() {
     let runtime = vanishing();
     let harness = Harness::dispatching_to(
         supervisor::binary(),

@@ -138,7 +138,10 @@ pub async fn start(store: &Store, run: &Run) -> Result<SentInstruction> {
             },
         )
         .await?;
-    tx.sessions().prompt_turn(run).await?;
+    tx.sessions()
+        .prompt_turn(run, crate::domain::RunState::Working)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("the run {} cannot start a turn", run.id))?;
     tx.commit().await?;
 
     Ok(sent)
@@ -149,7 +152,10 @@ pub(crate) async fn prompt(tx: &mut Tx<'_>, run: &Run, prompt: String) -> Result
     tx.sessions()
         .send_instruction(run, Instruction::Prompt { prompt })
         .await?;
-    tx.sessions().prompt_turn(run).await?;
+    tx.sessions()
+        .prompt_turn(run, crate::domain::RunState::Waiting)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("the run {} cannot start a turn", run.id))?;
 
     Ok(())
 }
