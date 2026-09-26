@@ -1,5 +1,8 @@
 # Two deployables, and the environment dials out
 
+> **Amended by [ADR-0030](0030-the-supervisor-lives-with-its-instance.md).** A supervisor lives with
+> its Instance, not its Run, and a Run is begun over its link.
+
 kestrel publishes two images. **`kestrel`** is the control plane: one artifact, roles selected by
 argv. **`kestrel-env`** is the base image a run executes in — the supervisor binary, the opencode
 binary, the `claude` binary (bundled by the Agent SDK as a platform-specific optional dependency),
