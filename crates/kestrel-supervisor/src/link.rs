@@ -62,7 +62,7 @@ pub enum Report {
     Heartbeat,
     Stderr { lines: Vec<String> },
     Started,
-    Model { model: String, offered: Vec<String> },
+    Model { model: String },
     Said { message: String },
     Used { usage: Usage },
     Answered,

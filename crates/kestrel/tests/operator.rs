@@ -208,6 +208,12 @@ fn agents_of(organization: &str) -> String {
     operator::AGENTS.replace("{organization}", organization)
 }
 
+fn agent_model_of(organization: &str, agent: &str) -> String {
+    operator::AGENT_MODEL
+        .replace("{organization}", organization)
+        .replace("{agent}", agent)
+}
+
 fn declaration_of(organization: &str) -> String {
     operator::DECLARATION.replace("{organization}", organization)
 }
@@ -223,6 +229,17 @@ fn credentials_of(organization: &str) -> String {
 fn credential_of(organization: &str, variable: &str) -> String {
     operator::CREDENTIAL
         .replace("{organization}", organization)
+        .replace("{variable}", variable)
+}
+
+fn profiles_of(organization: &str) -> String {
+    operator::PROFILES.replace("{organization}", organization)
+}
+
+fn profile_variable_of(organization: &str, profile: &str, variable: &str) -> String {
+    operator::PROFILE_VARIABLE
+        .replace("{organization}", organization)
+        .replace("{profile}", profile)
         .replace("{variable}", variable)
 }
 
@@ -2045,29 +2062,55 @@ async fn a_declaration_that_describes_nothing_declarable_is_refused() {
 }
 
 #[tokio::test]
-async fn an_agent_naming_a_model_its_runtime_does_not_advertise_is_refused() {
+async fn an_agent_names_a_model_a_newly_added_profile_could_offer() {
     let harness = Harness::boot().await;
-    let organization = harness.declare_organization("acme").await;
-    harness
-        .advertised(&organization, "opencode", &["claude-opus-5"])
-        .await;
-
-    let (status, refusal) = declared(
+    harness.declare_organization("acme").await;
+    let (built, _) = declared(
         &harness,
         &agents_of("acme"),
-        &json!({ "name": "builder", "runtime": "opencode", "model": "gpt-9" }),
+        &json!({ "name": "builder", "runtime": "opencode" }),
+    )
+    .await;
+    assert_eq!(built, StatusCode::CREATED);
+
+    let (subscribed, _) = declared(
+        &harness,
+        &profiles_of("acme"),
+        &json!({ "name": "jack", "owner": "Jack" }),
+    )
+    .await;
+    assert_eq!(subscribed, StatusCode::CREATED);
+    let (keyed, _) = requested(
+        &harness,
+        reqwest::Method::PUT,
+        &profile_variable_of("acme", "jack", "OPENCODE_API_KEY"),
+        Some(&json!({ "secret": "jacks-subscription-key" })),
+    )
+    .await;
+    assert_eq!(keyed, StatusCode::OK);
+
+    let (changed, model) = requested(
+        &harness,
+        reqwest::Method::PUT,
+        &agent_model_of("acme", "builder"),
+        Some(&json!({ "model": "opencode-go/glm-5.3" })),
+    )
+    .await;
+    let (named, fresh) = declared(
+        &harness,
+        &agents_of("acme"),
+        &json!({
+            "name": "reviewer",
+            "runtime": "opencode",
+            "model": "opencode-go/glm-5.3"
+        }),
     )
     .await;
 
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(
-        refusal["message"]
-            .as_str()
-            .expect("a message")
-            .contains("claude-opus-5"),
-        "the refusal does not say what the runtime offers: {refusal}"
-    );
-    assert!(listed(&harness, &agents_of("acme")).await.is_empty());
+    assert_eq!(changed, StatusCode::OK, "{model}");
+    assert_eq!(model["model"], "opencode-go/glm-5.3");
+    assert_eq!(named, StatusCode::CREATED, "{fresh}");
+    assert_eq!(fresh["model"], "opencode-go/glm-5.3");
 
     harness.teardown().await;
 }

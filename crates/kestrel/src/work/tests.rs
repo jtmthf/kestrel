@@ -1,7 +1,6 @@
 use tempfile::TempDir;
 
 use super::*;
-use crate::agent;
 use crate::domain::RunState;
 use crate::log::Window;
 use crate::session;
@@ -238,7 +237,6 @@ async fn reports_record_the_run_and_its_transcript_together() {
             Some(2),
             Report::Model {
                 model: "scripted-mini".to_owned(),
-                offered: vec!["scripted-mini".to_owned(), "scripted-max".to_owned()],
             },
         )
         .await
@@ -292,16 +290,6 @@ async fn reports_record_the_run_and_its_transcript_together() {
             },
         ]
     );
-    assert!(
-        agent::set_model(&fixture.store, "acme", "builder", Some("scripted-max"))
-            .await
-            .is_ok()
-    );
-    assert!(
-        agent::set_model(&fixture.store, "acme", "builder", Some("not-offered"))
-            .await
-            .is_err()
-    );
 }
 
 #[tokio::test]
@@ -354,7 +342,6 @@ async fn numbered_reports_refuse_missing_and_invalid_numbers_without_effects() {
         Report::Started,
         Report::Model {
             model: "unexpected".to_owned(),
-            offered: vec!["unexpected".to_owned()],
         },
         Report::Said {
             message: "refused".to_owned(),

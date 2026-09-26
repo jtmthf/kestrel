@@ -377,16 +377,6 @@ impl Harness {
             .expect("the model should change")
     }
 
-    pub async fn advertised(&self, organization: &Organization, runtime: &str, models: &[&str]) {
-        let models: Vec<String> = models.iter().map(|&model| model.to_owned()).collect();
-        let mut tx = self.store.begin().await.expect("a transaction");
-        tx.agents()
-            .record_models_advertised(organization.id, runtime, &models)
-            .await
-            .expect("the models should record");
-        tx.commit().await.expect("the models should commit");
-    }
-
     pub async fn agents(&self, organization: &Organization) -> Vec<Agent> {
         let mut tx = self.store.begin().await.expect("a transaction");
         tx.agents()

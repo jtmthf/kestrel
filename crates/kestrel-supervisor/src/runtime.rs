@@ -58,10 +58,9 @@ pub struct Worked {
 }
 
 /// Which model the agent works the turn on — the one its Run named, or the one the runtime
-/// defaults to when it named none — and every model the runtime offered to be set to.
+/// defaults to when it named none.
 pub struct On {
     pub model: String,
-    pub offered: Vec<String>,
 }
 
 /// What to ask the agent to set, and what it is on once it has. Nothing is set for a Run
@@ -640,7 +639,6 @@ fn selects_the_model(
             id: None,
             on: On {
                 model: select.current_value.0.to_string(),
-                offered,
             },
         }));
     };
@@ -654,7 +652,6 @@ fn selects_the_model(
         id: Some(id.clone()),
         on: On {
             model: model.to_owned(),
-            offered,
         },
     }))
 }
@@ -957,7 +954,6 @@ mod tests {
 
         assert_eq!(selects.id.expect("a model to set").0.as_ref(), "model");
         assert_eq!(selects.on.model, "thorough");
-        assert_eq!(selects.on.offered, ["fast", "thorough"]);
     }
 
     #[test]

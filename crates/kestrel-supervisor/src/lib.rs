@@ -402,10 +402,7 @@ fn everything_left_to_say(
 ) -> impl Iterator<Item = Report> {
     worked
         .on
-        .map(|on| Report::Model {
-            model: on.model,
-            offered: on.offered,
-        })
+        .map(|on| Report::Model { model: on.model })
         .into_iter()
         .chain(
             worked

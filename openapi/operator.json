@@ -259,7 +259,7 @@
       "post": {
         "operationId": "declareAgent",
         "summary": "Declare an Agent.",
-        "description": "Desired state: an Agent by this name that already exists keeps its identity and takes on the runtime and model declared, so a declaration naming no model leaves it naming none. A model its runtime has been seen to advertise, and this is not among them, is refused with 422. A Run already in flight keeps the model it was dispatched with.",
+        "description": "Desired state: an Agent by this name that already exists keeps its identity and takes on the runtime and model declared, so a declaration naming no model leaves it naming none. A named model is taken at its word: what a runtime offers is only learned from a Run, and a Subscription Profile added since can widen it. A Run already in flight keeps the model it was dispatched with.",
         "parameters": [
           {
             "name": "organization",
