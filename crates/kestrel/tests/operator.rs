@@ -5,6 +5,7 @@ use std::fs;
 use std::time::Duration;
 
 use kestrel::domain::{EventRecordId, Exit, RunId};
+use kestrel::instance::{Git, Observed};
 use kestrel::link;
 use kestrel::log::{Entry, Message};
 use kestrel::operator;
@@ -1656,6 +1657,75 @@ async fn the_operator_documents_session_and_run_answers_and_refusals() {
     let nowhere = session_at("acme", "01a0a2d8-baf8-7c02-99fa-7280f174c14a");
     let (status, _) = got(&harness, &nowhere).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    harness.teardown().await;
+}
+
+#[tokio::test]
+async fn sealing_a_session_whose_instance_holds_unpublished_work_is_a_conflict_not_an_outage() {
+    let harness = Harness::boot().await;
+    let organization = harness.declare_organization("acme").await;
+    harness
+        .declare_workspace(
+            &organization,
+            "kestrel",
+            &["https://github.com/jtmthf/kestrel".to_owned()],
+            "main",
+        )
+        .await;
+    harness
+        .declare_agent(&organization, "builder", "opencode", None)
+        .await;
+    let session = harness.open_session("acme", "kestrel", "builder").await;
+
+    let queued = harness.enqueue_run(session.id).await;
+    let claimed = harness
+        .occupy_run()
+        .await
+        .expect("the run should claim")
+        .run;
+    assert_eq!(claimed.id, queued.id);
+    harness.executes_on(&claimed, "held").await;
+    harness
+        .report_checkout(
+            &claimed,
+            vec![Observed {
+                repository: "https://github.com/jtmthf/kestrel".to_owned(),
+                git: Git::Read {
+                    branch: Some("main".to_owned()),
+                    untracked: 0,
+                    uncommitted: 1,
+                    stashes: 0,
+                    unpushed: 0,
+                },
+            }],
+        )
+        .await;
+    harness.complete_run(&claimed).await;
+
+    let session_id = session.id.to_string();
+    let (status, refusal) = declared(&harness, &session_seal_at("acme", &session_id), &json!({}))
+        .await;
+
+    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+    let message = refusal["message"].as_str().expect("a message");
+    assert!(
+        message.contains("may hold the only copy of its work"),
+        "{refusal}"
+    );
+
+    let rejected = client(&harness, &["session", "seal", &session_id]).await;
+    assert!(
+        failed(&rejected).contains("may hold the only copy of its work"),
+        "{}",
+        rejected.err
+    );
+    assert_eq!(
+        rejected.status.code(),
+        Some(4),
+        "a refusal should exit rejected, not unavailable: {}",
+        rejected.err
+    );
 
     harness.teardown().await;
 }
