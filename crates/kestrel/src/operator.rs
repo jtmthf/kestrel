@@ -1594,10 +1594,7 @@ async fn post_to_session(
     )
     .await
     .map_err(session_refusal)?;
-    let run = match run {
-        Some(run) => Some(RunRecord::read(run)),
-        None => None,
-    };
+    let run = run.map(RunRecord::read);
 
     Ok(Json(run))
 }
